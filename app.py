@@ -26,6 +26,7 @@ class HermesSession:
     def __init__(self, args) -> None:
         self.args = args
         self.ws: Any = None
+        self._connect_cm: Any = None
         self.turn_index = 0
         self.microphone: Any = None
 
@@ -35,7 +36,8 @@ class HermesSession:
         if not token:
             raise RuntimeError("No voice-session token found. Set VOICE_SESSION_TOKEN or use the profile .env.")
         kwargs = config._connection_kwargs(connect, token)
-        self.ws = await connect(self.args.url, **kwargs).__aenter__()
+        self._connect_cm = connect(self.args.url, **kwargs)
+        self.ws = await self._connect_cm.__aenter__()
         return await send_hello(
             self.ws,
             client_id=self.args.client_id,
@@ -43,6 +45,11 @@ class HermesSession:
             session_id=self.args.session_id,
             display_name=self.args.display_name,
         )
+
+    async def close(self) -> None:
+        if self._connect_cm is not None:
+            await self._connect_cm.__aexit__(None, None, None)
+            self._connect_cm = None
 
     def send_turn(self, text: str, *, stt_source: str = "local"):
         self.turn_index += 1
@@ -93,6 +100,10 @@ class HermesStreamingApp(App):
             except (ProtocolError, RuntimeError, OSError, ConnectionError) as exc:
                 transcript.write(f"[error] {exc}")
         self.set_focus(self.query_one("#input", Input))
+
+    async def on_unmount(self) -> None:
+        if isinstance(self.session, HermesSession):
+            await self.session.close()
 
     async def on_input_submitted(self, event: Input.Submitted) -> None:
         text = event.value.strip()
