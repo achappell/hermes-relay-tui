@@ -12,9 +12,17 @@ Reference script:
 
 ## Scope
 
-- Visual upgrade only. No new protocol features, no multi-session
-  support. One Hermes voice-session connection per app run, same as
-  today.
+- Visual upgrade only. No new protocol features. One Hermes
+  voice-session connection open at a time, same as today — the TUI
+  does not show or manage multiple sessions concurrently (no tabs, no
+  split view).
+- Creating/resuming a session is in scope, but at launch time only:
+  `--session-id` (flag or `VOICE_SESSION_ID` env var) picks the
+  session to connect to, exactly like the CLI today. Reconnecting
+  later with the same `session_id` resumes that chat (session history
+  lives server-side, keyed by `session_id`, per the existing `hello`
+  handshake). No in-app session picker/list in v1 — that's a
+  reasonable follow-up once the core TUI exists, not a blocker for it.
 - Text turns and `/voice` microphone turns both in scope for v1.
 - Streaming stays fully live: text deltas append to the transcript as
   they arrive, PCM audio plays via `sounddevice` as chunks arrive —
@@ -27,7 +35,8 @@ Reference script:
 
 ## Non-goals
 
-- No new session/tab management.
+- No in-app session picker or multi-session tabbed/split view for v1
+  (see Scope above — launch-time `--session-id` covers create/resume).
 - No changes to the Hermes voice-session server protocol.
 - No automated test suite (the reference script has none either;
   validation is a manual run against the real endpoint).
