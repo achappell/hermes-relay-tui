@@ -5,7 +5,29 @@ Ported from hermes-hybrid-tui.py's PCMPlayer, unchanged in behavior.
 
 from __future__ import annotations
 
+import wave
+from pathlib import Path
 from typing import Any, Optional
+
+
+def audio_path(base: Optional[Path], index: int, turn_id: str) -> Path:
+    """Pick the WAV path for a turn, matching hermes-hybrid-tui.py's _audio_path."""
+    if base is None:
+        return Path.cwd() / f"hybrid-tui-{turn_id}.wav"
+    if index == 0:
+        return base
+    return base.with_name(f"{base.stem}-{index}{base.suffix or '.wav'}")
+
+
+def write_wav(path: Path, audio: bytes, audio_format: tuple[int, int, int]) -> None:
+    """Write raw PCM out as a WAV file, matching hermes-hybrid-tui.py's _write_wav."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    sample_rate, channels, sample_width = audio_format
+    with wave.open(str(path), "wb") as output:
+        output.setnchannels(channels)
+        output.setsampwidth(sample_width)
+        output.setframerate(sample_rate)
+        output.writeframes(audio)
 
 
 class PCMPlayer:

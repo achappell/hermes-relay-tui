@@ -88,7 +88,6 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--device-id", default=os.getenv("VOICE_SESSION_DEVICE_ID", "amanda-mac"))
     parser.add_argument("--session-id", default=os.getenv("VOICE_SESSION_ID", "hybrid-tui"))
     parser.add_argument("--display-name", default="Amanda streaming TUI")
-    parser.add_argument("--history", type=Path, default=Path.home() / ".hermes" / "streaming-tui-history")
     parser.add_argument("--no-play", action="store_true", help="buffer audio instead of opening the local speaker")
     parser.add_argument("--output", type=Path, help="also save each response WAV (later turns get a suffix)")
     parser.add_argument("--mic-max-seconds", type=float, default=_env_float("VOICE_SESSION_MIC_MAX_SECONDS", 15.0))
