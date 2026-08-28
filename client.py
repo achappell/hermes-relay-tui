@@ -85,6 +85,12 @@ async def send_turn(
             continue
 
         payload = json.loads(frame)
+        if not isinstance(payload, dict):
+            # Same guard _receive_json has, but reported as an event rather
+            # than raised: send_turn's contract is "failure arrives as an
+            # error event that ends the generator".
+            yield {"type": "error", "error": "server sent a non-object JSON frame"}
+            return
         kind = payload.get("type")
 
         if kind == "turn_accepted":
