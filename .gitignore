@@ -3,3 +3,4 @@ __pycache__/
 *.pyc
 .hermes/
 *.wav
+.pytest_cache/
