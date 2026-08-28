@@ -86,10 +86,13 @@ ported protocol logic.
     incremental `print()`.
   - `Input` widget for the `you>` prompt; `Input.Submitted` sends a
     text turn.
-  - A key binding (e.g. `ctrl+r` or a `/voice` text command, matching
-    the CLI's `/voice`) triggers mic capture in a Textual worker
-    (`self.run_worker(..., thread=True)`), same flow as the CLI:
-    listening → transcript → send as a turn.
+  - A Textual key binding (e.g. `ctrl+r`, shown as a discoverable
+    footer hint) triggers mic capture in a worker
+    (`self.run_worker(..., thread=True)`), same flow as the CLI's
+    `/voice`: listening → transcript → send as a turn. A key binding
+    is used instead of parsing `/voice` out of typed input — mode
+    switches belong on keys, not as text commands, so the `Input`
+    handler stays a plain "submit this as a turn" path.
   - A footer/status widget reflecting connection state, `[audio
     streaming]` / `[audio buffering: ...]`, and mic listening state —
     replacing the CLI's inline `print(f" [...]")` annotations.
@@ -97,9 +100,9 @@ ported protocol logic.
     that owns the `client.py` event loop for the session's lifetime;
     UI callbacks (`Input.Submitted`, voice binding) enqueue turns onto
     that worker rather than opening new connections per turn.
-  - `/help` and `/quit` behavior preserved (as commands typed into
-    `Input`, or as key bindings — `/quit` maps to Textual's quit
-    action).
+  - `/help` and `/quit` become key bindings too (e.g. `f1` / `ctrl+q`),
+    each shown in the footer, rather than typed commands — consistent
+    with the voice binding above.
 
 ### Data flow
 
