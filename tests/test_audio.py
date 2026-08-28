@@ -2,9 +2,37 @@
 import sys
 import types
 
+import wave
+from pathlib import Path
+
 import pytest
 
-from audio import PCMPlayer
+from audio import PCMPlayer, audio_path, write_wav
+
+
+def test_audio_path_uses_the_base_unchanged_for_the_first_turn(tmp_path):
+    base = tmp_path / "reply.wav"
+    assert audio_path(base, 0, "t0") == base
+
+
+def test_audio_path_suffixes_later_turns(tmp_path):
+    base = tmp_path / "reply.wav"
+    assert audio_path(base, 2, "t2") == tmp_path / "reply-2.wav"
+
+
+def test_audio_path_without_a_base_falls_back_to_the_turn_id():
+    assert audio_path(None, 3, "abc123") == Path.cwd() / "hybrid-tui-abc123.wav"
+
+
+def test_write_wav_creates_parent_directories_and_a_readable_file(tmp_path):
+    target = tmp_path / "nested" / "out.wav"
+    write_wav(target, b"\x00\x01\x02\x03", (24000, 1, 2))
+
+    with wave.open(str(target), "rb") as handle:
+        assert handle.getframerate() == 24000
+        assert handle.getnchannels() == 1
+        assert handle.getsampwidth() == 2
+        assert handle.readframes(2) == b"\x00\x01\x02\x03"
 
 
 def test_disabled_player_never_starts():
