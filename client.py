@@ -154,6 +154,9 @@ async def send_turn(
             delta = _final_text_delta(final_text, rendered_preview, streamed_text)
             if delta:
                 yield {"type": "text_delta", "text": delta}
+            if final_text:
+                rendered_preview = final_text
+                streamed_text = True
         elif kind == "message.start":
             yield {"type": "message_start"}
         elif kind == "message.complete":
@@ -161,6 +164,9 @@ async def send_turn(
             delta = _final_text_delta(final_text, rendered_preview, streamed_text)
             if delta:
                 yield {"type": "text_delta", "text": delta}
+            if final_text:
+                rendered_preview = final_text
+                streamed_text = True
             yield {
                 "type": "message_complete",
                 "text": final_text,

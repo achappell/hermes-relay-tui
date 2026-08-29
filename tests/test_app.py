@@ -914,6 +914,42 @@ async def test_turn_audio_is_written_to_a_wav_when_playback_is_off(tmp_path):
         assert f"audio: {output}" in transcript_of(app)
 
 
+async def test_audio_write_failure_preserves_a_recovery_wav(tmp_path, monkeypatch):
+    class FailingPlayer:
+        active = False
+        failure = None
+
+        def start(self, audio_format):
+            self.active = True
+
+        def write(self, chunk):
+            self.active = False
+            self.failure = "speaker stopped"
+
+        def close(self):
+            self.active = False
+
+    monkeypatch.chdir(tmp_path)
+    session = FakeSession(
+        events=[
+            {"type": "audio_start", "sample_rate": 24000, "channels": 1, "sample_width": 2},
+            {"type": "audio_chunk", "data": b"\x00\x01\x02\x03"},
+            {"type": "audio_end"},
+            {"type": "turn_end", "turn_id": "speaker-failed"},
+        ]
+    )
+    app = HermesStreamingApp(args=make_args(no_play=False), session_factory=lambda: session)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.player = FailingPlayer()
+        await app._run_turn("hi")
+
+    recovery_wav = tmp_path / "hybrid-tui-speaker-failed.wav"
+    assert recovery_wav.exists()
+    with wave.open(str(recovery_wav), "rb") as handle:
+        assert handle.readframes(2) == b"\x00\x01\x02\x03"
+
+
 async def test_audio_end_closes_playback_before_turn_end():
     class RecordingPlayer:
         active = False
