@@ -13,6 +13,7 @@ This is a client for the existing Hermes voice-session channel. It does not run 
 - WAV output when playback is disabled or `--output` is supplied.
 - Session create/resume through `--session-id`.
 - Bounded reconnect attempts with visible connection state and local prompt preservation.
+- Structured thinking, status, tool, notification, and background activity rendering with unsupported-event diagnostics.
 - Connection, timeout, and turn errors shown in the UI instead of crashing the app.
 
 ## Requirements
@@ -72,6 +73,12 @@ venv/bin/python app.py \
 ```
 
 The endpoint must be reachable from the machine running the TUI, and the server must accept the supplied bearer token.
+
+Richer gateway-style events are normalized when the relay sends them. Thinking
+and tool progress use one replaceable activity line, repeated status updates
+are suppressed, and the final assistant text starts on its own `hermes:` line.
+Event types the client does not understand are shown as diagnostic transcript
+entries instead of being discarded.
 
 ## Controls
 

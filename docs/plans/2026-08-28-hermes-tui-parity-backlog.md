@@ -206,6 +206,14 @@ should be logged or surfaced diagnostically, not discarded without a trace.
 Acceptance: a tool-running turn has a live activity lane, a stable final
 assistant message, and a useful error if the tool or gateway fails.
 
+Current implementation: `client.send_turn()` normalizes the verified
+gateway-style `message`, thinking/reasoning, status, notification, tool, and
+background event families into app events. The app keeps activity in one
+replaceable line, suppresses duplicate statuses, starts assistant text on a
+separate `hermes:` line, and surfaces unsupported events diagnostically. The
+current voice-session channel still emits only the basic voice frames, so live
+tool/reasoning behavior remains dependent on a richer relay contract.
+
 ### P0.7 Structured prompts
 
 Implement blocking prompt modes for:

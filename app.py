@@ -1,6 +1,6 @@
 """Textual TUI for the Hermes voice-session channel.
 
-Consumes events from client.py (text deltas, status, audio, turn_end)
+Consumes normalized events from client.py (message text, activity, audio, turn_end)
 and renders them into a scrolling transcript, replacing the print()
 calls in hermes-hybrid-tui.py's turn loop.
 
@@ -375,6 +375,17 @@ class HermesStreamingApp(App):
         """Append `text` on a line of its own, terminated by a newline."""
         prefix = "" if (not self.transcript_text or self.transcript_text.endswith("\n")) else "\n"
         self._append(f"{prefix}{text}\n")
+
+    def _replace_last_block(self, text: str) -> None:
+        """Replace the last complete transcript line, used for live activity."""
+        if not self.transcript_text.endswith("\n"):
+            self._append_block(text)
+            return
+        body = self.transcript_text[:-1]
+        line_start = body.rfind("\n") + 1
+        self.transcript_text = f"{body[:line_start]}{text}\n"
+        self.query_one("#transcript", Static).update(self.transcript_text)
+        self.query_one("#transcript-scroll", VerticalScroll).scroll_end(animate=False)
 
     # --- lifecycle ------------------------------------------------------------
 
@@ -786,7 +797,6 @@ class HermesStreamingApp(App):
 
         index = self.session.turn_index
         self._append_block(f"you> {text}")
-        self._append("hermes: ")
         timeout = getattr(self.args, "turn_timeout", 0) or 0
         try:
             events = self.session.send_turn(text, stt_source=stt_source)
@@ -829,13 +839,62 @@ class HermesStreamingApp(App):
     async def _consume_turn(self, events: AsyncIterator[dict[str, Any]], index: int) -> None:
         audio = bytearray()
         audio_format: Optional[tuple[int, int, int]] = None
+        assistant_started = False
+        activity_line: Optional[str] = None
+        last_status: Optional[str] = None
+
+        def set_activity(text: str) -> None:
+            nonlocal activity_line
+            if not text:
+                return
+            rendered = f"[{text}]"
+            if rendered == activity_line:
+                return
+            if activity_line is None or not self.transcript_text.endswith(f"{activity_line}\n"):
+                self._append_block(rendered)
+            else:
+                self._replace_last_block(rendered)
+            activity_line = rendered
 
         async for event in events:
             kind = event["type"]
             if kind == "text_delta":
+                if not assistant_started:
+                    self._append("hermes: ")
+                    assistant_started = True
                 self._append(event["text"])
+                activity_line = None
+            elif kind == "thinking_delta":
+                set_activity("thinking…")
+            elif kind == "reasoning_available":
+                set_activity("reasoning available")
             elif kind == "status":
-                self._append(f"\n[{event['text']}]")
+                status_text = str(event.get("text") or "").strip()
+                if status_text and status_text != last_status:
+                    last_status = status_text
+                    if assistant_started:
+                        self._append_block(f"[{status_text}]")
+                    else:
+                        set_activity(status_text)
+            elif kind == "notification":
+                self._append_block(f"notification: {event['text']}")
+            elif kind == "notification_clear":
+                set_activity("notification cleared")
+            elif kind == "tool_start":
+                set_activity(f"tool: {event.get('name') or 'tool'}…")
+            elif kind == "tool_progress":
+                name = event.get("name") or "tool"
+                preview = str(event.get("preview") or "working…").strip()
+                set_activity(f"tool: {name} — {preview}")
+            elif kind == "tool_complete":
+                name = event.get("name") or "tool"
+                set_activity(f"tool: {name} {'✗' if event.get('error') else '✓'}")
+            elif kind == "background_complete":
+                text = str(event.get("text") or "background task complete").strip()
+                self._append_block(f"background: {text}")
+            elif kind == "unknown_event":
+                event_type = event.get("event_type") or "missing"
+                self._append_block(f"[unhandled server event: {event_type}]")
             elif kind == "audio_start":
                 audio_format = (event["sample_rate"], event["channels"], event["sample_width"])
                 self.player.start(audio_format)

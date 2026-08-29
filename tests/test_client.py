@@ -180,7 +180,7 @@ async def test_status_frames_are_yielded_and_empty_ones_suppressed():
     assert events[0] == {"type": "status", "text": "thinking"}
 
 
-async def test_unknown_frame_kinds_are_ignored():
+async def test_send_turn_surfaces_unknown_frame_kinds_for_diagnostics():
     events = await collect(
         [
             json.dumps({"type": "something_new", "text": "ignore me"}),
@@ -188,7 +188,53 @@ async def test_unknown_frame_kinds_are_ignored():
         ]
     )
 
-    assert [event["type"] for event in events] == ["turn_end"]
+    assert events[0] == {
+        "type": "unknown_event",
+        "event_type": "something_new",
+        "payload": {"type": "something_new", "text": "ignore me"},
+    }
+    assert events[-1] == {"type": "turn_end", "turn_id": events[-1]["turn_id"]}
+
+
+async def test_send_turn_normalizes_gateway_activity_events():
+    events = await collect(
+        [
+            json.dumps({"type": "message.start"}),
+            json.dumps({"type": "thinking.delta", "payload": {"text": "plan"}}),
+            json.dumps({"type": "status.update", "payload": {"kind": "working", "text": "thinking"}}),
+            json.dumps({"type": "notification.show", "payload": {"level": "info", "text": "heads up"}}),
+            json.dumps({"type": "tool.start", "payload": {"tool_id": "tool-1", "name": "search"}}),
+            json.dumps({"type": "tool.progress", "payload": {"name": "search", "preview": "reading"}}),
+            json.dumps({"type": "tool.complete", "payload": {"tool_id": "tool-1", "name": "search"}}),
+            json.dumps({"type": "background.complete", "payload": {"task_id": "task-1", "text": "done"}}),
+            json.dumps({"type": "message.complete", "payload": {"text": "answer"}}),
+            json.dumps({"type": "turn_end"}),
+        ]
+    )
+
+    assert [event["type"] for event in events] == [
+        "message_start",
+        "thinking_delta",
+        "status",
+        "notification",
+        "tool_start",
+        "tool_progress",
+        "tool_complete",
+        "background_complete",
+        "text_delta",
+        "message_complete",
+        "turn_end",
+    ]
+    assert events[2] == {"type": "status", "text": "thinking", "kind": "working"}
+    assert events[4]["tool_id"] == "tool-1"
+    assert events[8] == {"type": "text_delta", "text": "answer"}
+    assert events[9]["text"] == "answer"
+
+
+async def test_send_turn_uses_error_message_when_error_field_is_absent():
+    events = await collect([json.dumps({"type": "error", "message": "gateway failed"})])
+
+    assert events == [{"type": "error", "error": "gateway failed"}]
 
 
 async def test_non_object_json_frame_yields_an_error_and_stops():

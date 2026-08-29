@@ -415,6 +415,85 @@ async def test_status_and_error_events_render_on_their_own_lines():
         assert "[error] model hiccup" in lines
 
 
+async def test_repeated_activity_updates_replace_one_line_before_final_text():
+    session = FakeSession(
+        events=[
+            {"type": "status", "text": "thinking"},
+            {"type": "status", "text": "thinking"},
+            {"type": "status", "text": "thinking"},
+            {"type": "text_delta", "text": "polished answer"},
+            {"type": "turn_end", "turn_id": "activity-1"},
+        ]
+    )
+    app = HermesStreamingApp(args=make_args(), session_factory=lambda: session)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await app._run_turn("hi")
+
+        lines = transcript_of(app).splitlines()
+        assert lines.count("[thinking]") == 1
+        assert "hermes: polished answer" in lines
+
+
+async def test_tool_progress_replaces_activity_line_instead_of_spamming_transcript():
+    session = FakeSession(
+        events=[
+            {"type": "tool_start", "tool_id": "tool-1", "name": "search"},
+            {"type": "tool_progress", "tool_id": "tool-1", "name": "search", "preview": "reading"},
+            {"type": "tool_progress", "tool_id": "tool-1", "name": "search", "preview": "parsing"},
+            {"type": "tool_complete", "tool_id": "tool-1", "name": "search"},
+            {"type": "text_delta", "text": "done"},
+            {"type": "turn_end", "turn_id": "tool-1"},
+        ]
+    )
+    app = HermesStreamingApp(args=make_args(), session_factory=lambda: session)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await app._run_turn("search")
+
+        lines = transcript_of(app).splitlines()
+        assert [line for line in lines if line.startswith("[tool:")] == ["[tool: search ✓]"]
+        assert "hermes: done" in lines
+
+
+async def test_activity_updates_do_not_replace_an_intervening_notification():
+    session = FakeSession(
+        events=[
+            {"type": "status", "text": "thinking"},
+            {"type": "notification", "text": "heads up"},
+            {"type": "tool_start", "name": "search"},
+            {"type": "text_delta", "text": "done"},
+            {"type": "turn_end", "turn_id": "activity-2"},
+        ]
+    )
+    app = HermesStreamingApp(args=make_args(), session_factory=lambda: session)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await app._run_turn("hi")
+
+        lines = transcript_of(app).splitlines()
+        assert "notification: heads up" in lines
+        assert "[tool: search…]" in lines
+        assert "hermes: done" in lines
+
+
+async def test_unknown_server_events_are_visible_in_the_transcript():
+    session = FakeSession(
+        events=[
+            {"type": "unknown_event", "event_type": "approval.request", "payload": {}},
+            {"type": "text_delta", "text": "answer"},
+            {"type": "turn_end", "turn_id": "unknown-1"},
+        ]
+    )
+    app = HermesStreamingApp(args=make_args(), session_factory=lambda: session)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await app._run_turn("hi")
+
+        assert "[unhandled server event: approval.request]" in transcript_of(app)
+        assert "hermes: answer" in transcript_of(app)
+
+
 async def test_voice_turn_streams_with_the_voice_stt_source():
     session = FakeSession()
     app = HermesStreamingApp(args=make_args(), session_factory=lambda: session)
