@@ -35,6 +35,24 @@ def _decode_audio_data(value: Any) -> Optional[bytes]:
     return None
 
 
+def _final_text_delta(
+    final_text: str,
+    rendered_preview: str,
+    streamed_text: bool,
+) -> Optional[str]:
+    """Return only text not already emitted by a streaming preview."""
+    if not final_text:
+        return None
+    if not streamed_text:
+        return final_text
+    preview = rendered_preview.rstrip("▉")
+    if final_text == preview:
+        return None
+    if final_text.startswith(preview):
+        return final_text[len(preview):]
+    return f"\n{final_text}"
+
+
 async def _receive_json(ws: Any) -> dict[str, Any]:
     while True:
         frame = await ws.recv()
@@ -132,19 +150,17 @@ async def send_turn(
             streamed_text = True
             yield {"type": "text_delta", "text": delta}
         elif kind in {"text", "text_final"}:
-            final_text = str(payload.get("text") or "")
-            if kind == "text" or (kind == "text_final" and not streamed_text):
-                yield {"type": "text_delta", "text": final_text}
-            elif kind == "text_final" and final_text != rendered_preview.rstrip("▉"):
-                yield {"type": "text_delta", "text": f"\n{final_text}"}
+            final_text = str(event_payload.get("text") or event_payload.get("rendered") or "")
+            delta = _final_text_delta(final_text, rendered_preview, streamed_text)
+            if delta:
+                yield {"type": "text_delta", "text": delta}
         elif kind == "message.start":
             yield {"type": "message_start"}
         elif kind == "message.complete":
             final_text = str(event_payload.get("text") or event_payload.get("rendered") or "")
-            if final_text and not streamed_text:
-                yield {"type": "text_delta", "text": final_text}
-            elif final_text and final_text != rendered_preview.rstrip("▉"):
-                yield {"type": "text_delta", "text": f"\n{final_text}"}
+            delta = _final_text_delta(final_text, rendered_preview, streamed_text)
+            if delta:
+                yield {"type": "text_delta", "text": delta}
             yield {
                 "type": "message_complete",
                 "text": final_text,
