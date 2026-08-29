@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=75"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "hermes-streaming-tui"
+version = "0.1.0"
+description = "A small Textual terminal UI for authenticated Hermes voice sessions"
+readme = "README.md"
+requires-python = ">=3.14,<3.15"
+authors = [{ name = "Amanda Chappell" }]
+dependencies = [
+  "textual>=8.2",
+  "websockets>=12.0",
+  "sounddevice>=0.4.6",
+  "python-dotenv>=1.0.1",
+  "PyYAML>=6.0",
+  "numpy>=2.0",
+  "faster-whisper>=1.2.1",
+]
+
+[project.scripts]
+hermes-streaming-tui = "app:main"
+
+[tool.setuptools]
+py-modules = ["app", "audio", "client", "commands", "config", "mic"]
