@@ -160,6 +160,22 @@ async def test_send_turn_yields_a_plain_text_frame_whole():
     assert events[-1]["type"] == "turn_end"
 
 
+async def test_message_complete_matching_a_plain_text_frame_is_not_repeated():
+    events = await collect(
+        [
+            json.dumps({"type": "text", "text": "the complete answer"}),
+            json.dumps({"type": "message.complete", "payload": {"text": "the complete answer"}}),
+            json.dumps({"type": "turn_end"}),
+        ]
+    )
+
+    assert events == [
+        {"type": "text_delta", "text": "the complete answer"},
+        {"type": "message_complete", "text": "the complete answer", "reasoning": "", "failure_reason": ""},
+        {"type": "turn_end", "turn_id": events[-1]["turn_id"]},
+    ]
+
+
 async def test_text_final_without_streaming_yields_the_whole_text():
     events = await collect(
         [

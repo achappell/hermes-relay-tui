@@ -885,6 +885,7 @@ class HermesStreamingApp(App):
         audio_file = bytearray()
         audio_file_format: Optional[tuple[int, int, int]] = None
         played_live = False
+        playback_failed = False
         assistant_started = False
         activity_line: Optional[str] = None
         last_status: Optional[str] = None
@@ -950,6 +951,7 @@ class HermesStreamingApp(App):
             elif kind == "audio_start":
                 audio_format = (event["sample_rate"], event["channels"], event["sample_width"])
                 self.player.start(audio_format)
+                playback_failed = playback_failed or bool(self.player.failure)
                 played_live = played_live or self.player.active
                 if self.player.active:
                     self._set_voice_state(VOICE_SPEAKING)
@@ -961,6 +963,7 @@ class HermesStreamingApp(App):
                 audio.extend(event["data"])
                 if self.player.active:
                     await asyncio.to_thread(self.player.write, event["data"])
+                playback_failed = playback_failed or bool(self.player.failure)
             elif kind == "audio_end":
                 # Each prior chunk has completed its worker-thread write when
                 # this event arrives, so closing here drains the final tail
@@ -992,10 +995,12 @@ class HermesStreamingApp(App):
                 audio.extend(file_audio)
                 audio_format = file_format
                 self.player.start(file_format)
+                playback_failed = playback_failed or bool(self.player.failure)
                 played_live = played_live or self.player.active
                 if self.player.active:
                     self._set_voice_state(VOICE_SPEAKING)
                     await asyncio.to_thread(self.player.write, file_audio)
+                    playback_failed = playback_failed or bool(self.player.failure)
                     self.player.close()
                 elif self.player.failure:
                     self._set_voice_state(VOICE_BUFFERING)
@@ -1005,7 +1010,12 @@ class HermesStreamingApp(App):
             elif kind == "turn_end":
                 self._append("\n")
                 self._save_turn_audio(
-                    bytes(audio), audio_format, index, event.get("turn_id", ""), played_live
+                    bytes(audio),
+                    audio_format,
+                    index,
+                    event.get("turn_id", ""),
+                    played_live,
+                    playback_failed,
                 )
                 self._set_voice_state(VOICE_READY)
 
@@ -1016,11 +1026,12 @@ class HermesStreamingApp(App):
         index: int,
         turn_id: str,
         played_live: bool,
+        playback_failed: bool,
     ) -> None:
         """Write the turn's PCM out as a WAV when asked to, or as a safety net
         when playback never went live — same rule as the reference script."""
         base = getattr(self.args, "output", None)
-        if not (audio and audio_format and (base or not played_live)):
+        if not (audio and audio_format and (base or not played_live or playback_failed)):
             return
         output = audio_path(base, index, turn_id or "turn")
         try:
