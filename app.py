@@ -15,16 +15,66 @@ token-per-line list.
 from __future__ import annotations
 
 import asyncio
-from typing import Any, AsyncIterator, Callable, Optional, Protocol
+import inspect
+from typing import Any, AsyncIterator, Awaitable, Callable, Optional, Protocol
 
+from textual import events
 from textual.app import App, ComposeResult
 from textual.containers import VerticalScroll
-from textual.widgets import Footer, Header, Input, Static
+from textual.message import Message
+from textual.widgets import Footer, Header, Static, TextArea
 
 import config
 from audio import PCMPlayer, audio_path, write_wav
 from client import send_hello, send_turn
+from commands import CommandInvocation, complete_slash_command, help_text, parse_slash_command
 from mic import load_microphone_class
+
+
+class Composer(TextArea):
+    """Multiline prompt editor with explicit submit/newline key semantics."""
+
+    class Submitted(Message):
+        def __init__(self, composer: "Composer") -> None:
+            super().__init__()
+            self.composer = composer
+            self.text = composer.text
+
+    class CompletionRequested(Message):
+        def __init__(self, composer: "Composer") -> None:
+            super().__init__()
+            self.composer = composer
+            self.text = composer.text
+
+    class InterruptRequested(Message):
+        """Ctrl+C must reach the app even while the TextArea has focus."""
+
+        def __init__(self, composer: "Composer") -> None:
+            super().__init__()
+            self.composer = composer
+
+    async def _on_key(self, event: events.Key) -> None:
+        if event.key == "ctrl+c":
+            event.stop()
+            event.prevent_default()
+            self.post_message(self.InterruptRequested(self))
+            return
+        if event.key == "tab":
+            event.stop()
+            event.prevent_default()
+            self.post_message(self.CompletionRequested(self))
+            return
+        if event.key == "enter":
+            event.stop()
+            event.prevent_default()
+            self.post_message(self.Submitted(self))
+            return
+        if event.key.endswith("+enter"):
+            event.stop()
+            event.prevent_default()
+            self.insert("\n")
+            return
+        await super()._on_key(event)
 
 
 class SessionProtocol(Protocol):
@@ -105,27 +155,44 @@ RETRY_HINT = "Retry with a fresh --session-id after the remote model recovers."
 class HermesStreamingApp(App):
     """A Textual TUI for a Hermes voice-session chat."""
 
+    CSS = """
+    #composer {
+        height: 5;
+        max-height: 10;
+    }
+    """
+
     BINDINGS = [
         ("ctrl+r", "voice_turn", "Voice turn"),
+        ("ctrl+c", "interrupt", "Interrupt"),
         ("f1", "show_help", "Help"),
         ("ctrl+q", "quit", "Quit"),
     ]
 
-    def __init__(self, args=None, session_factory: Optional[Callable[[], Any]] = None) -> None:
+    def __init__(
+        self,
+        args=None,
+        session_factory: Optional[Callable[[], Any]] = None,
+        command_dispatcher: Optional[Callable[[CommandInvocation], Awaitable[str] | str]] = None,
+    ) -> None:
         super().__init__()
         self.args = args
         self._session_factory = session_factory
+        self._command_dispatcher = command_dispatcher
         self.session: SessionProtocol = None  # type: ignore[assignment]
         self.player = PCMPlayer(enabled=not (args and args.no_play))
         self.transcript_text = ""
         self._turn_in_flight = False
+        self._queued_prompts: list[str] = []
+        self._active_turn_task: Optional[asyncio.Task[None]] = None
+        self._needs_reconnect = False
 
     def compose(self) -> ComposeResult:
         yield Header()
         with VerticalScroll(id="transcript-scroll"):
             # markup=False so a literal "[error] ..." isn't eaten as Rich markup.
             yield Static("", id="transcript", markup=False)
-        yield Input(placeholder="you>", id="input")
+        yield Composer(placeholder="you>", id="composer")
         yield Footer()
 
     # --- transcript rendering -------------------------------------------------
@@ -147,7 +214,7 @@ class HermesStreamingApp(App):
 
     async def on_mount(self) -> None:
         self.session = self._session_factory() if self._session_factory else HermesSession(self.args)
-        self.set_focus(self.query_one("#input", Input))
+        self.set_focus(self.query_one("#composer", Composer))
         # In a worker so a hanging endpoint can't freeze the UI (or block ctrl+q).
         self.run_worker(self._connect(), exclusive=True)
 
@@ -167,41 +234,271 @@ class HermesStreamingApp(App):
 
     # --- input paths ----------------------------------------------------------
 
-    async def on_input_submitted(self, event: Input.Submitted) -> None:
-        text = event.value.strip()
-        event.input.value = ""
+    async def on_composer_submitted(self, event: Composer.Submitted) -> None:
+        text = event.text.strip()
+        event.composer.load_text("")
         if not text:
             return
-        await self._run_turn(text)
+        invocation = parse_slash_command(text)
+        if invocation is not None:
+            self.run_worker(
+                self._handle_command(invocation),
+                name=f"command /{invocation.name or 'help'}",
+                group="interaction",
+                exit_on_error=False,
+            )
+            return
+        self.run_worker(
+            self._run_turn(text),
+            name="chat turn",
+            group="interaction",
+            exit_on_error=False,
+        )
+
+    async def on_composer_completion_requested(self, event: Composer.CompletionRequested) -> None:
+        candidates = complete_slash_command(event.text)
+        if not candidates:
+            return
+        if len(candidates) == 1:
+            event.composer.load_text(f"{candidates[0]} ")
+            event.composer.move_cursor((0, len(event.composer.text)))
+            return
+        self._append_block("commands: " + ", ".join(candidates))
+
+    async def on_composer_interrupt_requested(self, event: Composer.InterruptRequested) -> None:
+        self.run_worker(
+            self.action_interrupt(),
+            name="interrupt",
+            group="interaction",
+            exit_on_error=False,
+        )
+
+    async def _handle_command(self, invocation: CommandInvocation) -> None:
+        command = invocation.command
+        if command is None:
+            await self._dispatch_command(invocation)
+            return
+        if command.name == "help":
+            self._append_block(help_text(invocation.args))
+        elif command.name == "clear":
+            self.transcript_text = ""
+            self.query_one("#transcript", Static).update("")
+        elif command.name == "status":
+            session_id = getattr(self.args, "session_id", "session")
+            state = "connected" if self.session.is_connected() else "disconnected"
+            self._append_block(f"session: {session_id} · {state} · queued: {len(self._queued_prompts)}")
+        elif command.name == "queue":
+            await self._handle_queue_command(invocation.args)
+        elif command.name == "voice":
+            if invocation.args:
+                self._append_block("usage: /voice (capture one microphone turn)")
+            else:
+                await self.action_voice_turn()
+        elif command.name == "steer":
+            await self._handle_steer(invocation.args)
+        elif command.name == "quit":
+            self.exit()
+        else:
+            await self._dispatch_command(invocation)
+
+    async def _dispatch_command(self, invocation: CommandInvocation) -> None:
+        if self._command_dispatcher is None:
+            self._append_block(
+                f"[error] /{invocation.name} needs Hermes gateway command dispatch; "
+                "the voice-session channel does not expose it yet."
+            )
+            return
+        try:
+            result = self._command_dispatcher(invocation)
+            if inspect.isawaitable(result):
+                result = await result
+        except Exception as exc:
+            self._append_block(f"[error] /{invocation.name}: {exc}")
+            return
+        if result:
+            self._append_block(str(result))
+
+    @staticmethod
+    def _queue_preview(text: str) -> str:
+        preview = " ↵ ".join(text.splitlines())
+        if len(preview) > 80:
+            preview = preview[:77] + "…"
+        return repr(preview)
+
+    def _enqueue_prompt(self, text: str) -> None:
+        self._queued_prompts.append(text)
+        self._append_block(f"queued[{len(self._queued_prompts)}]: {self._queue_preview(text)}")
+
+    def _queue_listing(self) -> str:
+        if not self._queued_prompts:
+            return "queue empty."
+        entries = [
+            f"{index}. {self._queue_preview(text)}"
+            for index, text in enumerate(self._queued_prompts, start=1)
+        ]
+        return "Queued prompts:\n" + "\n".join(entries)
+
+    def _queue_index(self, raw_index: str) -> Optional[int]:
+        try:
+            index = int(raw_index)
+        except ValueError:
+            self._append_block(f"invalid queue item: {raw_index!r}")
+            return None
+        if not 1 <= index <= len(self._queued_prompts):
+            self._append_block(f"queue item must be between 1 and {len(self._queued_prompts)}")
+            return None
+        return index - 1
+
+    async def _handle_queue_command(self, args: str) -> None:
+        parts = args.strip().split(maxsplit=2)
+        if not parts:
+            self._append_block(self._queue_listing())
+            return
+
+        action = parts[0].lower()
+        if action == "clear":
+            count = len(self._queued_prompts)
+            self._queued_prompts.clear()
+            self._append_block(f"cleared {count} queued prompt(s).")
+            return
+        if action in {"drop", "delete"}:
+            if len(parts) != 2:
+                self._append_block("usage: /queue drop <number>")
+                return
+            index = self._queue_index(parts[1])
+            if index is not None:
+                removed = self._queued_prompts.pop(index)
+                self._append_block(f"dropped: {self._queue_preview(removed)}")
+            return
+        if action == "edit":
+            if len(parts) != 3:
+                self._append_block("usage: /queue edit <number> <replacement>")
+                return
+            index = self._queue_index(parts[1])
+            if index is not None:
+                self._queued_prompts[index] = parts[2]
+                self._append_block(f"edited[{index + 1}]: {self._queue_preview(parts[2])}")
+            return
+
+        self._enqueue_prompt(args.strip())
+        if not self._turn_in_flight:
+            next_text = self._queued_prompts.pop(0)
+            self._append_block(f"starting queued: {self._queue_preview(next_text)}")
+            await self._run_turn(next_text)
+
+    async def _handle_steer(self, args: str) -> None:
+        replacement = args.strip()
+        if not replacement:
+            self._append_block("usage: /steer <replacement prompt>")
+            return
+        if self._turn_in_flight:
+            await self._interrupt_active_turn()
+        await self._run_turn(replacement)
 
     async def action_voice_turn(self) -> None:
         if self._turn_in_flight:
             self._append_block("[a turn is already in flight]")
             return
         self._append_block("listening…")
-        transcript_text = await asyncio.to_thread(self.session.capture_voice)
+        try:
+            transcript_text = await asyncio.to_thread(self.session.capture_voice)
+        except Exception as exc:
+            self._append_block(f"[error] microphone: {exc}")
+            return
         if not transcript_text:
             self._append_block("no speech detected.")
             return
         await self._run_turn(transcript_text, stt_source="local-faster-whisper")
 
+    async def action_interrupt(self) -> None:
+        if await self._interrupt_active_turn():
+            return
+
+        composer = self.query_one("#composer", Composer)
+        if composer.text:
+            composer.load_text("")
+            self._append_block("draft cleared.")
+            return
+        if self._queued_prompts:
+            count = len(self._queued_prompts)
+            self._queued_prompts.clear()
+            self._append_block(f"cleared {count} queued prompt(s).")
+            return
+        self.exit()
+
+    async def _interrupt_active_turn(self) -> bool:
+        """Cancel local consumption and reset the stream before reuse.
+
+        The current voice-session protocol has no interrupt operation. Closing
+        the connection is the safe client-side fallback: it prevents late
+        events from the canceled turn being consumed as the next turn's data.
+        """
+        if not self._turn_in_flight:
+            return False
+
+        self.player.close()
+        active_task = self._active_turn_task
+        current_task = asyncio.current_task()
+        if active_task is not None and active_task is not current_task and not active_task.done():
+            active_task.cancel()
+            try:
+                await active_task
+            except asyncio.CancelledError:
+                pass
+        elif self._turn_in_flight:
+            self._append_block("[interrupted]")
+            self._turn_in_flight = False
+
+        try:
+            await self.session.close()
+        except Exception as exc:
+            self._append_block(f"[error] interrupt cleanup: {exc}")
+        self._needs_reconnect = True
+        return True
+
     async def action_show_help(self) -> None:
         self._append_block(
-            "Bindings: ctrl+r = voice turn, f1 = help, ctrl+q = quit. Everything typed is sent to Hermes."
+            "Bindings: enter = send, shift+enter / alt+enter = newline, "
+            "ctrl+r = voice turn, ctrl+c = interrupt, f1 = help, ctrl+q = quit."
         )
 
     # --- the turn loop --------------------------------------------------------
 
     async def _run_turn(self, text: str, *, stt_source: str = "local") -> None:
         if self._turn_in_flight:
-            # Two coroutines calling ws.recv() concurrently raises
-            # websockets.ConcurrencyError; refuse the second turn instead.
-            self._append_block("[a turn is already in flight]")
+            # Keep one websocket reader while preserving text submitted during
+            # a response. The active turn drains this FIFO after it completes.
+            self._enqueue_prompt(text)
             return
+        current_task = asyncio.current_task()
+        self._active_turn_task = current_task
+        try:
+            next_text: Optional[str] = text
+            next_stt_source = stt_source
+            while next_text is not None:
+                await self._run_single_turn(next_text, stt_source=next_stt_source)
+                if not self._queued_prompts:
+                    break
+                next_text = self._queued_prompts.pop(0)
+                next_stt_source = "local"
+                self._append_block(f"dequeued: {self._queue_preview(next_text)}")
+        finally:
+            if self._active_turn_task is current_task:
+                self._active_turn_task = None
+
+    async def _run_single_turn(self, text: str, *, stt_source: str) -> None:
         if not self.session.is_connected():
-            self._append_block(f"you> {text}")
-            self._append_block("[error] not connected")
-            return
+            if not self._needs_reconnect:
+                self._append_block(f"you> {text}")
+                self._append_block("[error] not connected")
+                return
+            self._append_block("reconnecting…")
+            await self._connect()
+            if not self.session.is_connected():
+                self._append_block(f"you> {text}")
+                self._append_block("[error] not connected")
+                return
+            self._needs_reconnect = False
 
         self._turn_in_flight = True
         index = self.session.turn_index
@@ -214,6 +511,9 @@ class HermesStreamingApp(App):
                 await asyncio.wait_for(self._consume_turn(events, index), timeout)
             else:
                 await self._consume_turn(events, index)
+        except asyncio.CancelledError:
+            self._append_block("[interrupted]")
+            raise
         except (asyncio.TimeoutError, TimeoutError):
             self._append_block(
                 f"[error] voice turn exceeded {timeout:g}s without completing; "
