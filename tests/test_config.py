@@ -2,7 +2,7 @@ import os
 
 import pytest
 
-from config import _env_float, _env_int, _resolve_token, _connection_kwargs
+from config import _env_choice, _env_float, _env_int, _resolve_token, _connection_kwargs, build_arg_parser
 
 
 def test_env_float_uses_default_when_unset(monkeypatch):
@@ -23,6 +23,25 @@ def test_env_float_falls_back_on_bad_value(monkeypatch):
 def test_env_int_parses_set_value(monkeypatch):
     monkeypatch.setenv("SOME_INT", "42")
     assert _env_int("SOME_INT", 7) == 42
+
+
+def test_env_choice_uses_default_for_an_invalid_value(monkeypatch):
+    monkeypatch.setenv("SOME_MODE", "bogus")
+    assert _env_choice("SOME_MODE", ("queue", "steer"), "queue") == "queue"
+
+
+def test_parser_defaults_to_queue_busy_mode(monkeypatch):
+    monkeypatch.delenv("VOICE_SESSION_BUSY_MODE", raising=False)
+    assert build_arg_parser().parse_args([]).busy_mode == "queue"
+
+
+def test_parser_reads_busy_mode_from_environment(monkeypatch):
+    monkeypatch.setenv("VOICE_SESSION_BUSY_MODE", "steer")
+    assert build_arg_parser().parse_args([]).busy_mode == "steer"
+
+
+def test_parser_accepts_busy_mode_flag():
+    assert build_arg_parser().parse_args(["--busy-mode", "interrupt"]).busy_mode == "interrupt"
 
 
 def test_resolve_token_prefers_explicit_argument(tmp_path):

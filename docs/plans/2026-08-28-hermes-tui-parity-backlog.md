@@ -7,7 +7,89 @@ It defines the smallest useful parity target for a voice-session client; it is
 not a request to duplicate every administrative and debugging surface in the
 full Hermes TUI.
 
-Reference implementation: `~/.hermes/hermes-agent/ui-tui/`.
+Protocol reference: `~/.hermes/hermes-agent/ui-tui/`.
+Preferred interaction reference: the Claude Code TUI, wherever its behavior
+fits this client's voice-session boundaries.
+
+## UX direction
+
+The Claude TUI is the feel we want: keyboard-first, calm under streaming
+output, and quick to recover from an interruption. Borrow that interaction
+model where the Hermes channel supports it:
+
+- keep the composer usable while a response is running;
+- make busy-turn behavior a setting (`queue`, `steer`, or `interrupt`), not a
+  command-shaped workaround;
+- preserve partial work and drafts across interruptions;
+- prefer compact, visible status over modal clutter;
+- make commands and help discoverable without breaking the typing flow.
+
+Hermes remains the owner of sessions, models, tools, and voice transport. When
+Claude-style behavior requires a protocol operation Hermes does not expose,
+record the gap and keep the client behavior honest.
+
+## Claude UX parity under the Hermes relay
+
+The relay boundary determines which Claude-like features are real client work
+and which require Hermes protocol support. The TUI must not present an action
+as available merely because it can draw a menu for it.
+
+### Client-only surfaces
+
+These can be built without changing the relay:
+
+- searchable slash-command palette with descriptions and argument hints;
+- local prompt history and reverse search;
+- compact versus verbose transcript viewing, redraw, draft cancellation, and
+  external-editor support;
+- session-local busy-mode selection (`queue`, `steer`, or `interrupt`);
+- status indicators for locally known session, model, mode, audio, and
+  connection state;
+- local `@` path/file completion and attachment preparation, subject to the
+  relay accepting the eventual attachment payload.
+
+### Surfaces that require richer relay events
+
+These need normalized server-to-client events before the UI can represent them
+faithfully:
+
+- thinking and reasoning deltas;
+- tool start, progress, completion, and failure lanes;
+- role-aware message start/delta/complete events;
+- approval, clarify, sudo, and secret prompts;
+- notifications, reconnect state, and background activity;
+- complete audio lifecycle, including `audio_end` and file fallback;
+- context/usage data and relay-owned task state.
+
+### Surfaces that require relay operations or durable state
+
+These cannot be correct client-only features:
+
+- true remote `interrupt` and `steer`;
+- new/list/resume sessions, names, branching, and transcript hydration;
+- model/provider/config changes;
+- session-wide permission or autonomy modes;
+- command dispatch;
+- attachments that Hermes tools can consume;
+- background tasks, subagents, side questions, and task-list state;
+- skills, plugins, and MCP discovery/configuration.
+
+The client may provide a local preview or fallback, but it must label that
+behavior as local or best-effort until the relay confirms the operation.
+
+### Keyboard decisions
+
+Claude uses `Ctrl+R` for prompt-history search and Space for voice dictation.
+Hermes currently uses `Ctrl+R` for microphone capture. Before implementing
+history search, choose whether to move voice to Space/`/voice` or keep Hermes'
+voice binding and assign history another key. This is a UX decision, not a
+relay constraint.
+
+Reference material: [Claude interactive mode](https://code.claude.com/docs/en/interactive-mode),
+[Claude keybindings](https://code.claude.com/docs/en/keybindings),
+[Claude permission modes](https://code.claude.com/docs/en/permission-modes),
+[Claude session management](https://code.claude.com/docs/en/sessions), and
+[Claude commands](https://code.claude.com/docs/en/commands).
 
 ## Current baseline
 
@@ -45,6 +127,8 @@ without flattening or losing text.
 
 - Parse slash commands before treating input as a chat turn.
 - Add a registry with aliases, help text, and `Tab` completion.
+- Add a Claude-style command palette overlay: searchable command names,
+  descriptions, and argument hints with keyboard selection and Escape to close.
 - Start with `/help`, `/new`, `/clear`, `/status`, `/model`, `/sessions`,
   `/resume`, `/queue`, `/voice`, and `/quit`.
 - Route unknown commands to Hermes' gateway command dispatcher rather than
@@ -78,9 +162,10 @@ and receive the correction without restarting the TUI.
 
 Current implementation: `Ctrl+C` cancels local stream consumption, stops local
 audio, closes the current connection, and reconnects before the next turn.
-`/steer <prompt>` uses the same replacement path. Full server-side cancellation
-remains deferred until the voice-session protocol exposes an explicit interrupt
-operation.
+Busy-turn behavior is now configurable as `queue` (default), `steer`, or
+`interrupt`; ordinary submissions follow the selected mode. `/steer` remains
+only as a migration warning. Full server-side cancellation remains deferred
+until the voice-session protocol exposes an explicit interrupt operation.
 
 ### P0.5 Session lifecycle and recovery
 

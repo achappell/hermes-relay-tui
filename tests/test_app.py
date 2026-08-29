@@ -78,6 +78,7 @@ def make_args(**overrides):
         output=None,
         session_id="s1",
         turn_timeout=0,
+        busy_mode="queue",
     )
     for key, value in overrides.items():
         setattr(args, key, value)
@@ -340,6 +341,126 @@ async def test_composer_remains_submitable_while_a_turn_is_responding():
         assert session.sent_turns == [("first", "local"), ("second", "local")]
 
 
+async def test_steer_busy_mode_applies_to_an_ordinary_message():
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    class ReconnectableSession(FakeSession):
+        async def connect(self):
+            self.connect_calls += 1
+            self.connected = True
+            return self.hello
+
+        async def close(self):
+            self.closed = True
+            self.connected = False
+
+        def send_turn(self, text, *, stt_source="local"):
+            self.sent_turns.append((text, stt_source))
+            self.turn_index += 1
+
+            async def stream():
+                if text == "first":
+                    started.set()
+                    await release.wait()
+                yield {"type": "text_delta", "text": text}
+                yield {"type": "turn_end", "turn_id": text}
+
+            return stream()
+
+    session = ReconnectableSession()
+    app = HermesStreamingApp(args=make_args(busy_mode="steer"), session_factory=lambda: session)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        first = asyncio.create_task(app._run_turn("first"))
+        await asyncio.wait_for(started.wait(), 1)
+
+        await app._submit_text("corrected")
+
+        assert first.done()
+        assert session.sent_turns == [("first", "local"), ("corrected", "local")]
+        assert session.connect_calls == 2
+        assert "hermes: corrected" in transcript_of(app)
+
+
+async def test_interrupt_busy_mode_stops_an_active_turn_without_sending_message():
+    gate = asyncio.Event()
+    session = FakeSession(gate=gate)
+    app = HermesStreamingApp(args=make_args(busy_mode="interrupt"), session_factory=lambda: session)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        first = asyncio.create_task(app._run_turn("first"))
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        assert app._turn_in_flight
+
+        await app._submit_text("do not send")
+
+        assert first.done()
+        assert session.sent_turns == [("first", "local")]
+        assert app._queued_prompts == []
+        assert not app._turn_in_flight
+
+
+async def test_steer_slash_command_explains_busy_mode_migration():
+    session = FakeSession()
+    app = HermesStreamingApp(args=make_args(), session_factory=lambda: session)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        composer = app.query_one("#composer", Composer)
+        composer.text = "/steer corrected"
+        await pilot.press("enter")
+        await pilot.pause()
+
+        assert session.sent_turns == []
+        assert "set --busy-mode steer" in transcript_of(app)
+
+
+async def test_status_reports_the_selected_busy_mode():
+    session = FakeSession()
+    app = HermesStreamingApp(args=make_args(busy_mode="interrupt"), session_factory=lambda: session)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        invocation = parse_slash_command("/status")
+        assert invocation is not None
+        await app._handle_command(invocation)
+
+        assert "busy-mode: interrupt" in transcript_of(app)
+
+
+async def test_busy_command_changes_mode_for_the_current_session():
+    session = FakeSession()
+    app = HermesStreamingApp(args=make_args(), session_factory=lambda: session)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        composer = app.query_one("#composer", Composer)
+        composer.text = "/busy steer"
+        await pilot.press("enter")
+        await pilot.pause()
+
+        assert app.busy_mode == "steer"
+        assert "busy-mode set to steer" in transcript_of(app)
+
+        composer.text = "/busy"
+        await pilot.press("enter")
+        await pilot.pause()
+        assert "busy-mode: steer" in transcript_of(app)
+
+
+async def test_busy_command_rejects_unknown_modes():
+    session = FakeSession()
+    app = HermesStreamingApp(args=make_args(), session_factory=lambda: session)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        composer = app.query_one("#composer", Composer)
+        composer.text = "/busy chaos"
+        await pilot.press("enter")
+        await pilot.pause()
+
+        assert app.busy_mode == "queue"
+        assert "usage: /busy [queue|steer|interrupt]" in transcript_of(app)
+
+
 async def test_ctrl_c_interrupts_active_turn_and_preserves_partial_transcript():
     gate = asyncio.Event()
     session = FakeSession(
@@ -379,51 +500,6 @@ async def test_ctrl_c_clears_an_idle_draft_before_any_exit():
 
         assert composer.text == ""
         assert "draft cleared." in transcript_of(app)
-
-
-async def test_steer_interrupts_and_reconnects_before_sending_replacement():
-    started = asyncio.Event()
-    release = asyncio.Event()
-
-    class ReconnectableSession(FakeSession):
-        async def connect(self):
-            self.connect_calls += 1
-            self.connected = True
-            return self.hello
-
-        async def close(self):
-            self.closed = True
-            self.connected = False
-
-        def send_turn(self, text, *, stt_source="local"):
-            self.sent_turns.append((text, stt_source))
-            self.turn_index += 1
-
-            async def stream():
-                if text == "first":
-                    started.set()
-                    await release.wait()
-                yield {"type": "text_delta", "text": text}
-                yield {"type": "turn_end", "turn_id": text}
-
-            return stream()
-
-    session = ReconnectableSession()
-    app = HermesStreamingApp(args=make_args(), session_factory=lambda: session)
-    async with app.run_test() as pilot:
-        await pilot.pause()
-        first = asyncio.create_task(app._run_turn("first"))
-        await asyncio.wait_for(started.wait(), 1)
-
-        invocation = parse_slash_command("/steer corrected")
-        assert invocation is not None
-        await app._handle_command(invocation)
-
-        assert first.done()
-        assert session.sent_turns == [("first", "local"), ("corrected", "local")]
-        assert session.connect_calls == 2
-        assert not app._turn_in_flight
-        assert "hermes: corrected" in transcript_of(app)
 
 
 async def test_composer_ctrl_c_reaches_the_app_interrupt_action():
@@ -572,6 +648,7 @@ async def test_help_binding_prints_the_bindings_line():
         await app.action_show_help()
         assert "ctrl+r = voice turn" in transcript_of(app)
         assert "ctrl+c = interrupt" in transcript_of(app)
+        assert "busy-mode = queue" in transcript_of(app)
 
 
 # --- session lifecycle ------------------------------------------------------

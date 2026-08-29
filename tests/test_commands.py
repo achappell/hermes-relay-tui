@@ -30,13 +30,21 @@ def test_completion_only_targets_a_bare_slash_word():
     assert complete_slash_command("/model gpt") == []
 
 
-def test_steer_is_a_registered_replacement_command():
+def test_steer_is_not_a_registered_command_anymore():
     invocation = parse_slash_command("/steer answer the second question")
 
     assert invocation is not None
-    assert invocation.command is not None
-    assert invocation.command.name == "steer"
+    assert invocation.command is None
     assert invocation.args == "answer the second question"
+
+
+def test_busy_command_is_registered_for_session_configuration():
+    invocation = parse_slash_command("/busy steer")
+
+    assert invocation is not None
+    assert invocation.command is not None
+    assert invocation.command.name == "busy"
+    assert invocation.args == "steer"
 
 
 def test_help_can_filter_commands():

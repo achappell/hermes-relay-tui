@@ -72,9 +72,11 @@ Do not put a real token in this file or in the README.
 - Type a message in the multiline composer and press `Enter` to send it.
 - Press `Shift+Enter` or `Alt+Enter` to insert a newline without submitting.
 - Press `Tab` after `/` to complete a slash command.
-- While a turn is active, ordinary prompts enter the FIFO queue; use `/queue` to inspect or edit it.
+- While a turn is active, ordinary prompts follow `--busy-mode` (`queue` by default; `steer` or `interrupt` are alternatives).
+- Use `/queue` to inspect or edit queued prompts.
+- Use `/busy [queue|steer|interrupt]` to change the mode for the current session.
 - `Ctrl+C` interrupts the active turn; when idle it clears the draft, clears the queue, or exits.
-- `/steer <prompt>` interrupts the active turn and sends the replacement after reconnecting.
+- `/steer` is retained only as a migration warning; steering happens when an ordinary message is submitted in `--busy-mode steer`.
 - Slash commands are routed before ordinary text; do not silently send an unknown command as a model prompt.
 - `Ctrl+R` captures a local microphone turn and sends its transcript.
 - `F1` displays help in the transcript.
@@ -91,10 +93,11 @@ The complete source of truth is `config.build_arg_parser()`. The main runtime op
 - `--no-play` — buffer audio without opening the local speaker.
 - `--output PATH` — save response audio as WAV; later turns receive numbered suffixes.
 - `--turn-timeout SECONDS` — response timeout; default is 195 seconds, and `0` disables it.
+- `--busy-mode MODE` — active-turn behavior: `queue` (default), `steer`, or `interrupt`.
 - `--mic-max-seconds`, `--mic-silence-duration`, `--mic-silence-threshold` — microphone tuning.
 - `--stt-model` — optional local Faster-Whisper model selection.
 
-Relevant environment variables include `HERMES_VOICE_SESSION_URL`, `VOICE_SESSION_TOKEN`, `VOICE_SESSION_CLIENT_ID`, `VOICE_SESSION_DEVICE_ID`, `VOICE_SESSION_ID`, `VOICE_SESSION_MIC_MAX_SECONDS`, `VOICE_SESSION_MIC_SILENCE_DURATION`, `VOICE_SESSION_MIC_SILENCE_THRESHOLD`, `VOICE_SESSION_STT_MODEL`, and `VOICE_SESSION_TURN_TIMEOUT`.
+Relevant environment variables include `HERMES_VOICE_SESSION_URL`, `VOICE_SESSION_TOKEN`, `VOICE_SESSION_CLIENT_ID`, `VOICE_SESSION_DEVICE_ID`, `VOICE_SESSION_ID`, `VOICE_SESSION_MIC_MAX_SECONDS`, `VOICE_SESSION_MIC_SILENCE_DURATION`, `VOICE_SESSION_MIC_SILENCE_THRESHOLD`, `VOICE_SESSION_STT_MODEL`, `VOICE_SESSION_TURN_TIMEOUT`, and `VOICE_SESSION_BUSY_MODE`.
 
 ## Integration boundaries
 

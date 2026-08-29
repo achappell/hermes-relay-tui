@@ -84,24 +84,27 @@ The endpoint must be reachable from the machine running the TUI, and the server 
 | `F1` | Show keyboard help |
 | `Ctrl+Q` | Quit |
 
-Typed text is sent as-is. During an active response, ordinary prompts are
-queued and `/steer <prompt>` interrupts the current response and sends the
-replacement.
+Typed text is sent as-is. During an active response, ordinary prompts follow
+the configured `--busy-mode`: `queue` preserves them for later, `steer`
+replaces the active response, and `interrupt` stops the active response without
+sending the new message.
 
 Slash commands are routed before ordinary prompts. The initial local commands
-are `/help`, `/clear`, `/status`, `/queue`, `/voice`, and `/quit`; `/queue`
+are `/help`, `/clear`, `/status`, `/queue`, `/busy`, `/voice`, and `/quit`;
+`/queue`
 also supports `list`, `edit <number> <replacement>`, `drop <number>`, and
-`clear`. `/steer <prompt>` is the local replacement-message command. `/model`,
-`/new`, `/sessions`, `/resume`, and other commands use the
+`clear`. `/busy [queue|steer|interrupt]` changes the mode for the current
+session. `/steer` is retained only as a migration warning. `/model`, `/new`,
+`/sessions`, `/resume`, and other commands use the
 gateway-dispatch boundary when one is supplied. The current voice-session
 protocol does not yet expose gateway command dispatch, so those commands fail
 visibly instead of being sent to the model as prose.
 
 Because the current voice-session protocol has no explicit interrupt frame,
-`Ctrl+C` and `/steer` cancel local stream consumption, close the current
-connection, and reconnect before the next turn. This prevents stale audio and
-events from corrupting the replacement; remote generation itself remains
-best-effort until the protocol grows a server-side interrupt operation.
+`Ctrl+C` and busy-mode `steer` cancel local stream consumption, close the
+current connection, and reconnect before the next turn. This prevents stale
+audio and events from corrupting the replacement; remote generation itself
+remains best-effort until the protocol grows a server-side interrupt operation.
 
 ## Useful options
 
@@ -115,6 +118,7 @@ best-effort until the protocol grows a server-side interrupt operation.
 | `--no-play` | Do not open the local speaker; buffer audio instead |
 | `--output PATH` | Save response audio to WAV |
 | `--turn-timeout SECONDS` | Timeout a turn; default `195`, `0` disables |
+| `--busy-mode MODE` | Active-turn behavior: `queue` (default), `steer`, or `interrupt` |
 | `--mic-max-seconds SECONDS` | Maximum microphone capture duration |
 | `--mic-silence-duration SECONDS` | Silence duration that ends capture |
 | `--mic-silence-threshold VALUE` | Capture silence threshold |
@@ -142,6 +146,7 @@ When `--output` is set, the first turn uses that path and later turns use number
 | `VOICE_SESSION_MIC_SILENCE_THRESHOLD` | `200` |
 | `VOICE_SESSION_STT_MODEL` | unset; use the Hermes/local-STT default |
 | `VOICE_SESSION_TURN_TIMEOUT` | `195.0` seconds |
+| `VOICE_SESSION_BUSY_MODE` | `queue`, `steer`, or `interrupt` |
 
 ## Test
 
