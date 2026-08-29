@@ -94,11 +94,13 @@ The complete source of truth is `config.build_arg_parser()`. The main runtime op
 - `--no-play` — buffer audio without opening the local speaker.
 - `--output PATH` — save response audio as WAV; later turns receive numbered suffixes.
 - `--turn-timeout SECONDS` — response timeout; default is 195 seconds, and `0` disables it.
+- `--connect-retries COUNT` — additional connection attempts after the first failure; default is 3.
+- `--connect-retry-delay SECONDS` — base delay before reconnect attempts; default is 1 second.
 - `--busy-mode MODE` — active-turn behavior: `queue` (default), `steer`, or `interrupt`.
 - `--mic-max-seconds`, `--mic-silence-duration`, `--mic-silence-threshold` — microphone tuning.
 - `--stt-model` — optional local Faster-Whisper model selection.
 
-Relevant environment variables include `HERMES_VOICE_SESSION_URL`, `VOICE_SESSION_TOKEN`, `VOICE_SESSION_CLIENT_ID`, `VOICE_SESSION_DEVICE_ID`, `VOICE_SESSION_ID`, `VOICE_SESSION_MIC_MAX_SECONDS`, `VOICE_SESSION_MIC_SILENCE_DURATION`, `VOICE_SESSION_MIC_SILENCE_THRESHOLD`, `VOICE_SESSION_STT_MODEL`, `VOICE_SESSION_TURN_TIMEOUT`, and `VOICE_SESSION_BUSY_MODE`.
+Relevant environment variables include `HERMES_VOICE_SESSION_URL`, `VOICE_SESSION_TOKEN`, `VOICE_SESSION_CLIENT_ID`, `VOICE_SESSION_DEVICE_ID`, `VOICE_SESSION_ID`, `VOICE_SESSION_MIC_MAX_SECONDS`, `VOICE_SESSION_MIC_SILENCE_DURATION`, `VOICE_SESSION_MIC_SILENCE_THRESHOLD`, `VOICE_SESSION_STT_MODEL`, `VOICE_SESSION_TURN_TIMEOUT`, `VOICE_SESSION_CONNECT_RETRIES`, `VOICE_SESSION_CONNECT_RETRY_DELAY`, and `VOICE_SESSION_BUSY_MODE`.
 
 ## Integration boundaries
 
@@ -108,6 +110,7 @@ Relevant environment variables include `HERMES_VOICE_SESSION_URL`, `VOICE_SESSIO
 - `app.py` owns presentation and turn state. It should not grow protocol parsing logic that belongs in `client.py`.
 - `mic.py` loads `LocalMicrophone` from `<checkout>/scripts/voice-session-client.py`; that file and the project's voice dependencies must exist for `Ctrl+R` to work.
 - `audio.py` supports signed 16-bit PCM for live playback. If playback cannot start, the app reports buffering and can still save the collected PCM as WAV.
+- Connection setup uses bounded exponential-backoff retries. Prompts that cannot be sent remain FIFO-queued; a turn that may have reached Hermes is never replayed automatically after a socket failure.
 - The current voice-session protocol has no explicit interrupt operation. Interruption closes the current client connection and reconnects before the next turn, preventing stale events from being consumed as new-turn data; server-side generation cancellation remains a protocol concern.
 - On macOS, microphone permission belongs to the launching app (Terminal, iTerm, VS Code, or the IDE), and a missing accessible default input is reported by PortAudio as device `-1`.
 

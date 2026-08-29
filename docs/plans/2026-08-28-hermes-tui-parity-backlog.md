@@ -180,6 +180,16 @@ until the voice-session protocol exposes an explicit interrupt operation.
 Acceptance: the TUI can start a fresh chat, browse existing chats, resume one,
 and recover from a transient connection drop without manual process restart.
 
+Current implementation: connection establishment has a bounded retry policy
+(`--connect-retries`, default three additional attempts) with exponential
+backoff (`--connect-retry-delay`, default one second, capped at eight seconds).
+The UI exposes `connecting`, `retrying`, `connected`, and `disconnected` state
+through `/status`; prompts that cannot be sent remain in the FIFO queue and
+newer prompts wait behind them. A turn that may have reached Hermes is never
+automatically replayed after a socket failure. Session browser, transcript
+hydration, and gateway-backed `/new`, `/sessions`, and `/resume` remain blocked
+on richer relay operations.
+
 ### P0.6 Structured turn/event controller
 
 Handle the event families the current Hermes TUI renders:

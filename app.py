@@ -251,20 +251,29 @@ class HermesSession:
         self.microphone: Any = None
 
     async def connect(self) -> dict[str, Any]:
+        if self._connect_cm is not None or self.ws is not None:
+            await self.close()
         connect = config.connect_factory()
         token = config._resolve_token(self.args.token, self.args.profile_env)
         if not token:
             raise RuntimeError("No voice-session token found. Set VOICE_SESSION_TOKEN or use the profile .env.")
         kwargs = config._connection_kwargs(connect, token)
-        self._connect_cm = connect(self.args.url, **kwargs)
-        self.ws = await self._connect_cm.__aenter__()
-        return await send_hello(
-            self.ws,
-            client_id=self.args.client_id,
-            device_id=self.args.device_id,
-            session_id=self.args.session_id,
-            display_name=self.args.display_name,
-        )
+        try:
+            self._connect_cm = connect(self.args.url, **kwargs)
+            self.ws = await self._connect_cm.__aenter__()
+            return await send_hello(
+                self.ws,
+                client_id=self.args.client_id,
+                device_id=self.args.device_id,
+                session_id=self.args.session_id,
+                display_name=self.args.display_name,
+            )
+        except BaseException:
+            try:
+                await self.close()
+            except Exception:
+                pass
+            raise
 
     def is_connected(self) -> bool:
         return self.ws is not None
@@ -295,7 +304,12 @@ class HermesSession:
         return self.microphone.capture()
 
 
-RETRY_HINT = "Retry with a fresh --session-id after the remote model recovers."
+CONNECTION_DISCONNECTED = "disconnected"
+CONNECTION_CONNECTING = "connecting"
+CONNECTION_RETRYING = "retrying"
+CONNECTION_CONNECTED = "connected"
+MAX_CONNECT_RETRY_DELAY = 8.0
+RETRY_HINT = "The app remains open; retry when the endpoint recovers."
 
 
 class HermesStreamingApp(App):
@@ -332,6 +346,8 @@ class HermesStreamingApp(App):
         self._queued_prompts: list[str] = []
         self._active_turn_task: Optional[asyncio.Task[None]] = None
         self._needs_reconnect = False
+        self.connection_state = CONNECTION_DISCONNECTED
+        self._connection_lock = asyncio.Lock()
         self.busy_mode = getattr(args, "busy_mode", "queue")
         if self.busy_mode not in config.BUSY_MODES:
             self.busy_mode = "queue"
@@ -366,17 +382,68 @@ class HermesStreamingApp(App):
         self.session = self._session_factory() if self._session_factory else HermesSession(self.args)
         self.set_focus(self.query_one("#composer", Composer))
         # In a worker so a hanging endpoint can't freeze the UI (or block ctrl+q).
-        self.run_worker(self._connect(), exclusive=True)
+        self.run_worker(self._connect(force=True), exclusive=True)
 
-    async def _connect(self) -> None:
-        try:
-            hello = await self.session.connect()
-        except Exception as exc:  # nothing during connect may take the app down
-            self._append_block(f"[error] {exc}")
+    async def _connect(self, *, force: bool = False) -> bool:
+        """Establish a session with bounded exponential-backoff retries."""
+        async with self._connection_lock:
+            if self.session.is_connected() and not force:
+                self.connection_state = CONNECTION_CONNECTED
+                return True
+
+            retries = max(0, int(getattr(self.args, "connect_retries", 3)))
+            retry_delay = max(0.0, float(getattr(self.args, "connect_retry_delay", 1.0)))
+            attempts = retries + 1
+            reconnecting = self._needs_reconnect
+            last_error: Exception = RuntimeError("unknown connection failure")
+
+            for attempt in range(attempts):
+                if attempt == 0:
+                    self.connection_state = CONNECTION_CONNECTING
+                    if reconnecting:
+                        self._append_block("reconnecting…")
+                else:
+                    self.connection_state = CONNECTION_RETRYING
+                    delay = min(retry_delay * (2 ** (attempt - 1)), MAX_CONNECT_RETRY_DELAY)
+                    if delay:
+                        self._append_block(
+                            f"reconnecting… attempt {attempt + 1}/{attempts} in {delay:g}s"
+                        )
+                        await asyncio.sleep(delay)
+                    else:
+                        self._append_block(f"reconnecting… attempt {attempt + 1}/{attempts}")
+
+                try:
+                    hello = await self.session.connect()
+                    if not self.session.is_connected():
+                        raise ConnectionError("session did not establish a connection")
+                except asyncio.CancelledError:
+                    self.connection_state = CONNECTION_DISCONNECTED
+                    raise
+                except Exception as exc:
+                    last_error = exc
+                    self.connection_state = CONNECTION_DISCONNECTED
+                    try:
+                        await self.session.close()
+                    except Exception:
+                        pass
+                    self._append_block(
+                        f"[connection attempt {attempt + 1}/{attempts} failed: {exc}]"
+                    )
+                    continue
+
+                self.connection_state = CONNECTION_CONNECTED
+                self._needs_reconnect = False
+                session_id = getattr(self.args, "session_id", "session")
+                self._append_block(f"Connected to {session_id} (chat {hello.get('chat_id')}).")
+                return True
+
+            self.connection_state = CONNECTION_DISCONNECTED
+            self._append_block(
+                f"[error] {last_error}; unable to connect after {attempts} attempt(s)"
+            )
             self._append_block(RETRY_HINT)
-            return
-        session_id = getattr(self.args, "session_id", "session")
-        self._append_block(f"Connected to {session_id} (chat {hello.get('chat_id')}).")
+            return False
 
     async def on_unmount(self) -> None:
         if self.session is not None:
@@ -455,9 +522,8 @@ class HermesStreamingApp(App):
             self.query_one("#transcript", Static).update("")
         elif command.name == "status":
             session_id = getattr(self.args, "session_id", "session")
-            state = "connected" if self.session.is_connected() else "disconnected"
             self._append_block(
-                f"session: {session_id} · {state} · busy-mode: {self.busy_mode} "
+                f"session: {session_id} · {self.connection_state} · busy-mode: {self.busy_mode} "
                 f"· queued: {len(self._queued_prompts)}"
             )
         elif command.name == "queue":
@@ -634,6 +700,7 @@ class HermesStreamingApp(App):
             await self.session.close()
         except Exception as exc:
             self._append_block(f"[error] interrupt cleanup: {exc}")
+        self.connection_state = CONNECTION_DISCONNECTED
         self._needs_reconnect = True
         return True
 
@@ -644,6 +711,12 @@ class HermesStreamingApp(App):
             await asyncio.sleep(0)
 
         if not self._turn_in_flight:
+            if self._queued_prompts:
+                self._enqueue_prompt(text)
+                next_text = self._queued_prompts.pop(0)
+                self._append_block(f"starting queued: {self._queue_preview(next_text)}")
+                await self._run_turn(next_text)
+                return
             await self._run_turn(text)
             return
         if self.busy_mode == "queue":
@@ -687,7 +760,13 @@ class HermesStreamingApp(App):
             next_text: Optional[str] = text
             next_stt_source = stt_source
             while next_text is not None:
-                await self._run_single_turn(next_text, stt_source=next_stt_source)
+                turn_was_sent = await self._run_single_turn(next_text, stt_source=next_stt_source)
+                if not turn_was_sent:
+                    self._queued_prompts.insert(0, next_text)
+                    self._append_block(
+                        f"queued until connection recovers: {self._queue_preview(next_text)}"
+                    )
+                    break
                 if not self._queued_prompts:
                     break
                 next_text = self._queued_prompts.pop(0)
@@ -698,19 +777,12 @@ class HermesStreamingApp(App):
             if self._active_turn_task is current_task:
                 self._active_turn_task = None
 
-    async def _run_single_turn(self, text: str, *, stt_source: str) -> None:
+    async def _run_single_turn(self, text: str, *, stt_source: str) -> bool:
         if not self.session.is_connected():
-            if not self._needs_reconnect:
+            if not await self._connect():
                 self._append_block(f"you> {text}")
-                self._append_block("[error] not connected")
-                return
-            self._append_block("reconnecting…")
-            await self._connect()
-            if not self.session.is_connected():
-                self._append_block(f"you> {text}")
-                self._append_block("[error] not connected")
-                return
-            self._needs_reconnect = False
+                self._append_block("[error] not connected; prompt kept in queue")
+                return False
 
         index = self.session.turn_index
         self._append_block(f"you> {text}")
@@ -724,8 +796,11 @@ class HermesStreamingApp(App):
                 await self._consume_turn(events, index)
         except asyncio.CancelledError:
             self._append_block("[interrupted]")
+            self.connection_state = CONNECTION_DISCONNECTED
+            self._needs_reconnect = True
             raise
         except (asyncio.TimeoutError, TimeoutError):
+            await self._mark_connection_lost()
             self._append_block(
                 f"[error] voice turn exceeded {timeout:g}s without completing; "
                 "the remote model may be stalled. Start a fresh session and retry."
@@ -733,12 +808,23 @@ class HermesStreamingApp(App):
         except Exception as exc:
             # ConnectionClosed, ConcurrencyError, AttributeError from a dead
             # socket — none of them should take the whole app down.
+            await self._mark_connection_lost()
             self._append_block(f"[error] {exc}")
             self._append_block(RETRY_HINT)
         finally:
             # Always tear the stream down; leaving it open leaked a
             # sounddevice stream per failed turn.
             self.player.close()
+        return True
+
+    async def _mark_connection_lost(self) -> None:
+        """Close a failed stream so the next turn cannot reuse a dead socket."""
+        self.connection_state = CONNECTION_DISCONNECTED
+        self._needs_reconnect = True
+        try:
+            await self.session.close()
+        except Exception as exc:
+            self._append_block(f"[error] reconnect cleanup: {exc}")
 
     async def _consume_turn(self, events: AsyncIterator[dict[str, Any]], index: int) -> None:
         audio = bytearray()
