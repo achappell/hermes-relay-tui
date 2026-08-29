@@ -25,11 +25,22 @@ def test_homebrew_trial_formula_declares_runtime_boundaries():
 def test_release_automation_tracks_the_python_package():
     config = json.loads((ROOT / "release-please-config.json").read_text(encoding="utf-8"))
     manifest = json.loads((ROOT / ".release-please-manifest.json").read_text(encoding="utf-8"))
+    project = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
 
     package = config["packages"]["."]
     assert package["release-type"] == "python"
     assert package["package-name"] == "hermes-streaming-tui"
-    assert manifest["."] == "0.1.0"
+    assert manifest["."] == project["project"]["version"]
     assert "release-please-action@" in (
         ROOT / ".github/workflows/release-please.yml"
     ).read_text(encoding="utf-8")
+
+
+def test_release_workflow_publishes_python_distributions():
+    workflow = (ROOT / ".github/workflows/release.yml").read_text(encoding="utf-8")
+
+    assert "python -m build --sdist --wheel" in workflow
+    assert "gh release upload" in workflow
+    assert "pypa/gh-action-pypi-publish@" in workflow
+    assert "HOMEBREW_TAP_AUTOMATION" in workflow
+    assert "generate_homebrew_formula.py" in workflow
