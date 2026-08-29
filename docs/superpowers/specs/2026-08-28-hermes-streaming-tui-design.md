@@ -28,7 +28,7 @@ Reference script:
   they arrive, PCM audio plays via `sounddevice` as chunks arrive —
   matching current CLI behavior, not a buffer-then-render simplification.
 - Same connection defaults as the reference script: `DEFAULT_URL`
-  (`ws://100.90.186.57:8792/voice-session`), `DEFAULT_CHECKOUT`
+  (the configured voice-session URL), `DEFAULT_CHECKOUT`
   (`~/.hermes/hermes-agent`), `DEFAULT_PROFILE_ENV`
   (`~/.hermes/profiles/amanda/.env`), same env var names
   (`VOICE_SESSION_TOKEN`, `VOICE_SESSION_URL`, etc.).

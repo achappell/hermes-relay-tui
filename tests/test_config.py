@@ -2,7 +2,7 @@ import os
 
 import pytest
 
-from config import _env_choice, _env_float, _env_int, _resolve_token, _connection_kwargs, build_arg_parser
+from config import DEFAULT_URL, _env_choice, _env_float, _env_int, _resolve_token, _connection_kwargs, build_arg_parser
 
 
 def test_env_float_uses_default_when_unset(monkeypatch):
@@ -33,6 +33,12 @@ def test_env_choice_uses_default_for_an_invalid_value(monkeypatch):
 def test_parser_defaults_to_queue_busy_mode(monkeypatch):
     monkeypatch.delenv("VOICE_SESSION_BUSY_MODE", raising=False)
     assert build_arg_parser().parse_args([]).busy_mode == "queue"
+
+
+def test_parser_defaults_to_local_voice_session_endpoint(monkeypatch):
+    monkeypatch.delenv("HERMES_VOICE_SESSION_URL", raising=False)
+    assert build_arg_parser().parse_args([]).url == DEFAULT_URL
+    assert DEFAULT_URL == "ws://localhost:8792/voice-session"
 
 
 def test_parser_reads_busy_mode_from_environment(monkeypatch):

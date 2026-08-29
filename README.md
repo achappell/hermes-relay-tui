@@ -90,7 +90,9 @@ Keep real tokens in your environment or an ignored local profile file. Never com
 VOICE_SESSION_TOKEN='redacted-token' venv/bin/python app.py
 ```
 
-The default connection is `ws://100.90.186.57:8792/voice-session`, with session ID `hybrid-tui`. Override those values when needed:
+The default connection is `ws://localhost:8792/voice-session`, assuming a local
+Hermes gateway, with session ID `hybrid-tui`. Set `HERMES_VOICE_SESSION_URL` or
+use `--url` when connecting to a remote gateway:
 
 ```bash
 venv/bin/python app.py \
@@ -185,7 +187,7 @@ When `--output` is set, the first turn uses that path and later turns use number
 | Variable | Default / role |
 | --- | --- |
 | `VOICE_SESSION_TOKEN` | Bearer token |
-| `HERMES_VOICE_SESSION_URL` | `ws://100.90.186.57:8792/voice-session` |
+| `HERMES_VOICE_SESSION_URL` | `ws://localhost:8792/voice-session` |
 | `VOICE_SESSION_CLIENT_ID` | `amanda-laptop` |
 | `VOICE_SESSION_DEVICE_ID` | `amanda-mac` |
 | `VOICE_SESSION_ID` | `hybrid-tui` |

@@ -166,7 +166,7 @@ import os
 from pathlib import Path
 from typing import Any, Optional
 
-DEFAULT_URL = "ws://100.90.186.57:8792/voice-session"
+DEFAULT_URL = "ws://localhost:8792/voice-session"
 DEFAULT_CHECKOUT = Path.home() / ".hermes" / "hermes-agent"
 DEFAULT_PROFILE_ENV = Path.home() / ".hermes" / "profiles" / "amanda" / ".env"
 
