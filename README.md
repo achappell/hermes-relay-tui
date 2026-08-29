@@ -35,6 +35,26 @@ venv/bin/pip install -r requirements-dev.txt
 
 That installs the local STT dependencies as well. The first transcription may download the selected Faster-Whisper model.
 
+### Homebrew trial install
+
+The repository includes a draft formula for a clean-Mac trial. It is not yet a
+published tap, so clone the private repository and stage the formula in a local
+tap first:
+
+```bash
+git clone git@github.com:achappell/hermes-streaming-tui.git
+cd hermes-streaming-tui
+brew tap-new --no-git achappell/hermes-streaming
+tap_dir="$(brew --repository)/Library/Taps/achappell/homebrew-hermes-streaming"
+mkdir -p "$tap_dir/Formula"
+cp packaging/homebrew/hermes-streaming-tui.rb "$tap_dir/Formula/"
+brew install --build-from-source --HEAD achappell/hermes-streaming/hermes-streaming-tui
+hermes-streaming-tui --help
+```
+
+See [`docs/packaging/jensen-trial.md`](docs/packaging/jensen-trial.md) for the
+token, Hermes checkout, microphone, and smoke-test steps.
+
 If the repository already has `venv/`, install or refresh the dependencies with:
 
 ```bash
