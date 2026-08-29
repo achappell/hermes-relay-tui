@@ -310,12 +310,29 @@ CONNECTION_RETRYING = "retrying"
 CONNECTION_CONNECTED = "connected"
 MAX_CONNECT_RETRY_DELAY = 8.0
 RETRY_HINT = "The app remains open; retry when the endpoint recovers."
+VOICE_READY = "ready"
+VOICE_CONNECTING = "connecting…"
+VOICE_RECONNECTING = "reconnecting…"
+VOICE_DISCONNECTED = "disconnected"
+VOICE_LISTENING = "listening…"
+VOICE_TRANSCRIBING = "transcribing…"
+VOICE_THINKING = "thinking…"
+VOICE_SPEAKING = "speaking…"
+VOICE_BUFFERING = "buffering…"
+VOICE_INTERRUPTED = "interrupted"
+VOICE_ERROR = "error"
 
 
 class HermesStreamingApp(App):
     """A Textual TUI for a Hermes voice-session chat."""
 
     CSS = """
+    #voice-status {
+        height: 1;
+        padding: 0 1;
+        color: $text-muted;
+    }
+
     #composer {
         height: 5;
         max-height: 10;
@@ -342,6 +359,7 @@ class HermesStreamingApp(App):
         self.session: SessionProtocol = None  # type: ignore[assignment]
         self.player = PCMPlayer(enabled=not (args and args.no_play))
         self.transcript_text = ""
+        self.voice_state = VOICE_READY
         self._turn_in_flight = False
         self._queued_prompts: list[str] = []
         self._active_turn_task: Optional[asyncio.Task[None]] = None
@@ -358,6 +376,7 @@ class HermesStreamingApp(App):
         with VerticalScroll(id="transcript-scroll"):
             # markup=False so a literal "[error] ..." isn't eaten as Rich markup.
             yield Static("", id="transcript", markup=False)
+        yield Static("● ready", id="voice-status")
         yield Composer(placeholder="you>", id="composer")
         yield Footer()
 
@@ -387,11 +406,16 @@ class HermesStreamingApp(App):
         self.query_one("#transcript", Static).update(self.transcript_text)
         self.query_one("#transcript-scroll", VerticalScroll).scroll_end(animate=False)
 
+    def _set_voice_state(self, state: str) -> None:
+        self.voice_state = state
+        self.query_one("#voice-status", Static).update(f"● {state}")
+
     # --- lifecycle ------------------------------------------------------------
 
     async def on_mount(self) -> None:
         self.session = self._session_factory() if self._session_factory else HermesSession(self.args)
         self.set_focus(self.query_one("#composer", Composer))
+        self._set_voice_state(VOICE_CONNECTING)
         # In a worker so a hanging endpoint can't freeze the UI (or block ctrl+q).
         self.run_worker(self._connect(force=True), exclusive=True)
 
@@ -400,6 +424,7 @@ class HermesStreamingApp(App):
         async with self._connection_lock:
             if self.session.is_connected() and not force:
                 self.connection_state = CONNECTION_CONNECTED
+                self._set_voice_state(VOICE_READY)
                 return True
 
             retries = max(0, int(getattr(self.args, "connect_retries", 3)))
@@ -411,10 +436,14 @@ class HermesStreamingApp(App):
             for attempt in range(attempts):
                 if attempt == 0:
                     self.connection_state = CONNECTION_CONNECTING
+                    self._set_voice_state(
+                        VOICE_RECONNECTING if reconnecting else VOICE_CONNECTING
+                    )
                     if reconnecting:
                         self._append_block("reconnecting…")
                 else:
                     self.connection_state = CONNECTION_RETRYING
+                    self._set_voice_state(VOICE_RECONNECTING)
                     delay = min(retry_delay * (2 ** (attempt - 1)), MAX_CONNECT_RETRY_DELAY)
                     if delay:
                         self._append_block(
@@ -430,10 +459,12 @@ class HermesStreamingApp(App):
                         raise ConnectionError("session did not establish a connection")
                 except asyncio.CancelledError:
                     self.connection_state = CONNECTION_DISCONNECTED
+                    self._set_voice_state(VOICE_DISCONNECTED)
                     raise
                 except Exception as exc:
                     last_error = exc
                     self.connection_state = CONNECTION_DISCONNECTED
+                    self._set_voice_state(VOICE_DISCONNECTED)
                     try:
                         await self.session.close()
                     except Exception:
@@ -444,12 +475,14 @@ class HermesStreamingApp(App):
                     continue
 
                 self.connection_state = CONNECTION_CONNECTED
+                self._set_voice_state(VOICE_READY)
                 self._needs_reconnect = False
                 session_id = getattr(self.args, "session_id", "session")
                 self._append_block(f"Connected to {session_id} (chat {hello.get('chat_id')}).")
                 return True
 
             self.connection_state = CONNECTION_DISCONNECTED
+            self._set_voice_state(VOICE_DISCONNECTED)
             self._append_block(
                 f"[error] {last_error}; unable to connect after {attempts} attempt(s)"
             )
@@ -657,15 +690,19 @@ class HermesStreamingApp(App):
         if self._turn_in_flight:
             self._append_block("[a turn is already in flight]")
             return
+        self._set_voice_state(VOICE_LISTENING)
         self._append_block("listening…")
         try:
             transcript_text = await asyncio.to_thread(self.session.capture_voice)
         except Exception as exc:
+            self._set_voice_state(VOICE_ERROR)
             self._append_block(f"[error] microphone: {exc}")
             return
         if not transcript_text:
+            self._set_voice_state(VOICE_READY)
             self._append_block("no speech detected.")
             return
+        self._set_voice_state(VOICE_TRANSCRIBING)
         await self._run_turn(transcript_text, stt_source="local-faster-whisper")
 
     async def action_interrupt(self) -> None:
@@ -694,6 +731,7 @@ class HermesStreamingApp(App):
         if not self._turn_in_flight:
             return False
 
+        self._set_voice_state(VOICE_INTERRUPTED)
         self.player.close()
         active_task = self._active_turn_task
         current_task = asyncio.current_task()
@@ -797,6 +835,8 @@ class HermesStreamingApp(App):
 
         index = self.session.turn_index
         self._append_block(f"you> {text}")
+        if stt_source != "local-faster-whisper":
+            self._set_voice_state(VOICE_THINKING)
         timeout = getattr(self.args, "turn_timeout", 0) or 0
         try:
             events = self.session.send_turn(text, stt_source=stt_source)
@@ -805,11 +845,13 @@ class HermesStreamingApp(App):
             else:
                 await self._consume_turn(events, index)
         except asyncio.CancelledError:
+            self._set_voice_state(VOICE_INTERRUPTED)
             self._append_block("[interrupted]")
             self.connection_state = CONNECTION_DISCONNECTED
             self._needs_reconnect = True
             raise
         except (asyncio.TimeoutError, TimeoutError):
+            self._set_voice_state(VOICE_ERROR)
             await self._mark_connection_lost()
             self._append_block(
                 f"[error] voice turn exceeded {timeout:g}s without completing; "
@@ -819,6 +861,7 @@ class HermesStreamingApp(App):
             # ConnectionClosed, ConcurrencyError, AttributeError from a dead
             # socket — none of them should take the whole app down.
             await self._mark_connection_lost()
+            self._set_voice_state(VOICE_ERROR)
             self._append_block(f"[error] {exc}")
             self._append_block(RETRY_HINT)
         finally:
@@ -830,6 +873,7 @@ class HermesStreamingApp(App):
     async def _mark_connection_lost(self) -> None:
         """Close a failed stream so the next turn cannot reuse a dead socket."""
         self.connection_state = CONNECTION_DISCONNECTED
+        self._set_voice_state(VOICE_DISCONNECTED)
         self._needs_reconnect = True
         try:
             await self.session.close()
@@ -863,18 +907,22 @@ class HermesStreamingApp(App):
             kind = event["type"]
             if kind == "text_delta":
                 if not assistant_started:
+                    self._set_voice_state(VOICE_THINKING)
                     self._append("hermes: ")
                     assistant_started = True
                 self._append(event["text"])
                 activity_line = None
             elif kind == "thinking_delta":
+                self._set_voice_state(VOICE_THINKING)
                 set_activity("thinking…")
             elif kind == "reasoning_available":
+                self._set_voice_state(VOICE_THINKING)
                 set_activity("reasoning available")
             elif kind == "status":
                 status_text = str(event.get("text") or "").strip()
                 if status_text and status_text != last_status:
                     last_status = status_text
+                    self._set_voice_state(status_text)
                     if assistant_started:
                         self._append_block(f"[{status_text}]")
                     else:
@@ -884,8 +932,10 @@ class HermesStreamingApp(App):
             elif kind == "notification_clear":
                 set_activity("notification cleared")
             elif kind == "tool_start":
+                self._set_voice_state(VOICE_THINKING)
                 set_activity(f"tool: {event.get('name') or 'tool'}…")
             elif kind == "tool_progress":
+                self._set_voice_state(VOICE_THINKING)
                 name = event.get("name") or "tool"
                 preview = str(event.get("preview") or "working…").strip()
                 set_activity(f"tool: {name} — {preview}")
@@ -903,9 +953,13 @@ class HermesStreamingApp(App):
                 self.player.start(audio_format)
                 played_live = played_live or self.player.active
                 if self.player.active:
+                    self._set_voice_state(VOICE_SPEAKING)
                     set_activity("audio streaming")
                 elif self.player.failure:
+                    self._set_voice_state(VOICE_BUFFERING)
                     set_activity(f"audio buffering: {self.player.failure}")
+                else:
+                    self._set_voice_state(VOICE_BUFFERING)
             elif kind == "audio_chunk":
                 audio.extend(event["data"])
                 if self.player.active:
@@ -925,6 +979,7 @@ class HermesStreamingApp(App):
                     audio_file_format = (int(metadata[0]), int(metadata[1]), int(metadata[2]))
                 else:
                     audio_file_format = None
+                self._set_voice_state(VOICE_BUFFERING)
                 set_activity("audio buffering…")
             elif kind == "audio_file_chunk":
                 audio_file.extend(event["data"])
@@ -943,17 +998,21 @@ class HermesStreamingApp(App):
                 self.player.start(file_format)
                 played_live = played_live or self.player.active
                 if self.player.active:
+                    self._set_voice_state(VOICE_SPEAKING)
                     await asyncio.to_thread(self.player.write, file_audio)
                     self.player.close()
                 elif self.player.failure:
+                    self._set_voice_state(VOICE_BUFFERING)
                     set_activity(f"audio buffering: {self.player.failure}")
             elif kind == "error":
+                self._set_voice_state(VOICE_ERROR)
                 self._append_block(f"[error] {event['error']}")
             elif kind == "turn_end":
                 self._append("\n")
                 self._save_turn_audio(
                     bytes(audio), audio_format, index, event.get("turn_id", ""), played_live
                 )
+                self._set_voice_state(VOICE_READY)
 
     def _save_turn_audio(
         self,

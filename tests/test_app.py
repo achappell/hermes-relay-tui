@@ -90,6 +90,10 @@ def transcript_of(app) -> str:
     return str(content)
 
 
+def voice_status_of(app) -> str:
+    return str(app.query_one("#voice-status", Static).content)
+
+
 def make_args(**overrides):
     args = types.SimpleNamespace(
         no_play=True,
@@ -114,6 +118,24 @@ async def test_app_mounts_with_transcript_and_input():
         await pilot.pause()
         assert app.query_one("#transcript", Static) is not None
         assert app.query_one("#composer", Composer) is not None
+        assert voice_status_of(app) == "● ready"
+
+
+async def test_voice_status_surface_displays_lifecycle_states():
+    app = HermesStreamingApp(args=make_args(), session_factory=lambda: FakeSession())
+    states = (
+        "listening…",
+        "transcribing…",
+        "thinking…",
+        "speaking…",
+        "buffering…",
+        "interrupted",
+    )
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        for state in states:
+            app._set_voice_state(state)
+            assert voice_status_of(app) == f"● {state}"
 
 
 async def test_connect_banner_is_appended_from_the_worker():
@@ -505,6 +527,7 @@ async def test_voice_turn_streams_with_the_voice_stt_source():
         assert session.capture_calls == 1
         assert session.sent_turns == [("spoken words", "local-faster-whisper")]
         assert "you> spoken words" in transcript_of(app)
+        assert voice_status_of(app) == "● ready"
 
 
 async def test_voice_turn_with_no_speech_sends_nothing():
@@ -735,6 +758,7 @@ async def test_ctrl_c_interrupts_active_turn_and_preserves_partial_transcript():
         assert session.closed
         assert "partial answer" in transcript_of(app)
         assert "[interrupted]" in transcript_of(app)
+        assert voice_status_of(app) == "● interrupted"
 
 
 async def test_ctrl_c_clears_an_idle_draft_before_any_exit():
