@@ -44,6 +44,22 @@ def test_parser_accepts_busy_mode_flag():
     assert build_arg_parser().parse_args(["--busy-mode", "interrupt"]).busy_mode == "interrupt"
 
 
+def test_parser_defaults_to_bounded_connection_retries(monkeypatch):
+    monkeypatch.delenv("VOICE_SESSION_CONNECT_RETRIES", raising=False)
+    monkeypatch.delenv("VOICE_SESSION_CONNECT_RETRY_DELAY", raising=False)
+    args = build_arg_parser().parse_args([])
+    assert args.connect_retries == 3
+    assert args.connect_retry_delay == 1.0
+
+
+def test_parser_reads_connection_retry_settings_from_environment(monkeypatch):
+    monkeypatch.setenv("VOICE_SESSION_CONNECT_RETRIES", "5")
+    monkeypatch.setenv("VOICE_SESSION_CONNECT_RETRY_DELAY", "0.25")
+    args = build_arg_parser().parse_args([])
+    assert args.connect_retries == 5
+    assert args.connect_retry_delay == 0.25
+
+
 def test_resolve_token_prefers_explicit_argument(tmp_path):
     env_path = tmp_path / ".env"
     env_path.write_text("VOICE_SESSION_TOKEN=from-file\n")

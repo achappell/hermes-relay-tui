@@ -12,6 +12,7 @@ This is a client for the existing Hermes voice-session channel. It does not run 
 - Live signed 16-bit PCM playback through `sounddevice`.
 - WAV output when playback is disabled or `--output` is supplied.
 - Session create/resume through `--session-id`.
+- Bounded reconnect attempts with visible connection state and local prompt preservation.
 - Connection, timeout, and turn errors shown in the UI instead of crashing the app.
 
 ## Requirements
@@ -111,6 +112,12 @@ current connection, and reconnect before the next turn. This prevents stale
 audio and events from corrupting the replacement; remote generation itself
 remains best-effort until the protocol grows a server-side interrupt operation.
 
+Connection setup retries up to three additional times by default, using an
+exponential delay capped at eight seconds. Override this with
+`--connect-retries` and `--connect-retry-delay`. If a connection is unavailable,
+the submitted prompt remains in the local queue and newer prompts wait behind
+it. A turn that may already have reached Hermes is never replayed automatically.
+
 ## Useful options
 
 | Option | Purpose |
@@ -123,6 +130,8 @@ remains best-effort until the protocol grows a server-side interrupt operation.
 | `--no-play` | Do not open the local speaker; buffer audio instead |
 | `--output PATH` | Save response audio to WAV |
 | `--turn-timeout SECONDS` | Timeout a turn; default `195`, `0` disables |
+| `--connect-retries COUNT` | Additional connection attempts after the first failure; default `3` |
+| `--connect-retry-delay SECONDS` | Base delay before reconnect attempts; default `1.0` |
 | `--busy-mode MODE` | Active-turn behavior: `queue` (default), `steer`, or `interrupt` |
 | `--mic-max-seconds SECONDS` | Maximum microphone capture duration |
 | `--mic-silence-duration SECONDS` | Silence duration that ends capture |
@@ -151,6 +160,8 @@ When `--output` is set, the first turn uses that path and later turns use number
 | `VOICE_SESSION_MIC_SILENCE_THRESHOLD` | `200` |
 | `VOICE_SESSION_STT_MODEL` | unset; use the Hermes/local-STT default |
 | `VOICE_SESSION_TURN_TIMEOUT` | `195.0` seconds |
+| `VOICE_SESSION_CONNECT_RETRIES` | `3` additional connection attempts |
+| `VOICE_SESSION_CONNECT_RETRY_DELAY` | `1.0` second base reconnect delay |
 | `VOICE_SESSION_BUSY_MODE` | `queue`, `steer`, or `interrupt` |
 
 ## Test
@@ -179,7 +190,7 @@ The PCM stream must be signed 16-bit audio, and `sounddevice` must be able to op
 
 ### A turn times out
 
-The default timeout is 195 seconds. Check the endpoint and server-side model health, then retry with a fresh `--session-id`. Use `--turn-timeout 0` only when an unbounded wait is genuinely wanted.
+The default timeout is 195 seconds. Check the endpoint and server-side model health, then retry with a fresh `--session-id`; a timed-out turn is not replayed automatically because the remote side may already have processed it. Use `--turn-timeout 0` only when an unbounded wait is genuinely wanted.
 
 ## Project layout
 

@@ -130,11 +130,11 @@ Input.Submitted / voice binding
   Once TAB started, no fatal exit; errors surface as
   transcript/status messages.
 - Connection errors (`ConnectionError`, `OSError`, `ConnectionClosed`,
-  `EOFError`) caught the same way as the CLI's `main()` — reported as
-  a status/transcript message with the same retry guidance ("Retry
-  with a fresh --session-id..."), app stays open rather than exiting
-  the process, since a Textual app closing on connection loss is a
-  worse experience than in a CLI.
+  `EOFError`) are reported in the transcript and retried with a bounded
+  exponential-backoff policy. The app stays open rather than exiting the
+  process, and a prompt that could not be sent remains in the local FIFO
+  queue. A turn that may already have reached Hermes is not replayed
+  automatically after a socket failure.
 - Turn timeout: same `RuntimeError` message as today, surfaced in the
   transcript instead of raised to a bare traceback.
 

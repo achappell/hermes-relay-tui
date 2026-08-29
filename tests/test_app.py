@@ -6,6 +6,7 @@ import pytest
 from textual.widgets import Input, OptionList, Static, TextArea
 
 from app import CommandPalette, Composer, HermesSession, HermesStreamingApp
+from client import ProtocolError
 from commands import parse_slash_command
 
 DEFAULT_EVENTS = [
@@ -64,6 +65,22 @@ class FakeSession:
         self.closed = True
 
 
+class FlakyConnectSession(FakeSession):
+    """A session that becomes usable after a controlled number of failures."""
+
+    def __init__(self, failures_before_success, **kwargs):
+        super().__init__(connected=False, **kwargs)
+        self.failures_remaining = failures_before_success
+
+    async def connect(self):
+        self.connect_calls += 1
+        if self.failures_remaining:
+            self.failures_remaining -= 1
+            raise ConnectionError("endpoint unavailable")
+        self.connected = True
+        return self.hello
+
+
 def transcript_of(app) -> str:
     """The text the transcript widget is actually rendering."""
     content = app.query_one("#transcript", Static).content
@@ -79,6 +96,8 @@ def make_args(**overrides):
         session_id="s1",
         turn_timeout=0,
         busy_mode="queue",
+        connect_retries=0,
+        connect_retry_delay=0,
     )
     for key, value in overrides.items():
         setattr(args, key, value)
@@ -116,6 +135,106 @@ async def test_connect_failure_is_reported_not_raised():
     async with app.run_test() as pilot:
         await pilot.pause()
         assert "[error] no token" in transcript_of(app)
+
+
+async def test_connect_retries_then_reports_connected():
+    session = FlakyConnectSession(2)
+    app = HermesStreamingApp(
+        args=make_args(connect_retries=2, connect_retry_delay=0),
+        session_factory=lambda: session,
+    )
+    async with app.run_test() as pilot:
+        await pilot.pause()
+
+        assert session.connect_calls == 3
+        assert app.connection_state == "connected"
+        assert "connection attempt 1/3 failed" in transcript_of(app)
+        assert "Connected to s1" in transcript_of(app)
+
+
+async def test_connect_exhaustion_keeps_app_open_and_reports_bound():
+    session = FlakyConnectSession(99)
+    app = HermesStreamingApp(
+        args=make_args(connect_retries=2, connect_retry_delay=0),
+        session_factory=lambda: session,
+    )
+    async with app.run_test() as pilot:
+        await pilot.pause()
+
+        assert session.connect_calls == 3
+        assert app.connection_state == "disconnected"
+        assert "unable to connect after 3 attempt(s)" in transcript_of(app)
+
+
+async def test_prompt_is_kept_in_queue_when_recovery_is_exhausted():
+    session = FlakyConnectSession(99)
+    app = HermesStreamingApp(args=make_args(), session_factory=lambda: session)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await app._run_turn("keep this prompt")
+
+        assert session.sent_turns == []
+        assert app._queued_prompts == ["keep this prompt"]
+        assert "prompt kept in queue" in transcript_of(app)
+
+
+async def test_new_prompt_waits_behind_a_retained_prompt():
+    session = FlakyConnectSession(99)
+    app = HermesStreamingApp(args=make_args(), session_factory=lambda: session)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await app._run_turn("first prompt")
+
+        session.failures_remaining = 0
+        await app._submit_text("second prompt")
+
+        assert session.sent_turns == [
+            ("first prompt", "local"),
+            ("second prompt", "local"),
+        ]
+        assert app._queued_prompts == []
+
+
+async def test_dropped_turn_is_not_replayed_but_next_prompt_recovers():
+    class DropOnceSession(FakeSession):
+        async def connect(self):
+            self.connect_calls += 1
+            self.connected = True
+            return self.hello
+
+        def send_turn(self, text, *, stt_source="local"):
+            self.sent_turns.append((text, stt_source))
+            self.turn_index += 1
+
+            async def stream():
+                if text == "first":
+                    yield {"type": "text_delta", "text": "partial"}
+                    self.connected = False
+                    raise ConnectionResetError("socket went away")
+                yield {"type": "text_delta", "text": "second answer"}
+                yield {"type": "turn_end", "turn_id": "second"}
+
+            return stream()
+
+    session = DropOnceSession()
+    app = HermesStreamingApp(
+        args=make_args(connect_retries=1, connect_retry_delay=0),
+        session_factory=lambda: session,
+    )
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await app._run_turn("first")
+
+        assert session.sent_turns == [("first", "local")]
+        assert app.connection_state == "disconnected"
+        assert "partial" in transcript_of(app)
+
+        await app._submit_text("second")
+
+        assert session.sent_turns == [("first", "local"), ("second", "local")]
+        assert transcript_of(app).count("you> first") == 1
+        assert "hermes: second answer" in transcript_of(app)
+        assert app.connection_state == "connected"
 
 
 async def test_submitting_input_sends_a_turn_and_clears_input():
@@ -714,6 +833,44 @@ class FakeConnectContextManager:
 
     async def __aexit__(self, exc_type, exc, tb):
         self.aexit_called_with = (exc_type, exc, tb)
+
+
+async def test_session_connect_closes_a_half_open_context_after_handshake_failure(monkeypatch):
+    class BadHelloWebSocket:
+        async def send(self, data):
+            pass
+
+        async def recv(self):
+            return '{"type": "unexpected"}'
+
+    class BadHelloContextManager(FakeConnectContextManager):
+        async def __aenter__(self):
+            return BadHelloWebSocket()
+
+    fake_cm = BadHelloContextManager()
+
+    def fake_connect(url, **kwargs):
+        return fake_cm
+
+    monkeypatch.setattr("config.connect_factory", lambda: fake_connect)
+    monkeypatch.setattr("config._resolve_token", lambda explicit, env_path: "token")
+    session = HermesSession(
+        args=make_args(
+            token=None,
+            profile_env=None,
+            url="ws://test",
+            client_id="client",
+            device_id="device",
+            display_name="test",
+        )
+    )
+
+    with pytest.raises(ProtocolError, match="voice-session hello failed"):
+        await session.connect()
+
+    assert fake_cm.aexit_called_with == (None, None, None)
+    assert session._connect_cm is None
+    assert session.ws is None
 
 
 async def test_session_close_exits_the_connect_context_manager():

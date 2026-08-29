@@ -112,4 +112,16 @@ def build_arg_parser() -> argparse.ArgumentParser:
         default=_env_float("VOICE_SESSION_TURN_TIMEOUT", 195.0),
         help="seconds to wait for a response before closing the session (0 disables)",
     )
+    parser.add_argument(
+        "--connect-retries",
+        type=int,
+        default=_env_int("VOICE_SESSION_CONNECT_RETRIES", 3),
+        help="additional connection attempts after the first failure",
+    )
+    parser.add_argument(
+        "--connect-retry-delay",
+        type=float,
+        default=_env_float("VOICE_SESSION_CONNECT_RETRY_DELAY", 1.0),
+        help="base seconds before reconnect attempts; delay doubles each time",
+    )
     return parser
