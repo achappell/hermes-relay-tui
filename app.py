@@ -27,7 +27,7 @@ from textual.widgets import Footer, Header, Input, OptionList, Static, TextArea
 from textual.widgets.option_list import Option
 
 import config
-from audio import PCMPlayer, audio_path, write_wav
+from audio import PCMPlayer, audio_path, read_wav, write_wav
 from client import send_hello, send_turn
 from commands import (
     COMMAND_REGISTRY,
@@ -839,6 +839,9 @@ class HermesStreamingApp(App):
     async def _consume_turn(self, events: AsyncIterator[dict[str, Any]], index: int) -> None:
         audio = bytearray()
         audio_format: Optional[tuple[int, int, int]] = None
+        audio_file = bytearray()
+        audio_file_format: Optional[tuple[int, int, int]] = None
+        played_live = False
         assistant_started = False
         activity_line: Optional[str] = None
         last_status: Optional[str] = None
@@ -898,6 +901,7 @@ class HermesStreamingApp(App):
             elif kind == "audio_start":
                 audio_format = (event["sample_rate"], event["channels"], event["sample_width"])
                 self.player.start(audio_format)
+                played_live = played_live or self.player.active
                 if self.player.active:
                     self._append(" [audio streaming]")
                 elif self.player.failure:
@@ -906,12 +910,49 @@ class HermesStreamingApp(App):
                 audio.extend(event["data"])
                 if self.player.active:
                     await asyncio.to_thread(self.player.write, event["data"])
+            elif kind == "audio_end":
+                # Each prior chunk has completed its worker-thread write when
+                # this event arrives, so closing here drains the final tail
+                # before turn_end is processed.
+                self.player.close()
+            elif kind == "audio_file_start":
+                audio_file.clear()
+                metadata = tuple(
+                    event.get(field)
+                    for field in ("sample_rate", "channels", "sample_width")
+                )
+                if all(value is not None for value in metadata):
+                    audio_file_format = (int(metadata[0]), int(metadata[1]), int(metadata[2]))
+                else:
+                    audio_file_format = None
+                set_activity("audio buffering…")
+            elif kind == "audio_file_chunk":
+                audio_file.extend(event["data"])
+            elif kind == "audio_file_end":
+                if event.get("data"):
+                    audio_file.extend(event["data"])
+                try:
+                    file_audio, file_format = read_wav(bytes(audio_file))
+                except ValueError:
+                    if audio_file_format is None:
+                        self._append_block("[error] unsupported audio file fallback")
+                        continue
+                    file_audio, file_format = bytes(audio_file), audio_file_format
+                audio.extend(file_audio)
+                audio_format = file_format
+                self.player.start(file_format)
+                played_live = played_live or self.player.active
+                if self.player.active:
+                    await asyncio.to_thread(self.player.write, file_audio)
+                    self.player.close()
+                elif self.player.failure:
+                    set_activity(f"audio buffering: {self.player.failure}")
             elif kind == "error":
                 self._append_block(f"[error] {event['error']}")
             elif kind == "turn_end":
                 self._append("\n")
                 self._save_turn_audio(
-                    bytes(audio), audio_format, index, event.get("turn_id", ""), self.player.active
+                    bytes(audio), audio_format, index, event.get("turn_id", ""), played_live
                 )
 
     def _save_turn_audio(

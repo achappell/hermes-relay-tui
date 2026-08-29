@@ -1,6 +1,7 @@
 import asyncio
 import types
 import wave
+from io import BytesIO
 
 import pytest
 from textual.widgets import Input, OptionList, Static, TextArea
@@ -886,6 +887,71 @@ async def test_turn_audio_is_written_to_a_wav_when_playback_is_off(tmp_path):
             assert handle.getsampwidth() == 2
             assert handle.getframerate() == 24000
         assert f"audio: {output}" in transcript_of(app)
+
+
+async def test_audio_end_closes_playback_before_turn_end():
+    class RecordingPlayer:
+        active = False
+        failure = None
+
+        def __init__(self):
+            self.close_states = []
+
+        def start(self, audio_format):
+            self.active = True
+
+        def write(self, chunk):
+            pass
+
+        def close(self):
+            self.close_states.append(self.active)
+            self.active = False
+
+    session = FakeSession(
+        events=[
+            {"type": "audio_start", "sample_rate": 24000, "channels": 1, "sample_width": 2},
+            {"type": "audio_chunk", "data": b"\x00\x01"},
+            {"type": "audio_end"},
+            {"type": "turn_end", "turn_id": "audio-end"},
+        ]
+    )
+    app = HermesStreamingApp(args=make_args(no_play=False), session_factory=lambda: session)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        player = RecordingPlayer()
+        app.player = player
+        await app._run_turn("hi")
+
+        assert player.close_states == [True, False]
+
+
+async def test_audio_file_fallback_is_recovered_as_wav(tmp_path):
+    source = BytesIO()
+    with wave.open(source, "wb") as handle:
+        handle.setnchannels(1)
+        handle.setsampwidth(2)
+        handle.setframerate(16000)
+        handle.writeframes(b"\x00\x01\x02\x03")
+
+    output = tmp_path / "fallback.wav"
+    session = FakeSession(
+        events=[
+            {"type": "audio_file_start", "mime_type": "audio/wav"},
+            {"type": "audio_file_chunk", "data": source.getvalue()},
+            {"type": "audio_file_end"},
+            {"type": "turn_end", "turn_id": "file-fallback"},
+        ]
+    )
+    app = HermesStreamingApp(
+        args=make_args(output=output), session_factory=lambda: session
+    )
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await app._run_turn("hi")
+
+        with wave.open(str(output), "rb") as handle:
+            assert handle.getframerate() == 16000
+            assert handle.readframes(2) == b"\x00\x01\x02\x03"
 
 
 async def test_help_binding_prints_the_bindings_line():

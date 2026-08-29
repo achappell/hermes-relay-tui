@@ -1,8 +1,8 @@
 # tests/test_audio.py
 import sys
 import types
-
 import wave
+from io import BytesIO
 from pathlib import Path
 
 import pytest
@@ -33,6 +33,19 @@ def test_write_wav_creates_parent_directories_and_a_readable_file(tmp_path):
         assert handle.getnchannels() == 1
         assert handle.getsampwidth() == 2
         assert handle.readframes(2) == b"\x00\x01\x02\x03"
+
+
+def test_read_wav_returns_pcm_and_format():
+    from audio import read_wav
+
+    source = BytesIO()
+    with wave.open(source, "wb") as handle:
+        handle.setnchannels(1)
+        handle.setsampwidth(2)
+        handle.setframerate(16000)
+        handle.writeframes(b"\x00\x01\x02\x03")
+
+    assert read_wav(source.getvalue()) == (b"\x00\x01\x02\x03", (16000, 1, 2))
 
 
 def test_disabled_player_never_starts():

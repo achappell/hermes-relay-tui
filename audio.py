@@ -6,6 +6,7 @@ Ported from hermes-hybrid-tui.py's PCMPlayer, unchanged in behavior.
 from __future__ import annotations
 
 import wave
+from io import BytesIO
 from pathlib import Path
 from typing import Any, Optional
 
@@ -30,6 +31,20 @@ def write_wav(path: Path, audio: bytes, audio_format: tuple[int, int, int]) -> N
         output.writeframes(audio)
 
 
+def read_wav(data: bytes) -> tuple[bytes, tuple[int, int, int]]:
+    """Extract PCM and its format from a complete WAV fallback payload."""
+    try:
+        with wave.open(BytesIO(data), "rb") as source:
+            audio_format = (
+                source.getframerate(),
+                source.getnchannels(),
+                source.getsampwidth(),
+            )
+            return source.readframes(source.getnframes()), audio_format
+    except (EOFError, OSError, wave.Error) as exc:
+        raise ValueError("invalid WAV audio fallback") from exc
+
+
 class PCMPlayer:
     """Play signed 16-bit PCM chunks locally, with a safe buffering fallback."""
 
@@ -43,6 +58,7 @@ class PCMPlayer:
         return self.stream is not None
 
     def start(self, audio_format: tuple[int, int, int]) -> None:
+        self.failure = None
         if not self.enabled:
             return
         sample_rate, channels, sample_width = audio_format
