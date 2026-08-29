@@ -527,6 +527,7 @@ async def test_voice_turn_streams_with_the_voice_stt_source():
         assert session.capture_calls == 1
         assert session.sent_turns == [("spoken words", "local-faster-whisper")]
         assert "you> spoken words" in transcript_of(app)
+        assert "listening…" not in transcript_of(app)
         assert voice_status_of(app) == "● ready"
 
 
@@ -975,8 +976,9 @@ async def test_audio_status_gets_its_own_line_before_assistant_response():
         await app._run_turn("hi")
 
         transcript = transcript_of(app)
-        assert "[audio streaming]\nhermes: Good. One of me is plenty." in transcript
-        assert "[audio streaming]hermes:" not in transcript
+        assert "hermes: Good. One of me is plenty." in transcript
+        assert "[audio streaming]" not in transcript
+        assert voice_status_of(app) == "● ready"
 
 
 async def test_audio_file_fallback_is_recovered_as_wav(tmp_path):
