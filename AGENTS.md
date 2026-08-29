@@ -24,6 +24,20 @@ The implementation is a laptop-side client. The Hermes server owns sessions, mod
 - Record non-blocking bugs and usability snags in `docs/friction-log.md`; defer them unless they block current work, risk data loss, or repeat.
 - When changing behavior, update or add a focused test in `tests/` before declaring the work finished.
 
+## GitHub Project task management
+
+The [Hermes Streaming TUI GitHub Project](https://github.com/users/achappell/projects/3/views/2) manages this repository's engineering tasks. It is the source of truth for task scope, priority, ownership, dependencies, and progress. The Daily Note may mirror the current work item for personal orchestration, but it does not replace keeping the project board current.
+
+- Before starting work, inspect the project and choose the highest-priority unblocked item in `Ready` or `Building`. Do not invent a parallel task list in the repository.
+- Give every substantive task a project item. Shape new items with an outcome, acceptance criteria, UX expectations, and a validation scenario; fill in `Priority`, `Area`, `Layer`, and `Horizon`.
+- Move work through the `Workflow` field: `Inbox` → `Ready` → `Building` → `Verify` → `Done`. Use `Blocked` when progress depends on Hermes, a protocol change, an external service, or an explicit design decision.
+- Keep the built-in `Status` field aligned with `Workflow` (`Todo` for planned work, `In Progress` for active work, and `Done` only after completion). `Workflow` is the board's kanban state.
+- Keep one active vertical slice in `Building`. Move the current item there before implementation and move it out promptly when the work is blocked, ready for verification, or complete.
+- Manage the board continuously as the work changes: add newly discovered follow-ups, split oversized tasks, edit acceptance criteria, link PRs and evidence, remove duplicates or abandoned tasks, and delete stale work rather than leaving ghosts in `Building`.
+- When blocked, record the concrete blocker and the next unblocking action on the item. Do not present a local fallback as complete relay support.
+- Move an item to `Verify` after implementation, then run focused tests, the full suite, and the required manual smoke test. Record the evidence on the item; move it to `Done` only when the change is validated and merged.
+- At the end of a work session, reconcile the board with the code and GitHub state: no completed item left in `Building`, no active work without a card, and no release or administrative PR allowed to hide unfinished product work.
+
 ## Setup
 
 Use the repository virtual environment when it exists:
