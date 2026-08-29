@@ -49,6 +49,19 @@ hermes-streaming-tui --help
 See [`docs/packaging/jensen-trial.md`](docs/packaging/jensen-trial.md) for the
 token, Hermes checkout, microphone, and smoke-test steps.
 
+## Project automation
+
+- GitHub Actions runs the test suite and verifies the installed console command
+  on every push and pull request.
+- Dependabot checks Python and GitHub Actions dependencies weekly, grouping
+  compatible minor and patch updates into reviewable pull requests.
+- Release-please watches conventional commits and opens the next version PR;
+  merging it updates `pyproject.toml`, the manifest, and the changelog.
+
+The private Homebrew tap has its own formula CI and GitHub Actions Dependabot
+updates. Its formula is currently pinned manually for each source release;
+automating that cross-repository handoff is a later packaging slice.
+
 If the repository already has `venv/`, install or refresh the dependencies with:
 
 ```bash

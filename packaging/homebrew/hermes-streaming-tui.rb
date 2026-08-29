@@ -1,3 +1,7 @@
+# typed: strict
+# frozen_string_literal: true
+
+# Homebrew formula for the Hermes Streaming TUI.
 class HermesStreamingTui < Formula
   desc "Textual terminal UI for authenticated Hermes voice sessions"
   homepage "https://github.com/achappell/hermes-streaming-tui"
