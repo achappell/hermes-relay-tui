@@ -37,18 +37,12 @@ That installs the local STT dependencies as well. The first transcription may do
 
 ### Homebrew trial install
 
-The repository includes a draft formula for a clean-Mac trial. It is not yet a
-published tap, so clone the private repository and stage the formula in a local
-tap first:
+The private Homebrew tap is ready for GitHub users with access to the source
+repository:
 
 ```bash
-git clone git@github.com:achappell/hermes-streaming-tui.git
-cd hermes-streaming-tui
-brew tap-new --no-git achappell/hermes-streaming
-tap_dir="$(brew --repository)/Library/Taps/achappell/homebrew-hermes-streaming"
-mkdir -p "$tap_dir/Formula"
-cp packaging/homebrew/hermes-streaming-tui.rb "$tap_dir/Formula/"
-brew install --build-from-source --HEAD achappell/hermes-streaming/hermes-streaming-tui
+brew tap achappell/hermes-streaming
+brew install achappell/hermes-streaming/hermes-streaming-tui
 hermes-streaming-tui --help
 ```
 
