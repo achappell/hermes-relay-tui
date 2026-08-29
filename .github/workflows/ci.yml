@@ -37,7 +37,10 @@ jobs:
       - name: Run tests
         run: python -m pytest
 
-      - name: Verify console installation
+      - name: Build distributions
+        run: python -m build --sdist --wheel
+
+      - name: Verify wheel installation
         run: |
-          python -m pip install --no-deps --no-build-isolation .
+          python -m pip install --no-deps dist/*.whl
           hermes-streaming-tui --help

@@ -1,12 +1,11 @@
 # Jensen Homebrew trial
 
 This is the near-term install path for trying the Hermes Streaming TUI on a
-clean Mac. The private tap is `achappell/homebrew-hermes-streaming`; Jensen
-needs GitHub access to both the tap and the private source repository.
+clean Mac. The public tap is `achappell/homebrew-hermes-streaming`.
 
 ## Install from the repository
 
-The trial machine needs a working Homebrew installation and GitHub access:
+The trial machine needs a working Homebrew installation:
 
 ```bash
 brew tap achappell/hermes-streaming
