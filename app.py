@@ -186,6 +186,10 @@ class HermesStreamingApp(App):
         self._queued_prompts: list[str] = []
         self._active_turn_task: Optional[asyncio.Task[None]] = None
         self._needs_reconnect = False
+        self.busy_mode = getattr(args, "busy_mode", "queue")
+        if self.busy_mode not in config.BUSY_MODES:
+            self.busy_mode = "queue"
+        self._busy_transition_owner: Optional[asyncio.Task[None]] = None
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -249,7 +253,7 @@ class HermesStreamingApp(App):
             )
             return
         self.run_worker(
-            self._run_turn(text),
+            self._submit_text(text),
             name="chat turn",
             group="interaction",
             exit_on_error=False,
@@ -276,6 +280,12 @@ class HermesStreamingApp(App):
     async def _handle_command(self, invocation: CommandInvocation) -> None:
         command = invocation.command
         if command is None:
+            if invocation.name == "steer":
+                self._append_block(
+                    "[deprecated] /steer is no longer a command; set "
+                    "--busy-mode steer and submit the replacement normally."
+                )
+                return
             await self._dispatch_command(invocation)
             return
         if command.name == "help":
@@ -286,16 +296,19 @@ class HermesStreamingApp(App):
         elif command.name == "status":
             session_id = getattr(self.args, "session_id", "session")
             state = "connected" if self.session.is_connected() else "disconnected"
-            self._append_block(f"session: {session_id} · {state} · queued: {len(self._queued_prompts)}")
+            self._append_block(
+                f"session: {session_id} · {state} · busy-mode: {self.busy_mode} "
+                f"· queued: {len(self._queued_prompts)}"
+            )
         elif command.name == "queue":
             await self._handle_queue_command(invocation.args)
+        elif command.name == "busy":
+            await self._handle_busy_command(invocation.args)
         elif command.name == "voice":
             if invocation.args:
                 self._append_block("usage: /voice (capture one microphone turn)")
             else:
                 await self.action_voice_turn()
-        elif command.name == "steer":
-            await self._handle_steer(invocation.args)
         elif command.name == "quit":
             self.exit()
         else:
@@ -386,14 +399,22 @@ class HermesStreamingApp(App):
             self._append_block(f"starting queued: {self._queue_preview(next_text)}")
             await self._run_turn(next_text)
 
-    async def _handle_steer(self, args: str) -> None:
-        replacement = args.strip()
-        if not replacement:
-            self._append_block("usage: /steer <replacement prompt>")
+    async def _handle_busy_command(self, args: str) -> None:
+        parts = args.strip().lower().split()
+        if not parts:
+            self._append_block(
+                f"busy-mode: {self.busy_mode} (queue / steer / interrupt)"
+            )
             return
-        if self._turn_in_flight:
-            await self._interrupt_active_turn()
-        await self._run_turn(replacement)
+        if len(parts) != 1 or parts[0] not in config.BUSY_MODES:
+            self._append_block("usage: /busy [queue|steer|interrupt]")
+            return
+        previous = self.busy_mode
+        self.busy_mode = parts[0]
+        if previous == self.busy_mode:
+            self._append_block(f"busy-mode already {self.busy_mode}.")
+        else:
+            self._append_block(f"busy-mode set to {self.busy_mode} (was {previous}).")
 
     async def action_voice_turn(self) -> None:
         if self._turn_in_flight:
@@ -456,10 +477,37 @@ class HermesStreamingApp(App):
         self._needs_reconnect = True
         return True
 
+    async def _submit_text(self, text: str) -> None:
+        """Apply the configured busy-turn policy to an ordinary message."""
+        current_task = asyncio.current_task()
+        while self._busy_transition_owner is not None:
+            await asyncio.sleep(0)
+
+        if not self._turn_in_flight:
+            await self._run_turn(text)
+            return
+        if self.busy_mode == "queue":
+            self._enqueue_prompt(text)
+            return
+
+        # Interrupt and steer both need to reset the stream before another
+        # reader can touch the socket. The owner guard closes the tiny window
+        # between canceling the old task and starting the replacement.
+        self._busy_transition_owner = current_task
+        try:
+            await self._interrupt_active_turn()
+            if self.busy_mode == "steer":
+                await self._run_turn(text)
+        finally:
+            if self._busy_transition_owner is current_task:
+                self._busy_transition_owner = None
+
     async def action_show_help(self) -> None:
         self._append_block(
             "Bindings: enter = send, shift+enter / alt+enter = newline, "
-            "ctrl+r = voice turn, ctrl+c = interrupt, f1 = help, ctrl+q = quit."
+            "ctrl+r = voice turn, ctrl+c = interrupt, f1 = help, ctrl+q = quit. "
+            f"busy-mode = {self.busy_mode} (queue / steer / interrupt); "
+            "use /busy to change it."
         )
 
     # --- the turn loop --------------------------------------------------------
@@ -472,6 +520,9 @@ class HermesStreamingApp(App):
             return
         current_task = asyncio.current_task()
         self._active_turn_task = current_task
+        self._turn_in_flight = True
+        if self._busy_transition_owner is current_task:
+            self._busy_transition_owner = None
         try:
             next_text: Optional[str] = text
             next_stt_source = stt_source
@@ -483,6 +534,7 @@ class HermesStreamingApp(App):
                 next_stt_source = "local"
                 self._append_block(f"dequeued: {self._queue_preview(next_text)}")
         finally:
+            self._turn_in_flight = False
             if self._active_turn_task is current_task:
                 self._active_turn_task = None
 
@@ -500,7 +552,6 @@ class HermesStreamingApp(App):
                 return
             self._needs_reconnect = False
 
-        self._turn_in_flight = True
         index = self.session.turn_index
         self._append_block(f"you> {text}")
         self._append("hermes: ")
@@ -528,7 +579,6 @@ class HermesStreamingApp(App):
             # Always tear the stream down; leaving it open leaked a
             # sounddevice stream per failed turn.
             self.player.close()
-            self._turn_in_flight = False
 
     async def _consume_turn(self, events: AsyncIterator[dict[str, Any]], index: int) -> None:
         audio = bytearray()

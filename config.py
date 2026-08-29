@@ -15,6 +15,7 @@ from typing import Any, Optional
 DEFAULT_URL = "ws://100.90.186.57:8792/voice-session"
 DEFAULT_CHECKOUT = Path.home() / ".hermes" / "hermes-agent"
 DEFAULT_PROFILE_ENV = Path.home() / ".hermes" / "profiles" / "amanda" / ".env"
+BUSY_MODES = ("queue", "steer", "interrupt")
 
 
 def _env_float(name: str, default: float) -> float:
@@ -29,6 +30,11 @@ def _env_int(name: str, default: int) -> int:
         return int(os.getenv(name, str(default)))
     except (TypeError, ValueError):
         return default
+
+
+def _env_choice(name: str, choices: tuple[str, ...], default: str) -> str:
+    value = os.getenv(name, default).strip().lower()
+    return value if value in choices else default
 
 
 def _resolve_token(explicit: Optional[str], env_path: Path) -> str:
@@ -94,6 +100,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--mic-silence-duration", type=float, default=_env_float("VOICE_SESSION_MIC_SILENCE_DURATION", 3.0))
     parser.add_argument("--mic-silence-threshold", type=int, default=_env_int("VOICE_SESSION_MIC_SILENCE_THRESHOLD", 200))
     parser.add_argument("--stt-model", default=os.getenv("VOICE_SESSION_STT_MODEL") or None)
+    parser.add_argument(
+        "--busy-mode",
+        choices=BUSY_MODES,
+        default=_env_choice("VOICE_SESSION_BUSY_MODE", BUSY_MODES, "queue"),
+        help="what an ordinary message does while a turn is active",
+    )
     parser.add_argument(
         "--turn-timeout",
         type=float,
