@@ -71,6 +71,7 @@ Do not put a real token in this file or in the README.
 
 - Type a message in the multiline composer and press `Enter` to send it.
 - Press `Shift+Enter` or `Alt+Enter` to insert a newline without submitting.
+- Type `/` at an empty composer to open the visual slash-command palette; filter, use the arrow keys, and press `Enter` to prepare a command.
 - Press `Tab` after `/` to complete a slash command.
 - While a turn is active, ordinary prompts follow `--busy-mode` (`queue` by default; `steer` or `interrupt` are alternatives).
 - Use `/queue` to inspect or edit queued prompts.

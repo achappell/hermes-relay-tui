@@ -78,6 +78,7 @@ The endpoint must be reachable from the machine running the TUI, and the server 
 | --- | --- |
 | `Enter` | Send the composer contents |
 | `Shift+Enter` / `Alt+Enter` | Insert a newline |
+| `/` at an empty composer | Open the visual slash-command palette |
 | `Tab` | Complete a slash command |
 | `Ctrl+R` | Capture and send a microphone turn |
 | `Ctrl+C` | Interrupt the active turn; otherwise clear the draft, queue, or quit |
@@ -89,7 +90,11 @@ the configured `--busy-mode`: `queue` preserves them for later, `steer`
 replaces the active response, and `interrupt` stops the active response without
 sending the new message.
 
-Slash commands are routed before ordinary prompts. The initial local commands
+Slash commands are routed before ordinary prompts. Typing `/` in an empty
+composer opens a searchable command palette; filter by name or description,
+use the arrow keys to choose a command, then press `Enter` to return it to the
+composer. `Escape` closes the palette and leaves the slash draft in place. The
+initial local commands
 are `/help`, `/clear`, `/status`, `/queue`, `/busy`, `/voice`, and `/quit`;
 `/queue`
 also supports `list`, `edit <number> <replacement>`, `drop <number>`, and

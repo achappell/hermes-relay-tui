@@ -104,8 +104,9 @@ The streaming client already provides:
 - connection, timeout, and turn-error reporting.
 
 The current UI has a multiline composer, one accumulated transcript widget, a
-FIFO busy-turn queue, local slash-command routing, and a `Ctrl+R` voice path.
-Session administration commands still require a gateway-dispatch seam.
+FIFO busy-turn queue, local slash-command routing, a visual slash-command
+palette, and a `Ctrl+R` voice path. Session administration commands still
+require a gateway-dispatch seam.
 
 ## P0 — basic Hermes TUI parity
 

@@ -20,14 +20,23 @@ from typing import Any, AsyncIterator, Awaitable, Callable, Optional, Protocol
 
 from textual import events
 from textual.app import App, ComposeResult
-from textual.containers import VerticalScroll
+from textual.containers import Container, VerticalScroll
 from textual.message import Message
-from textual.widgets import Footer, Header, Static, TextArea
+from textual.screen import ModalScreen
+from textual.widgets import Footer, Header, Input, OptionList, Static, TextArea
+from textual.widgets.option_list import Option
 
 import config
 from audio import PCMPlayer, audio_path, write_wav
 from client import send_hello, send_turn
-from commands import CommandInvocation, complete_slash_command, help_text, parse_slash_command
+from commands import (
+    COMMAND_REGISTRY,
+    Command,
+    CommandInvocation,
+    complete_slash_command,
+    help_text,
+    parse_slash_command,
+)
 from mic import load_microphone_class
 
 
@@ -53,7 +62,19 @@ class Composer(TextArea):
             super().__init__()
             self.composer = composer
 
+    class CommandPaletteRequested(Message):
+        """Open the command palette when a slash starts a draft."""
+
+        def __init__(self, composer: "Composer") -> None:
+            super().__init__()
+            self.composer = composer
+
     async def _on_key(self, event: events.Key) -> None:
+        if event.character == "/" and not self.text:
+            event.stop()
+            event.prevent_default()
+            self.post_message(self.CommandPaletteRequested(self))
+            return
         if event.key == "ctrl+c":
             event.stop()
             event.prevent_default()
@@ -75,6 +96,131 @@ class Composer(TextArea):
             self.insert("\n")
             return
         await super()._on_key(event)
+
+
+class CommandPalette(ModalScreen[Optional[Command]]):
+    """Claude-style searchable command chooser for the local registry."""
+
+    CSS = """
+    CommandPalette {
+        align: center middle;
+        background: transparent;
+    }
+
+    #command-palette {
+        width: 72;
+        height: auto;
+        max-height: 80%;
+        border: round $accent;
+        background: $surface;
+        padding: 1 2;
+    }
+
+    #command-filter {
+        margin: 1 0;
+    }
+
+    #command-options {
+        height: auto;
+        max-height: 16;
+        min-height: 3;
+    }
+
+    #command-details {
+        height: 2;
+        margin-top: 1;
+        color: $text-muted;
+    }
+    """
+
+    BINDINGS = [("escape", "close_palette", "Close")]
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._commands: list[Command] = []
+
+    def compose(self) -> ComposeResult:
+        with Container(id="command-palette"):
+            yield Static("Commands", id="command-title")
+            yield Input(placeholder="Filter commands…", id="command-filter")
+            yield OptionList(id="command-options")
+            yield Static("↑↓ navigate · Enter select · Esc close", id="command-details")
+
+    def on_mount(self) -> None:
+        self._refresh_options("")
+        self.set_focus(self.query_one("#command-filter", Input))
+
+    def _refresh_options(self, filter_text: str) -> None:
+        needle = filter_text.strip().lower()
+        self._commands = [
+            command
+            for command in COMMAND_REGISTRY
+            if not needle
+            or needle in command.name.lower()
+            or needle in command.description.lower()
+        ]
+        options = [
+            Option(self._option_label(command), id=command.name)
+            for command in self._commands
+        ]
+        option_list = self.query_one("#command-options", OptionList)
+        option_list.set_options(options)
+        if options:
+            option_list.highlighted = 0
+            self._update_details(0)
+        else:
+            self.query_one("#command-details", Static).update(
+                "No matching commands. Press Esc to close."
+            )
+
+    @staticmethod
+    def _option_label(command: Command) -> str:
+        args = f" {command.args_hint}" if command.args_hint else ""
+        return f"/{command.name}{args} — {command.description}"
+
+    def _update_details(self, index: int) -> None:
+        if not 0 <= index < len(self._commands):
+            return
+        command = self._commands[index]
+        args = f" {command.args_hint}" if command.args_hint else ""
+        self.query_one("#command-details", Static).update(
+            f"/{command.name}{args}: {command.description}"
+        )
+
+    def on_input_changed(self, event: Input.Changed) -> None:
+        if event.input.id == "command-filter":
+            self._refresh_options(event.value)
+
+    def on_key(self, event: events.Key) -> None:
+        if event.key not in {"up", "down"}:
+            return
+        command_filter = self.query_one("#command-filter", Input)
+        if self.focused is not command_filter:
+            return
+        option_list = self.query_one("#command-options", OptionList)
+        if not option_list.option_count:
+            return
+        event.stop()
+        event.prevent_default()
+        self.set_focus(option_list)
+        option_list.highlighted = (
+            0 if event.key == "down" else option_list.option_count - 1
+        )
+
+    def on_option_list_option_highlighted(self, event: OptionList.OptionHighlighted) -> None:
+        self._update_details(event.option_index)
+
+    def on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:
+        if 0 <= event.option_index < len(self._commands):
+            self.dismiss(self._commands[event.option_index])
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        option_list = self.query_one("#command-options", OptionList)
+        if option_list.highlighted is not None and option_list.highlighted < len(self._commands):
+            self.dismiss(self._commands[option_list.highlighted])
+
+    def action_close_palette(self) -> None:
+        self.dismiss(None)
 
 
 class SessionProtocol(Protocol):
@@ -268,6 +414,20 @@ class HermesStreamingApp(App):
             event.composer.move_cursor((0, len(event.composer.text)))
             return
         self._append_block("commands: " + ", ".join(candidates))
+
+    def on_composer_command_palette_requested(
+        self, event: Composer.CommandPaletteRequested
+    ) -> None:
+        event.composer.load_text("/")
+        self.push_screen(CommandPalette(), self._command_palette_closed)
+
+    def _command_palette_closed(self, command: Optional[Command]) -> None:
+        composer = self.query_one("#composer", Composer)
+        self.set_focus(composer)
+        if command is None:
+            return
+        composer.load_text(f"/{command.name} ")
+        composer.move_cursor((0, len(composer.text)))
 
     async def on_composer_interrupt_requested(self, event: Composer.InterruptRequested) -> None:
         self.run_worker(
