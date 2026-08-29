@@ -201,6 +201,22 @@ async def test_text_final_matching_the_streamed_preview_yields_nothing_new():
     assert events[0]["text"] == "already streamed▉"
 
 
+async def test_text_frame_after_streaming_yields_only_the_unseen_suffix():
+    events = await collect(
+        [
+            json.dumps({"type": "text_delta", "text": "Yes. Every word"}),
+            json.dumps({"type": "text", "text": "Yes. Every word."}),
+            json.dumps({"type": "turn_end"}),
+        ]
+    )
+
+    assert events == [
+        {"type": "text_delta", "text": "Yes. Every word"},
+        {"type": "text_delta", "text": "."},
+        {"type": "turn_end", "turn_id": events[-1]["turn_id"]},
+    ]
+
+
 async def test_status_frames_are_yielded_and_empty_ones_suppressed():
     events = await collect(
         [
