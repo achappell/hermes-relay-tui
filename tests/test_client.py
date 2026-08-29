@@ -83,6 +83,42 @@ async def test_send_turn_yields_audio_chunks_between_start_and_end():
     assert events[1]["data"] == b"\x00\x01\x02\x03"
 
 
+async def test_send_turn_yields_audio_end_and_file_fallback_frames():
+    frames = [
+        json.dumps({"type": "audio_start", "sample_rate": 24000}),
+        b"pcm",
+        json.dumps({"type": "audio_end"}),
+        json.dumps(
+            {
+                "type": "audio_file_start",
+                "filename": "reply.wav",
+                "mime_type": "audio/wav",
+            }
+        ),
+        b"RIFF...",
+        json.dumps({"type": "audio_file_end"}),
+        json.dumps({"type": "turn_end"}),
+    ]
+
+    events = await collect(frames)
+
+    assert [event["type"] for event in events] == [
+        "audio_start",
+        "audio_chunk",
+        "audio_end",
+        "audio_file_start",
+        "audio_file_chunk",
+        "audio_file_end",
+        "turn_end",
+    ]
+    assert events[3] == {
+        "type": "audio_file_start",
+        "filename": "reply.wav",
+        "mime_type": "audio/wav",
+    }
+    assert events[4]["data"] == b"RIFF..."
+
+
 async def test_send_turn_restarts_the_line_when_the_preview_rewinds():
     # A preview that isn't an extension of what was already shown can't be
     # diffed, so the whole thing is re-emitted on a fresh line.

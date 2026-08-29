@@ -7,6 +7,8 @@ render them however it likes.
 
 from __future__ import annotations
 
+import base64
+import binascii
 import json
 import uuid
 from typing import Any, AsyncIterator, Optional
@@ -14,6 +16,23 @@ from typing import Any, AsyncIterator, Optional
 
 class ProtocolError(RuntimeError):
     """Raised when the server sends something the client can't handle."""
+
+
+def _decode_audio_data(value: Any) -> Optional[bytes]:
+    """Decode an optional inline file payload without guessing at text data."""
+    if isinstance(value, (bytes, bytearray)):
+        return bytes(value)
+    if isinstance(value, list):
+        try:
+            return bytes(value)
+        except ValueError:
+            return None
+    if isinstance(value, str):
+        try:
+            return base64.b64decode(value, validate=True)
+        except (binascii.Error, ValueError):
+            return None
+    return None
 
 
 async def _receive_json(ws: Any) -> dict[str, Any]:
@@ -77,11 +96,13 @@ async def send_turn(
 
     rendered_preview = ""
     streamed_text = False
+    audio_file_active = False
 
     while True:
         frame = await ws.recv()
         if isinstance(frame, bytes):
-            yield {"type": "audio_chunk", "data": frame}
+            kind = "audio_file_chunk" if audio_file_active else "audio_chunk"
+            yield {"type": kind, "data": frame}
             continue
 
         payload = json.loads(frame)
@@ -194,10 +215,33 @@ async def send_turn(
         elif kind == "audio_start":
             yield {
                 "type": "audio_start",
-                "sample_rate": int(payload.get("sample_rate", 24000)),
-                "channels": int(payload.get("channels", 1)),
-                "sample_width": int(payload.get("sample_width", 2)),
+                "sample_rate": int(event_payload.get("sample_rate", 24000)),
+                "channels": int(event_payload.get("channels", 1)),
+                "sample_width": int(event_payload.get("sample_width", 2)),
             }
+        elif kind == "audio_end":
+            yield {"type": "audio_end"}
+        elif kind == "audio_file_start":
+            audio_file_active = True
+            event = {"type": "audio_file_start"}
+            for field in (
+                "filename",
+                "mime_type",
+                "format",
+                "sample_rate",
+                "channels",
+                "sample_width",
+            ):
+                if field in event_payload:
+                    event[field] = event_payload[field]
+            yield event
+        elif kind == "audio_file_end":
+            audio_file_active = False
+            event = {"type": "audio_file_end"}
+            data = _decode_audio_data(event_payload.get("data"))
+            if data is not None:
+                event["data"] = data
+            yield event
         elif kind == "error":
             yield {
                 "type": "error",
