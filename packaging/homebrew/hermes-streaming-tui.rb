@@ -2,10 +2,11 @@ class HermesStreamingTui < Formula
   desc "Textual terminal UI for authenticated Hermes voice sessions"
   homepage "https://github.com/achappell/hermes-streaming-tui"
 
-  # This is the near-term Jensen trial formula. It tracks the private main
-  # branch until a tap and tagged release provide a stable, checksummed source.
-  url "https://github.com/achappell/hermes-streaming-tui.git", using: :git, branch: "main"
-  version "0.1.0-dev"
+  # The private source repository is fetched through Git so Homebrew can use
+  # the user's configured GitHub credentials without putting a token in this
+  # formula. Pin this tag again for each release.
+  url "https://github.com/achappell/hermes-streaming-tui.git", using: :git, tag: "v0.1.0"
+  version "0.1.0"
   head "https://github.com/achappell/hermes-streaming-tui.git", branch: "main"
 
   depends_on "portaudio"

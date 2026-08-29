@@ -1,31 +1,23 @@
 # Jensen Homebrew trial
 
 This is the near-term install path for trying the Hermes Streaming TUI on a
-clean Mac. The formula is currently a draft in this repository rather than a
-published Homebrew tap: the GitHub repository is private, and a stable formula
-still needs a tagged release and checksum.
+clean Mac. The private tap is `achappell/homebrew-hermes-streaming`; Jensen
+needs GitHub access to both the tap and the private source repository.
 
 ## Install from the repository
 
-The trial machine needs GitHub access to the private repository and a working
-Homebrew installation:
+The trial machine needs a working Homebrew installation and GitHub access:
 
 ```bash
-git clone git@github.com:achappell/hermes-streaming-tui.git
-cd hermes-streaming-tui
-brew tap-new --no-git achappell/hermes-streaming
-tap_dir="$(brew --repository)/Library/Taps/achappell/homebrew-hermes-streaming"
-mkdir -p "$tap_dir/Formula"
-cp packaging/homebrew/hermes-streaming-tui.rb "$tap_dir/Formula/"
-brew install --build-from-source --HEAD achappell/hermes-streaming/hermes-streaming-tui
+brew tap achappell/hermes-streaming
+brew install achappell/hermes-streaming/hermes-streaming-tui
 hermes-streaming-tui --help
 ```
 
 The formula installs Python 3.14, PortAudio, the Python dependencies, and the
 `hermes-streaming-tui` command into an isolated Homebrew-managed environment.
-Homebrew requires formulas to live in a tap, which is why the commands stage
-this draft in a local tap first.
-The Faster-Whisper model may download on the first microphone turn.
+It is pinned to source tag `v0.1.0`; the Faster-Whisper model may download on
+the first microphone turn.
 
 ## First typed turn
 
@@ -71,6 +63,6 @@ Privacy & Security → Microphone**, then restart that app.
 
 ## What remains before the polished install
 
-1. Create a dedicated private Homebrew tap repository.
-2. Tag a release and pin the formula to its immutable source checksum.
-3. Add a short upgrade/uninstall path and verify the formula on Jensen's Mac.
+1. Convert the private Git source formula to a checksummed release archive if
+   the tap is ever made public.
+2. Add a short upgrade/uninstall path and verify the formula on Jensen's Mac.
