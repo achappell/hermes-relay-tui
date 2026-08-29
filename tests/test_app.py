@@ -3,9 +3,9 @@ import types
 import wave
 
 import pytest
-from textual.widgets import Static, TextArea
+from textual.widgets import Input, OptionList, Static, TextArea
 
-from app import Composer, HermesSession, HermesStreamingApp
+from app import CommandPalette, Composer, HermesSession, HermesStreamingApp
 from commands import parse_slash_command
 
 DEFAULT_EVENTS = [
@@ -198,6 +198,55 @@ async def test_tab_completes_a_unique_slash_command_and_keeps_draft_local():
 
         assert composer.text == "/status "
         assert session.sent_turns == []
+
+
+async def test_slash_opens_command_palette_and_enter_hands_command_to_composer():
+    session = FakeSession()
+    app = HermesStreamingApp(args=make_args(), session_factory=lambda: session)
+    async with app.run_test() as pilot:
+        composer = app.query_one("#composer", Composer)
+        await pilot.press("/")
+        await pilot.pause()
+
+        assert isinstance(app.screen, CommandPalette)
+        command_filter = app.screen.query_one("#command-filter", Input)
+        assert app.focused is command_filter
+
+        await pilot.press("b", "u")
+        await pilot.pause()
+
+        options = app.screen.query_one("#command-options", OptionList)
+        assert options.option_count == 1
+        assert "/busy" in str(options.get_option_at_index(0).prompt)
+
+        await pilot.press("down")
+        await pilot.pause()
+        assert app.focused is options
+        assert options.highlighted == 0
+
+        await pilot.press("enter")
+        await pilot.pause()
+
+        assert composer.text == "/busy "
+        assert app.focused is composer
+        assert session.sent_turns == []
+
+
+async def test_escape_closes_command_palette_and_preserves_slash_draft():
+    session = FakeSession()
+    app = HermesStreamingApp(args=make_args(), session_factory=lambda: session)
+    async with app.run_test() as pilot:
+        composer = app.query_one("#composer", Composer)
+        await pilot.press("/")
+        await pilot.pause()
+        assert isinstance(app.screen, CommandPalette)
+
+        await pilot.press("escape")
+        await pilot.pause()
+
+        assert not isinstance(app.screen, CommandPalette)
+        assert composer.text == "/"
+        assert app.focused is composer
 
 
 # --- the bug this suite previously could not see ----------------------------
