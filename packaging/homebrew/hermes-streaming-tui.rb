@@ -6,9 +6,7 @@ class HermesStreamingTui < Formula
   desc "Textual terminal UI for authenticated Hermes voice sessions"
   homepage "https://github.com/achappell/hermes-streaming-tui"
 
-  # The private source repository is fetched through Git so Homebrew can use
-  # the user's configured GitHub credentials without putting a token in this
-  # formula. Pin this tag again for each release.
+  # Pin the public source tag and revision for reproducible installs.
   url "https://github.com/achappell/hermes-streaming-tui.git", using: :git,
       tag: "v0.1.0", revision: "9796b63452e8e77b246ffa9119936f36c5a220a9"
   head "https://github.com/achappell/hermes-streaming-tui.git", branch: "main"

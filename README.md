@@ -35,10 +35,9 @@ venv/bin/pip install -r requirements-dev.txt
 
 That installs the local STT dependencies as well. The first transcription may download the selected Faster-Whisper model.
 
-### Homebrew trial install
+### Homebrew install
 
-The private Homebrew tap is ready for GitHub users with access to the source
-repository:
+The public Homebrew tap is ready:
 
 ```bash
 brew tap achappell/hermes-streaming
@@ -49,6 +48,18 @@ hermes-streaming-tui --help
 See [`docs/packaging/jensen-trial.md`](docs/packaging/jensen-trial.md) for the
 token, Hermes checkout, microphone, and smoke-test steps.
 
+### Python package
+
+Each tagged release publishes a wheel and source distribution to GitHub
+Releases. Once PyPI publishing is enabled, the same package can also be
+installed with:
+
+```bash
+python3.14 -m pip install hermes-streaming-tui
+pipx install hermes-streaming-tui
+uv tool install hermes-streaming-tui
+```
+
 ## Project automation
 
 - GitHub Actions runs the test suite and verifies the installed console command
@@ -58,9 +69,9 @@ token, Hermes checkout, microphone, and smoke-test steps.
 - Release-please watches conventional commits and opens the next version PR;
   merging it updates `pyproject.toml`, the manifest, and the changelog.
 
-The private Homebrew tap has its own formula CI and GitHub Actions Dependabot
-updates. Its formula is currently pinned manually for each source release;
-automating that cross-repository handoff is a later packaging slice.
+The public Homebrew tap has its own formula CI and GitHub Actions Dependabot
+updates. Its formula is pinned to a source tag and revision; releases can open
+a reviewable cross-repository formula update PR when tap automation is enabled.
 
 If the repository already has `venv/`, install or refresh the dependencies with:
 

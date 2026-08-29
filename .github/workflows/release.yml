@@ -1,0 +1,112 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    name: Build release packages
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Install PortAudio runtime
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes portaudio19-dev
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.14"
+
+      - name: Build wheel and source distribution
+        run: |
+          python -m pip install --upgrade build
+          python -m build --sdist --wheel
+
+      - name: Verify the wheel
+        run: |
+          python -m venv /tmp/hermes-release-smoke
+          /tmp/hermes-release-smoke/bin/pip install dist/*.whl
+          /tmp/hermes-release-smoke/bin/hermes-streaming-tui --help
+
+      - name: Ensure the GitHub release exists
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 || \
+            gh release create "$GITHUB_REF_NAME" --verify-tag --title "$GITHUB_REF_NAME" --generate-notes
+
+      - name: Upload packages to GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release upload "$GITHUB_REF_NAME" dist/*.whl dist/*.tar.gz --clobber
+
+      # Configure a PyPI Trusted Publisher first, then set the repository
+      # variable PYPI_PUBLISHING=enabled. Keeping this opt-in makes a tagged
+      # GitHub release safe before the PyPI project exists.
+      - name: Publish to PyPI
+        if: vars.PYPI_PUBLISHING == 'enabled'
+        uses: pypa/gh-action-pypi-publish@76f52bc884231f62b9a034ebfe128415bbaabdfc # v1.12.4
+        with:
+          packages-dir: dist/
+          skip-existing: true
+
+  update-homebrew:
+    name: Open Homebrew formula update PR
+    if: vars.HOMEBREW_TAP_AUTOMATION == 'enabled'
+    needs: package
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: achappell/homebrew-hermes-streaming
+          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          path: tap
+
+      - name: Render the pinned formula
+        env:
+          VERSION: ${{ github.ref_name }}
+          REVISION: ${{ github.sha }}
+        run: |
+          VERSION="${VERSION#v}"
+          python scripts/generate_homebrew_formula.py \
+            --version "$VERSION" \
+            --revision "$REVISION" \
+            --output tap/Formula/hermes-streaming-tui.rb
+
+      - name: Open a formula update PR
+        working-directory: tap
+        env:
+          GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          VERSION: ${{ github.ref_name }}
+        run: |
+          VERSION="${VERSION#v}"
+          BRANCH="automation/hermes-streaming-tui-${VERSION}-${GITHUB_RUN_ID}"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git switch -c "$BRANCH"
+          git add Formula/hermes-streaming-tui.rb
+          git diff --cached --quiet && exit 0
+          git commit -m "chore: update hermes-streaming-tui to ${VERSION}"
+          git push --set-upstream origin "$BRANCH"
+          gh pr create \
+            --repo achappell/homebrew-hermes-streaming \
+            --base main \
+            --head "$BRANCH" \
+            --title "chore: update hermes-streaming-tui to ${VERSION}" \
+            --body "Updates the formula to source release v${VERSION}. CI and code-owner review are required before merging."
