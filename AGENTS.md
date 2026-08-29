@@ -105,9 +105,10 @@ Relevant environment variables include `HERMES_VOICE_SESSION_URL`, `VOICE_SESSIO
 ## Integration boundaries
 
 - `client.send_hello()` sends the protocol v1 `hello` payload and requires a `hello_ack` response.
-- `client.send_turn()` sends a transcript turn and yields structured events for text, status, audio, errors, and turn completion.
+- `client.send_turn()` sends a transcript turn and yields normalized events for text, activity, audio, errors, and turn completion; unknown server events become explicit diagnostics.
 - Binary WebSocket frames are raw PCM audio. `audio_start` supplies sample rate, channel count, and sample width.
 - `app.py` owns presentation and turn state. It should not grow protocol parsing logic that belongs in `client.py`.
+- Thinking/status/tool activity is rendered as a replaceable transcript line; the assistant response gets its own line once text begins, so repeated activity cannot pollute the final answer.
 - `mic.py` loads `LocalMicrophone` from `<checkout>/scripts/voice-session-client.py`; that file and the project's voice dependencies must exist for `Ctrl+R` to work.
 - `audio.py` supports signed 16-bit PCM for live playback. If playback cannot start, the app reports buffering and can still save the collected PCM as WAV.
 - Connection setup uses bounded exponential-backoff retries. Prompts that cannot be sent remain FIFO-queued; a turn that may have reached Hermes is never replayed automatically after a socket failure.
