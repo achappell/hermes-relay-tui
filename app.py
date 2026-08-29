@@ -691,7 +691,6 @@ class HermesStreamingApp(App):
             self._append_block("[a turn is already in flight]")
             return
         self._set_voice_state(VOICE_LISTENING)
-        self._append_block("listening…")
         try:
             transcript_text = await asyncio.to_thread(self.session.capture_voice)
         except Exception as exc:
@@ -954,10 +953,8 @@ class HermesStreamingApp(App):
                 played_live = played_live or self.player.active
                 if self.player.active:
                     self._set_voice_state(VOICE_SPEAKING)
-                    set_activity("audio streaming")
                 elif self.player.failure:
                     self._set_voice_state(VOICE_BUFFERING)
-                    set_activity(f"audio buffering: {self.player.failure}")
                 else:
                     self._set_voice_state(VOICE_BUFFERING)
             elif kind == "audio_chunk":
@@ -980,7 +977,6 @@ class HermesStreamingApp(App):
                 else:
                     audio_file_format = None
                 self._set_voice_state(VOICE_BUFFERING)
-                set_activity("audio buffering…")
             elif kind == "audio_file_chunk":
                 audio_file.extend(event["data"])
             elif kind == "audio_file_end":
@@ -1003,7 +999,6 @@ class HermesStreamingApp(App):
                     self.player.close()
                 elif self.player.failure:
                     self._set_voice_state(VOICE_BUFFERING)
-                    set_activity(f"audio buffering: {self.player.failure}")
             elif kind == "error":
                 self._set_voice_state(VOICE_ERROR)
                 self._append_block(f"[error] {event['error']}")
