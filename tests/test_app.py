@@ -925,6 +925,36 @@ async def test_audio_end_closes_playback_before_turn_end():
         assert player.close_states == [True, False]
 
 
+async def test_audio_status_gets_its_own_line_before_assistant_response():
+    class ActivePlayer:
+        active = False
+        failure = None
+
+        def start(self, audio_format):
+            self.active = True
+
+        def close(self):
+            self.active = False
+
+    session = FakeSession(
+        events=[
+            {"type": "thinking_delta", "text": "thinking"},
+            {"type": "audio_start", "sample_rate": 24000, "channels": 1, "sample_width": 2},
+            {"type": "text_delta", "text": "Good. One of me is plenty."},
+            {"type": "turn_end", "turn_id": "audio-status"},
+        ]
+    )
+    app = HermesStreamingApp(args=make_args(no_play=False), session_factory=lambda: session)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.player = ActivePlayer()
+        await app._run_turn("hi")
+
+        transcript = transcript_of(app)
+        assert "[audio streaming]\nhermes: Good. One of me is plenty." in transcript
+        assert "[audio streaming]hermes:" not in transcript
+
+
 async def test_audio_file_fallback_is_recovered_as_wav(tmp_path):
     source = BytesIO()
     with wave.open(source, "wb") as handle:

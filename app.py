@@ -903,9 +903,9 @@ class HermesStreamingApp(App):
                 self.player.start(audio_format)
                 played_live = played_live or self.player.active
                 if self.player.active:
-                    self._append(" [audio streaming]")
+                    set_activity("audio streaming")
                 elif self.player.failure:
-                    self._append(f" [audio buffering: {self.player.failure}]")
+                    set_activity(f"audio buffering: {self.player.failure}")
             elif kind == "audio_chunk":
                 audio.extend(event["data"])
                 if self.player.active:
