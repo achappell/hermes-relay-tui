@@ -293,6 +293,24 @@ async def test_modified_enter_inserts_newlines_without_submitting():
         assert session.sent_turns == []
 
 
+async def test_ctrl_j_inserts_newline_without_submitting():
+    # Ghostty (and other terminals without the Kitty keyboard protocol) send
+    # Shift+Enter as a bare linefeed, which Textual reports as "ctrl+j"
+    # rather than a distinguishable "shift+enter".
+    session = FakeSession()
+    app = HermesStreamingApp(args=make_args(), session_factory=lambda: session)
+    async with app.run_test() as pilot:
+        composer = app.query_one("#composer", Composer)
+        composer.text = "first line"
+        composer.move_cursor((0, len("first line")))
+
+        await pilot.press("ctrl+j")
+        await pilot.pause()
+
+        assert composer.text == "first line\n"
+        assert session.sent_turns == []
+
+
 async def test_slash_help_is_handled_without_sending_a_turn():
     session = FakeSession()
     app = HermesStreamingApp(args=make_args(), session_factory=lambda: session)
