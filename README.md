@@ -161,6 +161,10 @@ the configured `--busy-mode`: `queue` preserves them for later, `steer`
 replaces the active response, and `interrupt` stops the active response without
 sending the new message.
 
+When prompts are waiting, a compact queue shelf above the composer shows the
+pending count and previews; it disappears as the queue drains. Use `/queue` to
+edit or remove pending prompts.
+
 Slash commands are routed before ordinary prompts. Typing `/` and a command
 name works like any other text — a compact, non-blocking suggestion line
 above the composer lists matching commands and their args/description as you

@@ -316,6 +316,13 @@ class HermesStreamingApp(App):
         height: 5;
         max-height: 10;
     }
+
+    #queue-shelf {
+        height: auto;
+        max-height: 6;
+        padding: 0 1;
+        color: $text-muted;
+    }
     """
 
     BINDINGS = [
@@ -384,6 +391,7 @@ class HermesStreamingApp(App):
             # markup=False so a literal "[error] ..." isn't eaten as Rich markup.
             yield Static("", id="transcript", markup=False)
         yield Static("● ready", id="voice-status")
+        yield Static("", id="queue-shelf", markup=False)
         yield Static("", id="command-suggestions", markup=False)
         yield Composer(placeholder="you>", id="composer")
         yield Footer()
@@ -421,10 +429,27 @@ class HermesStreamingApp(App):
         self.voice_state = state
         self.query_one("#voice-status", Static).update(f"● {state}")
 
+    def _refresh_queue_shelf(self) -> None:
+        try:
+            widget = self.query_one("#queue-shelf", Static)
+        except NoMatches:
+            return
+        if not self._queued_prompts:
+            widget.update("")
+            widget.display = False
+            return
+        entries = [
+            f"{index}. {self._queue_preview(text)}"
+            for index, text in enumerate(self._queued_prompts, start=1)
+        ]
+        widget.update(f"Queue ({len(self._queued_prompts)} queued):\n" + "\n".join(entries))
+        widget.display = True
+
     # --- lifecycle ------------------------------------------------------------
 
     async def on_mount(self) -> None:
         self.session = self._session_factory() if self._session_factory else HermesSession(self.args)
+        self._refresh_queue_shelf()
         self.query_one("#command-suggestions", Static).display = False
         self.set_focus(self.query_one("#composer", Composer))
         self._set_voice_state(VOICE_CONNECTING)
@@ -720,6 +745,7 @@ class HermesStreamingApp(App):
         self._last_prompt_status = PROMPT_NOT_SENT
         self._queued_prompts.append(text)
         self._append_block(f"queued[{len(self._queued_prompts)}]: {self._queue_preview(text)}")
+        self._refresh_queue_shelf()
 
     def _queue_listing(self) -> str:
         if not self._queued_prompts:
@@ -751,6 +777,7 @@ class HermesStreamingApp(App):
         if action == "clear":
             count = len(self._queued_prompts)
             self._queued_prompts.clear()
+            self._refresh_queue_shelf()
             self._append_block(f"cleared {count} queued prompt(s).")
             return
         if action in {"drop", "delete"}:
@@ -760,6 +787,7 @@ class HermesStreamingApp(App):
             index = self._queue_index(parts[1])
             if index is not None:
                 removed = self._queued_prompts.pop(index)
+                self._refresh_queue_shelf()
                 self._append_block(f"dropped: {self._queue_preview(removed)}")
             return
         if action == "edit":
@@ -769,12 +797,14 @@ class HermesStreamingApp(App):
             index = self._queue_index(parts[1])
             if index is not None:
                 self._queued_prompts[index] = parts[2]
+                self._refresh_queue_shelf()
                 self._append_block(f"edited[{index + 1}]: {self._queue_preview(parts[2])}")
             return
 
         self._enqueue_prompt(args.strip())
         if not self._turn_in_flight:
             next_text = self._queued_prompts.pop(0)
+            self._refresh_queue_shelf()
             self._append_block(f"starting queued: {self._queue_preview(next_text)}")
             await self._run_turn(next_text)
 
@@ -897,6 +927,7 @@ class HermesStreamingApp(App):
         for index in range(len(self._queued_prompts) - 1, -1, -1):
             if self._queued_prompts[index] == prompt:
                 del self._queued_prompts[index]
+                self._refresh_queue_shelf()
                 return True
         return False
 
@@ -1169,6 +1200,7 @@ class HermesStreamingApp(App):
         if self._queued_prompts:
             count = len(self._queued_prompts)
             self._queued_prompts.clear()
+            self._refresh_queue_shelf()
             self._append_block(f"cleared {count} queued prompt(s).")
             return
         self.exit()
@@ -1292,6 +1324,7 @@ class HermesStreamingApp(App):
             if self._queued_prompts:
                 self._enqueue_prompt(text)
                 next_text = self._queued_prompts.pop(0)
+                self._refresh_queue_shelf()
                 self._append_block(f"starting queued: {self._queue_preview(next_text)}")
                 await self._run_turn(next_text)
                 return
@@ -1344,6 +1377,7 @@ class HermesStreamingApp(App):
                 turn_was_sent = await self._run_single_turn(next_text, stt_source=next_stt_source)
                 if not turn_was_sent:
                     self._queued_prompts.insert(0, next_text)
+                    self._refresh_queue_shelf()
                     self._append_block(
                         f"queued until connection recovers: {self._queue_preview(next_text)}"
                     )
@@ -1351,6 +1385,7 @@ class HermesStreamingApp(App):
                 if not self._queued_prompts:
                     break
                 next_text = self._queued_prompts.pop(0)
+                self._refresh_queue_shelf()
                 next_stt_source = "local"
                 self._append_block(f"dequeued: {self._queue_preview(next_text)}")
         finally:
