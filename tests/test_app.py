@@ -125,6 +125,24 @@ async def test_app_mounts_with_transcript_and_input():
         assert voice_status_of(app) == "● ready"
 
 
+async def test_queue_shelf_shows_count_and_previews_pending_prompts():
+    app = HermesStreamingApp(args=make_args(), session_factory=lambda: FakeSession())
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        shelf = app.query_one("#queue-shelf", Static)
+        assert shelf.display is False
+
+        app._enqueue_prompt("first")
+        app._enqueue_prompt("second\nline")
+        await pilot.pause()
+
+        assert shelf.display is True
+        shelf_text = str(shelf.content)
+        assert "2 queued" in shelf_text
+        assert "1. 'first'" in shelf_text
+        assert "2. 'second ↵ line'" in shelf_text
+
+
 async def test_voice_status_surface_displays_lifecycle_states():
     app = HermesStreamingApp(args=make_args(), session_factory=lambda: FakeSession())
     states = (
@@ -203,6 +221,9 @@ async def test_prompt_is_kept_in_queue_when_recovery_is_exhausted():
         assert session.sent_turns == []
         assert app._queued_prompts == ["keep this prompt"]
         assert "prompt kept in queue" in transcript_of(app)
+        shelf = app.query_one("#queue-shelf", Static)
+        assert shelf.display is True
+        assert "1. 'keep this prompt'" in str(shelf.content)
 
 
 async def test_new_prompt_waits_behind_a_retained_prompt():
@@ -968,12 +989,15 @@ async def test_second_turn_is_queued_while_one_is_in_flight():
         assert session.sent_turns == [("one", "local")]
         assert app._queued_prompts == ["two"]
         assert "queued[1]: 'two'" in transcript_of(app)
+        shelf = app.query_one("#queue-shelf", Static)
+        assert "1 queued" in str(shelf.content)
 
         gate.set()
         await first
         assert not app._turn_in_flight
         assert app._queued_prompts == []
         assert session.sent_turns == [("one", "local"), ("two", "local")]
+        assert shelf.display is False
 
 
 async def test_composer_remains_submitable_while_a_turn_is_responding():
@@ -1249,7 +1273,10 @@ async def test_queue_command_lists_edits_and_drops_prompts():
     app = HermesStreamingApp(args=make_args(), session_factory=lambda: session)
     async with app.run_test() as pilot:
         app._queued_prompts = ["first", "second"]
+        app._refresh_queue_shelf()
         composer = app.query_one("#composer", Composer)
+        shelf = app.query_one("#queue-shelf", Static)
+        assert "2 queued" in str(shelf.content)
 
         composer.text = "/queue"
         await pilot.press("enter")
@@ -1259,12 +1286,95 @@ async def test_queue_command_lists_edits_and_drops_prompts():
         composer.text = "/queue edit 2 revised second"
         await pilot.press("enter")
         assert app._queued_prompts == ["first", "revised second"]
+        assert "revised second" in str(shelf.content)
 
         composer.text = "/queue drop 1"
         await pilot.press("enter")
         assert app._queued_prompts == ["revised second"]
+        assert "1 queued" in str(shelf.content)
+        assert "first" not in str(shelf.content)
         assert "dropped: 'first'" in transcript_of(app)
         assert session.sent_turns == []
+
+
+async def test_queue_clear_hides_the_queue_shelf():
+    app = HermesStreamingApp(args=make_args(), session_factory=lambda: FakeSession())
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app._enqueue_prompt("first")
+        app._enqueue_prompt("second")
+        shelf = app.query_one("#queue-shelf", Static)
+        assert shelf.display is True
+
+        composer = app.query_one("#composer", Composer)
+        composer.text = "/queue clear"
+        await pilot.press("enter")
+
+        assert app._queued_prompts == []
+        assert shelf.display is False
+        assert str(shelf.content) == ""
+
+
+async def test_ctrl_c_clears_queue_shelf_when_idle():
+    app = HermesStreamingApp(args=make_args(), session_factory=lambda: FakeSession())
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app._enqueue_prompt("queued prompt")
+        shelf = app.query_one("#queue-shelf", Static)
+
+        await app.action_interrupt()
+
+        assert app._queued_prompts == []
+        assert shelf.display is False
+
+
+async def test_queue_command_hides_shelf_after_starting_prompt_immediately():
+    app = HermesStreamingApp(args=make_args(), session_factory=lambda: FakeSession())
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        shelf = app.query_one("#queue-shelf", Static)
+
+        await app._handle_queue_command("direct prompt")
+
+        assert app._queued_prompts == []
+        assert shelf.display is False
+
+
+async def test_submitting_with_a_retained_queue_keeps_shelf_on_newer_prompt():
+    gate = asyncio.Event()
+    session = FakeSession(gate=gate)
+    app = HermesStreamingApp(args=make_args(), session_factory=lambda: session)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app._queued_prompts = ["pending"]
+        app._refresh_queue_shelf()
+        shelf = app.query_one("#queue-shelf", Static)
+
+        submit = asyncio.create_task(app._submit_text("new"))
+        await asyncio.sleep(0.05)
+
+        assert session.sent_turns == [("pending", "local")]
+        assert app._queued_prompts == ["new"]
+        assert "1 queued" in str(shelf.content)
+        assert "'new'" in str(shelf.content)
+        assert "'pending'" not in str(shelf.content)
+
+        gate.set()
+        await asyncio.wait_for(submit, 1)
+
+
+async def test_removing_last_queued_prompt_refreshes_shelf():
+    app = HermesStreamingApp(args=make_args(), session_factory=lambda: FakeSession())
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app._enqueue_prompt("unsent prompt")
+        shelf = app.query_one("#queue-shelf", Static)
+        assert shelf.display is True
+
+        assert app._remove_last_queued_prompt("unsent prompt") is True
+
+        assert app._queued_prompts == []
+        assert shelf.display is False
 
 
 async def test_voice_turn_is_refused_while_a_turn_is_in_flight():
@@ -1891,11 +2001,14 @@ async def test_undo_removes_only_an_unsent_prompt_from_the_local_queue():
     async with app.run_test() as pilot:
         await pilot.pause()
         await app._run_turn("unsent prompt")
+        shelf = app.query_one("#queue-shelf", Static)
+        assert shelf.display is True
         await app._handle_command(parse_slash_command("/undo"))
         await pilot.pause()
         transcript = transcript_of(app)
 
     assert app._queued_prompts == []
+    assert shelf.display is False
     assert "removed unsent prompt" in transcript
 
 
