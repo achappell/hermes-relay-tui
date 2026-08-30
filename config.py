@@ -107,6 +107,29 @@ def load_config_file(path: Optional[Path]) -> dict[str, Any]:
     return data
 
 
+def ensure_default_config_file(path: Path) -> bool:
+    """Create ``path`` from the bundled example config if it doesn't exist.
+
+    The example file is entirely comments — no active keys — so writing it
+    out changes nothing about how args resolve; it just gives a first-time
+    user a real, discoverable file to edit before their first ``/reload``
+    instead of a silent absence. A no-op when the file already exists, or
+    when the example template isn't present alongside this module (e.g. a
+    packaged install that doesn't ship it — see DIST-01/DIST-02).
+    """
+    if path.exists():
+        return False
+    template = Path(__file__).parent / "config.example.yaml"
+    if not template.exists():
+        return False
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(template.read_text(encoding="utf-8"), encoding="utf-8")
+    except OSError:
+        return False
+    return True
+
+
 def _cfg_str(cfg: dict[str, Any], key: str, hardcoded: Optional[str] = None) -> Optional[str]:
     value = cfg.get(key)
     return str(value) if value is not None else hardcoded
@@ -338,5 +361,6 @@ __all__ = [
     "build_arg_parser",
     "configure_logging",
     "connect_factory",
+    "ensure_default_config_file",
     "load_config_file",
 ]

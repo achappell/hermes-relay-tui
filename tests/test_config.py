@@ -10,6 +10,7 @@ from config import (
     _resolve_token,
     _connection_kwargs,
     build_arg_parser,
+    ensure_default_config_file,
     load_config_file,
 )
 
@@ -261,3 +262,27 @@ def test_default_config_path_is_used_when_no_flag_or_env_given(tmp_path, monkeyp
     default_path.write_text("busy_mode: steer\n")
     monkeypatch.setattr(config_module, "DEFAULT_CONFIG_PATH", default_path)
     assert build_arg_parser([]).parse_args([]).busy_mode == "steer"
+
+
+def test_ensure_default_config_file_creates_missing_file_from_template(tmp_path):
+    target = tmp_path / "nested" / "config.yaml"
+    assert ensure_default_config_file(target) is True
+    assert target.exists()
+    assert target.read_text(encoding="utf-8").startswith("# Example hermes-relay config file.")
+
+
+def test_ensure_default_config_file_does_not_overwrite_an_existing_file(tmp_path):
+    target = tmp_path / "config.yaml"
+    target.write_text("busy_mode: steer\n")
+    assert ensure_default_config_file(target) is False
+    assert target.read_text(encoding="utf-8") == "busy_mode: steer\n"
+
+
+def test_ensure_default_config_file_created_content_is_behaviorally_inert(tmp_path):
+    """The auto-created file must not change how args resolve — it's just discoverable."""
+    target = tmp_path / "config.yaml"
+    ensure_default_config_file(target)
+    argv = ["--config", str(target)]
+    args = build_arg_parser(argv).parse_args(argv)
+    assert args.busy_mode == "queue"
+    assert args.url == DEFAULT_URL

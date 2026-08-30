@@ -31,6 +31,7 @@ COMMAND_REGISTRY: tuple[Command, ...] = (
     Command("voice", "Capture and send a microphone turn"),
     Command("audio", "List or select local audio devices", args_hint="[list|status|input|output]"),
     Command("history", "Search or show prompt history", args_hint="[search term]"),
+    Command("reload", "Reload settings from the config file and environment"),
     Command("quit", "Exit the TUI", aliases=("exit",)),
 )
 
