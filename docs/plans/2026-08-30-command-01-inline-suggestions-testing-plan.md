@@ -27,16 +27,27 @@ name starts with `bu` (e.g. `/busy [queue|steer|interrupt] — Show or set
 active-turn behavior`). Typing further narrows or clears the list live,
 without ever taking focus away from the composer.
 
-## 3. Suggestions disappear once you're past the command name
+## 3. Suggestions narrow to usage for a command that takes arguments
 
-1. Finish typing `/busy interrupt` (a space after `busy`).
+1. Type `/busy ` (a space after `busy`).
 
-Expect: the suggestion line disappears once the space is typed — you're now
-composing arguments, not picking a command.
-2. Press `Enter`.
+Expect: the suggestion line narrows to just `/busy [queue|steer|interrupt]
+— Show or set active-turn behavior` — it does not disappear, since `/busy`
+still needs an argument.
+2. Keep typing `interrupt`.
+
+Expect: the same usage line stays visible while you type the argument.
+3. Press `Enter`.
 
 Expect: `/busy interrupt` submits normally and changes the busy-mode, same
-as before.
+as before, and the suggestion line disappears once the composer clears.
+
+## 3a. Suggestions disappear for a command that takes no arguments
+
+1. Type `/quit ` (a space after `quit`).
+
+Expect: the suggestion line disappears — `/quit` takes no arguments, so
+there's nothing left to hint at.
 
 ## 4. Tab still completes a unique match in place
 
@@ -44,6 +55,15 @@ as before.
 
 Expect: the composer fills in `/status ` (trailing space), cursor at the
 end, focus still in the composer — no overlay, no transcript noise.
+
+## 4a. Tab-completing a command that takes arguments keeps the hint visible
+
+1. Clear the composer, type `/bu`, and press `Tab`.
+
+Expect: the composer fills in `/busy ` and the suggestion line narrows to
+`/busy [queue|steer|interrupt] — Show or set active-turn behavior` instead
+of disappearing — this is the original complaint: Tab used to silently drop
+the hint the moment it filled in a command that still needed an argument.
 
 ## 5. Suggestions stay out of the way for ordinary prompts
 

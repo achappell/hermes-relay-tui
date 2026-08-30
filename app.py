@@ -508,10 +508,33 @@ class HermesStreamingApp(App):
             # A Changed message can still be in flight during app teardown,
             # after the widget it targets has already been unmounted.
             return
-        if not text.startswith("/") or any(character.isspace() for character in text):
+        if not text.startswith("/"):
             widget.display = False
             return
-        prefix = text[1:].lower()
+        body = text[1:]
+        if any(character.isspace() for character in body):
+            # Past the command name and into its arguments — narrow to that
+            # one command's usage instead of hiding, so a command that takes
+            # arguments (e.g. /busy) doesn't lose its hint the moment you've
+            # typed the space.
+            head_parts = body.split(None, 1)
+            head = head_parts[0].lower() if head_parts else ""
+            command = next(
+                (
+                    c
+                    for c in COMMAND_REGISTRY
+                    if c.name == head or head in c.aliases
+                ),
+                None,
+            )
+            if command is None or not command.args_hint:
+                widget.display = False
+                return
+            widget.update(f"/{command.name} {command.args_hint} — {command.description}")
+            widget.display = True
+            return
+
+        prefix = body.lower()
         matches = [
             command
             for command in COMMAND_REGISTRY

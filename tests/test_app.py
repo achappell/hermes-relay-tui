@@ -420,7 +420,7 @@ async def test_command_suggestions_appear_while_typing_a_command_name():
         assert "/busy" in str(suggestions.render())
 
 
-async def test_command_suggestions_hide_once_a_command_and_space_are_typed():
+async def test_command_suggestions_narrow_to_usage_for_a_command_that_takes_args():
     session = FakeSession()
     app = HermesStreamingApp(args=make_args(), session_factory=lambda: session)
     async with app.run_test() as pilot:
@@ -435,7 +435,28 @@ async def test_command_suggestions_hide_once_a_command_and_space_are_typed():
         composer.move_cursor((0, len(composer.text)))
         await pilot.pause()
 
-        assert suggestions.display is False
+        assert suggestions.display is True
+        rendered = str(suggestions.render())
+        assert "/busy [queue|steer|interrupt]" in rendered
+
+        composer.text = "/busy inter"
+        composer.move_cursor((0, len(composer.text)))
+        await pilot.pause()
+
+        assert suggestions.display is True
+        assert "/busy [queue|steer|interrupt]" in str(suggestions.render())
+
+
+async def test_command_suggestions_hide_once_args_are_typed_for_a_no_arg_command():
+    session = FakeSession()
+    app = HermesStreamingApp(args=make_args(), session_factory=lambda: session)
+    async with app.run_test() as pilot:
+        composer = app.query_one("#composer", Composer)
+        composer.text = "/quit "
+        composer.move_cursor((0, len(composer.text)))
+        await pilot.pause()
+
+        assert app.query_one("#command-suggestions", Static).display is False
 
 
 async def test_command_suggestions_hide_for_ordinary_prompt_text():
