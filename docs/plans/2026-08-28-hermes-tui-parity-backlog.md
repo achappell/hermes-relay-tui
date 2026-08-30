@@ -152,7 +152,7 @@ and it is sent in order after the current turn.
 ### P0.4 Interrupt and redirect
 
 - Give `Ctrl+C` an explicit busy-turn meaning: interrupt the active turn.
-- Add `/steer` or equivalent replacement-message behavior.
+- Add equivalent replacement-message behavior through the busy-mode setting.
 - Stop remote generation and local audio playback together.
 - Preserve the partial transcript and make the next prompt immediately usable.
 - Define clear idle behavior: clear draft first, exit only when nothing is
@@ -164,8 +164,9 @@ and receive the correction without restarting the TUI.
 Current implementation: `Ctrl+C` cancels local stream consumption, stops local
 audio, closes the current connection, and reconnects before the next turn.
 Busy-turn behavior is now configurable as `queue` (default), `steer`, or
-`interrupt`; ordinary submissions follow the selected mode. `/steer` remains
-only as a migration warning. Full server-side cancellation remains deferred
+`interrupt`; ordinary submissions follow the selected mode. The old standalone
+steering command is removed; `/busy` is the command surface for this setting.
+Full server-side cancellation remains deferred
 until the voice-session protocol exposes an explicit interrupt operation.
 
 ### P0.5 Session lifecycle and recovery
@@ -259,7 +260,7 @@ Add these after the P0 interaction loop is solid:
 - configuration refresh without restarting the client;
 - persistent input history at `~/.hermes/.hermes_history`;
 - `/history`, `/save`, `/copy`, `/logs`, and `/usage`;
-- `/retry`, `/undo`, `/steer`, and `/compress`;
+- `/retry`, `/undo`, and `/compress`;
 - paste text, image, and path attachments, including `/image`;
 - optional `!command` execution and `{!command}` interpolation behind a safety
   gate;

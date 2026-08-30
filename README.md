@@ -146,6 +146,11 @@ turn state. It does not record bearer tokens, prompts, response text, or audio.
 | `Ctrl+R` | Capture and send a microphone turn |
 | `/audio` | Show or select local audio devices |
 | `/image` | Stage, list, or clear a local image attachment |
+| `/save [path]` | Save the visible transcript locally without overwriting files |
+| `/copy` | Copy the visible transcript to the system clipboard |
+| `/logs` | Show local debug logging status and path |
+| `/retry` | Retry a prompt only when it was proven not to reach Hermes |
+| `/undo` | Remove an unsent local prompt from the queue |
 | `Ctrl+C` | Interrupt the active turn; otherwise clear the draft, queue, or quit |
 | `F1` | Show keyboard help |
 | `Ctrl+Q` | Quit |
@@ -162,19 +167,26 @@ above the composer lists matching commands and their args/description as you
 type, and disappears once you've typed a space or the text no longer looks
 like a command. `Tab` fills in a uniquely-matching command name without
 moving focus out of the composer. The initial local commands
-are `/help`, `/clear`, `/status`, `/queue`, `/busy`, `/details`, `/voice`, `/audio`, `/image`, and `/quit`;
+are `/help`, `/clear`, `/status`, `/queue`, `/busy`, `/details`, `/voice`, `/audio`, `/image`, `/history`, `/save`, `/copy`, `/logs`, `/retry`, `/undo`, `/usage`, `/compress`, and `/quit`;
 `/queue`
 also supports `list`, `edit <number> <replacement>`, `drop <number>`, and
 `clear`. `/busy [queue|steer|interrupt]` changes the mode for the current
 session. `/details [show|hide]` controls thinking and tool detail. `/audio`
 shows the current devices; `/audio list` lists PortAudio devices, and
 `/audio input <device>` / `/audio output <device>` select a device for the
-current session. Use `default` to return to the system default. `/steer` is
-retained only as a migration warning. `/model`, `/new`,
+current session. Use `default` to return to the system default. `/model`, `/new`,
 `/sessions`, `/resume`, and other commands use the
 gateway-dispatch boundary when one is supplied. The current voice-session
-protocol does not yet expose gateway command dispatch, so those commands fail
-visibly instead of being sent to the model as prose.
+protocol does not yet expose gateway command dispatch, usage, conversation
+compression, or remote undo, so those commands fail visibly instead of being
+sent to the model as prose. Use `/busy steer` or `--busy-mode steer` to change
+what ordinary submissions do while a turn is active.
+
+`/save` and `/copy` use the exact visible transcript projection, so hidden
+thinking and tool detail is excluded while `/details show` includes it. `/save`
+defaults to `hermes-transcript-YYYYMMDD-HHMMSS.txt` in the current directory and
+never overwrites an existing file. `/retry` refuses a turn that may have reached
+Hermes; `/undo` only removes a prompt that is still local and unsent.
 
 Use `/image <path>` to stage a local image, `/image list` to inspect staged
 metadata, and `/image clear` to cancel them. A unique final `@path` token can
@@ -290,6 +302,10 @@ venv/bin/pytest
 
 For a copy-paste manual check of attachments and safe shell preparation, see
 [`docs/testing/daily-03-attachments-shell.md`](docs/testing/daily-03-attachments-shell.md).
+
+For a copy-paste manual check of recovery, transcript export, diagnostics, and
+relay-boundary behavior, see
+[`docs/plans/2026-08-30-daily-04-recovery-testing-plan.md`](docs/plans/2026-08-30-daily-04-recovery-testing-plan.md).
 
 ## Troubleshooting
 

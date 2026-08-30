@@ -8,6 +8,7 @@ from io import BytesIO
 import pytest
 from textual.widgets import Static
 
+import app as app_module
 from app import Composer, HermesSession, HermesStreamingApp
 from client import ProtocolError
 from commands import parse_slash_command
@@ -1062,7 +1063,7 @@ async def test_interrupt_busy_mode_stops_an_active_turn_without_sending_message(
         assert not app._turn_in_flight
 
 
-async def test_steer_slash_command_explains_busy_mode_migration():
+async def test_steer_slash_command_is_no_longer_handled_locally():
     session = FakeSession()
     app = HermesStreamingApp(args=make_args(), session_factory=lambda: session)
     async with app.run_test() as pilot:
@@ -1073,7 +1074,7 @@ async def test_steer_slash_command_explains_busy_mode_migration():
         await pilot.pause()
 
         assert session.sent_turns == []
-        assert "set --busy-mode steer" in transcript_of(app)
+        assert "needs Hermes gateway command dispatch" in transcript_of(app)
 
 
 async def test_status_reports_the_selected_busy_mode():
@@ -1748,6 +1749,154 @@ async def test_history_command_reports_empty_history():
         await pilot.press("enter")
         await pilot.pause()
         assert "history: empty" in transcript_of(app)
+
+
+async def test_save_command_writes_the_visible_transcript_only(tmp_path):
+    app = HermesStreamingApp(args=make_args(), session_factory=lambda: FakeSession())
+    target = tmp_path / "transcript.txt"
+    async with app.run_test() as pilot:
+        app.transcript.clear()
+        app.show_transcript_details = False
+        app.transcript.add("user", "visible prompt")
+        app.transcript.add("thinking", "hidden detail", detail=True)
+        app.transcript.add("assistant", "visible answer")
+        app._refresh_transcript()
+
+        composer = app.query_one("#composer", Composer)
+        composer.text = f"/save {target}"
+        await pilot.press("enter")
+        await pilot.pause()
+        transcript = transcript_of(app)
+
+    assert target.read_text(encoding="utf-8") == (
+        "you> visible prompt\nhermes: visible answer"
+    )
+    assert f"saved visible transcript to {target}" in transcript
+    assert "hidden detail" in transcript
+
+
+async def test_save_command_refuses_to_overwrite_an_existing_file(tmp_path):
+    target = tmp_path / "existing.txt"
+    target.write_text("keep this", encoding="utf-8")
+    app = HermesStreamingApp(args=make_args(), session_factory=lambda: FakeSession())
+    async with app.run_test() as pilot:
+        app.transcript.add("user", "new text")
+        composer = app.query_one("#composer", Composer)
+        composer.text = f"/save {target}"
+        await pilot.press("enter")
+        await pilot.pause()
+        transcript = transcript_of(app)
+
+    assert target.read_text(encoding="utf-8") == "keep this"
+    assert "already exists; refusing to overwrite" in transcript
+
+
+async def test_copy_command_uses_the_visible_transcript(monkeypatch):
+    copied = []
+
+    async def fake_copy(text):
+        copied.append(text)
+
+    monkeypatch.setattr(app_module, "copy_text", fake_copy)
+    app = HermesStreamingApp(args=make_args(), session_factory=lambda: FakeSession())
+    async with app.run_test() as pilot:
+        app.transcript.clear()
+        app.show_transcript_details = False
+        app.transcript.add("user", "visible prompt")
+        app.transcript.add("thinking", "hidden detail", detail=True)
+        app.transcript.add("assistant", "visible answer")
+        composer = app.query_one("#composer", Composer)
+        composer.text = "/copy"
+        await pilot.press("enter")
+        await pilot.pause()
+        transcript = transcript_of(app)
+
+    assert copied == ["you> visible prompt\nhermes: visible answer"]
+    assert "copied visible transcript" in transcript
+
+
+async def test_logs_command_reports_the_local_debug_log(monkeypatch, tmp_path):
+    path = tmp_path / "session.log"
+    path.write_text("safe trace", encoding="utf-8")
+    monkeypatch.setattr(app_module, "active_log_file", lambda: path)
+    app = HermesStreamingApp(args=make_args(), session_factory=lambda: FakeSession())
+    async with app.run_test() as pilot:
+        composer = app.query_one("#composer", Composer)
+        composer.text = "/logs"
+        await pilot.press("enter")
+        await pilot.pause()
+        transcript = transcript_of(app)
+
+    assert f"logs: debug trace present at {path}" in transcript
+
+
+@pytest.mark.parametrize("command", ["/usage", "/compress"])
+async def test_relay_only_daily04_commands_report_protocol_limits(command):
+    app = HermesStreamingApp(args=make_args(), session_factory=lambda: FakeSession())
+    async with app.run_test() as pilot:
+        composer = app.query_one("#composer", Composer)
+        composer.text = command
+        await pilot.press("enter")
+        await pilot.pause()
+        transcript = transcript_of(app)
+
+    assert "not exposed by the voice-session protocol" in transcript
+
+
+async def test_retry_replays_only_a_prompt_that_never_reached_the_relay():
+    session = FlakyConnectSession(2)
+    app = HermesStreamingApp(args=make_args(), session_factory=lambda: session)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await app._run_turn("unsent prompt")
+        assert app._queued_prompts == ["unsent prompt"]
+        assert session.sent_turns == []
+
+        await app._handle_command(parse_slash_command("/retry"))
+        await pilot.pause()
+        transcript = transcript_of(app)
+
+    assert session.sent_turns == [("unsent prompt", "local")]
+    assert "retrying: 'unsent prompt'" in transcript
+
+
+async def test_retry_refuses_a_turn_that_may_have_reached_the_relay():
+    session = FakeSession()
+
+    def exploding_send_turn(text, *, stt_source="local"):
+        session.sent_turns.append((text, stt_source))
+
+        async def stream():
+            raise ConnectionResetError("socket went away")
+            yield  # pragma: no cover - makes this an async generator
+
+        return stream()
+
+    session.send_turn = exploding_send_turn
+    app = HermesStreamingApp(args=make_args(), session_factory=lambda: session)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await app._run_turn("possibly sent")
+        await app._handle_command(parse_slash_command("/retry"))
+        await pilot.pause()
+        transcript = transcript_of(app)
+
+    assert session.sent_turns == [("possibly sent", "local")]
+    assert "may have reached Hermes" in transcript
+
+
+async def test_undo_removes_only_an_unsent_prompt_from_the_local_queue():
+    session = FlakyConnectSession(2)
+    app = HermesStreamingApp(args=make_args(), session_factory=lambda: session)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await app._run_turn("unsent prompt")
+        await app._handle_command(parse_slash_command("/undo"))
+        await pilot.pause()
+        transcript = transcript_of(app)
+
+    assert app._queued_prompts == []
+    assert "removed unsent prompt" in transcript
 
 
 async def test_status_command_shows_configured_model():

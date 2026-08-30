@@ -68,6 +68,17 @@ def test_activity_is_replaceable_and_can_be_hidden_without_losing_answer():
     assert "The answer" in hidden
 
 
+def test_plain_text_for_matches_the_selected_detail_visibility():
+    buffer = TranscriptBuffer()
+    buffer.add("user", "visible prompt")
+    buffer.add("thinking", "private reasoning", detail=True)
+    buffer.add("assistant", "visible answer")
+
+    assert buffer.plain_text_for(show_details=False) == (
+        "you> visible prompt\nhermes: visible answer"
+    )
+
+
 def test_interleaved_activity_does_not_split_one_assistant_stream():
     buffer = TranscriptBuffer()
     buffer.start_stream("assistant")

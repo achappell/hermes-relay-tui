@@ -32,6 +32,13 @@ COMMAND_REGISTRY: tuple[Command, ...] = (
     Command("audio", "List or select local audio devices", args_hint="[list|status|input|output]"),
     Command("image", "Stage a local image attachment", args_hint="<path>|list|clear"),
     Command("history", "Search or show prompt history", args_hint="[search term]"),
+    Command("save", "Save the visible transcript locally", args_hint="[path]"),
+    Command("copy", "Copy the visible transcript to the system clipboard"),
+    Command("logs", "Show local debug logging status and path"),
+    Command("usage", "Show relay usage information when supported"),
+    Command("retry", "Retry the last prompt only when it was never sent"),
+    Command("undo", "Remove the last unsent local prompt from the queue"),
+    Command("compress", "Compress the conversation when the relay supports it"),
     Command("reload", "Reload settings from the config file and environment"),
     Command("quit", "Exit the TUI", aliases=("exit",)),
 )

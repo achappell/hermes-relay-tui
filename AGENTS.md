@@ -130,7 +130,7 @@ Do not put a real token in this file or in the README.
 - Use `!command` or `{!command}` only after opting in with `--allow-shell`; execution is local, bounded, and visible, with shell operators rejected.
 - Use `/reload` to re-read the config file/environment without restarting. Any of busy-mode, show-details, or audio devices you've changed interactively this session are left alone; everything else picks up the new values. A malformed config file reports an error instead of crashing.
 - `Ctrl+C` interrupts the active turn; when idle it clears the draft, clears the queue, or exits.
-- `/steer` is retained only as a migration warning; steering happens when an ordinary message is submitted in `--busy-mode steer`.
+- Steering happens when an ordinary message is submitted in `--busy-mode steer`; there is no separate slash command.
 - Slash commands are routed before ordinary text; do not silently send an unknown command as a model prompt.
 - `Ctrl+R` captures a local microphone turn and sends its transcript.
 - `F1` displays help in the transcript.
