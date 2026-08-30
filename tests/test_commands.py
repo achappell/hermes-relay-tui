@@ -47,6 +47,15 @@ def test_busy_command_is_registered_for_session_configuration():
     assert invocation.args == "steer"
 
 
+def test_audio_command_is_registered_for_local_device_controls():
+    invocation = parse_slash_command("/audio input USB Microphone")
+
+    assert invocation is not None
+    assert invocation.command is not None
+    assert invocation.command.name == "audio"
+    assert invocation.args == "input USB Microphone"
+
+
 def test_help_can_filter_commands():
     rendered = help_text("microphone")
 

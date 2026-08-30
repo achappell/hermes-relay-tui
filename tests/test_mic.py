@@ -1,11 +1,14 @@
 import asyncio
+import sys
+import threading
+import types
 
 import pytest
 from textual.app import App
 from tqdm import tqdm
 from tqdm.std import TqdmDefaultWriteLock
 
-from mic import load_microphone_class
+from mic import load_microphone_class, wrap_recorder
 
 
 def test_missing_voice_client_raises(tmp_path):
@@ -64,3 +67,33 @@ async def test_loading_microphone_prepares_tqdm_for_textual_streams(tmp_path, mo
 
     assert app.error is None
     assert app.loaded_class is not None
+
+
+def test_wrapped_recorder_selects_input_device_and_cancellation_wakes_capture(monkeypatch):
+    observed = {}
+    default = types.SimpleNamespace(device=("default input", "default output"))
+    fake_sounddevice = types.SimpleNamespace(default=default)
+    monkeypatch.setitem(sys.modules, "sounddevice", fake_sounddevice)
+
+    class FakeRecorder:
+        supports_silence_autostop = True
+
+        def start(self, on_silence_stop=None):
+            observed["device_during_start"] = fake_sounddevice.default.device
+            self.callback = on_silence_stop
+
+        def cancel(self):
+            observed["cancelled"] = True
+
+    recorder = FakeRecorder()
+    proxy = wrap_recorder(recorder, input_device="USB Microphone")
+    finished = threading.Event()
+
+    proxy.start(on_silence_stop=finished.set)
+    assert observed["device_during_start"] == ("USB Microphone", "default output")
+    assert fake_sounddevice.default.device == ("default input", "default output")
+
+    proxy.cancel()
+
+    assert observed["cancelled"] is True
+    assert finished.is_set()

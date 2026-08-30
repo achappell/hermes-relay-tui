@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from audio import PCMPlayer, audio_path, write_wav
+from audio import PCMPlayer, audio_device_list, audio_path, write_wav
 
 
 def test_audio_path_uses_the_base_unchanged_for_the_first_turn(tmp_path):
@@ -93,6 +93,47 @@ def test_start_success_makes_player_active(monkeypatch):
     player.close()
     assert started["stopped"] and started["closed"]
     assert not player.active
+
+
+def test_start_passes_selected_output_device_to_sounddevice(monkeypatch):
+    received = {}
+
+    class FakeStream:
+        def start(self):
+            pass
+
+        def stop(self):
+            pass
+
+        def close(self):
+            pass
+
+    def raw_output_stream(**kwargs):
+        received.update(kwargs)
+        return FakeStream()
+
+    fake_module = types.SimpleNamespace(RawOutputStream=raw_output_stream)
+    monkeypatch.setitem(sys.modules, "sounddevice", fake_module)
+
+    player = PCMPlayer(enabled=True, output_device="USB Headset")
+    player.start((24000, 1, 2))
+
+    assert received["device"] == "USB Headset"
+
+
+def test_audio_device_list_normalizes_input_and_output_capabilities(monkeypatch):
+    fake_module = types.SimpleNamespace(
+        query_devices=lambda: [
+            {"name": "Built-in Microphone", "max_input_channels": 2, "max_output_channels": 0},
+            {"name": "USB Headset", "max_input_channels": 1, "max_output_channels": 2},
+        ]
+    )
+    monkeypatch.setitem(sys.modules, "sounddevice", fake_module)
+
+    assert audio_device_list() == [
+        {"index": 0, "name": "Built-in Microphone", "inputs": 2, "outputs": 0},
+        {"index": 1, "name": "USB Headset", "inputs": 1, "outputs": 2},
+    ]
 
 
 def test_start_failure_sets_failure_message(monkeypatch):

@@ -54,6 +54,21 @@ def test_parser_accepts_hidden_transcript_detail_flag():
     assert build_arg_parser().parse_args(["--hide-thinking"]).hide_thinking is True
 
 
+def test_parser_reads_audio_device_selectors_from_flags_and_environment(monkeypatch):
+    monkeypatch.setenv("VOICE_SESSION_MIC_INPUT_DEVICE", "2")
+    monkeypatch.setenv("VOICE_SESSION_AUDIO_OUTPUT_DEVICE", "USB Headset")
+
+    args = build_arg_parser().parse_args([])
+    assert args.mic_input_device == 2
+    assert args.audio_output_device == "USB Headset"
+
+    args = build_arg_parser().parse_args(
+        ["--mic-input-device", "Built-in Microphone", "--audio-output-device", "3"]
+    )
+    assert args.mic_input_device == "Built-in Microphone"
+    assert args.audio_output_device == 3
+
+
 def test_parser_accepts_debug_trace_options(tmp_path):
     args = build_arg_parser().parse_args(["--debug", "--log-file", str(tmp_path / "trace.log")])
     assert args.debug is True
