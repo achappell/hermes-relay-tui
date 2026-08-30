@@ -288,6 +288,9 @@ The suite uses fake sessions and protocol objects, so it does not require a live
 venv/bin/pytest
 ```
 
+For a copy-paste manual check of attachments and safe shell preparation, see
+[`docs/testing/daily-03-attachments-shell.md`](docs/testing/daily-03-attachments-shell.md).
+
 ## Troubleshooting
 
 ### `No voice-session token found`
