@@ -38,6 +38,18 @@ def test_streaming_records_keep_roles_and_markdown_together():
     assert "print('ok')" in output
 
 
+def test_user_message_newlines_survive_rendering():
+    # Markdown treats a single "\n" as a soft break (renders as a space);
+    # user-typed text (e.g. via Shift+Enter) must keep its literal line breaks.
+    buffer = TranscriptBuffer()
+    buffer.add("user", "test\ntenohut")
+
+    output = rendered_text(buffer)
+    lines = [line for line in output.splitlines() if line.strip()]
+    assert lines == ["you>", "test", "tenohut"]
+    assert "test tenohut" not in output
+
+
 def test_activity_is_replaceable_and_can_be_hidden_without_losing_answer():
     buffer = TranscriptBuffer()
     buffer.set_activity("[thinking…]", role="thinking")

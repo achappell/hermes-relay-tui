@@ -8,8 +8,8 @@ import tempfile
 from pathlib import Path
 from typing import Any, Optional
 
-LOGGER_NAME = "hermes_streaming_tui"
-DEFAULT_LOG_FILE = Path(tempfile.gettempdir()) / "hermes-streaming-tui-debug.log"
+LOGGER_NAME = "hermes_relay_tui"
+DEFAULT_LOG_FILE = Path(tempfile.gettempdir()) / "hermes-relay-tui-debug.log"
 
 logger = logging.getLogger(LOGGER_NAME)
 

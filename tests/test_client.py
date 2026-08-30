@@ -124,7 +124,7 @@ async def test_send_turn_replaces_a_nonprefix_terminal_text_update():
 
 
 async def test_send_turn_logs_protocol_shapes_without_text_content(caplog):
-    caplog.set_level(logging.DEBUG, logger="hermes_streaming_tui")
+    caplog.set_level(logging.DEBUG, logger="hermes_relay_tui")
     frames = [
         json.dumps({"type": "message.delta", "payload": {"text": "The answer"}}),
         json.dumps({"type": "message.complete", "payload": {"text": "The answer"}}),
