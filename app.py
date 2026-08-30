@@ -22,18 +22,16 @@ from typing import Any, AsyncIterator, Awaitable, Callable, Optional, Protocol
 
 from textual import events
 from textual.app import App, ComposeResult
-from textual.containers import Container, VerticalScroll
+from textual.containers import VerticalScroll
+from textual.css.query import NoMatches
 from textual.message import Message
-from textual.screen import ModalScreen
-from textual.widgets import Footer, Header, Input, OptionList, Static, TextArea
-from textual.widgets.option_list import Option
+from textual.widgets import Footer, Header, Static, TextArea
 
 import config
 from audio import PCMPlayer, audio_device_list, audio_path, read_wav, write_wav
 from client import send_hello, send_turn
 from commands import (
     COMMAND_REGISTRY,
-    Command,
     CommandInvocation,
     complete_slash_command,
     help_text,
@@ -67,13 +65,6 @@ class Composer(TextArea):
             super().__init__()
             self.composer = composer
 
-    class CommandPaletteRequested(Message):
-        """Open the command palette when a slash starts a draft."""
-
-        def __init__(self, composer: "Composer") -> None:
-            super().__init__()
-            self.composer = composer
-
     class HistoryPrevRequested(Message):
         """Up at the top line: recall the previous history entry."""
 
@@ -89,11 +80,6 @@ class Composer(TextArea):
             self.composer = composer
 
     async def _on_key(self, event: events.Key) -> None:
-        if event.character == "/" and not self.text:
-            event.stop()
-            event.prevent_default()
-            self.post_message(self.CommandPaletteRequested(self))
-            return
         if event.key == "ctrl+c":
             event.stop()
             event.prevent_default()
@@ -128,131 +114,6 @@ class Composer(TextArea):
             self.insert("\n")
             return
         await super()._on_key(event)
-
-
-class CommandPalette(ModalScreen[Optional[Command]]):
-    """Claude-style searchable command chooser for the local registry."""
-
-    CSS = """
-    CommandPalette {
-        align: center middle;
-        background: transparent;
-    }
-
-    #command-palette {
-        width: 72;
-        height: auto;
-        max-height: 80%;
-        border: round $accent;
-        background: $surface;
-        padding: 1 2;
-    }
-
-    #command-filter {
-        margin: 1 0;
-    }
-
-    #command-options {
-        height: auto;
-        max-height: 16;
-        min-height: 3;
-    }
-
-    #command-details {
-        height: 2;
-        margin-top: 1;
-        color: $text-muted;
-    }
-    """
-
-    BINDINGS = [("escape", "close_palette", "Close")]
-
-    def __init__(self) -> None:
-        super().__init__()
-        self._commands: list[Command] = []
-
-    def compose(self) -> ComposeResult:
-        with Container(id="command-palette"):
-            yield Static("Commands", id="command-title")
-            yield Input(placeholder="Filter commands…", id="command-filter")
-            yield OptionList(id="command-options")
-            yield Static("↑↓ navigate · Enter select · Esc close", id="command-details")
-
-    def on_mount(self) -> None:
-        self._refresh_options("")
-        self.set_focus(self.query_one("#command-filter", Input))
-
-    def _refresh_options(self, filter_text: str) -> None:
-        needle = filter_text.strip().lower()
-        self._commands = [
-            command
-            for command in COMMAND_REGISTRY
-            if not needle
-            or needle in command.name.lower()
-            or needle in command.description.lower()
-        ]
-        options = [
-            Option(self._option_label(command), id=command.name)
-            for command in self._commands
-        ]
-        option_list = self.query_one("#command-options", OptionList)
-        option_list.set_options(options)
-        if options:
-            option_list.highlighted = 0
-            self._update_details(0)
-        else:
-            self.query_one("#command-details", Static).update(
-                "No matching commands. Press Esc to close."
-            )
-
-    @staticmethod
-    def _option_label(command: Command) -> str:
-        args = f" {command.args_hint}" if command.args_hint else ""
-        return f"/{command.name}{args} — {command.description}"
-
-    def _update_details(self, index: int) -> None:
-        if not 0 <= index < len(self._commands):
-            return
-        command = self._commands[index]
-        args = f" {command.args_hint}" if command.args_hint else ""
-        self.query_one("#command-details", Static).update(
-            f"/{command.name}{args}: {command.description}"
-        )
-
-    def on_input_changed(self, event: Input.Changed) -> None:
-        if event.input.id == "command-filter":
-            self._refresh_options(event.value)
-
-    def on_key(self, event: events.Key) -> None:
-        if event.key not in {"up", "down"}:
-            return
-        command_filter = self.query_one("#command-filter", Input)
-        if self.focused is not command_filter:
-            return
-        option_list = self.query_one("#command-options", OptionList)
-        if not option_list.option_count:
-            return
-        event.stop()
-        event.prevent_default()
-        self.set_focus(option_list)
-        option_list.highlighted = (
-            0 if event.key == "down" else option_list.option_count - 1
-        )
-
-    def on_option_list_option_highlighted(self, event: OptionList.OptionHighlighted) -> None:
-        self._update_details(event.option_index)
-
-    def on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:
-        if 0 <= event.option_index < len(self._commands):
-            self.dismiss(self._commands[event.option_index])
-
-    def on_input_submitted(self, event: Input.Submitted) -> None:
-        option_list = self.query_one("#command-options", OptionList)
-        if option_list.highlighted is not None and option_list.highlighted < len(self._commands):
-            self.dismiss(self._commands[option_list.highlighted])
-
-    def action_close_palette(self) -> None:
-        self.dismiss(None)
 
 
 class SessionProtocol(Protocol):
@@ -486,6 +347,7 @@ class HermesStreamingApp(App):
             # markup=False so a literal "[error] ..." isn't eaten as Rich markup.
             yield Static("", id="transcript", markup=False)
         yield Static("● ready", id="voice-status")
+        yield Static("", id="command-suggestions", markup=False)
         yield Composer(placeholder="you>", id="composer")
         yield Footer()
 
@@ -522,6 +384,7 @@ class HermesStreamingApp(App):
 
     async def on_mount(self) -> None:
         self.session = self._session_factory() if self._session_factory else HermesSession(self.args)
+        self.query_one("#command-suggestions", Static).display = False
         self.set_focus(self.query_one("#composer", Composer))
         self._set_voice_state(VOICE_CONNECTING)
         # In a worker so a hanging endpoint can't freeze the UI (or block ctrl+q).
@@ -629,13 +492,68 @@ class HermesStreamingApp(App):
 
     async def on_composer_completion_requested(self, event: Composer.CompletionRequested) -> None:
         candidates = complete_slash_command(event.text)
-        if not candidates:
+        if len(candidates) != 1:
             return
-        if len(candidates) == 1:
-            event.composer.load_text(f"{candidates[0]} ")
-            event.composer.move_cursor((0, len(event.composer.text)))
+        event.composer.load_text(f"{candidates[0]} ")
+        event.composer.move_cursor((0, len(event.composer.text)))
+
+    def on_text_area_changed(self, event: TextArea.Changed) -> None:
+        if event.text_area.id == "composer":
+            self._update_command_suggestions(event.text_area.text)
+
+    def _update_command_suggestions(self, text: str) -> None:
+        try:
+            widget = self.query_one("#command-suggestions", Static)
+        except NoMatches:
+            # A Changed message can still be in flight during app teardown,
+            # after the widget it targets has already been unmounted.
             return
-        self._append_block("commands: " + ", ".join(candidates))
+        if not text.startswith("/"):
+            widget.display = False
+            return
+        body = text[1:]
+        if any(character.isspace() for character in body):
+            # Past the command name and into its arguments — narrow to that
+            # one command's usage instead of hiding, so a command that takes
+            # arguments (e.g. /busy) doesn't lose its hint the moment you've
+            # typed the space.
+            head_parts = body.split(None, 1)
+            head = head_parts[0].lower() if head_parts else ""
+            command = next(
+                (
+                    c
+                    for c in COMMAND_REGISTRY
+                    if c.name == head or head in c.aliases
+                ),
+                None,
+            )
+            if command is None or not command.args_hint:
+                widget.display = False
+                return
+            widget.update(f"/{command.name} {command.args_hint} — {command.description}")
+            widget.display = True
+            return
+
+        prefix = body.lower()
+        matches = [
+            command
+            for command in COMMAND_REGISTRY
+            if command.name.startswith(prefix)
+            or any(alias.startswith(prefix) for alias in command.aliases)
+        ]
+        if not matches:
+            widget.display = False
+            return
+        shown, overflow = matches[:6], matches[6:]
+        lines = [
+            f"/{command.name}{f' {command.args_hint}' if command.args_hint else ''}"
+            f" — {command.description}"
+            for command in shown
+        ]
+        if overflow:
+            lines.append(f"… {len(overflow)} more")
+        widget.update("\n".join(lines))
+        widget.display = True
 
     def on_composer_history_prev_requested(self, event: Composer.HistoryPrevRequested) -> None:
         if not self._history.entries:
@@ -662,20 +580,6 @@ class HermesStreamingApp(App):
     def _load_history_entry(self, composer: "Composer") -> None:
         composer.load_text(self._history.entries[self._history_index])
         composer.move_cursor(composer.document.end)
-
-    def on_composer_command_palette_requested(
-        self, event: Composer.CommandPaletteRequested
-    ) -> None:
-        event.composer.load_text("/")
-        self.push_screen(CommandPalette(), self._command_palette_closed)
-
-    def _command_palette_closed(self, command: Optional[Command]) -> None:
-        composer = self.query_one("#composer", Composer)
-        self.set_focus(composer)
-        if command is None:
-            return
-        composer.load_text(f"/{command.name} ")
-        composer.move_cursor((0, len(composer.text)))
 
     async def on_composer_interrupt_requested(self, event: Composer.InterruptRequested) -> None:
         self.run_worker(
