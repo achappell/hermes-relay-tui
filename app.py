@@ -39,6 +39,7 @@ from commands import (
     parse_slash_command,
 )
 from diagnostics import logger as diagnostic_logger, summarize_payload, summarize_text
+from history import PromptHistory, history_path_for_url
 from mic import cancel_microphone, load_microphone_class, make_recorder_factory
 from transcript import TranscriptBuffer
 
@@ -72,6 +73,20 @@ class Composer(TextArea):
             super().__init__()
             self.composer = composer
 
+    class HistoryPrevRequested(Message):
+        """Up at the top line: recall the previous history entry."""
+
+        def __init__(self, composer: "Composer") -> None:
+            super().__init__()
+            self.composer = composer
+
+    class HistoryNextRequested(Message):
+        """Down at the bottom line: recall the next history entry."""
+
+        def __init__(self, composer: "Composer") -> None:
+            super().__init__()
+            self.composer = composer
+
     async def _on_key(self, event: events.Key) -> None:
         if event.character == "/" and not self.text:
             event.stop()
@@ -87,6 +102,16 @@ class Composer(TextArea):
             event.stop()
             event.prevent_default()
             self.post_message(self.CompletionRequested(self))
+            return
+        if event.key == "up" and self.cursor_location[0] == 0:
+            event.stop()
+            event.prevent_default()
+            self.post_message(self.HistoryPrevRequested(self))
+            return
+        if event.key == "down" and self.cursor_location[0] == self.document.line_count - 1:
+            event.stop()
+            event.prevent_default()
+            self.post_message(self.HistoryNextRequested(self))
             return
         if event.key == "enter":
             event.stop()
@@ -432,6 +457,12 @@ class HermesStreamingApp(App):
         if self.busy_mode not in config.BUSY_MODES:
             self.busy_mode = "queue"
         self._busy_transition_owner: Optional[asyncio.Task[None]] = None
+        history_path = getattr(args, "history_path", None) or history_path_for_url(
+            getattr(args, "url", None)
+        )
+        self._history = PromptHistory(history_path)
+        self._history_index: Optional[int] = None
+        self._history_draft = ""
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -559,6 +590,8 @@ class HermesStreamingApp(App):
     async def on_composer_submitted(self, event: Composer.Submitted) -> None:
         text = event.text.strip()
         event.composer.load_text("")
+        self._history_index = None
+        self._history_draft = ""
         if not text:
             return
         invocation = parse_slash_command(text)
@@ -570,6 +603,7 @@ class HermesStreamingApp(App):
                 exit_on_error=False,
             )
             return
+        self._history.append(text)
         self.run_worker(
             self._submit_text(text),
             name="chat turn",
@@ -586,6 +620,32 @@ class HermesStreamingApp(App):
             event.composer.move_cursor((0, len(event.composer.text)))
             return
         self._append_block("commands: " + ", ".join(candidates))
+
+    def on_composer_history_prev_requested(self, event: Composer.HistoryPrevRequested) -> None:
+        if not self._history.entries:
+            return
+        if self._history_index is None:
+            self._history_draft = event.composer.text
+            self._history_index = len(self._history.entries)
+        if self._history_index == 0:
+            return
+        self._history_index -= 1
+        self._load_history_entry(event.composer)
+
+    def on_composer_history_next_requested(self, event: Composer.HistoryNextRequested) -> None:
+        if self._history_index is None:
+            return
+        self._history_index += 1
+        if self._history_index >= len(self._history.entries):
+            self._history_index = None
+            event.composer.load_text(self._history_draft)
+            event.composer.move_cursor(event.composer.document.end)
+            return
+        self._load_history_entry(event.composer)
+
+    def _load_history_entry(self, composer: "Composer") -> None:
+        composer.load_text(self._history.entries[self._history_index])
+        composer.move_cursor(composer.document.end)
 
     def on_composer_command_palette_requested(
         self, event: Composer.CommandPaletteRequested
@@ -627,9 +687,11 @@ class HermesStreamingApp(App):
             self._refresh_transcript()
         elif command.name == "status":
             session_id = getattr(self.args, "session_id", "session")
+            model = getattr(self.args, "model", None) or "default"
             self._append_block(
-                f"session: {session_id} · {self.connection_state} · busy-mode: {self.busy_mode} "
-                f"· queued: {len(self._queued_prompts)}"
+                f"session: {session_id} · {self.connection_state} · model: {model} "
+                f"· busy-mode: {self.busy_mode} · queued: {len(self._queued_prompts)} "
+                f"· history: {self._history.path}"
             )
         elif command.name == "queue":
             await self._handle_queue_command(invocation.args)
@@ -644,6 +706,8 @@ class HermesStreamingApp(App):
                 await self._capture_voice_turn()
         elif command.name == "audio":
             await self._handle_audio_command(invocation.args)
+        elif command.name == "history":
+            self._handle_history_command(invocation.args)
         elif command.name == "quit":
             self.exit()
         else:
@@ -765,6 +829,20 @@ class HermesStreamingApp(App):
         self._refresh_transcript()
         state = "shown" if self.show_transcript_details else "hidden"
         self._append_block(f"transcript details: {state}")
+
+    def _handle_history_command(self, args: str) -> None:
+        """Show or search persistent prompt history, most recent first."""
+        needle = args.strip().lower()
+        entries = list(enumerate(self._history.entries, start=1))
+        if needle:
+            entries = [(index, text) for index, text in entries if needle in text.lower()]
+        if not entries:
+            self._append_block("history: no matches" if needle else "history: empty")
+            return
+        recent = entries[-20:]
+        heading = f"Prompt history matching {args.strip()!r}:" if needle else "Prompt history:"
+        lines = [f"{index}. {self._queue_preview(text)}" for index, text in recent]
+        self._append_block(heading + "\n" + "\n".join(lines))
 
     async def _handle_audio_command(self, args: str) -> None:
         """Show and change local input/output devices for this session."""
@@ -976,6 +1054,7 @@ class HermesStreamingApp(App):
     async def action_show_help(self) -> None:
         self._append_block(
             "Bindings: enter = send, shift+enter / alt+enter = newline, "
+            "up/down at the top/bottom line = prompt history, "
             "ctrl+r = voice turn, ctrl+c = interrupt, f1 = help, ctrl+q = quit. "
             f"busy-mode = {self.busy_mode} (queue / steer / interrupt); "
             "use /busy to change it."

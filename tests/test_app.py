@@ -1358,3 +1358,162 @@ async def test_voice_binding_is_registered():
         assert bindings_by_key["ctrl+r"].action == "voice_turn"
         assert "ctrl+c" in bindings_by_key
         assert bindings_by_key["ctrl+c"].action == "interrupt"
+
+
+# --- persistent prompt history ----------------------------------------------
+
+
+async def test_up_recalls_previous_prompt_and_preserves_the_in_progress_draft(tmp_path):
+    session = FakeSession()
+    app = HermesStreamingApp(
+        args=make_args(history_path=tmp_path / "history"), session_factory=lambda: session
+    )
+    async with app.run_test() as pilot:
+        composer = app.query_one("#composer", Composer)
+        composer.text = "first prompt"
+        await pilot.press("enter")
+        await pilot.pause()
+        composer.text = "second prompt"
+        await pilot.press("enter")
+        await pilot.pause()
+
+        composer.text = "unsent draft"
+        composer.move_cursor((0, len(composer.text)))
+        await pilot.press("up")
+        await pilot.pause()
+        assert composer.text == "second prompt"
+
+        await pilot.press("up")
+        await pilot.pause()
+        assert composer.text == "first prompt"
+
+        # Already at the oldest entry: another Up is a no-op.
+        await pilot.press("up")
+        await pilot.pause()
+        assert composer.text == "first prompt"
+
+        await pilot.press("down")
+        await pilot.pause()
+        assert composer.text == "second prompt"
+
+        await pilot.press("down")
+        await pilot.pause()
+        assert composer.text == "unsent draft"
+
+
+async def test_history_persists_to_disk_across_app_instances(tmp_path):
+    history_path = tmp_path / "history"
+    first_session = FakeSession()
+    first_app = HermesStreamingApp(
+        args=make_args(history_path=history_path), session_factory=lambda: first_session
+    )
+    async with first_app.run_test() as pilot:
+        composer = first_app.query_one("#composer", Composer)
+        composer.text = "remembered prompt"
+        await pilot.press("enter")
+        await pilot.pause()
+
+    second_session = FakeSession()
+    second_app = HermesStreamingApp(
+        args=make_args(history_path=history_path), session_factory=lambda: second_session
+    )
+    async with second_app.run_test() as pilot:
+        composer = second_app.query_one("#composer", Composer)
+        await pilot.press("up")
+        await pilot.pause()
+        assert composer.text == "remembered prompt"
+
+
+async def test_history_does_not_interleave_across_different_hermes_backends():
+    laptop_session = FakeSession()
+    laptop_app = HermesStreamingApp(
+        args=make_args(url="ws://localhost:8792/voice-session"),
+        session_factory=lambda: laptop_session,
+    )
+    async with laptop_app.run_test() as pilot:
+        composer = laptop_app.query_one("#composer", Composer)
+        composer.text = "prompt sent to my laptop's local hermes"
+        await pilot.press("enter")
+        await pilot.pause()
+
+    media_server_session = FakeSession()
+    media_server_app = HermesStreamingApp(
+        args=make_args(url="wss://media-server.local:8792/voice-session"),
+        session_factory=lambda: media_server_session,
+    )
+    async with media_server_app.run_test() as pilot:
+        composer = media_server_app.query_one("#composer", Composer)
+        # A fresh backend starts with no recall from the laptop's history.
+        await pilot.press("up")
+        await pilot.pause()
+        assert composer.text == ""
+
+        composer.text = "prompt sent to the media server"
+        await pilot.press("enter")
+        await pilot.pause()
+        composer.text = "/history"
+        await pilot.press("enter")
+        await pilot.pause()
+        transcript = transcript_of(media_server_app)
+        assert "prompt sent to the media server" in transcript
+        assert "prompt sent to my laptop's local hermes" not in transcript
+
+
+async def test_history_command_lists_and_filters_past_prompts(tmp_path):
+    session = FakeSession()
+    app = HermesStreamingApp(
+        args=make_args(history_path=tmp_path / "history"), session_factory=lambda: session
+    )
+    async with app.run_test() as pilot:
+        composer = app.query_one("#composer", Composer)
+        composer.text = "deploy the app"
+        await pilot.press("enter")
+        await pilot.pause()
+        composer.text = "check the weather"
+        await pilot.press("enter")
+        await pilot.pause()
+
+        composer.text = "/history deploy"
+        await pilot.press("enter")
+        await pilot.pause()
+        transcript = transcript_of(app)
+        listing = transcript.split("Prompt history matching")[-1]
+        assert "deploy the app" in listing
+        assert "check the weather" not in listing
+
+
+async def test_history_command_reports_empty_history():
+    app = HermesStreamingApp(args=make_args(), session_factory=lambda: FakeSession())
+    async with app.run_test() as pilot:
+        composer = app.query_one("#composer", Composer)
+        composer.text = "/history"
+        await pilot.press("enter")
+        await pilot.pause()
+        assert "history: empty" in transcript_of(app)
+
+
+async def test_status_command_shows_configured_model():
+    app = HermesStreamingApp(
+        args=make_args(model="glm-4.6"), session_factory=lambda: FakeSession()
+    )
+    async with app.run_test() as pilot:
+        composer = app.query_one("#composer", Composer)
+        composer.text = "/status"
+        await pilot.press("enter")
+        await pilot.pause()
+        assert "model: glm-4.6" in transcript_of(app)
+
+
+async def test_reasoning_and_fast_commands_report_honest_unavailable_state():
+    app = HermesStreamingApp(args=make_args(), session_factory=lambda: FakeSession())
+    async with app.run_test() as pilot:
+        composer = app.query_one("#composer", Composer)
+        composer.text = "/reasoning high"
+        await pilot.press("enter")
+        await pilot.pause()
+        assert "/reasoning needs Hermes gateway command dispatch" in transcript_of(app)
+
+        composer.text = "/fast on"
+        await pilot.press("enter")
+        await pilot.pause()
+        assert "/fast needs Hermes gateway command dispatch" in transcript_of(app)

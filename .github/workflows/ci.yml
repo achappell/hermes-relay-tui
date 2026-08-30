@@ -43,4 +43,4 @@ jobs:
       - name: Verify wheel installation
         run: |
           python -m pip install --no-deps dist/*.whl
-          hermes-streaming-tui --help
+          hermes-relay --help

@@ -3,7 +3,7 @@
   "packages": {
     ".": {
       "release-type": "python",
-      "package-name": "hermes-streaming-tui",
+      "package-name": "hermes-relay-tui",
       "changelog-type": "github",
       "include-component-in-tag": false,
       "bump-minor-pre-major": true,

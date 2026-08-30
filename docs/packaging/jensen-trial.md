@@ -9,12 +9,12 @@ The trial machine needs a working Homebrew installation:
 
 ```bash
 brew tap achappell/hermes-streaming
-brew install achappell/hermes-streaming/hermes-streaming-tui
-hermes-streaming-tui --help
+brew install achappell/hermes-streaming/hermes-relay-tui
+hermes-relay --help
 ```
 
 The formula installs Python 3.14, PortAudio, the Python dependencies, and the
-`hermes-streaming-tui` command into an isolated Homebrew-managed environment.
+`hermes-relay` command into an isolated Homebrew-managed environment.
 It is pinned to source tag `v0.1.0`; the Faster-Whisper model may download on
 the first microphone turn.
 
@@ -25,7 +25,7 @@ file. Do not put it in the repository or paste it into a shared issue.
 
 ```bash
 export VOICE_SESSION_TOKEN='redacted-token'
-hermes-streaming-tui \
+hermes-relay \
   --profile-env "$HOME/.hermes/profiles/jensen/.env" \
   --no-play
 ```
@@ -40,7 +40,7 @@ Voice turns still need a local Hermes checkout containing
 launches the terminal:
 
 ```bash
-hermes-streaming-tui \
+hermes-relay \
   --profile-env "$HOME/.hermes/profiles/jensen/.env" \
   --checkout "$HOME/.hermes/hermes-agent"
 ```
@@ -52,7 +52,7 @@ Privacy & Security → Microphone**, then restart that app.
 ## Trial checklist
 
 - [ ] `brew install` completes on a clean Mac.
-- [ ] `hermes-streaming-tui --help` opens without a Python traceback.
+- [ ] `hermes-relay --help` opens without a Python traceback.
 - [ ] A typed turn reaches Hermes and streams inline text.
 - [ ] `Ctrl+R` captures speech after microphone permission is granted.
 - [ ] A response plays, or `--no-play --output response.wav` saves valid audio.

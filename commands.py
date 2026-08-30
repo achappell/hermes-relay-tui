@@ -21,6 +21,8 @@ COMMAND_REGISTRY: tuple[Command, ...] = (
     Command("clear", "Clear the visible transcript"),
     Command("status", "Show connection and session status"),
     Command("model", "Change the active Hermes model", args_hint="[model]"),
+    Command("reasoning", "Change the active reasoning effort", args_hint="[level]"),
+    Command("fast", "Toggle fast mode", args_hint="[on|off]"),
     Command("sessions", "List resumable Hermes sessions"),
     Command("resume", "Resume a Hermes session", args_hint="[session-id]"),
     Command("queue", "Queue a prompt for the next turn", args_hint="<prompt>"),
@@ -28,6 +30,7 @@ COMMAND_REGISTRY: tuple[Command, ...] = (
     Command("details", "Show or hide thinking and tool detail", args_hint="[show|hide]"),
     Command("voice", "Capture and send a microphone turn"),
     Command("audio", "List or select local audio devices", args_hint="[list|status|input|output]"),
+    Command("history", "Search or show prompt history", args_hint="[search term]"),
     Command("quit", "Exit the TUI", aliases=("exit",)),
 )
 
