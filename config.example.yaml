@@ -1,0 +1,61 @@
+# Example hermes-relay config file.
+#
+# Copy this to ~/.hermes-relay-tui/config.yaml (the default location) and
+# trim it down to just the fiddly bits you don't want to retype every time.
+# Every key here is optional — omit anything you're happy leaving at its
+# built-in default.
+#
+# Precedence for every setting below: CLI flag > environment variable >
+# this file > built-in default. So this file only fills in the gaps —
+# a flag on the command line always wins, and an env var you already have
+# set (e.g. VOICE_SESSION_TOKEN) still wins over this file too.
+#
+# Override this file's own location with --config <path> or the
+# HERMES_RELAY_TUI_CONFIG environment variable.
+
+# --- connection ---------------------------------------------------------
+# Which Hermes backend to relay to. Point this at the media-server gateway,
+# your laptop's local Hermes agent, or anywhere else reachable.
+# url: wss://media-server.local:8792/voice-session
+
+# Bearer token. Prefer VOICE_SESSION_TOKEN in your shell env or the
+# profile .env below instead of writing a real token in this file.
+# token: ""
+
+# --- local Hermes install (only needed for the voice/Ctrl+R feature) ---
+# checkout: ~/.hermes/hermes-agent
+# profile_env: ~/.hermes/profiles/amanda/.env
+
+# --- session identity ----------------------------------------------------
+# client_id: amanda-laptop
+# device_id: amanda-mac
+# session_id: hybrid-tui
+# display_name: "Amanda streaming TUI"
+
+# --- audio ---------------------------------------------------------------
+# no_play: false            # true buffers audio instead of opening the speaker
+# output: ~/hermes-responses/response.wav   # also save each response WAV
+# mic_max_seconds: 15.0
+# mic_silence_duration: 3.0
+# mic_silence_threshold: 200
+# mic_input_device: 2               # numeric index or a device name string
+# audio_output_device: "USB Headset"
+# stt_model: null                   # local Faster-Whisper model override
+
+# --- session/config state -------------------------------------------------
+# model: null                # shown in /status; not yet relay-confirmed (RELAY-02)
+# history_path: null         # default: scoped per --url host under
+                              # ~/.hermes-relay-tui/history/
+
+# --- turn behavior ---------------------------------------------------------
+# busy_mode: queue           # queue | steer | interrupt
+# hide_thinking: false
+
+# --- debugging ---------------------------------------------------------
+# debug: false
+# log_file: null             # implies debug: true when set
+
+# --- connection resilience ------------------------------------------------
+# turn_timeout: 195.0        # 0 disables the timeout
+# connect_retries: 3
+# connect_retry_delay: 1.0

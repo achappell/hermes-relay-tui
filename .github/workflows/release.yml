@@ -38,7 +38,7 @@ jobs:
         run: |
           python -m venv /tmp/hermes-release-smoke
           /tmp/hermes-release-smoke/bin/pip install dist/*.whl
-          /tmp/hermes-release-smoke/bin/hermes-streaming-tui --help
+          /tmp/hermes-release-smoke/bin/hermes-relay --help
 
       - name: Ensure the GitHub release exists
         env:
