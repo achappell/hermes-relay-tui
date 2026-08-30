@@ -50,6 +50,16 @@ def test_parser_accepts_busy_mode_flag():
     assert build_arg_parser().parse_args(["--busy-mode", "interrupt"]).busy_mode == "interrupt"
 
 
+def test_parser_accepts_hidden_transcript_detail_flag():
+    assert build_arg_parser().parse_args(["--hide-thinking"]).hide_thinking is True
+
+
+def test_parser_accepts_debug_trace_options(tmp_path):
+    args = build_arg_parser().parse_args(["--debug", "--log-file", str(tmp_path / "trace.log")])
+    assert args.debug is True
+    assert args.log_file == tmp_path / "trace.log"
+
+
 def test_parser_defaults_to_bounded_connection_retries(monkeypatch):
     monkeypatch.delenv("VOICE_SESSION_CONNECT_RETRIES", raising=False)
     monkeypatch.delenv("VOICE_SESSION_CONNECT_RETRY_DELAY", raising=False)

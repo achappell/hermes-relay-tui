@@ -14,6 +14,7 @@ This is a client for the existing Hermes voice-session channel. It does not run 
 - Session create/resume through `--session-id`.
 - Bounded reconnect attempts with visible connection state and local prompt preservation.
 - Structured thinking, status, tool, notification, and background activity rendering with unsupported-event diagnostics.
+- Typed Markdown transcript rendering with `/details [show|hide]` and `--hide-thinking` controls.
 - Connection, timeout, and turn errors shown in the UI instead of crashing the app.
 
 ## Requirements
@@ -120,6 +121,17 @@ are suppressed, and the final assistant text starts on its own `hermes:` line.
 Event types the client does not understand are shown as diagnostic transcript
 entries instead of being discarded.
 
+For a live-session smoke test that needs diagnosis, enable the content-safe
+protocol trace:
+
+```bash
+venv/bin/python app.py --debug --log-file /tmp/hermes-streaming-tui.log
+```
+
+In another terminal, use `tail -f /tmp/hermes-streaming-tui.log`. The trace
+includes frame order, event names, payload keys, text/byte lengths, hashes, and
+turn state. It does not record bearer tokens, prompts, response text, or audio.
+
 ## Controls
 
 | Key | Action |
@@ -143,11 +155,11 @@ composer opens a searchable command palette; filter by name or description,
 use the arrow keys to choose a command, then press `Enter` to return it to the
 composer. `Escape` closes the palette and leaves the slash draft in place. The
 initial local commands
-are `/help`, `/clear`, `/status`, `/queue`, `/busy`, `/voice`, and `/quit`;
+are `/help`, `/clear`, `/status`, `/queue`, `/busy`, `/details`, `/voice`, and `/quit`;
 `/queue`
 also supports `list`, `edit <number> <replacement>`, `drop <number>`, and
 `clear`. `/busy [queue|steer|interrupt]` changes the mode for the current
-session. `/steer` is retained only as a migration warning. `/model`, `/new`,
+session. `/details [show|hide]` controls thinking and tool detail. `/steer` is retained only as a migration warning. `/model`, `/new`,
 `/sessions`, `/resume`, and other commands use the
 gateway-dispatch boundary when one is supplied. The current voice-session
 protocol does not yet expose gateway command dispatch, so those commands fail
@@ -176,6 +188,9 @@ it. A turn that may already have reached Hermes is never replayed automatically.
 | `--profile-env PATH` | `.env` file used for token lookup |
 | `--no-play` | Do not open the local speaker; buffer audio instead |
 | `--output PATH` | Save response audio to WAV |
+| `--hide-thinking` | Hide thinking and tool detail in the transcript |
+| `--debug` | Write a content-safe protocol trace to the default temporary log |
+| `--log-file PATH` | Write the debug trace to `PATH` (also enables debug logging) |
 | `--turn-timeout SECONDS` | Timeout a turn; default `195`, `0` disables |
 | `--connect-retries COUNT` | Additional connection attempts after the first failure; default `3` |
 | `--connect-retry-delay SECONDS` | Base delay before reconnect attempts; default `1.0` |
@@ -210,6 +225,8 @@ When `--output` is set, the first turn uses that path and later turns use number
 | `VOICE_SESSION_CONNECT_RETRIES` | `3` additional connection attempts |
 | `VOICE_SESSION_CONNECT_RETRY_DELAY` | `1.0` second base reconnect delay |
 | `VOICE_SESSION_BUSY_MODE` | `queue`, `steer`, or `interrupt` |
+| `HERMES_STREAMING_TUI_DEBUG` | `1`, `true`, `yes`, or `on` enables the debug trace |
+| `HERMES_STREAMING_TUI_LOG_FILE` | Debug trace path; implies debug logging |
 
 ## Test
 
@@ -247,6 +264,7 @@ client.py     Hermes WebSocket protocol and streamed events
 config.py     CLI and environment configuration
 audio.py      PCM playback and WAV writing
 mic.py        Hermes microphone loader
+transcript.py Typed message records and Markdown rendering
 tests/        Automated tests
 docs/         Design and implementation notes
 ```

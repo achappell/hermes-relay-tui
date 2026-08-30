@@ -25,6 +25,7 @@ COMMAND_REGISTRY: tuple[Command, ...] = (
     Command("resume", "Resume a Hermes session", args_hint="[session-id]"),
     Command("queue", "Queue a prompt for the next turn", args_hint="<prompt>"),
     Command("busy", "Show or set active-turn behavior", args_hint="[queue|steer|interrupt]"),
+    Command("details", "Show or hide thinking and tool detail", args_hint="[show|hide]"),
     Command("voice", "Capture and send a microphone turn"),
     Command("quit", "Exit the TUI", aliases=("exit",)),
 )

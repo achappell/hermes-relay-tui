@@ -12,6 +12,8 @@ import os
 from pathlib import Path
 from typing import Any, Optional
 
+from diagnostics import configure_logging
+
 DEFAULT_URL = "ws://localhost:8792/voice-session"
 DEFAULT_CHECKOUT = Path.home() / ".hermes" / "hermes-agent"
 DEFAULT_PROFILE_ENV = Path.home() / ".hermes" / "profiles" / "amanda" / ".env"
@@ -35,6 +37,13 @@ def _env_int(name: str, default: int) -> int:
 def _env_choice(name: str, choices: tuple[str, ...], default: str) -> str:
     value = os.getenv(name, default).strip().lower()
     return value if value in choices else default
+
+
+def _env_bool(name: str, default: bool = False) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _resolve_token(explicit: Optional[str], env_path: Path) -> str:
@@ -107,6 +116,25 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help="what an ordinary message does while a turn is active",
     )
     parser.add_argument(
+        "--hide-thinking",
+        action="store_true",
+        help="hide thinking and tool detail in the transcript",
+    )
+    parser.add_argument(
+        "--debug",
+        action="store_true",
+        default=_env_bool("HERMES_STREAMING_TUI_DEBUG"),
+        help="write a content-safe protocol trace for live-session debugging",
+    )
+    parser.add_argument(
+        "--log-file",
+        type=Path,
+        default=Path(os.environ["HERMES_STREAMING_TUI_LOG_FILE"])
+        if os.getenv("HERMES_STREAMING_TUI_LOG_FILE")
+        else None,
+        help="debug trace path; implies --debug when supplied",
+    )
+    parser.add_argument(
         "--turn-timeout",
         type=float,
         default=_env_float("VOICE_SESSION_TURN_TIMEOUT", 195.0),
@@ -125,3 +153,20 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help="base seconds before reconnect attempts; delay doubles each time",
     )
     return parser
+
+
+__all__ = [
+    "BUSY_MODES",
+    "DEFAULT_CHECKOUT",
+    "DEFAULT_PROFILE_ENV",
+    "DEFAULT_URL",
+    "_connection_kwargs",
+    "_env_bool",
+    "_env_choice",
+    "_env_float",
+    "_env_int",
+    "_resolve_token",
+    "build_arg_parser",
+    "configure_logging",
+    "connect_factory",
+]

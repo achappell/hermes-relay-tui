@@ -37,7 +37,9 @@ from commands import (
     help_text,
     parse_slash_command,
 )
+from diagnostics import logger as diagnostic_logger, summarize_payload, summarize_text
 from mic import load_microphone_class
+from transcript import TranscriptBuffer
 
 
 class Composer(TextArea):
@@ -258,17 +260,31 @@ class HermesSession:
         if not token:
             raise RuntimeError("No voice-session token found. Set VOICE_SESSION_TOKEN or use the profile .env.")
         kwargs = config._connection_kwargs(connect, token)
+        diagnostic_logger.debug(
+            "connect.start url=%s session_id=%s client_id=%s device_id=%s",
+            self.args.url.split("?", 1)[0],
+            self.args.session_id,
+            self.args.client_id,
+            self.args.device_id,
+        )
         try:
             self._connect_cm = connect(self.args.url, **kwargs)
             self.ws = await self._connect_cm.__aenter__()
-            return await send_hello(
+            hello = await send_hello(
                 self.ws,
                 client_id=self.args.client_id,
                 device_id=self.args.device_id,
                 session_id=self.args.session_id,
                 display_name=self.args.display_name,
             )
-        except BaseException:
+            diagnostic_logger.debug(
+                "connect.hello_ack keys=%s chat_id_present=%s",
+                ",".join(sorted(str(key) for key in hello)),
+                bool(hello.get("chat_id")),
+            )
+            return hello
+        except BaseException as exc:
+            diagnostic_logger.error("connect.failed type=%s", type(exc).__name__)
             try:
                 await self.close()
             except Exception:
@@ -290,6 +306,12 @@ class HermesSession:
         # turn_index stays 0-based for the first turn, matching the reference
         # script's `index` — _audio_path only adds a suffix from index 1 on.
         self.turn_index += 1
+        diagnostic_logger.debug(
+            "session.turn index=%d stt_source=%s %s",
+            self.turn_index,
+            stt_source,
+            summarize_text(text),
+        )
         return send_turn(self.ws, session_id=self.args.session_id, text=text, stt_source=stt_source)
 
     def capture_voice(self) -> str:
@@ -358,7 +380,8 @@ class HermesStreamingApp(App):
         self._command_dispatcher = command_dispatcher
         self.session: SessionProtocol = None  # type: ignore[assignment]
         self.player = PCMPlayer(enabled=not (args and args.no_play))
-        self.transcript_text = ""
+        self.transcript = TranscriptBuffer()
+        self.show_transcript_details = not bool(getattr(args, "hide_thinking", False))
         self.voice_state = VOICE_READY
         self._turn_in_flight = False
         self._queued_prompts: list[str] = []
@@ -382,29 +405,28 @@ class HermesStreamingApp(App):
 
     # --- transcript rendering -------------------------------------------------
 
+    @property
+    def transcript_text(self) -> str:
+        """Plain-text projection retained for diagnostics and test assertions."""
+        return self.transcript.plain_text
+
+    def _refresh_transcript(self) -> None:
+        self.query_one("#transcript", Static).update(
+            self.transcript.render(show_details=self.show_transcript_details)
+        )
+        self.query_one("#transcript-scroll", VerticalScroll).scroll_end(animate=False)
+
     def _append(self, text: str) -> None:
-        """Append inline, exactly like the CLI's print(..., end="")."""
+        """Append a streamed delta to the current typed message."""
         if not text:
             return
-        self.transcript_text += text
-        self.query_one("#transcript", Static).update(self.transcript_text)
-        self.query_one("#transcript-scroll", VerticalScroll).scroll_end(animate=False)
+        self.transcript.append_stream(text)
+        self._refresh_transcript()
 
-    def _append_block(self, text: str) -> None:
-        """Append `text` on a line of its own, terminated by a newline."""
-        prefix = "" if (not self.transcript_text or self.transcript_text.endswith("\n")) else "\n"
-        self._append(f"{prefix}{text}\n")
-
-    def _replace_last_block(self, text: str) -> None:
-        """Replace the last complete transcript line, used for live activity."""
-        if not self.transcript_text.endswith("\n"):
-            self._append_block(text)
-            return
-        body = self.transcript_text[:-1]
-        line_start = body.rfind("\n") + 1
-        self.transcript_text = f"{body[:line_start]}{text}\n"
-        self.query_one("#transcript", Static).update(self.transcript_text)
-        self.query_one("#transcript-scroll", VerticalScroll).scroll_end(animate=False)
+    def _append_block(self, text: str, *, role: str = "system", detail: bool = False) -> None:
+        """Append a complete typed message to the transcript."""
+        self.transcript.add(role, text, detail=detail)
+        self._refresh_transcript()
 
     def _set_voice_state(self, state: str) -> None:
         self.voice_state = state
@@ -562,8 +584,8 @@ class HermesStreamingApp(App):
         if command.name == "help":
             self._append_block(help_text(invocation.args))
         elif command.name == "clear":
-            self.transcript_text = ""
-            self.query_one("#transcript", Static).update("")
+            self.transcript.clear()
+            self._refresh_transcript()
         elif command.name == "status":
             session_id = getattr(self.args, "session_id", "session")
             self._append_block(
@@ -574,6 +596,8 @@ class HermesStreamingApp(App):
             await self._handle_queue_command(invocation.args)
         elif command.name == "busy":
             await self._handle_busy_command(invocation.args)
+        elif command.name == "details":
+            self._handle_details_command(invocation.args)
         elif command.name == "voice":
             if invocation.args:
                 self._append_block("usage: /voice (capture one microphone turn)")
@@ -685,6 +709,21 @@ class HermesStreamingApp(App):
             self._append_block(f"busy-mode already {self.busy_mode}.")
         else:
             self._append_block(f"busy-mode set to {self.busy_mode} (was {previous}).")
+
+    def _handle_details_command(self, args: str) -> None:
+        """Show or hide replaceable thinking and tool activity."""
+        parts = args.strip().lower().split()
+        if not parts:
+            state = "shown" if self.show_transcript_details else "hidden"
+            self._append_block(f"transcript details: {state}")
+            return
+        if len(parts) != 1 or parts[0] not in {"show", "hide"}:
+            self._append_block("usage: /details [show|hide]")
+            return
+        self.show_transcript_details = parts[0] == "show"
+        self._refresh_transcript()
+        state = "shown" if self.show_transcript_details else "hidden"
+        self._append_block(f"transcript details: {state}")
 
     async def action_voice_turn(self) -> None:
         if self._turn_in_flight:
@@ -826,6 +865,12 @@ class HermesStreamingApp(App):
                 self._active_turn_task = None
 
     async def _run_single_turn(self, text: str, *, stt_source: str) -> bool:
+        diagnostic_logger.debug(
+            "app.turn.start index=%s stt_source=%s %s",
+            getattr(self.session, "turn_index", "?"),
+            stt_source,
+            summarize_text(text),
+        )
         if not self.session.is_connected():
             if not await self._connect():
                 self._append_block(f"you> {text}")
@@ -833,7 +878,7 @@ class HermesStreamingApp(App):
                 return False
 
         index = self.session.turn_index
-        self._append_block(f"you> {text}")
+        self._append_block(text, role="user")
         if stt_source != "local-faster-whisper":
             self._set_voice_state(VOICE_THINKING)
         timeout = getattr(self.args, "turn_timeout", 0) or 0
@@ -867,6 +912,12 @@ class HermesStreamingApp(App):
             # Always tear the stream down; leaving it open leaked a
             # sounddevice stream per failed turn.
             self.player.close()
+            diagnostic_logger.debug(
+                "app.turn.finish index=%s transcript_chars=%d connection=%s",
+                index,
+                len(self.transcript_text),
+                self.connection_state,
+            )
         return True
 
     async def _mark_connection_lost(self) -> None:
@@ -887,67 +938,72 @@ class HermesStreamingApp(App):
         played_live = False
         playback_failed = False
         assistant_started = False
-        activity_line: Optional[str] = None
         last_status: Optional[str] = None
 
-        def set_activity(text: str) -> None:
-            nonlocal activity_line
+        def set_activity(text: str, *, role: str = "status") -> None:
             if not text:
                 return
             rendered = f"[{text}]"
-            if rendered == activity_line:
-                return
-            if activity_line is None or not self.transcript_text.endswith(f"{activity_line}\n"):
-                self._append_block(rendered)
-            else:
-                self._replace_last_block(rendered)
-            activity_line = rendered
+            self.transcript.set_activity(rendered, role=role)
+            self._refresh_transcript()
 
         async for event in events:
             kind = event["type"]
-            if kind == "text_delta":
+            diagnostic_logger.debug(
+                "app.event kind=%s %s",
+                kind,
+                summarize_payload(event),
+            )
+            if kind in {"text_delta", "text_replace"}:
                 if not assistant_started:
                     self._set_voice_state(VOICE_THINKING)
-                    self._append("hermes: ")
+                    self.transcript.start_stream("assistant")
                     assistant_started = True
-                self._append(event["text"])
-                activity_line = None
+                if kind == "text_replace":
+                    self.transcript.replace_stream(event["text"])
+                    self._refresh_transcript()
+                else:
+                    self._append(event["text"])
             elif kind == "thinking_delta":
                 self._set_voice_state(VOICE_THINKING)
-                set_activity("thinking…")
+                set_activity("thinking…", role="thinking")
             elif kind == "reasoning_available":
                 self._set_voice_state(VOICE_THINKING)
-                set_activity("reasoning available")
+                set_activity("reasoning available", role="thinking")
             elif kind == "status":
                 status_text = str(event.get("text") or "").strip()
                 if status_text and status_text != last_status:
                     last_status = status_text
                     self._set_voice_state(status_text)
                     if assistant_started:
-                        self._append_block(f"[{status_text}]")
+                        self._append_block(f"[{status_text}]", role="status")
                     else:
-                        set_activity(status_text)
+                        set_activity(status_text, role="status")
             elif kind == "notification":
-                self._append_block(f"notification: {event['text']}")
+                self._append_block(f"notification: {event['text']}", role="notification")
             elif kind == "notification_clear":
-                set_activity("notification cleared")
+                set_activity("notification cleared", role="notification")
             elif kind == "tool_start":
                 self._set_voice_state(VOICE_THINKING)
-                set_activity(f"tool: {event.get('name') or 'tool'}…")
+                set_activity(f"tool: {event.get('name') or 'tool'}…", role="tool")
             elif kind == "tool_progress":
                 self._set_voice_state(VOICE_THINKING)
                 name = event.get("name") or "tool"
                 preview = str(event.get("preview") or "working…").strip()
-                set_activity(f"tool: {name} — {preview}")
+                set_activity(f"tool: {name} — {preview}", role="tool")
             elif kind == "tool_complete":
                 name = event.get("name") or "tool"
-                set_activity(f"tool: {name} {'✗' if event.get('error') else '✓'}")
+                set_activity(
+                    f"tool: {name} {'✗' if event.get('error') else '✓'}", role="tool"
+                )
             elif kind == "background_complete":
                 text = str(event.get("text") or "background task complete").strip()
-                self._append_block(f"background: {text}")
+                self._append_block(f"background: {text}", role="background")
             elif kind == "unknown_event":
                 event_type = event.get("event_type") or "missing"
-                self._append_block(f"[unhandled server event: {event_type}]")
+                self._append_block(
+                    f"[unhandled server event: {event_type}]", role="error"
+                )
             elif kind == "audio_start":
                 audio_format = (event["sample_rate"], event["channels"], event["sample_width"])
                 self.player.start(audio_format)
@@ -1006,9 +1062,9 @@ class HermesStreamingApp(App):
                     self._set_voice_state(VOICE_BUFFERING)
             elif kind == "error":
                 self._set_voice_state(VOICE_ERROR)
-                self._append_block(f"[error] {event['error']}")
+                self._append_block(f"[error] {event['error']}", role="error")
             elif kind == "turn_end":
-                self._append("\n")
+                self.transcript.finish_stream()
                 self._save_turn_audio(
                     bytes(audio),
                     audio_format,
@@ -1045,6 +1101,11 @@ class HermesStreamingApp(App):
 def main() -> int:
     parser = config.build_arg_parser()
     args = parser.parse_args()
+    if args.log_file is not None:
+        args.debug = True
+    log_path = config.configure_logging(debug=args.debug, log_file=args.log_file)
+    if log_path is not None:
+        diagnostic_logger.info("app.start url=%s", args.url.split("?", 1)[0])
     app = HermesStreamingApp(args=args)
     app.run()
     return 0
