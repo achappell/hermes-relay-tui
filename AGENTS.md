@@ -93,6 +93,7 @@ Do not put a real token in this file or in the README.
 - Use `/queue` to inspect or edit queued prompts.
 - Use `/busy [queue|steer|interrupt]` to change the mode for the current session.
 - Use `/details [show|hide]` or `--hide-thinking` to control thinking/tool detail in the transcript.
+- Use `/audio [list|status|input <device>|output <device>]` to inspect and select local audio devices for the current session.
 - `Ctrl+C` interrupts the active turn; when idle it clears the draft, clears the queue, or exits.
 - `/steer` is retained only as a migration warning; steering happens when an ordinary message is submitted in `--busy-mode steer`.
 - Slash commands are routed before ordinary text; do not silently send an unknown command as a model prompt.
@@ -118,9 +119,10 @@ The complete source of truth is `config.build_arg_parser()`. The main runtime op
 - `--debug` — write a content-safe protocol trace to a temporary log file.
 - `--log-file PATH` — choose the debug trace path; supplying it implies `--debug`.
 - `--mic-max-seconds`, `--mic-silence-duration`, `--mic-silence-threshold` — microphone tuning.
+- `--mic-input-device`, `--audio-output-device` — optional local input/output device name or index; `default` restores the system default.
 - `--stt-model` — optional local Faster-Whisper model selection.
 
-Relevant environment variables include `HERMES_VOICE_SESSION_URL`, `VOICE_SESSION_TOKEN`, `VOICE_SESSION_CLIENT_ID`, `VOICE_SESSION_DEVICE_ID`, `VOICE_SESSION_ID`, `VOICE_SESSION_MIC_MAX_SECONDS`, `VOICE_SESSION_MIC_SILENCE_DURATION`, `VOICE_SESSION_MIC_SILENCE_THRESHOLD`, `VOICE_SESSION_STT_MODEL`, `VOICE_SESSION_TURN_TIMEOUT`, `VOICE_SESSION_CONNECT_RETRIES`, `VOICE_SESSION_CONNECT_RETRY_DELAY`, and `VOICE_SESSION_BUSY_MODE`.
+Relevant environment variables include `HERMES_VOICE_SESSION_URL`, `VOICE_SESSION_TOKEN`, `VOICE_SESSION_CLIENT_ID`, `VOICE_SESSION_DEVICE_ID`, `VOICE_SESSION_ID`, `VOICE_SESSION_MIC_MAX_SECONDS`, `VOICE_SESSION_MIC_SILENCE_DURATION`, `VOICE_SESSION_MIC_SILENCE_THRESHOLD`, `VOICE_SESSION_MIC_INPUT_DEVICE`, `VOICE_SESSION_AUDIO_OUTPUT_DEVICE`, `VOICE_SESSION_STT_MODEL`, `VOICE_SESSION_TURN_TIMEOUT`, `VOICE_SESSION_CONNECT_RETRIES`, `VOICE_SESSION_CONNECT_RETRY_DELAY`, and `VOICE_SESSION_BUSY_MODE`.
 
 `HERMES_STREAMING_TUI_DEBUG` and `HERMES_STREAMING_TUI_LOG_FILE` configure the
 optional debug trace without command-line flags. The trace records event
@@ -135,7 +137,7 @@ response text, or audio contents.
 - Binary WebSocket frames are raw PCM audio. `audio_start` supplies sample rate, channel count, and sample width.
 - `app.py` owns presentation and turn state. It should not grow protocol parsing logic that belongs in `client.py`.
 - Thinking/status/tool activity is rendered as a replaceable transcript line; the assistant response gets its own line once text begins, so repeated activity cannot pollute the final answer.
-- `mic.py` loads `LocalMicrophone` from `<checkout>/scripts/voice-session-client.py`; that file and the project's voice dependencies must exist for `Ctrl+R` to work.
+- `mic.py` loads `LocalMicrophone` from `<checkout>/scripts/voice-session-client.py`; its adapter supplies session-local input selection and cancellation, while that file and the project's voice dependencies must exist for `Ctrl+R` to work.
 - `audio.py` supports signed 16-bit PCM for live playback. If playback cannot start, the app reports buffering and can still save the collected PCM as WAV.
 - Connection setup uses bounded exponential-backoff retries. Prompts that cannot be sent remain FIFO-queued; a turn that may have reached Hermes is never replayed automatically after a socket failure.
 - The current voice-session protocol has no explicit interrupt operation. Interruption closes the current client connection and reconnects before the next turn, preventing stale events from being consumed as new-turn data; server-side generation cancellation remains a protocol concern.

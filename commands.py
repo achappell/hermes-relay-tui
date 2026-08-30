@@ -27,6 +27,7 @@ COMMAND_REGISTRY: tuple[Command, ...] = (
     Command("busy", "Show or set active-turn behavior", args_hint="[queue|steer|interrupt]"),
     Command("details", "Show or hide thinking and tool detail", args_hint="[show|hide]"),
     Command("voice", "Capture and send a microphone turn"),
+    Command("audio", "List or select local audio devices", args_hint="[list|status|input|output]"),
     Command("quit", "Exit the TUI", aliases=("exit",)),
 )
 

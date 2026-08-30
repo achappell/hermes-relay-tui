@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import threading
 from typing import Any, AsyncIterator, Awaitable, Callable, Optional, Protocol
 
 from textual import events
@@ -27,7 +28,7 @@ from textual.widgets import Footer, Header, Input, OptionList, Static, TextArea
 from textual.widgets.option_list import Option
 
 import config
-from audio import PCMPlayer, audio_path, read_wav, write_wav
+from audio import PCMPlayer, audio_device_list, audio_path, read_wav, write_wav
 from client import send_hello, send_turn
 from commands import (
     COMMAND_REGISTRY,
@@ -38,7 +39,7 @@ from commands import (
     parse_slash_command,
 )
 from diagnostics import logger as diagnostic_logger, summarize_payload, summarize_text
-from mic import load_microphone_class
+from mic import cancel_microphone, load_microphone_class, make_recorder_factory
 from transcript import TranscriptBuffer
 
 
@@ -239,6 +240,10 @@ class SessionProtocol(Protocol):
 
     def capture_voice(self) -> str: ...
 
+    def cancel_voice(self) -> None: ...
+
+    async def set_input_device(self, device: int | str | None) -> None: ...
+
     async def close(self) -> None: ...
 
 
@@ -251,6 +256,8 @@ class HermesSession:
         self._connect_cm: Any = None
         self.turn_index = 0
         self.microphone: Any = None
+        self.input_device = getattr(args, "mic_input_device", None)
+        self._voice_cancel_requested = threading.Event()
 
     async def connect(self) -> dict[str, Any]:
         if self._connect_cm is not None or self.ws is not None:
@@ -295,6 +302,11 @@ class HermesSession:
         return self.ws is not None
 
     async def close(self) -> None:
+        self.cancel_voice()
+        microphone = self.microphone
+        self.microphone = None
+        if microphone is not None:
+            await asyncio.to_thread(microphone.close)
         if self._connect_cm is not None:
             try:
                 await self._connect_cm.__aexit__(None, None, None)
@@ -315,6 +327,7 @@ class HermesSession:
         return send_turn(self.ws, session_id=self.args.session_id, text=text, stt_source=stt_source)
 
     def capture_voice(self) -> str:
+        self._voice_cancel_requested.clear()
         if self.microphone is None:
             microphone_class = load_microphone_class(self.args.checkout)
             self.microphone = microphone_class(
@@ -322,8 +335,28 @@ class HermesSession:
                 silence_duration=self.args.mic_silence_duration,
                 silence_threshold=self.args.mic_silence_threshold,
                 model=self.args.stt_model,
+                recorder_factory=make_recorder_factory(
+                    self.input_device,
+                    self._voice_cancel_requested,
+                ),
             )
         return self.microphone.capture()
+
+    def cancel_voice(self) -> None:
+        self._voice_cancel_requested.set()
+        if self.microphone is not None:
+            cancel_microphone(self.microphone)
+
+    async def set_input_device(self, device: int | str | None) -> None:
+        """Select the input device for subsequent microphone captures."""
+        if self.input_device == device:
+            return
+        self.cancel_voice()
+        microphone = self.microphone
+        self.microphone = None
+        self.input_device = device
+        if microphone is not None:
+            await asyncio.to_thread(microphone.close)
 
 
 CONNECTION_DISCONNECTED = "disconnected"
@@ -379,13 +412,19 @@ class HermesStreamingApp(App):
         self._session_factory = session_factory
         self._command_dispatcher = command_dispatcher
         self.session: SessionProtocol = None  # type: ignore[assignment]
-        self.player = PCMPlayer(enabled=not (args and args.no_play))
+        self.player = PCMPlayer(
+            enabled=not (args and args.no_play),
+            output_device=getattr(args, "audio_output_device", None),
+        )
+        self.audio_input_device = getattr(args, "mic_input_device", None)
         self.transcript = TranscriptBuffer()
         self.show_transcript_details = not bool(getattr(args, "hide_thinking", False))
         self.voice_state = VOICE_READY
         self._turn_in_flight = False
         self._queued_prompts: list[str] = []
         self._active_turn_task: Optional[asyncio.Task[None]] = None
+        self._voice_capture_task: Optional[asyncio.Task[str]] = None
+        self._voice_capture_cancelled = False
         self._needs_reconnect = False
         self.connection_state = CONNECTION_DISCONNECTED
         self._connection_lock = asyncio.Lock()
@@ -602,7 +641,9 @@ class HermesStreamingApp(App):
             if invocation.args:
                 self._append_block("usage: /voice (capture one microphone turn)")
             else:
-                await self.action_voice_turn()
+                await self._capture_voice_turn()
+        elif command.name == "audio":
+            await self._handle_audio_command(invocation.args)
         elif command.name == "quit":
             self.exit()
         else:
@@ -725,16 +766,105 @@ class HermesStreamingApp(App):
         state = "shown" if self.show_transcript_details else "hidden"
         self._append_block(f"transcript details: {state}")
 
-    async def action_voice_turn(self) -> None:
+    async def _handle_audio_command(self, args: str) -> None:
+        """Show and change local input/output devices for this session."""
+        parts = args.strip().split(maxsplit=1)
+        action = parts[0].lower() if parts else "status"
+        if action == "status":
+            if len(parts) > 1:
+                self._append_block("usage: /audio [list|status|input|output]")
+                return
+            self._append_block(
+                "audio: "
+                f"input={self._audio_device_label(self.audio_input_device)} · "
+                f"output={self._audio_device_label(self.player.output_device)} · "
+                f"state={self.voice_state}"
+            )
+            return
+        if action == "list":
+            if len(parts) > 1:
+                self._append_block("usage: /audio list")
+                return
+            try:
+                devices = audio_device_list()
+            except Exception as exc:
+                self._append_block(f"[error] audio devices: {exc}")
+                return
+            if not devices:
+                self._append_block("audio devices: none detected")
+                return
+            lines = ["Audio devices:"]
+            for device in devices:
+                capabilities = []
+                if device["inputs"]:
+                    capabilities.append(f"input {device['inputs']}")
+                if device["outputs"]:
+                    capabilities.append(f"output {device['outputs']}")
+                lines.append(
+                    f"{device['index']}: {device['name']} ({', '.join(capabilities) or 'no I/O'})"
+                )
+            self._append_block("\n".join(lines))
+            return
+        if action not in {"input", "output"} or len(parts) != 2:
+            self._append_block(
+                "usage: /audio [list|status|input <device>|output <device>]"
+            )
+            return
+
+        selector = config._device_selector(parts[1])
+        if action == "input":
+            setter = getattr(self.session, "set_input_device", None)
+            try:
+                if callable(setter):
+                    result = setter(selector)
+                    if inspect.isawaitable(result):
+                        await result
+                else:
+                    setattr(self.session, "input_device", selector)
+            except Exception as exc:
+                self._append_block(f"[error] audio input device: {exc}")
+                return
+            self.audio_input_device = selector
+        else:
+            self.player.output_device = selector
+        self._append_block(f"audio {action} device: {self._audio_device_label(selector)}")
+
+    @staticmethod
+    def _audio_device_label(device: int | str | None) -> str:
+        return "default" if device is None else str(device)
+
+    def action_voice_turn(self) -> None:
+        """Start voice capture off the Textual message-pump path."""
+        self.run_worker(
+            self._capture_voice_turn(),
+            name="voice turn",
+            group="interaction",
+            exit_on_error=False,
+        )
+
+    async def _capture_voice_turn(self) -> None:
         if self._turn_in_flight:
             self._append_block("[a turn is already in flight]")
             return
         self._set_voice_state(VOICE_LISTENING)
+        self._voice_capture_cancelled = False
+        capture_task = asyncio.create_task(asyncio.to_thread(self.session.capture_voice))
+        self._voice_capture_task = capture_task
         try:
-            transcript_text = await asyncio.to_thread(self.session.capture_voice)
+            transcript_text = await capture_task
+        except asyncio.CancelledError:
+            if self._voice_capture_cancelled:
+                return
+            raise
         except Exception as exc:
             self._set_voice_state(VOICE_ERROR)
             self._append_block(f"[error] microphone: {exc}")
+            return
+        finally:
+            if self._voice_capture_task is capture_task:
+                self._voice_capture_task = None
+            self._voice_capture_cancelled = False
+        if self.voice_state == VOICE_INTERRUPTED:
             return
         if not transcript_text:
             self._set_voice_state(VOICE_READY)
@@ -744,6 +874,8 @@ class HermesStreamingApp(App):
         await self._run_turn(transcript_text, stt_source="local-faster-whisper")
 
     async def action_interrupt(self) -> None:
+        if await self._cancel_active_voice_capture():
+            return
         if await self._interrupt_active_turn():
             return
 
@@ -758,6 +890,25 @@ class HermesStreamingApp(App):
             self._append_block(f"cleared {count} queued prompt(s).")
             return
         self.exit()
+
+    async def _cancel_active_voice_capture(self) -> bool:
+        """Stop microphone capture without treating Ctrl+C as an idle exit."""
+        capture_task = self._voice_capture_task
+        if capture_task is None or capture_task.done():
+            return False
+
+        self._voice_capture_cancelled = True
+        self._set_voice_state(VOICE_INTERRUPTED)
+        cancel = getattr(self.session, "cancel_voice", None)
+        if callable(cancel):
+            await asyncio.to_thread(cancel)
+        else:
+            capture_task.cancel()
+        try:
+            await capture_task
+        except asyncio.CancelledError:
+            pass
+        return True
 
     async def _interrupt_active_turn(self) -> bool:
         """Cancel local consumption and reset the stream before reuse.

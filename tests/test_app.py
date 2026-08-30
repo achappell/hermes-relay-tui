@@ -1,4 +1,6 @@
 import asyncio
+import sys
+import threading
 import types
 import wave
 from io import BytesIO
@@ -568,7 +570,7 @@ async def test_voice_turn_streams_with_the_voice_stt_source():
     app = HermesStreamingApp(args=make_args(), session_factory=lambda: session)
     async with app.run_test() as pilot:
         await pilot.pause()
-        await app.action_voice_turn()
+        await app._capture_voice_turn()
 
         assert session.capture_calls == 1
         assert session.sent_turns == [("spoken words", "local-faster-whisper")]
@@ -583,7 +585,7 @@ async def test_voice_turn_with_no_speech_sends_nothing():
     app = HermesStreamingApp(args=make_args(), session_factory=lambda: session)
     async with app.run_test() as pilot:
         await pilot.pause()
-        await app.action_voice_turn()
+        await app._capture_voice_turn()
 
         assert session.sent_turns == []
         assert "no speech detected." in transcript_of(app)
@@ -599,10 +601,151 @@ async def test_voice_capture_failure_is_reported_without_crashing():
     app = HermesStreamingApp(args=make_args(), session_factory=lambda: session)
     async with app.run_test() as pilot:
         await pilot.pause()
-        await app.action_voice_turn()
+        await app._capture_voice_turn()
 
         assert "[error] microphone: voice dependencies are not installed" in transcript_of(app)
         assert session.sent_turns == []
+
+
+async def test_audio_command_selects_input_and_output_devices_for_the_session():
+    class DeviceSession(FakeSession):
+        def __init__(self):
+            super().__init__()
+            self.input_device = None
+
+        def set_input_device(self, device):
+            self.input_device = device
+
+    session = DeviceSession()
+    app = HermesStreamingApp(args=make_args(), session_factory=lambda: session)
+    async with app.run_test() as pilot:
+        composer = app.query_one("#composer", Composer)
+        composer.text = "/audio input USB Microphone"
+        await pilot.press("enter")
+        await pilot.pause()
+
+        composer.text = "/audio output 2"
+        await pilot.press("enter")
+        await pilot.pause()
+
+        assert session.input_device == "USB Microphone"
+        assert app.player.output_device == 2
+        assert "audio input device: USB Microphone" in transcript_of(app)
+        assert "audio output device: 2" in transcript_of(app)
+
+
+async def test_audio_command_lists_detected_devices(monkeypatch):
+    fake_sounddevice = types.SimpleNamespace(
+        query_devices=lambda: [
+            {"name": "Built-in Microphone", "max_input_channels": 2, "max_output_channels": 0},
+            {"name": "USB Headset", "max_input_channels": 1, "max_output_channels": 2},
+        ]
+    )
+    monkeypatch.setitem(sys.modules, "sounddevice", fake_sounddevice)
+
+    app = HermesStreamingApp(args=make_args(), session_factory=lambda: FakeSession())
+    async with app.run_test() as pilot:
+        app.query_one("#composer", Composer).text = "/audio list"
+        await pilot.press("enter")
+        await pilot.pause()
+
+        transcript = transcript_of(app)
+        assert "0: Built-in Microphone (input 2)" in transcript
+        assert "1: USB Headset (input 1, output 2)" in transcript
+
+
+async def test_session_input_device_change_releases_existing_microphone():
+    session = HermesSession(make_args(mic_input_device=None))
+
+    class FakeMicrophone:
+        def __init__(self):
+            self.closed = False
+
+        def close(self):
+            self.closed = True
+
+    microphone = FakeMicrophone()
+    session.microphone = microphone
+
+    await session.set_input_device("USB Microphone")
+
+    assert session.input_device == "USB Microphone"
+    assert microphone.closed is True
+    assert session.microphone is None
+
+
+async def test_ctrl_c_cancels_an_active_microphone_capture():
+    class BlockingVoiceSession(FakeSession):
+        def __init__(self):
+            super().__init__()
+            self.capture_started = threading.Event()
+            self.capture_release = threading.Event()
+            self.cancel_voice_calls = 0
+
+        def capture_voice(self):
+            self.capture_calls += 1
+            self.capture_started.set()
+            self.capture_release.wait(1)
+            return ""
+
+        def cancel_voice(self):
+            self.cancel_voice_calls += 1
+            self.capture_release.set()
+
+    session = BlockingVoiceSession()
+    app = HermesStreamingApp(args=make_args(), session_factory=lambda: session)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        capture = asyncio.create_task(app._capture_voice_turn())
+        await asyncio.to_thread(session.capture_started.wait, 1)
+
+        await app.action_interrupt()
+        await asyncio.wait_for(capture, 1)
+
+        assert session.cancel_voice_calls == 1
+        assert session.sent_turns == []
+        assert voice_status_of(app) == "● interrupted"
+        assert "no speech detected." not in transcript_of(app)
+
+
+async def test_ctrl_c_key_cancels_an_active_microphone_capture():
+    class BlockingVoiceSession(FakeSession):
+        def __init__(self):
+            super().__init__()
+            self.capture_started = threading.Event()
+            self.capture_release = threading.Event()
+            self.cancel_voice_calls = 0
+
+        def capture_voice(self):
+            self.capture_calls += 1
+            self.capture_started.set()
+            self.capture_release.wait(10)
+            return ""
+
+        def cancel_voice(self):
+            self.cancel_voice_calls += 1
+            self.capture_release.set()
+
+    session = BlockingVoiceSession()
+    app = HermesStreamingApp(args=make_args(), session_factory=lambda: session)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        start_press = asyncio.create_task(pilot.press("ctrl+r"))
+        await asyncio.to_thread(session.capture_started.wait, 1)
+        capture_task = app._voice_capture_task
+        assert capture_task is not None
+
+        stop_press = asyncio.create_task(pilot.press("ctrl+c"))
+        await asyncio.sleep(0.05)
+        assert session.cancel_voice_calls == 1
+        await asyncio.wait_for(capture_task, 1)
+        await asyncio.wait_for(stop_press, 1)
+        await asyncio.wait_for(start_press, 1)
+
+        assert session.cancel_voice_calls == 1
+        assert session.sent_turns == []
+        assert voice_status_of(app) == "● interrupted"
+        assert "no speech detected." not in transcript_of(app)
 
 
 # --- guards -----------------------------------------------------------------
@@ -872,7 +1015,7 @@ async def test_voice_turn_is_refused_while_a_turn_is_in_flight():
         await pilot.pause()
         app._turn_in_flight = True
 
-        await app.action_voice_turn()
+        await app._capture_voice_turn()
 
         assert session.capture_calls == 0
         assert session.sent_turns == []

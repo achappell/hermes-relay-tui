@@ -9,6 +9,7 @@ This is a client for the existing Hermes voice-session channel. It does not run 
 - Streaming text transcript rendered inline as deltas arrive.
 - Text turns submitted from the input box.
 - Local microphone capture with Hermes' `LocalMicrophone` and local STT.
+- Cancellable microphone capture with session-local input/output device selection.
 - Live signed 16-bit PCM playback through `sounddevice`.
 - WAV output when playback is disabled or `--output` is supplied.
 - Session create/resume through `--session-id`.
@@ -141,6 +142,7 @@ turn state. It does not record bearer tokens, prompts, response text, or audio.
 | `/` at an empty composer | Open the visual slash-command palette |
 | `Tab` | Complete a slash command |
 | `Ctrl+R` | Capture and send a microphone turn |
+| `/audio` | Show or select local audio devices |
 | `Ctrl+C` | Interrupt the active turn; otherwise clear the draft, queue, or quit |
 | `F1` | Show keyboard help |
 | `Ctrl+Q` | Quit |
@@ -159,7 +161,11 @@ are `/help`, `/clear`, `/status`, `/queue`, `/busy`, `/details`, `/voice`, and `
 `/queue`
 also supports `list`, `edit <number> <replacement>`, `drop <number>`, and
 `clear`. `/busy [queue|steer|interrupt]` changes the mode for the current
-session. `/details [show|hide]` controls thinking and tool detail. `/steer` is retained only as a migration warning. `/model`, `/new`,
+session. `/details [show|hide]` controls thinking and tool detail. `/audio`
+shows the current devices; `/audio list` lists PortAudio devices, and
+`/audio input <device>` / `/audio output <device>` select a device for the
+current session. Use `default` to return to the system default. `/steer` is
+retained only as a migration warning. `/model`, `/new`,
 `/sessions`, `/resume`, and other commands use the
 gateway-dispatch boundary when one is supplied. The current voice-session
 protocol does not yet expose gateway command dispatch, so those commands fail
@@ -198,13 +204,15 @@ it. A turn that may already have reached Hermes is never replayed automatically.
 | `--mic-max-seconds SECONDS` | Maximum microphone capture duration |
 | `--mic-silence-duration SECONDS` | Silence duration that ends capture |
 | `--mic-silence-threshold VALUE` | Capture silence threshold |
+| `--mic-input-device DEVICE` | Microphone name or index; `default` uses the system default |
+| `--audio-output-device DEVICE` | Speaker name or index; `default` uses the system default |
 | `--stt-model NAME` | Select the local Faster-Whisper model |
 
 Run `venv/bin/python app.py --help` for the full option list.
 
 ## Audio output
 
-By default, the app plays supported 16-bit PCM as it arrives. If playback is unavailable, it reports the failure and continues buffering the turn. Use `--no-play --output response.wav` to capture audio without using a speaker.
+By default, the app plays supported 16-bit PCM as it arrives. If playback is unavailable, it reports the failure and continues buffering the turn. Use `--audio-output-device` or `/audio output <device>` to select a speaker, and `--no-play --output response.wav` to capture audio without using one.
 
 When `--output` is set, the first turn uses that path and later turns use numbered suffixes such as `response-1.wav`. Without `--output`, audio that was not played live is written to the current directory as `hybrid-tui-<turn-id>.wav`.
 
@@ -220,6 +228,8 @@ When `--output` is set, the first turn uses that path and later turns use number
 | `VOICE_SESSION_MIC_MAX_SECONDS` | `15.0` |
 | `VOICE_SESSION_MIC_SILENCE_DURATION` | `3.0` |
 | `VOICE_SESSION_MIC_SILENCE_THRESHOLD` | `200` |
+| `VOICE_SESSION_MIC_INPUT_DEVICE` | Microphone name or index; unset uses the system default |
+| `VOICE_SESSION_AUDIO_OUTPUT_DEVICE` | Speaker name or index; unset uses the system default |
 | `VOICE_SESSION_STT_MODEL` | unset; use the Hermes/local-STT default |
 | `VOICE_SESSION_TURN_TIMEOUT` | `195.0` seconds |
 | `VOICE_SESSION_CONNECT_RETRIES` | `3` additional connection attempts |
@@ -247,6 +257,10 @@ Set `VOICE_SESSION_TOKEN`, pass `--token`, or point `--profile-env` at a file co
 Check that `--checkout` points to a Hermes checkout containing `scripts/voice-session-client.py`, and that the project virtualenv was refreshed with `venv/bin/pip install -r requirements-dev.txt`. The TUI loads `LocalMicrophone` from that file at runtime, using the TUI process' Python environment.
 
 On macOS, also grant microphone access to the app that launches the TUI (Terminal, iTerm, VS Code, or your IDE) under **System Settings → Privacy & Security → Microphone**, then fully restart that app. `Error querying device -1` means PortAudio cannot see an accessible default input device; check the selected input in **System Settings → Sound → Input** as well.
+
+Use `/audio list` to find device indexes, then `/audio input <index>` to select
+one for the current session. Press `Ctrl+C` while `● listening…` is shown to
+cancel capture without leaving the TUI.
 
 ### Audio is buffered instead of played
 

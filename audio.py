@@ -45,11 +45,30 @@ def read_wav(data: bytes) -> tuple[bytes, tuple[int, int, int]]:
         raise ValueError("invalid WAV audio fallback") from exc
 
 
+def audio_device_list() -> list[dict[str, Any]]:
+    """Return the local PortAudio devices with their I/O capabilities."""
+    import sounddevice as sd
+
+    devices = sd.query_devices()
+    if isinstance(devices, dict):
+        devices = [devices]
+    return [
+        {
+            "index": index,
+            "name": str(device.get("name", f"device {index}")),
+            "inputs": int(device.get("max_input_channels", 0)),
+            "outputs": int(device.get("max_output_channels", 0)),
+        }
+        for index, device in enumerate(devices)
+    ]
+
+
 class PCMPlayer:
     """Play signed 16-bit PCM chunks locally, with a safe buffering fallback."""
 
-    def __init__(self, enabled: bool) -> None:
+    def __init__(self, enabled: bool, output_device: int | str | None = None) -> None:
         self.enabled = enabled
+        self.output_device = output_device
         self.stream: Any = None
         self.failure: Optional[str] = None
 
@@ -68,11 +87,16 @@ class PCMPlayer:
         try:
             import sounddevice as sd
 
+            stream_kwargs = {
+                "samplerate": sample_rate,
+                "channels": channels,
+                "dtype": "int16",
+                "latency": "low",
+            }
+            if self.output_device is not None:
+                stream_kwargs["device"] = self.output_device
             self.stream = sd.RawOutputStream(
-                samplerate=sample_rate,
-                channels=channels,
-                dtype="int16",
-                latency="low",
+                **stream_kwargs,
             )
             self.stream.start()
         except Exception as exc:

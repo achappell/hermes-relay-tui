@@ -46,6 +46,19 @@ def _env_bool(name: str, default: bool = False) -> bool:
     return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _device_selector(value: Optional[str]) -> int | str | None:
+    """Convert a device name or numeric index from configuration."""
+    if value is None:
+        return None
+    normalized = value.strip()
+    if not normalized or normalized.lower() == "default":
+        return None
+    try:
+        return int(normalized)
+    except ValueError:
+        return normalized
+
+
 def _resolve_token(explicit: Optional[str], env_path: Path) -> str:
     if explicit:
         return explicit
@@ -108,6 +121,18 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--mic-max-seconds", type=float, default=_env_float("VOICE_SESSION_MIC_MAX_SECONDS", 15.0))
     parser.add_argument("--mic-silence-duration", type=float, default=_env_float("VOICE_SESSION_MIC_SILENCE_DURATION", 3.0))
     parser.add_argument("--mic-silence-threshold", type=int, default=_env_int("VOICE_SESSION_MIC_SILENCE_THRESHOLD", 200))
+    parser.add_argument(
+        "--mic-input-device",
+        type=_device_selector,
+        default=_device_selector(os.getenv("VOICE_SESSION_MIC_INPUT_DEVICE")),
+        help="microphone device name or index (default: system default)",
+    )
+    parser.add_argument(
+        "--audio-output-device",
+        type=_device_selector,
+        default=_device_selector(os.getenv("VOICE_SESSION_AUDIO_OUTPUT_DEVICE")),
+        help="speaker device name or index (default: system default)",
+    )
     parser.add_argument("--stt-model", default=os.getenv("VOICE_SESSION_STT_MODEL") or None)
     parser.add_argument(
         "--busy-mode",
