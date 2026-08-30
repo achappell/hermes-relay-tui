@@ -540,12 +540,61 @@ async def test_details_command_controls_thinking_and_tool_rendering():
         await pilot.pause()
         assert app.show_transcript_details is False
         assert "details: hidden" in transcript_of(app)
+        assert "thought for" not in app._visible_transcript_text()
+        assert "hermes: # Answer" in app._visible_transcript_text()
 
         app.query_one("#composer", Composer).text = "/details show"
         await pilot.press("enter")
         await pilot.pause()
         assert app.show_transcript_details is True
         assert "details: shown" in transcript_of(app)
+
+
+async def test_thinking_detail_accumulates_preview_and_reports_elapsed_time(monkeypatch):
+    ticks = iter([10.0, 14.0])
+    monkeypatch.setattr(
+        app_module,
+        "time",
+        types.SimpleNamespace(monotonic=lambda: next(ticks)),
+        raising=False,
+    )
+    thinking_ready = asyncio.Event()
+    release = asyncio.Event()
+
+    class ThinkingSession(FakeSession):
+        async def _stream(self, events):
+            for position, event in enumerate(events):
+                await asyncio.sleep(0)
+                yield event
+                if position == 1:
+                    thinking_ready.set()
+                    await release.wait()
+
+    session = ThinkingSession(
+        events=[
+            {"type": "thinking_delta", "text": "checking the relay"},
+            {"type": "thinking_delta", "text": " response"},
+            {"type": "text_delta", "text": "Done."},
+            {"type": "turn_end", "turn_id": "thinking-1"},
+        ]
+    )
+    app = HermesStreamingApp(args=make_args(), session_factory=lambda: session)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        turn = asyncio.create_task(app._run_turn("hi"))
+        await thinking_ready.wait()
+        await pilot.pause()
+
+        assert "[thinking: checking the relay response]" in transcript_of(app).splitlines()
+
+        release.set()
+        await turn
+        await pilot.pause()
+
+        lines = transcript_of(app).splitlines()
+        assert "[thought for 4s]" in lines
+        assert "hermes: Done." in lines
+        assert "[thinking…]" not in lines
 
 
 async def test_tab_completes_a_unique_slash_command_and_keeps_draft_local():

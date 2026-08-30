@@ -18,6 +18,7 @@ import asyncio
 import inspect
 import sys
 import threading
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any, AsyncIterator, Awaitable, Callable, Optional, Protocol
@@ -1475,6 +1476,43 @@ class HermesStreamingApp(App):
         playback_failed = False
         assistant_started = False
         last_status: Optional[str] = None
+        thinking_started_at: Optional[float] = None
+        thinking_preview = ""
+        thinking_preview_truncated = False
+        thinking_activity_active = False
+        thinking_summary_added = False
+
+        def update_thinking(text: Optional[str] = None) -> None:
+            nonlocal thinking_started_at, thinking_preview
+            nonlocal thinking_preview_truncated, thinking_activity_active
+            if thinking_started_at is None:
+                thinking_started_at = time.monotonic()
+            chunk = str(text or "")
+            if chunk.strip():
+                combined = thinking_preview + chunk
+                thinking_preview = combined[:160]
+                thinking_preview_truncated = len(combined) > len(thinking_preview)
+            preview = thinking_preview.strip()
+            if preview:
+                if thinking_preview_truncated:
+                    preview += "…"
+                set_activity(f"thinking: {preview}", role="thinking")
+            else:
+                set_activity("thinking…", role="thinking")
+            thinking_activity_active = True
+
+        def complete_thinking() -> None:
+            nonlocal thinking_summary_added, thinking_activity_active
+            if thinking_started_at is None or thinking_summary_added:
+                return
+            elapsed = max(0, int(time.monotonic() - thinking_started_at + 0.5))
+            summary = f"thought for {elapsed}s"
+            if thinking_activity_active:
+                set_activity(summary, role="thinking")
+            else:
+                self._append_block(f"[{summary}]", role="thinking", detail=True)
+            thinking_summary_added = True
+            thinking_activity_active = False
 
         def set_activity(text: str, *, role: str = "status") -> None:
             if not text:
@@ -1492,6 +1530,7 @@ class HermesStreamingApp(App):
             )
             if kind in {"text_delta", "text_replace"}:
                 if not assistant_started:
+                    complete_thinking()
                     self._set_voice_state(VOICE_THINKING)
                     self.transcript.start_stream("assistant")
                     assistant_started = True
@@ -1502,10 +1541,12 @@ class HermesStreamingApp(App):
                     self._append(event["text"])
             elif kind == "thinking_delta":
                 self._set_voice_state(VOICE_THINKING)
-                set_activity("thinking…", role="thinking")
+                if not assistant_started:
+                    update_thinking(event.get("text"))
             elif kind == "reasoning_available":
                 self._set_voice_state(VOICE_THINKING)
-                set_activity("reasoning available", role="thinking")
+                if not assistant_started:
+                    update_thinking(event.get("text"))
             elif kind == "status":
                 status_text = str(event.get("text") or "").strip()
                 if status_text and status_text != last_status:
@@ -1513,22 +1554,31 @@ class HermesStreamingApp(App):
                     self._set_voice_state(status_text)
                     if assistant_started:
                         self._append_block(f"[{status_text}]", role="status")
-                    else:
+                    elif not (
+                        thinking_activity_active
+                        and status_text.lower() in {"thinking", "thinking…", "reasoning"}
+                    ):
+                        thinking_activity_active = False
                         set_activity(status_text, role="status")
             elif kind == "notification":
+                thinking_activity_active = False
                 self._append_block(f"notification: {event['text']}", role="notification")
             elif kind == "notification_clear":
+                thinking_activity_active = False
                 set_activity("notification cleared", role="notification")
             elif kind == "tool_start":
                 self._set_voice_state(VOICE_THINKING)
+                thinking_activity_active = False
                 set_activity(f"tool: {event.get('name') or 'tool'}…", role="tool")
             elif kind == "tool_progress":
                 self._set_voice_state(VOICE_THINKING)
+                thinking_activity_active = False
                 name = event.get("name") or "tool"
                 preview = str(event.get("preview") or "working…").strip()
                 set_activity(f"tool: {name} — {preview}", role="tool")
             elif kind == "tool_complete":
                 name = event.get("name") or "tool"
+                thinking_activity_active = False
                 set_activity(
                     f"tool: {name} {'✗' if event.get('error') else '✓'}", role="tool"
                 )
@@ -1537,6 +1587,7 @@ class HermesStreamingApp(App):
                 self._append_block(f"background: {text}", role="background")
             elif kind == "unknown_event":
                 event_type = event.get("event_type") or "missing"
+                thinking_activity_active = False
                 self._append_block(
                     f"[unhandled server event: {event_type}]", role="error"
                 )
@@ -1598,8 +1649,10 @@ class HermesStreamingApp(App):
                     self._set_voice_state(VOICE_BUFFERING)
             elif kind == "error":
                 self._set_voice_state(VOICE_ERROR)
+                thinking_activity_active = False
                 self._append_block(f"[error] {event['error']}", role="error")
             elif kind == "turn_end":
+                complete_thinking()
                 self.transcript.finish_stream()
                 self._save_turn_audio(
                     bytes(audio),
