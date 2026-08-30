@@ -10,8 +10,14 @@ from __future__ import annotations
 import base64
 import binascii
 import json
+import logging
 import uuid
 from typing import Any, AsyncIterator, Optional
+
+from diagnostics import summarize_payload, summarize_text
+
+
+logger = logging.getLogger("hermes_streaming_tui.client")
 
 
 class ProtocolError(RuntimeError):
@@ -35,22 +41,22 @@ def _decode_audio_data(value: Any) -> Optional[bytes]:
     return None
 
 
-def _final_text_delta(
+def _final_text_update(
     final_text: str,
     rendered_preview: str,
     streamed_text: bool,
-) -> Optional[str]:
-    """Return only text not already emitted by a streaming preview."""
+) -> Optional[dict[str, str]]:
+    """Return the append-or-replace update needed for a terminal text frame."""
     if not final_text:
         return None
     if not streamed_text:
-        return final_text
+        return {"type": "text_delta", "text": final_text}
     preview = rendered_preview.rstrip("▉")
     if final_text == preview:
         return None
     if final_text.startswith(preview):
-        return final_text[len(preview):]
-    return f"\n{final_text}"
+        return {"type": "text_delta", "text": final_text[len(preview):]}
+    return {"type": "text_replace", "text": final_text}
 
 
 async def _receive_json(ws: Any) -> dict[str, Any]:
@@ -72,6 +78,13 @@ async def send_hello(
     session_id: str,
     display_name: str,
 ) -> dict[str, Any]:
+    logger.debug(
+        "hello.send client_id=%s device_id=%s session_id=%s display_name=%s",
+        client_id,
+        device_id,
+        session_id,
+        display_name,
+    )
     await ws.send(
         json.dumps(
             {
@@ -85,6 +98,7 @@ async def send_hello(
         )
     )
     hello = await _receive_json(ws)
+    logger.debug("hello.recv kind=%s %s", hello.get("type"), summarize_payload(hello))
     if hello.get("type") != "hello_ack":
         raise ProtocolError(f"voice-session hello failed: {hello}")
     return hello
@@ -99,6 +113,13 @@ async def send_turn(
     turn_id: Optional[str] = None,
 ) -> AsyncIterator[dict[str, Any]]:
     turn_id = turn_id or uuid.uuid4().hex
+    logger.debug(
+        "turn.send turn_id=%s session_id=%s stt_source=%s %s",
+        turn_id,
+        session_id,
+        stt_source,
+        summarize_text(text),
+    )
     await ws.send(
         json.dumps(
             {
@@ -116,14 +137,28 @@ async def send_turn(
     streamed_text = False
     audio_file_active = False
 
+    frame_index = 0
     while True:
         frame = await ws.recv()
+        frame_index += 1
         if isinstance(frame, bytes):
             kind = "audio_file_chunk" if audio_file_active else "audio_chunk"
+            logger.debug(
+                "frame.recv index=%d kind=%s turn_id=%s bytes=%d audio_file_active=%s",
+                frame_index,
+                kind,
+                turn_id,
+                len(frame),
+                audio_file_active,
+            )
             yield {"type": kind, "data": frame}
             continue
 
-        payload = json.loads(frame)
+        try:
+            payload = json.loads(frame)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            logger.exception("frame.decode_failed index=%d size=%d", frame_index, len(frame))
+            raise
         if not isinstance(payload, dict):
             # Same guard _receive_json has, but reported as an event rather
             # than raised: send_turn's contract is "failure arrives as an
@@ -131,6 +166,13 @@ async def send_turn(
             yield {"type": "error", "error": "server sent a non-object JSON frame"}
             return
         kind = payload.get("type")
+        logger.debug(
+            "frame.recv index=%d kind=%s turn_id=%s %s",
+            frame_index,
+            kind or "missing",
+            payload.get("turn_id") or turn_id,
+            summarize_payload(payload),
+        )
         event_payload = payload.get("payload")
         if not isinstance(event_payload, dict):
             event_payload = payload
@@ -139,21 +181,62 @@ async def send_turn(
             continue
         elif kind in {"text_delta", "message.delta"}:
             preview_value = event_payload.get("text")
-            if kind == "message.delta" and event_payload.get("rendered") is not None:
+            has_rendered_preview = (
+                kind == "message.delta" and event_payload.get("rendered") is not None
+            )
+            if has_rendered_preview:
                 preview_value = event_payload.get("rendered")
             preview = str(preview_value or "")
-            if preview.startswith(rendered_preview):
+            if kind == "message.delta" and not has_rendered_preview:
+                # Gateway message.delta frames carry append-only chunks when
+                # no cumulative rendered preview is supplied.
+                delta = preview
+                emitted_type = "text_delta"
+                rendered_preview += preview
+                mode = "raw_delta"
+            elif preview.startswith(rendered_preview):
                 delta = preview[len(rendered_preview):]
+                emitted_type = "text_delta"
+                rendered_preview = preview
+                mode = "cumulative_suffix"
+            elif event_payload.get("replace"):
+                # Hermes can revise a cumulative preview (for example when a
+                # late token changes formatting). Replace the active display
+                # record instead of appending the complete preview again.
+                delta = preview
+                emitted_type = "text_replace"
+                rendered_preview = preview
+                mode = "cumulative_replace"
             else:
                 delta = f"\n{preview}"
-            rendered_preview = preview
+                emitted_type = "text_delta"
+                rendered_preview = preview
+                mode = "cumulative_rewind"
             streamed_text = True
-            yield {"type": "text_delta", "text": delta}
+            logger.debug(
+                "normalize.text_delta source=%s mode=%s replace=%s preview=%s emitted=%s rendered_preview=%s",
+                kind,
+                mode,
+                bool(event_payload.get("replace")),
+                summarize_text(preview),
+                summarize_text(delta),
+                summarize_text(rendered_preview),
+            )
+            if delta:
+                yield {"type": emitted_type, "text": delta}
         elif kind in {"text", "text_final"}:
             final_text = str(event_payload.get("text") or event_payload.get("rendered") or "")
-            delta = _final_text_delta(final_text, rendered_preview, streamed_text)
-            if delta:
-                yield {"type": "text_delta", "text": delta}
+            update = _final_text_update(final_text, rendered_preview, streamed_text)
+            logger.debug(
+                "normalize.text_final source=%s final=%s emitted=%s prior_preview=%s streamed=%s",
+                kind,
+                summarize_text(final_text),
+                summarize_text(update.get("text") if update else None),
+                summarize_text(rendered_preview),
+                streamed_text,
+            )
+            if update:
+                yield update
             if final_text:
                 rendered_preview = final_text
                 streamed_text = True
@@ -161,9 +244,16 @@ async def send_turn(
             yield {"type": "message_start"}
         elif kind == "message.complete":
             final_text = str(event_payload.get("text") or event_payload.get("rendered") or "")
-            delta = _final_text_delta(final_text, rendered_preview, streamed_text)
-            if delta:
-                yield {"type": "text_delta", "text": delta}
+            update = _final_text_update(final_text, rendered_preview, streamed_text)
+            logger.debug(
+                "normalize.message_complete final=%s emitted=%s prior_preview=%s streamed=%s",
+                summarize_text(final_text),
+                summarize_text(update.get("text") if update else None),
+                summarize_text(rendered_preview),
+                streamed_text,
+            )
+            if update:
+                yield update
             if final_text:
                 rendered_preview = final_text
                 streamed_text = True
@@ -273,6 +363,13 @@ async def send_turn(
             }
             return
         elif kind == "turn_end":
+            logger.debug(
+                "turn.end turn_id=%s frame_index=%d streamed=%s preview=%s",
+                turn_id,
+                frame_index,
+                streamed_text,
+                summarize_text(rendered_preview),
+            )
             yield {"type": "turn_end", "turn_id": turn_id}
             return
         else:

@@ -1,4 +1,5 @@
 import json
+import logging
 
 import pytest
 
@@ -66,6 +67,79 @@ async def test_send_turn_yields_text_deltas_and_turn_end():
     assert kinds == ["text_delta", "text_delta", "turn_end"]
     assert events[0]["text"] == "Hel"
     assert events[1]["text"] == "lo"  # only the new suffix is yielded
+
+
+async def test_message_delta_without_rendered_preview_is_append_only():
+    frames = [
+        json.dumps({"type": "message.delta", "payload": {"text": "The answer "}}),
+        json.dumps({"type": "message.delta", "payload": {"text": "is here."}}),
+        json.dumps({"type": "message.complete", "payload": {"text": "The answer is here."}}),
+        json.dumps({"type": "turn_end"}),
+    ]
+    ws = FakeWebSocket(frames)
+
+    events = [event async for event in send_turn(ws, session_id="s1", text="hi", stt_source="local")]
+
+    assert [event["type"] for event in events] == [
+        "text_delta",
+        "text_delta",
+        "message_complete",
+        "turn_end",
+    ]
+    assert "".join(event["text"] for event in events if event["type"] == "text_delta") == "The answer is here."
+
+
+async def test_send_turn_replaces_a_cumulative_preview_when_server_requests_replace():
+    frames = [
+        json.dumps({"type": "text_delta", "text": "draft"}),
+        json.dumps({"type": "text_delta", "text": "final answer", "replace": True}),
+        json.dumps({"type": "text_final", "text": "final answer"}),
+        json.dumps({"type": "turn_end"}),
+    ]
+    ws = FakeWebSocket(frames)
+
+    events = [event async for event in send_turn(ws, session_id="s1", text="hi", stt_source="local")]
+
+    assert events[0] == {"type": "text_delta", "text": "draft"}
+    assert events[1] == {"type": "text_replace", "text": "final answer"}
+    assert events[2]["type"] == "turn_end" or events[2]["type"] == "message_complete"
+    assert [event["type"] for event in events] == ["text_delta", "text_replace", "turn_end"]
+
+
+async def test_send_turn_replaces_a_nonprefix_terminal_text_update():
+    frames = [
+        json.dumps({"type": "text_delta", "text": "draft"}),
+        json.dumps({"type": "text_final", "text": "final answer"}),
+        json.dumps({"type": "turn_end"}),
+    ]
+    ws = FakeWebSocket(frames)
+
+    events = [event async for event in send_turn(ws, session_id="s1", text="hi", stt_source="local")]
+
+    assert events == [
+        {"type": "text_delta", "text": "draft"},
+        {"type": "text_replace", "text": "final answer"},
+        {"type": "turn_end", "turn_id": events[-1]["turn_id"]},
+    ]
+
+
+async def test_send_turn_logs_protocol_shapes_without_text_content(caplog):
+    caplog.set_level(logging.DEBUG, logger="hermes_streaming_tui")
+    frames = [
+        json.dumps({"type": "message.delta", "payload": {"text": "The answer"}}),
+        json.dumps({"type": "message.complete", "payload": {"text": "The answer"}}),
+        json.dumps({"type": "turn_end"}),
+    ]
+    ws = FakeWebSocket(frames)
+
+    [event async for event in send_turn(ws, session_id="s1", text="private prompt", stt_source="local")]
+
+    messages = "\n".join(record.message for record in caplog.records)
+    assert "kind=message.delta" in messages
+    assert "kind=message.complete" in messages
+    assert "text_len=10" in messages
+    assert "private prompt" not in messages
+    assert "The answer" not in messages
 
 
 async def test_send_turn_yields_audio_chunks_between_start_and_end():
@@ -197,8 +271,8 @@ async def test_text_final_that_differs_from_the_preview_is_re_emitted():
     )
 
     kinds = [event["type"] for event in events]
-    assert kinds == ["text_delta", "text_delta", "turn_end"]
-    assert events[1] == {"type": "text_delta", "text": "\nthe corrected answer"}
+    assert kinds == ["text_delta", "text_replace", "turn_end"]
+    assert events[1] == {"type": "text_replace", "text": "the corrected answer"}
 
 
 async def test_text_final_matching_the_streamed_preview_yields_nothing_new():
