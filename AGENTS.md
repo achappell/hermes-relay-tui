@@ -126,6 +126,7 @@ Do not put a real token in this file or in the README.
 - Use `/busy [queue|steer|interrupt]` to change the mode for the current session.
 - Use `/details [show|hide]` or `--hide-thinking` to control thinking/tool detail in the transcript.
 - Use `/audio [list|status|input <device>|output <device>]` to inspect and select local audio devices for the current session.
+- Use `/reload` to re-read the config file/environment without restarting. Any of busy-mode, show-details, or audio devices you've changed interactively this session are left alone; everything else picks up the new values. A malformed config file reports an error instead of crashing.
 - `Ctrl+C` interrupts the active turn; when idle it clears the draft, clears the queue, or exits.
 - `/steer` is retained only as a migration warning; steering happens when an ordinary message is submitted in `--busy-mode steer`.
 - Slash commands are routed before ordinary text; do not silently send an unknown command as a model prompt.
