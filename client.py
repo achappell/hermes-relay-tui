@@ -17,7 +17,7 @@ from typing import Any, AsyncIterator, Optional
 from diagnostics import summarize_payload, summarize_text
 
 
-logger = logging.getLogger("hermes_streaming_tui.client")
+logger = logging.getLogger("hermes_relay_tui.client")
 
 
 class ProtocolError(RuntimeError):

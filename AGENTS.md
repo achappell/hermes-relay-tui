@@ -15,6 +15,52 @@ This repository contains a small Python/Textual terminal UI for the Hermes voice
 
 The implementation is a laptop-side client. The Hermes server owns sessions, model routing, speech generation, and the voice-session protocol.
 
+## GitHub Project task management — check this first
+
+Before answering "what's next" or starting any work, inspect the
+[Hermes Streaming TUI GitHub Project](https://github.com/users/achappell/projects/3/views/2)
+first. It is the sole source of truth for task scope, priority, ownership,
+dependencies, and progress — not `docs/plans/`, not `.hermes/plans/`, not this
+file's own roadmap-sounding prose. Those directories hold design history,
+testing procedures, and superseded operating-model proposals; none of them is
+a task queue, and several are stale relative to the board. If a plan file's
+status conflicts with the board, the board wins.
+
+```bash
+gh project item-list 3 --owner achappell --format json -L 100
+```
+
+- Before starting work, inspect the project and choose the highest-priority
+  unblocked item in `Ready` or `Building`. Do not invent a parallel task list
+  in the repository.
+- Give every substantive task a project item. Shape new items with an
+  outcome, acceptance criteria, UX expectations, and a validation scenario;
+  fill in `Priority`, `Area`, `Layer`, and `Horizon`.
+- Move work through the `Workflow` field: `Inbox` → `Ready` → `Building` →
+  `Verify` → `Done`. Use `Blocked` when progress depends on Hermes, a
+  protocol change, an external service, or an explicit design decision.
+- Keep the built-in `Status` field aligned with `Workflow` (`Todo` for
+  planned work, `In Progress` for active work, and `Done` only after
+  completion). `Workflow` is the board's kanban state.
+- Keep one active vertical slice in `Building`. Move the current item there
+  before implementation and move it out promptly when the work is blocked,
+  ready for verification, or complete.
+- Manage the board continuously as the work changes: add newly discovered
+  follow-ups, split oversized tasks, edit acceptance criteria, link PRs and
+  evidence, remove duplicates or abandoned tasks, and delete stale work
+  rather than leaving ghosts in `Building`.
+- When blocked, record the concrete blocker and the next unblocking action
+  on the item. Do not present a local fallback as complete relay support.
+- Move an item to `Verify` after implementation, then run focused tests, the
+  full suite, and the required manual smoke test. Record the evidence on the
+  item; move it to `Done` only when the change is validated and merged.
+- At the end of a work session, reconcile the board with the code and GitHub
+  state: no completed item left in `Building`, no active work without a
+  card, and no release or administrative PR allowed to hide unfinished
+  product work.
+- When multiple `Ready` items tie on `Priority` and `Horizon`, ask which one
+  to pick rather than guessing — the board doesn't encode a tiebreaker.
+
 ## Working agreement
 
 - Keep the code modular and direct. Avoid abstractions that do not remove real duplication.
@@ -25,20 +71,6 @@ The implementation is a laptop-side client. The Hermes server owns sessions, mod
 - Keep the UI responsive: blocking microphone capture and audio writes belong off the Textual event loop.
 - Record non-blocking bugs and usability snags in `docs/friction-log.md`; defer them unless they block current work, risk data loss, or repeat.
 - When changing behavior, update or add a focused test in `tests/` before declaring the work finished.
-
-## GitHub Project task management
-
-The [Hermes Streaming TUI GitHub Project](https://github.com/users/achappell/projects/3/views/2) manages this repository's engineering tasks. It is the source of truth for task scope, priority, ownership, dependencies, and progress. The Daily Note may mirror the current work item for personal orchestration, but it does not replace keeping the project board current.
-
-- Before starting work, inspect the project and choose the highest-priority unblocked item in `Ready` or `Building`. Do not invent a parallel task list in the repository.
-- Give every substantive task a project item. Shape new items with an outcome, acceptance criteria, UX expectations, and a validation scenario; fill in `Priority`, `Area`, `Layer`, and `Horizon`.
-- Move work through the `Workflow` field: `Inbox` → `Ready` → `Building` → `Verify` → `Done`. Use `Blocked` when progress depends on Hermes, a protocol change, an external service, or an explicit design decision.
-- Keep the built-in `Status` field aligned with `Workflow` (`Todo` for planned work, `In Progress` for active work, and `Done` only after completion). `Workflow` is the board's kanban state.
-- Keep one active vertical slice in `Building`. Move the current item there before implementation and move it out promptly when the work is blocked, ready for verification, or complete.
-- Manage the board continuously as the work changes: add newly discovered follow-ups, split oversized tasks, edit acceptance criteria, link PRs and evidence, remove duplicates or abandoned tasks, and delete stale work rather than leaving ghosts in `Building`.
-- When blocked, record the concrete blocker and the next unblocking action on the item. Do not present a local fallback as complete relay support.
-- Move an item to `Verify` after implementation, then run focused tests, the full suite, and the required manual smoke test. Record the evidence on the item; move it to `Done` only when the change is validated and merged.
-- At the end of a work session, reconcile the board with the code and GitHub state: no completed item left in `Building`, no active work without a card, and no release or administrative PR allowed to hide unfinished product work.
 
 ## Setup
 
@@ -124,7 +156,7 @@ The complete source of truth is `config.build_arg_parser()`. The main runtime op
 
 Relevant environment variables include `HERMES_VOICE_SESSION_URL`, `VOICE_SESSION_TOKEN`, `VOICE_SESSION_CLIENT_ID`, `VOICE_SESSION_DEVICE_ID`, `VOICE_SESSION_ID`, `VOICE_SESSION_MIC_MAX_SECONDS`, `VOICE_SESSION_MIC_SILENCE_DURATION`, `VOICE_SESSION_MIC_SILENCE_THRESHOLD`, `VOICE_SESSION_MIC_INPUT_DEVICE`, `VOICE_SESSION_AUDIO_OUTPUT_DEVICE`, `VOICE_SESSION_STT_MODEL`, `VOICE_SESSION_TURN_TIMEOUT`, `VOICE_SESSION_CONNECT_RETRIES`, `VOICE_SESSION_CONNECT_RETRY_DELAY`, and `VOICE_SESSION_BUSY_MODE`.
 
-`HERMES_STREAMING_TUI_DEBUG` and `HERMES_STREAMING_TUI_LOG_FILE` configure the
+`HERMES_RELAY_TUI_DEBUG` and `HERMES_RELAY_TUI_LOG_FILE` configure the
 optional debug trace without command-line flags. The trace records event
 ordering, protocol event names, payload keys, text/byte lengths, and short
 SHA-256 fingerprints. It intentionally does not record bearer tokens, prompts,

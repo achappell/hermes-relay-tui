@@ -14,17 +14,17 @@ Hermes Streaming TUI is distributed through several complementary channels:
 
 ## One-time PyPI setup
 
-Create the `hermes-streaming-tui` project on PyPI and configure a Trusted
+Create the `hermes-relay-tui` project on PyPI and configure a Trusted
 Publisher for:
 
 - owner: `achappell`
-- repository: `hermes-streaming-tui`
+- repository: `hermes-relay-tui`
 - workflow: `.github/workflows/release.yml`
 
 Then set the repository variable:
 
 ```bash
-gh variable set PYPI_PUBLISHING --repo achappell/hermes-streaming-tui --body enabled
+gh variable set PYPI_PUBLISHING --repo achappell/hermes-relay-tui --body enabled
 ```
 
 ## One-time Homebrew automation setup
@@ -34,7 +34,7 @@ write access to `achappell/homebrew-hermes-streaming`. Store it as
 `HOMEBREW_TAP_TOKEN` in the source repository, then enable the workflow:
 
 ```bash
-gh variable set HOMEBREW_TAP_AUTOMATION --repo achappell/hermes-streaming-tui --body enabled
+gh variable set HOMEBREW_TAP_AUTOMATION --repo achappell/hermes-relay-tui --body enabled
 ```
 
 The tap's protected branch and `CODEOWNERS` file keep each generated formula

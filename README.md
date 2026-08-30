@@ -43,8 +43,8 @@ The public Homebrew tap is ready:
 
 ```bash
 brew tap achappell/hermes-streaming
-brew install achappell/hermes-streaming/hermes-streaming-tui
-hermes-streaming-tui --help
+brew install achappell/hermes-streaming/hermes-relay-tui
+hermes-relay --help
 ```
 
 See [`docs/packaging/jensen-trial.md`](docs/packaging/jensen-trial.md) for the
@@ -57,9 +57,9 @@ Releases. Once PyPI publishing is enabled, the same package can also be
 installed with:
 
 ```bash
-python3.14 -m pip install hermes-streaming-tui
-pipx install hermes-streaming-tui
-uv tool install hermes-streaming-tui
+python3.14 -m pip install hermes-relay-tui
+pipx install hermes-relay-tui
+uv tool install hermes-relay-tui
 ```
 
 ## Project automation
@@ -126,10 +126,10 @@ For a live-session smoke test that needs diagnosis, enable the content-safe
 protocol trace:
 
 ```bash
-venv/bin/python app.py --debug --log-file /tmp/hermes-streaming-tui.log
+venv/bin/python app.py --debug --log-file /tmp/hermes-relay-tui.log
 ```
 
-In another terminal, use `tail -f /tmp/hermes-streaming-tui.log`. The trace
+In another terminal, use `tail -f /tmp/hermes-relay-tui.log`. The trace
 includes frame order, event names, payload keys, text/byte lengths, hashes, and
 turn state. It does not record bearer tokens, prompts, response text, or audio.
 
@@ -216,6 +216,24 @@ By default, the app plays supported 16-bit PCM as it arrives. If playback is una
 
 When `--output` is set, the first turn uses that path and later turns use numbered suffixes such as `response-1.wav`. Without `--output`, audio that was not played live is written to the current directory as `hybrid-tui-<turn-id>.wav`.
 
+## Config file
+
+Instead of retyping flags every launch, put your defaults in a YAML file at
+`~/.hermes-relay-tui/config.yaml` (or point `--config`/`HERMES_RELAY_TUI_CONFIG`
+at a different path). Copy [`config.example.yaml`](config.example.yaml) as a
+starting point — every key is documented and optional.
+
+Precedence for every setting: **CLI flag > environment variable > config
+file > built-in default.** So the config file only fills gaps — a flag on
+the command line, or an env var you already have set, still wins.
+
+```bash
+mkdir -p ~/.hermes-relay-tui
+cp config.example.yaml ~/.hermes-relay-tui/config.yaml
+# edit it, then:
+hermes-relay
+```
+
 ## Environment variables
 
 | Variable | Default / role |
@@ -235,8 +253,8 @@ When `--output` is set, the first turn uses that path and later turns use number
 | `VOICE_SESSION_CONNECT_RETRIES` | `3` additional connection attempts |
 | `VOICE_SESSION_CONNECT_RETRY_DELAY` | `1.0` second base reconnect delay |
 | `VOICE_SESSION_BUSY_MODE` | `queue`, `steer`, or `interrupt` |
-| `HERMES_STREAMING_TUI_DEBUG` | `1`, `true`, `yes`, or `on` enables the debug trace |
-| `HERMES_STREAMING_TUI_LOG_FILE` | Debug trace path; implies debug logging |
+| `HERMES_RELAY_TUI_DEBUG` | `1`, `true`, `yes`, or `on` enables the debug trace |
+| `HERMES_RELAY_TUI_LOG_FILE` | Debug trace path; implies debug logging |
 
 ## Test
 

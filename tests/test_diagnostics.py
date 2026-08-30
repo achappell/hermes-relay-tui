@@ -30,7 +30,7 @@ def test_configure_logging_writes_a_debug_trace_without_response_content(tmp_pat
     path = tmp_path / "session.log"
     configure_logging(debug=True, log_file=path)
     try:
-        logging.getLogger("hermes_streaming_tui.test").debug(
+        logging.getLogger("hermes_relay_tui.test").debug(
             "recv kind=%s %s", "message.delta", summarize_text("private response")
         )
     finally:

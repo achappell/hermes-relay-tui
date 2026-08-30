@@ -2,7 +2,16 @@ import os
 
 import pytest
 
-from config import DEFAULT_URL, _env_choice, _env_float, _env_int, _resolve_token, _connection_kwargs, build_arg_parser
+from config import (
+    DEFAULT_URL,
+    _env_choice,
+    _env_float,
+    _env_int,
+    _resolve_token,
+    _connection_kwargs,
+    build_arg_parser,
+    load_config_file,
+)
 
 
 def test_env_float_uses_default_when_unset(monkeypatch):
@@ -130,3 +139,125 @@ def test_connection_kwargs_falls_back_to_extra_headers():
 
     kwargs = _connection_kwargs(fake_connect, "tok")
     assert kwargs["extra_headers"] == {"Authorization": "Bearer tok"}
+
+
+# --- YAML config file --------------------------------------------------------
+
+
+def test_load_config_file_returns_empty_dict_when_missing(tmp_path):
+    assert load_config_file(tmp_path / "nope.yaml") == {}
+
+
+def test_load_config_file_returns_empty_dict_for_none_path():
+    assert load_config_file(None) == {}
+
+
+def test_load_config_file_parses_yaml_mapping(tmp_path):
+    path = tmp_path / "config.yaml"
+    path.write_text("url: ws://media-server.local:8792/voice-session\nbusy_mode: steer\n")
+    assert load_config_file(path) == {
+        "url": "ws://media-server.local:8792/voice-session",
+        "busy_mode": "steer",
+    }
+
+
+def test_load_config_file_rejects_a_non_mapping_document(tmp_path):
+    path = tmp_path / "config.yaml"
+    path.write_text("- just\n- a\n- list\n")
+    with pytest.raises(SystemExit):
+        load_config_file(path)
+
+
+def test_load_config_file_rejects_invalid_yaml(tmp_path):
+    path = tmp_path / "config.yaml"
+    path.write_text("url: [unterminated\n")
+    with pytest.raises(SystemExit):
+        load_config_file(path)
+
+
+def test_load_config_file_treats_an_empty_file_as_no_settings(tmp_path):
+    path = tmp_path / "config.yaml"
+    path.write_text("")
+    assert load_config_file(path) == {}
+
+
+def test_config_file_fills_the_fiddly_defaults(tmp_path):
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        "\n".join(
+            [
+                "url: ws://media-server.local:8792/voice-session",
+                "checkout: /custom/checkout",
+                "profile_env: /custom/profile.env",
+                "client_id: laptop-client",
+                "device_id: laptop-device",
+                "session_id: media-server-session",
+                "busy_mode: steer",
+                "mic_input_device: 2",
+                "audio_output_device: USB Headset",
+                "connect_retries: 7",
+                "connect_retry_delay: 2.5",
+                "turn_timeout: 60",
+                "history_path: /custom/history.jsonl",
+            ]
+        )
+    )
+    argv = ["--config", str(config_path)]
+    args = build_arg_parser(argv).parse_args(argv)
+
+    assert args.url == "ws://media-server.local:8792/voice-session"
+    assert str(args.checkout) == "/custom/checkout"
+    assert str(args.profile_env) == "/custom/profile.env"
+    assert args.client_id == "laptop-client"
+    assert args.device_id == "laptop-device"
+    assert args.session_id == "media-server-session"
+    assert args.busy_mode == "steer"
+    assert args.mic_input_device == 2
+    assert args.audio_output_device == "USB Headset"
+    assert args.connect_retries == 7
+    assert args.connect_retry_delay == 2.5
+    assert args.turn_timeout == 60
+    assert str(args.history_path) == "/custom/history.jsonl"
+
+
+def test_cli_flag_overrides_config_file(tmp_path):
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text("busy_mode: steer\n")
+    argv = ["--config", str(config_path), "--busy-mode", "interrupt"]
+    args = build_arg_parser(argv).parse_args(argv)
+    assert args.busy_mode == "interrupt"
+
+
+def test_env_var_overrides_config_file(tmp_path, monkeypatch):
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text("busy_mode: steer\n")
+    monkeypatch.setenv("VOICE_SESSION_BUSY_MODE", "interrupt")
+    argv = ["--config", str(config_path)]
+    args = build_arg_parser(argv).parse_args(argv)
+    assert args.busy_mode == "interrupt"
+
+
+def test_config_file_overrides_hardcoded_default_but_not_env_or_cli(tmp_path, monkeypatch):
+    monkeypatch.delenv("VOICE_SESSION_BUSY_MODE", raising=False)
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text("busy_mode: steer\n")
+    argv = ["--config", str(config_path)]
+    args = build_arg_parser(argv).parse_args(argv)
+    assert args.busy_mode == "steer"
+
+
+def test_invalid_busy_mode_in_config_file_falls_back_to_hardcoded_default(tmp_path):
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text("busy_mode: not-a-real-mode\n")
+    argv = ["--config", str(config_path)]
+    args = build_arg_parser(argv).parse_args(argv)
+    assert args.busy_mode == "queue"
+
+
+def test_default_config_path_is_used_when_no_flag_or_env_given(tmp_path, monkeypatch):
+    import config as config_module
+
+    default_path = tmp_path / "config.yaml"
+    default_path.write_text("busy_mode: steer\n")
+    monkeypatch.setattr(config_module, "DEFAULT_CONFIG_PATH", default_path)
+    assert build_arg_parser([]).parse_args([]).busy_mode == "steer"
