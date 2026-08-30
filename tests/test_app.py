@@ -940,6 +940,65 @@ async def test_busy_command_rejects_unknown_modes():
         assert "usage: /busy [queue|steer|interrupt]" in transcript_of(app)
 
 
+async def test_reload_command_picks_up_untouched_config_changes(tmp_path):
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text("turn_timeout: 42\nhide_thinking: true\n")
+    argv = ["--config", str(config_path)]
+    session = FakeSession()
+    app = HermesStreamingApp(args=make_args(), session_factory=lambda: session, argv=argv)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        assert app.show_transcript_details is True
+
+        composer = app.query_one("#composer", Composer)
+        composer.text = "/reload"
+        await pilot.press("enter")
+        await pilot.pause()
+
+        assert app.args.turn_timeout == 42
+        assert app.show_transcript_details is False
+        assert "config reloaded from" in transcript_of(app)
+
+
+async def test_reload_command_reports_malformed_config_without_crashing(tmp_path):
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(":\n  - not: [valid\n")
+    argv = ["--config", str(config_path)]
+    session = FakeSession()
+    app = HermesStreamingApp(args=make_args(), session_factory=lambda: session, argv=argv)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        composer = app.query_one("#composer", Composer)
+        composer.text = "/reload"
+        await pilot.press("enter")
+        await pilot.pause()
+
+        assert "[error] /reload:" in transcript_of(app)
+        assert app.is_running
+
+
+async def test_reload_command_keeps_session_touched_settings(tmp_path):
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text("busy_mode: steer\n")
+    argv = ["--config", str(config_path)]
+    session = FakeSession()
+    app = HermesStreamingApp(args=make_args(), session_factory=lambda: session, argv=argv)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        composer = app.query_one("#composer", Composer)
+        composer.text = "/busy interrupt"
+        await pilot.press("enter")
+        await pilot.pause()
+        assert app.busy_mode == "interrupt"
+
+        composer.text = "/reload"
+        await pilot.press("enter")
+        await pilot.pause()
+
+        assert app.busy_mode == "interrupt"
+        assert "kept session-set: busy-mode" in transcript_of(app)
+
+
 async def test_ctrl_c_interrupts_active_turn_and_preserves_partial_transcript():
     gate = asyncio.Event()
     session = FakeSession(

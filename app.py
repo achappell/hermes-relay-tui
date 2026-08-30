@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import sys
 import threading
 from typing import Any, AsyncIterator, Awaitable, Callable, Optional, Protocol
 
@@ -434,9 +435,14 @@ class HermesStreamingApp(App):
         args=None,
         session_factory: Optional[Callable[[], Any]] = None,
         command_dispatcher: Optional[Callable[[CommandInvocation], Awaitable[str] | str]] = None,
+        argv: Optional[list[str]] = None,
     ) -> None:
         super().__init__()
         self.args = args
+        # The argv used to resolve `args` at startup, kept so /reload can
+        # re-resolve config-file/env-var defaults with the same CLI flags
+        # still applied on top, instead of guessing at sys.argv again.
+        self._argv = list(sys.argv[1:] if argv is None else argv)
         self._session_factory = session_factory
         self._command_dispatcher = command_dispatcher
         self.session: SessionProtocol = None  # type: ignore[assignment]
@@ -466,6 +472,13 @@ class HermesStreamingApp(App):
         self._history = PromptHistory(history_path)
         self._history_index: Optional[int] = None
         self._history_draft = ""
+        # Set when the user changes these interactively this session, so a later
+        # /reload leaves the deliberate choice alone instead of clobbering it
+        # with whatever the config file currently says.
+        self._busy_mode_touched = False
+        self._show_details_touched = False
+        self._audio_input_touched = False
+        self._audio_output_touched = False
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -691,10 +704,11 @@ class HermesStreamingApp(App):
         elif command.name == "status":
             session_id = getattr(self.args, "session_id", "session")
             model = getattr(self.args, "model", None) or "default"
+            config_path = getattr(self.args, "config", None)
             self._append_block(
                 f"session: {session_id} · {self.connection_state} · model: {model} "
                 f"· busy-mode: {self.busy_mode} · queued: {len(self._queued_prompts)} "
-                f"· history: {self._history.path}"
+                f"· history: {self._history.path} · config: {config_path}"
             )
         elif command.name == "queue":
             await self._handle_queue_command(invocation.args)
@@ -711,6 +725,8 @@ class HermesStreamingApp(App):
             await self._handle_audio_command(invocation.args)
         elif command.name == "history":
             self._handle_history_command(invocation.args)
+        elif command.name == "reload":
+            self._handle_reload_command()
         elif command.name == "quit":
             self.exit()
         else:
@@ -813,6 +829,7 @@ class HermesStreamingApp(App):
             return
         previous = self.busy_mode
         self.busy_mode = parts[0]
+        self._busy_mode_touched = True
         if previous == self.busy_mode:
             self._append_block(f"busy-mode already {self.busy_mode}.")
         else:
@@ -829,6 +846,7 @@ class HermesStreamingApp(App):
             self._append_block("usage: /details [show|hide]")
             return
         self.show_transcript_details = parts[0] == "show"
+        self._show_details_touched = True
         self._refresh_transcript()
         state = "shown" if self.show_transcript_details else "hidden"
         self._append_block(f"transcript details: {state}")
@@ -846,6 +864,49 @@ class HermesStreamingApp(App):
         heading = f"Prompt history matching {args.strip()!r}:" if needle else "Prompt history:"
         lines = [f"{index}. {self._queue_preview(text)}" for index, text in recent]
         self._append_block(heading + "\n" + "\n".join(lines))
+
+    def _handle_reload_command(self) -> None:
+        """Re-read the config file/environment without restarting the client."""
+        try:
+            new_args = config.build_arg_parser(self._argv).parse_args(self._argv)
+        except SystemExit as exc:
+            self._append_block(f"[error] /reload: {exc}")
+            return
+
+        self.args = new_args
+        skipped: list[str] = []
+
+        new_busy_mode = getattr(new_args, "busy_mode", "queue")
+        if new_busy_mode not in config.BUSY_MODES:
+            new_busy_mode = "queue"
+        if self._busy_mode_touched:
+            skipped.append("busy-mode")
+        else:
+            self.busy_mode = new_busy_mode
+
+        new_show_details = not bool(getattr(new_args, "hide_thinking", False))
+        if self._show_details_touched:
+            skipped.append("show-details")
+        else:
+            if new_show_details != self.show_transcript_details:
+                self.show_transcript_details = new_show_details
+                self._refresh_transcript()
+
+        if self._audio_input_touched:
+            skipped.append("audio-input")
+        else:
+            self.audio_input_device = getattr(new_args, "mic_input_device", None)
+
+        if self._audio_output_touched:
+            skipped.append("audio-output")
+        else:
+            self.player.output_device = getattr(new_args, "audio_output_device", None)
+        self.player.enabled = not bool(getattr(new_args, "no_play", False))
+
+        message = f"config reloaded from {new_args.config}."
+        if skipped:
+            message += " kept session-set: " + ", ".join(skipped) + "."
+        self._append_block(message)
 
     async def _handle_audio_command(self, args: str) -> None:
         """Show and change local input/output devices for this session."""
@@ -906,8 +967,10 @@ class HermesStreamingApp(App):
                 self._append_block(f"[error] audio input device: {exc}")
                 return
             self.audio_input_device = selector
+            self._audio_input_touched = True
         else:
             self.player.output_device = selector
+            self._audio_output_touched = True
         self._append_block(f"audio {action} device: {self._audio_device_label(selector)}")
 
     @staticmethod
@@ -1334,6 +1397,7 @@ class HermesStreamingApp(App):
 def main() -> int:
     parser = config.build_arg_parser()
     args = parser.parse_args()
+    config.ensure_default_config_file(args.config)
     if args.log_file is not None:
         args.debug = True
     log_path = config.configure_logging(debug=args.debug, log_file=args.log_file)
