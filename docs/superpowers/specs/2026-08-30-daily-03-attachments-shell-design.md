@@ -30,7 +30,7 @@ substitutes successful stdout into an otherwise ordinary text turn.
 | --- | --- |
 | `attachments.py` | Immutable local attachment descriptors, safe path resolution, inline `@path` discovery, path completion, and human-readable previews. It does not upload or embed bytes. |
 | `shell.py` | Shell opt-in policy, command parsing/execution, timeout/output bounds, environment filtering, standalone execution, and interpolation. |
-| `commands.py` | Register `/image` with `add`, `list`, and `clear` behavior. |
+| `commands.py` | Register `/image` with path, `list`, and `clear` behavior. |
 | `config.py` | Add the opt-in `--allow-shell` flag, `HERMES_RELAY_TUI_ALLOW_SHELL`, and YAML `allow_shell` setting using existing precedence. |
 | `app.py` | Own staged attachments, route `/image`, offer `@` completion, prepare ordinary submissions, preserve drafts on preparation failure, and enforce the current relay capability boundary. |
 | `tests/test_attachments.py` | Unit coverage for path resolution, type/metadata classification, inline references, completion, and previews. |

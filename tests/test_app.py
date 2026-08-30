@@ -325,6 +325,155 @@ async def test_slash_help_is_handled_without_sending_a_turn():
         assert "/help" in transcript_of(app)
 
 
+async def test_image_command_stages_lists_and_clears_a_local_image(tmp_path):
+    image = tmp_path / "photo.png"
+    image.write_bytes(b"png bytes")
+    app = HermesStreamingApp(
+        args=make_args(history_path=tmp_path / "history"),
+        session_factory=lambda: FakeSession(),
+    )
+    async with app.run_test() as pilot:
+        composer = app.query_one("#composer", Composer)
+        composer.text = f"/image {image}"
+        await pilot.press("enter")
+        await pilot.pause()
+
+        assert [attachment.path for attachment in app._staged_attachments] == [image]
+        assert "photo.png" in transcript_of(app)
+        assert "image/png" in transcript_of(app)
+
+        composer.text = "/image list"
+        await pilot.press("enter")
+        await pilot.pause()
+        assert "Staged attachments:" in transcript_of(app)
+
+        composer.text = "/image clear"
+        await pilot.press("enter")
+        await pilot.pause()
+        assert app._staged_attachments == []
+        assert "cleared 1 staged attachment(s)" in transcript_of(app)
+
+
+async def test_image_command_rejects_a_non_image_without_staging_it(tmp_path):
+    document = tmp_path / "notes.txt"
+    document.write_text("not an image")
+    app = HermesStreamingApp(
+        args=make_args(history_path=tmp_path / "history"),
+        session_factory=lambda: FakeSession(),
+    )
+    async with app.run_test() as pilot:
+        composer = app.query_one("#composer", Composer)
+        composer.text = f"/image {document}"
+        await pilot.press("enter")
+        await pilot.pause()
+
+        assert app._staged_attachments == []
+        assert "[error] image: attachment is not an image" in transcript_of(app)
+
+
+async def test_path_reference_completion_keeps_the_draft_local(tmp_path):
+    image = tmp_path / "photo.png"
+    image.write_bytes(b"png bytes")
+    app = HermesStreamingApp(args=make_args(), session_factory=lambda: FakeSession())
+    async with app.run_test() as pilot:
+        composer = app.query_one("#composer", Composer)
+        composer.text = f"look at @{tmp_path}/pho"
+        composer.move_cursor((0, len(composer.text)))
+        await pilot.press("tab")
+        await pilot.pause()
+
+        assert composer.text == f"look at @{image}"
+        assert app.query_one("#composer", Composer).text == composer.text
+
+
+async def test_inline_attachment_is_reported_as_unsupported_and_preserves_draft(tmp_path):
+    document = tmp_path / "notes.txt"
+    document.write_text("local notes")
+    session = FakeSession()
+    app = HermesStreamingApp(
+        args=make_args(history_path=tmp_path / "history"),
+        session_factory=lambda: session,
+    )
+    async with app.run_test() as pilot:
+        composer = app.query_one("#composer", Composer)
+        prompt = f"summarize @{document}"
+        composer.text = prompt
+        await pilot.press("enter")
+        await pilot.pause()
+
+        assert session.sent_turns == []
+        assert composer.text == prompt
+        assert "relay does not support attachments" in transcript_of(app)
+        assert "notes.txt" in transcript_of(app)
+
+
+async def test_disabled_shell_interpolation_is_visible_and_preserves_draft(tmp_path):
+    app = HermesStreamingApp(
+        args=make_args(history_path=tmp_path / "history"),
+        session_factory=lambda: FakeSession(),
+    )
+    async with app.run_test() as pilot:
+        composer = app.query_one("#composer", Composer)
+        composer.text = "show {!printf ok}"
+        await pilot.press("enter")
+        await pilot.pause()
+
+        assert composer.text == "show {!printf ok}"
+        assert "shell execution is disabled" in transcript_of(app)
+
+
+async def test_enabled_shell_interpolation_prepares_prompt_before_sending(tmp_path):
+    session = FakeSession()
+    app = HermesStreamingApp(
+        args=make_args(allow_shell=True, history_path=tmp_path / "history"),
+        session_factory=lambda: session,
+    )
+    async with app.run_test() as pilot:
+        composer = app.query_one("#composer", Composer)
+        composer.text = "show {!printf ok}"
+        await pilot.press("enter")
+        await pilot.pause()
+
+        assert session.sent_turns == [("show ok", "local")]
+        assert composer.text == ""
+        assert "you> show ok" in transcript_of(app)
+
+
+async def test_standalone_shell_command_is_local_only_when_enabled(tmp_path):
+    session = FakeSession()
+    app = HermesStreamingApp(
+        args=make_args(allow_shell=True, history_path=tmp_path / "history"),
+        session_factory=lambda: session,
+    )
+    async with app.run_test() as pilot:
+        composer = app.query_one("#composer", Composer)
+        composer.text = "!printf ok"
+        await pilot.press("enter")
+        await pilot.pause()
+
+        assert session.sent_turns == []
+        assert composer.text == ""
+        assert "shell: printf ok" in transcript_of(app)
+        assert "ok" in transcript_of(app)
+
+
+async def test_ctrl_c_clears_idle_staged_attachments(tmp_path):
+    image = tmp_path / "photo.png"
+    image.write_bytes(b"png bytes")
+    app = HermesStreamingApp(args=make_args(), session_factory=lambda: FakeSession())
+    async with app.run_test() as pilot:
+        composer = app.query_one("#composer", Composer)
+        composer.text = f"/image {image}"
+        await pilot.press("enter")
+        await pilot.pause()
+        assert app._staged_attachments
+
+        await app.action_interrupt()
+
+        assert app._staged_attachments == []
+        assert "cleared 1 staged attachment(s)" in transcript_of(app)
+
+
 async def test_unknown_slash_command_uses_dispatcher_instead_of_model_turn():
     session = FakeSession()
     dispatched = []

@@ -64,6 +64,16 @@ def test_parser_accepts_hidden_transcript_detail_flag():
     assert build_arg_parser().parse_args(["--hide-thinking"]).hide_thinking is True
 
 
+def test_parser_disables_shell_by_default(monkeypatch):
+    monkeypatch.delenv("HERMES_RELAY_TUI_ALLOW_SHELL", raising=False)
+    assert build_arg_parser().parse_args([]).allow_shell is False
+
+
+def test_parser_reads_shell_opt_in_from_environment(monkeypatch):
+    monkeypatch.setenv("HERMES_RELAY_TUI_ALLOW_SHELL", "true")
+    assert build_arg_parser().parse_args([]).allow_shell is True
+
+
 def test_parser_reads_audio_device_selectors_from_flags_and_environment(monkeypatch):
     monkeypatch.setenv("VOICE_SESSION_MIC_INPUT_DEVICE", "2")
     monkeypatch.setenv("VOICE_SESSION_AUDIO_OUTPUT_DEVICE", "USB Headset")
@@ -200,6 +210,7 @@ def test_config_file_fills_the_fiddly_defaults(tmp_path):
                 "connect_retry_delay: 2.5",
                 "turn_timeout: 60",
                 "history_path: /custom/history.jsonl",
+                "allow_shell: true",
             ]
         )
     )
@@ -219,6 +230,7 @@ def test_config_file_fills_the_fiddly_defaults(tmp_path):
     assert args.connect_retry_delay == 2.5
     assert args.turn_timeout == 60
     assert str(args.history_path) == "/custom/history.jsonl"
+    assert args.allow_shell is True
 
 
 def test_cli_flag_overrides_config_file(tmp_path):

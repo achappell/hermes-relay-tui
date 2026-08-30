@@ -56,6 +56,15 @@ def test_audio_command_is_registered_for_local_device_controls():
     assert invocation.args == "input USB Microphone"
 
 
+def test_image_command_is_registered_for_local_attachments():
+    invocation = parse_slash_command("/image list")
+
+    assert invocation is not None
+    assert invocation.command is not None
+    assert invocation.command.name == "image"
+    assert invocation.args == "list"
+
+
 def test_help_can_filter_commands():
     rendered = help_text("microphone")
 

@@ -312,6 +312,12 @@ def build_arg_parser(argv: Optional[list[str]] = None) -> argparse.ArgumentParse
         help="hide thinking and tool detail in the transcript",
     )
     parser.add_argument(
+        "--allow-shell",
+        action="store_true",
+        default=_env_bool("HERMES_RELAY_TUI_ALLOW_SHELL", _cfg_bool(cfg, "allow_shell")),
+        help="allow bounded local !command execution and {!command} interpolation",
+    )
+    parser.add_argument(
         "--debug",
         action="store_true",
         default=_env_bool("HERMES_RELAY_TUI_DEBUG", _cfg_bool(cfg, "debug")),
