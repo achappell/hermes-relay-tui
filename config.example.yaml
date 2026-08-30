@@ -50,6 +50,7 @@
 # --- turn behavior ---------------------------------------------------------
 # busy_mode: queue           # queue | steer | interrupt
 # hide_thinking: false
+# allow_shell: false         # enables bounded local !command execution
 
 # --- debugging ---------------------------------------------------------
 # debug: false

@@ -23,4 +23,4 @@ dependencies = [
 hermes-relay = "app:main"
 
 [tool.setuptools]
-py-modules = ["app", "audio", "client", "commands", "config", "diagnostics", "history", "mic", "transcript"]
+py-modules = ["app", "attachments", "audio", "client", "commands", "config", "diagnostics", "history", "mic", "shell", "transcript"]

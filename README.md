@@ -17,6 +17,8 @@ This is a client for the existing Hermes voice-session channel. It does not run 
 - Structured thinking, status, tool, notification, and background activity rendering with unsupported-event diagnostics.
 - Typed Markdown transcript rendering with `/details [show|hide]` and `--hide-thinking` controls.
 - Connection, timeout, and turn errors shown in the UI instead of crashing the app.
+- Local image staging and `@path` attachment previews with an explicit text-only relay boundary.
+- Opt-in bounded local `!command` execution and `{!command}` prompt interpolation.
 
 ## Requirements
 
@@ -143,11 +145,13 @@ turn state. It does not record bearer tokens, prompts, response text, or audio.
 | `Tab` | Complete a uniquely-matching slash command in place |
 | `Ctrl+R` | Capture and send a microphone turn |
 | `/audio` | Show or select local audio devices |
+| `/image` | Stage, list, or clear a local image attachment |
 | `Ctrl+C` | Interrupt the active turn; otherwise clear the draft, queue, or quit |
 | `F1` | Show keyboard help |
 | `Ctrl+Q` | Quit |
 
-Typed text is sent as-is. During an active response, ordinary prompts follow
+Typed text is sent as-is unless it contains an explicitly staged or referenced
+local file, or an opted-in `{!command}` interpolation. During an active response, ordinary prompts follow
 the configured `--busy-mode`: `queue` preserves them for later, `steer`
 replaces the active response, and `interrupt` stops the active response without
 sending the new message.
@@ -158,7 +162,7 @@ above the composer lists matching commands and their args/description as you
 type, and disappears once you've typed a space or the text no longer looks
 like a command. `Tab` fills in a uniquely-matching command name without
 moving focus out of the composer. The initial local commands
-are `/help`, `/clear`, `/status`, `/queue`, `/busy`, `/details`, `/voice`, and `/quit`;
+are `/help`, `/clear`, `/status`, `/queue`, `/busy`, `/details`, `/voice`, `/audio`, `/image`, and `/quit`;
 `/queue`
 also supports `list`, `edit <number> <replacement>`, `drop <number>`, and
 `clear`. `/busy [queue|steer|interrupt]` changes the mode for the current
@@ -171,6 +175,23 @@ retained only as a migration warning. `/model`, `/new`,
 gateway-dispatch boundary when one is supplied. The current voice-session
 protocol does not yet expose gateway command dispatch, so those commands fail
 visibly instead of being sent to the model as prose.
+
+Use `/image <path>` to stage a local image, `/image list` to inspect staged
+metadata, and `/image clear` to cancel them. A unique final `@path` token can
+be completed with `Tab`; inline `@path` references and staged images are
+prepared locally with filename, MIME type, size, and resolved path previews.
+The current voice-session relay accepts text only, so attachment-bearing
+prompts remain in the composer and are rejected visibly; no attachment bytes
+are sent until Hermes exposes upload and capability operations.
+
+Local shell preparation is disabled by default. Enable it with
+`--allow-shell`, `HERMES_RELAY_TUI_ALLOW_SHELL=true`, or `allow_shell: true` in
+the YAML config. A standalone `!command` runs locally and never becomes a
+Hermes turn. In ordinary text, `{!command}` substitutes successful stdout.
+Commands use `shell=False`, reject shell operators, run for at most 10 seconds,
+and produce at most 64 KiB of combined output. `VOICE_SESSION_TOKEN`,
+`GH_TOKEN`, and `GITHUB_TOKEN` are removed from child environments. Errors,
+timeouts, and malformed commands remain local and preserve the composer draft.
 
 Because the current voice-session protocol has no explicit interrupt frame,
 `Ctrl+C` and busy-mode `steer` cancel local stream consumption, close the
@@ -202,6 +223,7 @@ it. A turn that may already have reached Hermes is never replayed automatically.
 | `--connect-retries COUNT` | Additional connection attempts after the first failure; default `3` |
 | `--connect-retry-delay SECONDS` | Base delay before reconnect attempts; default `1.0` |
 | `--busy-mode MODE` | Active-turn behavior: `queue` (default), `steer`, or `interrupt` |
+| `--allow-shell` | Opt in to bounded local `!command` execution and `{!command}` interpolation |
 | `--mic-max-seconds SECONDS` | Maximum microphone capture duration |
 | `--mic-silence-duration SECONDS` | Silence duration that ends capture |
 | `--mic-silence-threshold VALUE` | Capture silence threshold |
@@ -254,6 +276,7 @@ hermes-relay
 | `VOICE_SESSION_CONNECT_RETRIES` | `3` additional connection attempts |
 | `VOICE_SESSION_CONNECT_RETRY_DELAY` | `1.0` second base reconnect delay |
 | `VOICE_SESSION_BUSY_MODE` | `queue`, `steer`, or `interrupt` |
+| `HERMES_RELAY_TUI_ALLOW_SHELL` | `1`, `true`, `yes`, or `on` enables bounded local shell preparation |
 | `HERMES_RELAY_TUI_DEBUG` | `1`, `true`, `yes`, or `on` enables the debug trace |
 | `HERMES_RELAY_TUI_LOG_FILE` | Debug trace path; implies debug logging |
 

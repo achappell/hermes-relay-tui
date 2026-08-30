@@ -126,6 +126,8 @@ Do not put a real token in this file or in the README.
 - Use `/busy [queue|steer|interrupt]` to change the mode for the current session.
 - Use `/details [show|hide]` or `--hide-thinking` to control thinking/tool detail in the transcript.
 - Use `/audio [list|status|input <device>|output <device>]` to inspect and select local audio devices for the current session.
+- Use `/image <path>`, `/image list`, or `/image clear` to stage and inspect local image attachments. `@path` references support local path completion; the current relay reports attachments as unsupported rather than sending them.
+- Use `!command` or `{!command}` only after opting in with `--allow-shell`; execution is local, bounded, and visible, with shell operators rejected.
 - Use `/reload` to re-read the config file/environment without restarting. Any of busy-mode, show-details, or audio devices you've changed interactively this session are left alone; everything else picks up the new values. A malformed config file reports an error instead of crashing.
 - `Ctrl+C` interrupts the active turn; when idle it clears the draft, clears the queue, or exits.
 - `/steer` is retained only as a migration warning; steering happens when an ordinary message is submitted in `--busy-mode steer`.
@@ -148,6 +150,7 @@ The complete source of truth is `config.build_arg_parser()`. The main runtime op
 - `--connect-retries COUNT` — additional connection attempts after the first failure; default is 3.
 - `--connect-retry-delay SECONDS` — base delay before reconnect attempts; default is 1 second.
 - `--busy-mode MODE` — active-turn behavior: `queue` (default), `steer`, or `interrupt`.
+- `--allow-shell` — opt in to bounded local `!command` execution and `{!command}` interpolation; disabled by default.
 - `--hide-thinking` — hide thinking and tool detail in the transcript.
 - `--debug` — write a content-safe protocol trace to a temporary log file.
 - `--log-file PATH` — choose the debug trace path; supplying it implies `--debug`.
@@ -155,7 +158,7 @@ The complete source of truth is `config.build_arg_parser()`. The main runtime op
 - `--mic-input-device`, `--audio-output-device` — optional local input/output device name or index; `default` restores the system default.
 - `--stt-model` — optional local Faster-Whisper model selection.
 
-Relevant environment variables include `HERMES_VOICE_SESSION_URL`, `VOICE_SESSION_TOKEN`, `VOICE_SESSION_CLIENT_ID`, `VOICE_SESSION_DEVICE_ID`, `VOICE_SESSION_ID`, `VOICE_SESSION_MIC_MAX_SECONDS`, `VOICE_SESSION_MIC_SILENCE_DURATION`, `VOICE_SESSION_MIC_SILENCE_THRESHOLD`, `VOICE_SESSION_MIC_INPUT_DEVICE`, `VOICE_SESSION_AUDIO_OUTPUT_DEVICE`, `VOICE_SESSION_STT_MODEL`, `VOICE_SESSION_TURN_TIMEOUT`, `VOICE_SESSION_CONNECT_RETRIES`, `VOICE_SESSION_CONNECT_RETRY_DELAY`, and `VOICE_SESSION_BUSY_MODE`.
+Relevant environment variables include `HERMES_VOICE_SESSION_URL`, `VOICE_SESSION_TOKEN`, `VOICE_SESSION_CLIENT_ID`, `VOICE_SESSION_DEVICE_ID`, `VOICE_SESSION_ID`, `VOICE_SESSION_MIC_MAX_SECONDS`, `VOICE_SESSION_MIC_SILENCE_DURATION`, `VOICE_SESSION_MIC_SILENCE_THRESHOLD`, `VOICE_SESSION_MIC_INPUT_DEVICE`, `VOICE_SESSION_AUDIO_OUTPUT_DEVICE`, `VOICE_SESSION_STT_MODEL`, `VOICE_SESSION_TURN_TIMEOUT`, `VOICE_SESSION_CONNECT_RETRIES`, `VOICE_SESSION_CONNECT_RETRY_DELAY`, `VOICE_SESSION_BUSY_MODE`, and `HERMES_RELAY_TUI_ALLOW_SHELL`.
 
 `HERMES_RELAY_TUI_DEBUG` and `HERMES_RELAY_TUI_LOG_FILE` configure the
 optional debug trace without command-line flags. The trace records event
@@ -167,6 +170,7 @@ response text, or audio contents.
 
 - `client.send_hello()` sends the protocol v1 `hello` payload and requires a `hello_ack` response.
 - `client.send_turn()` sends a transcript turn and yields normalized events for text, activity, audio, errors, and turn completion; unknown server events become explicit diagnostics.
+- `app.py` prepares local attachment metadata and optional shell substitutions before submission. The current channel remains text-only: attachment-bearing prompts stop visibly before `client.send_turn()` rather than using an invented wire payload.
 - Binary WebSocket frames are raw PCM audio. `audio_start` supplies sample rate, channel count, and sample width.
 - `app.py` owns presentation and turn state. It should not grow protocol parsing logic that belongs in `client.py`.
 - Thinking/status/tool activity is rendered as a replaceable transcript line; the assistant response gets its own line once text begins, so repeated activity cannot pollute the final answer.

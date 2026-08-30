@@ -18,6 +18,7 @@ import asyncio
 import inspect
 import sys
 import threading
+from pathlib import Path
 from typing import Any, AsyncIterator, Awaitable, Callable, Optional, Protocol
 
 from textual import events
@@ -28,6 +29,14 @@ from textual.message import Message
 from textual.widgets import Footer, Header, Static, TextArea
 
 import config
+from attachments import (
+    Attachment,
+    AttachmentError,
+    complete_path_reference,
+    find_inline_attachments,
+    format_attachment_preview,
+    resolve_attachment,
+)
 from audio import PCMPlayer, audio_device_list, audio_path, read_wav, write_wav
 from client import send_hello, send_turn
 from commands import (
@@ -40,6 +49,14 @@ from commands import (
 from diagnostics import logger as diagnostic_logger, summarize_payload, summarize_text
 from history import PromptHistory, history_path_for_url
 from mic import cancel_microphone, load_microphone_class, make_recorder_factory
+from shell import (
+    ShellExecutionError,
+    ShellPolicy,
+    interpolate_commands,
+    interpolation_commands,
+    run_command,
+    standalone_command,
+)
 from transcript import TranscriptBuffer
 
 
@@ -317,6 +334,7 @@ class HermesStreamingApp(App):
         self.voice_state = VOICE_READY
         self._turn_in_flight = False
         self._queued_prompts: list[str] = []
+        self._staged_attachments: list[Attachment] = []
         self._active_turn_task: Optional[asyncio.Task[None]] = None
         self._voice_capture_task: Optional[asyncio.Task[str]] = None
         self._voice_capture_cancelled = False
@@ -468,13 +486,13 @@ class HermesStreamingApp(App):
 
     async def on_composer_submitted(self, event: Composer.Submitted) -> None:
         text = event.text.strip()
-        event.composer.load_text("")
         self._history_index = None
         self._history_draft = ""
         if not text:
             return
         invocation = parse_slash_command(text)
         if invocation is not None:
+            event.composer.load_text("")
             self.run_worker(
                 self._handle_command(invocation),
                 name=f"command /{invocation.name or 'help'}",
@@ -482,15 +500,19 @@ class HermesStreamingApp(App):
                 exit_on_error=False,
             )
             return
-        self._history.append(text)
         self.run_worker(
-            self._submit_text(text),
+            self._submit_text(text, composer=event.composer),
             name="chat turn",
             group="interaction",
             exit_on_error=False,
         )
 
     async def on_composer_completion_requested(self, event: Composer.CompletionRequested) -> None:
+        path_candidates = complete_path_reference(event.text)
+        if len(path_candidates) == 1:
+            event.composer.load_text(path_candidates[0])
+            event.composer.move_cursor((0, len(event.composer.text)))
+            return
         candidates = complete_slash_command(event.text)
         if len(candidates) != 1:
             return
@@ -627,6 +649,8 @@ class HermesStreamingApp(App):
                 await self._capture_voice_turn()
         elif command.name == "audio":
             await self._handle_audio_command(invocation.args)
+        elif command.name == "image":
+            await self._handle_image_command(invocation.args)
         elif command.name == "history":
             self._handle_history_command(invocation.args)
         elif command.name == "reload":
@@ -877,6 +901,40 @@ class HermesStreamingApp(App):
             self._audio_output_touched = True
         self._append_block(f"audio {action} device: {self._audio_device_label(selector)}")
 
+    async def _handle_image_command(self, args: str) -> None:
+        """Stage, inspect, or clear local image attachments."""
+        parts = args.strip().split(maxsplit=1)
+        if not parts:
+            self._append_block("usage: /image <path>|list|clear")
+            return
+
+        action = parts[0].lower()
+        if action == "list" and len(parts) == 1:
+            if not self._staged_attachments:
+                self._append_block("Staged attachments: none")
+                return
+            lines = ["Staged attachments:"]
+            lines.extend(f"- {format_attachment_preview(item)}" for item in self._staged_attachments)
+            self._append_block("\n".join(lines))
+            return
+        if action == "clear" and len(parts) == 1:
+            count = len(self._staged_attachments)
+            self._staged_attachments.clear()
+            self._append_block(f"cleared {count} staged attachment(s).")
+            return
+
+        raw_path = args.strip()
+        try:
+            attachment = resolve_attachment(raw_path, image_only=True)
+        except AttachmentError as exc:
+            self._append_block(f"[error] image: {exc}")
+            return
+        if any(item.path == attachment.path for item in self._staged_attachments):
+            self._append_block(f"image already staged: {format_attachment_preview(attachment)}")
+            return
+        self._staged_attachments.append(attachment)
+        self._append_block(f"staged image: {format_attachment_preview(attachment)}")
+
     @staticmethod
     def _audio_device_label(device: int | str | None) -> str:
         return "default" if device is None else str(device)
@@ -928,9 +986,19 @@ class HermesStreamingApp(App):
             return
 
         composer = self.query_one("#composer", Composer)
-        if composer.text:
+        if composer.text or self._staged_attachments:
+            had_draft = bool(composer.text)
+            attachment_count = len(self._staged_attachments)
             composer.load_text("")
-            self._append_block("draft cleared.")
+            self._staged_attachments.clear()
+            if had_draft and attachment_count:
+                self._append_block(
+                    f"draft and {attachment_count} staged attachment(s) cleared."
+                )
+            elif had_draft:
+                self._append_block("draft cleared.")
+            else:
+                self._append_block(f"cleared {attachment_count} staged attachment(s).")
             return
         if self._queued_prompts:
             count = len(self._queued_prompts)
@@ -990,8 +1058,66 @@ class HermesStreamingApp(App):
         self._needs_reconnect = True
         return True
 
-    async def _submit_text(self, text: str) -> None:
-        """Apply the configured busy-turn policy to an ordinary message."""
+    def _shell_policy(self) -> ShellPolicy:
+        return ShellPolicy(enabled=bool(getattr(self.args, "allow_shell", False)))
+
+    async def _submit_text(self, text: str, *, composer: Optional[Composer] = None) -> None:
+        """Prepare local references, then apply the busy-turn policy."""
+        history_text = text
+        local_command = standalone_command(text)
+        try:
+            if local_command is not None:
+                result = await run_command(
+                    local_command,
+                    policy=self._shell_policy(),
+                    cwd=Path.cwd(),
+                )
+                output = result.output.rstrip("\r\n") or "(no output)"
+                if result.returncode != 0:
+                    raise ShellExecutionError(
+                        f"{local_command!r} exited with status {result.returncode}: {output}"
+                    )
+                self._append_block(f"shell: {local_command}\n{output}")
+                if composer is not None:
+                    composer.load_text("")
+                return
+
+            attachments = list(self._staged_attachments)
+            attachments.extend(
+                item
+                for item in find_inline_attachments(text, cwd=Path.cwd())
+                if item.path not in {staged.path for staged in attachments}
+            )
+            if attachments:
+                lines = ["Attachments prepared:"]
+                lines.extend(f"- {format_attachment_preview(item)}" for item in attachments)
+                lines.append("[error] relay does not support attachments; prompt not sent.")
+                self._append_block("\n".join(lines))
+                return
+
+            shell_commands = interpolation_commands(text)
+            prepared_text = await interpolate_commands(
+                text,
+                policy=self._shell_policy(),
+                cwd=Path.cwd(),
+            )
+            if shell_commands:
+                self._append_block(
+                    "shell interpolation: "
+                    + ", ".join(f"{{!{command}}}" for command in shell_commands)
+                )
+        except AttachmentError as exc:
+            self._append_block(f"[error] attachment: {exc}")
+            return
+        except ShellExecutionError as exc:
+            self._append_block(f"[error] shell: {exc}")
+            return
+
+        text = prepared_text
+        if composer is not None:
+            composer.load_text("")
+        self._history.append(history_text)
+
         current_task = asyncio.current_task()
         while self._busy_transition_owner is not None:
             await asyncio.sleep(0)
