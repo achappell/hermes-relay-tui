@@ -139,8 +139,8 @@ turn state. It does not record bearer tokens, prompts, response text, or audio.
 | --- | --- |
 | `Enter` | Send the composer contents |
 | `Shift+Enter` / `Alt+Enter` | Insert a newline |
-| `/` at an empty composer | Open the visual slash-command palette |
-| `Tab` | Complete a slash command |
+| `/` | Type a command name; a live suggestion line shows matches as you type |
+| `Tab` | Complete a uniquely-matching slash command in place |
 | `Ctrl+R` | Capture and send a microphone turn |
 | `/audio` | Show or select local audio devices |
 | `Ctrl+C` | Interrupt the active turn; otherwise clear the draft, queue, or quit |
@@ -152,11 +152,12 @@ the configured `--busy-mode`: `queue` preserves them for later, `steer`
 replaces the active response, and `interrupt` stops the active response without
 sending the new message.
 
-Slash commands are routed before ordinary prompts. Typing `/` in an empty
-composer opens a searchable command palette; filter by name or description,
-use the arrow keys to choose a command, then press `Enter` to return it to the
-composer. `Escape` closes the palette and leaves the slash draft in place. The
-initial local commands
+Slash commands are routed before ordinary prompts. Typing `/` and a command
+name works like any other text — a compact, non-blocking suggestion line
+above the composer lists matching commands and their args/description as you
+type, and disappears once you've typed a space or the text no longer looks
+like a command. `Tab` fills in a uniquely-matching command name without
+moving focus out of the composer. The initial local commands
 are `/help`, `/clear`, `/status`, `/queue`, `/busy`, `/details`, `/voice`, and `/quit`;
 `/queue`
 also supports `list`, `edit <number> <replacement>`, `drop <number>`, and
