@@ -116,7 +116,13 @@ class TranscriptBuffer:
             label = self._LABELS.get(message.role)
             if label:
                 renderables.append(Text(label.rstrip(), style=self._STYLES[message.role]))
-                renderables.append(Markdown(message.text))
+                if message.role == "user":
+                    # Raw typed input: preserve literal newlines. Markdown
+                    # treats a single "\n" as a soft break (renders as a
+                    # space), which silently ate Shift+Enter line breaks.
+                    renderables.append(Text(message.text))
+                else:
+                    renderables.append(Markdown(message.text))
             else:
                 renderables.append(
                     Text(message.text, style=self._STYLES.get(message.role, "white"))

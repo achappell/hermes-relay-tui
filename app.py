@@ -118,7 +118,10 @@ class Composer(TextArea):
             event.prevent_default()
             self.post_message(self.Submitted(self))
             return
-        if event.key.endswith("+enter"):
+        if event.key.endswith("+enter") or event.key == "ctrl+j":
+            # Ghostty (and other terminals without the Kitty keyboard protocol)
+            # send Shift+Enter as a bare linefeed, which Textual reports as
+            # "ctrl+j" rather than a distinguishable "shift+enter".
             event.stop()
             event.prevent_default()
             self.insert("\n")
