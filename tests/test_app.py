@@ -6,9 +6,9 @@ import wave
 from io import BytesIO
 
 import pytest
-from textual.widgets import Input, OptionList, Static, TextArea
+from textual.widgets import Static
 
-from app import CommandPalette, Composer, HermesSession, HermesStreamingApp
+from app import Composer, HermesSession, HermesStreamingApp
 from client import ProtocolError
 from commands import parse_slash_command
 
@@ -391,52 +391,84 @@ async def test_tab_completes_a_unique_slash_command_and_keeps_draft_local():
         assert session.sent_turns == []
 
 
-async def test_slash_opens_command_palette_and_enter_hands_command_to_composer():
+async def test_slash_types_inline_without_opening_an_overlay():
     session = FakeSession()
     app = HermesStreamingApp(args=make_args(), session_factory=lambda: session)
     async with app.run_test() as pilot:
         composer = app.query_one("#composer", Composer)
-        await pilot.press("/")
+        await pilot.press("/", "b", "u", "s", "y")
         await pilot.pause()
 
-        assert isinstance(app.screen, CommandPalette)
-        command_filter = app.screen.query_one("#command-filter", Input)
-        assert app.focused is command_filter
-
-        await pilot.press("b", "u")
-        await pilot.pause()
-
-        options = app.screen.query_one("#command-options", OptionList)
-        assert options.option_count == 1
-        assert "/busy" in str(options.get_option_at_index(0).prompt)
-
-        await pilot.press("down")
-        await pilot.pause()
-        assert app.focused is options
-        assert options.highlighted == 0
-
-        await pilot.press("enter")
-        await pilot.pause()
-
-        assert composer.text == "/busy "
+        assert composer.text == "/busy"
         assert app.focused is composer
         assert session.sent_turns == []
 
 
-async def test_escape_closes_command_palette_and_preserves_slash_draft():
+async def test_command_suggestions_appear_while_typing_a_command_name():
+    session = FakeSession()
+    app = HermesStreamingApp(args=make_args(), session_factory=lambda: session)
+    async with app.run_test() as pilot:
+        suggestions = app.query_one("#command-suggestions", Static)
+        assert suggestions.display is False
+
+        composer = app.query_one("#composer", Composer)
+        composer.text = "/bu"
+        composer.move_cursor((0, len(composer.text)))
+        await pilot.pause()
+
+        assert suggestions.display is True
+        assert "/busy" in str(suggestions.render())
+
+
+async def test_command_suggestions_narrow_to_usage_for_a_command_that_takes_args():
     session = FakeSession()
     app = HermesStreamingApp(args=make_args(), session_factory=lambda: session)
     async with app.run_test() as pilot:
         composer = app.query_one("#composer", Composer)
-        await pilot.press("/")
+        composer.text = "/busy"
+        composer.move_cursor((0, len(composer.text)))
         await pilot.pause()
-        assert isinstance(app.screen, CommandPalette)
+        suggestions = app.query_one("#command-suggestions", Static)
+        assert suggestions.display is True
 
-        await pilot.press("escape")
+        composer.text = "/busy "
+        composer.move_cursor((0, len(composer.text)))
         await pilot.pause()
 
-        assert not isinstance(app.screen, CommandPalette)
-        assert composer.text == "/"
+        assert suggestions.display is True
+        rendered = str(suggestions.render())
+        assert "/busy [queue|steer|interrupt]" in rendered
+
+        composer.text = "/busy inter"
+        composer.move_cursor((0, len(composer.text)))
+        await pilot.pause()
+
+        assert suggestions.display is True
+        assert "/busy [queue|steer|interrupt]" in str(suggestions.render())
+
+
+async def test_command_suggestions_hide_once_args_are_typed_for_a_no_arg_command():
+    session = FakeSession()
+    app = HermesStreamingApp(args=make_args(), session_factory=lambda: session)
+    async with app.run_test() as pilot:
+        composer = app.query_one("#composer", Composer)
+        composer.text = "/quit "
+        composer.move_cursor((0, len(composer.text)))
+        await pilot.pause()
+
+        assert app.query_one("#command-suggestions", Static).display is False
+
+
+async def test_command_suggestions_hide_for_ordinary_prompt_text():
+    session = FakeSession()
+    app = HermesStreamingApp(args=make_args(), session_factory=lambda: session)
+    async with app.run_test() as pilot:
+        composer = app.query_one("#composer", Composer)
+        composer.text = "not a command"
+        composer.move_cursor((0, len(composer.text)))
+        await pilot.pause()
+
+        assert app.query_one("#command-suggestions", Static).display is False
         assert app.focused is composer
 
 
