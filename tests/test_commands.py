@@ -1,3 +1,5 @@
+import pytest
+
 from commands import complete_slash_command, help_text, parse_slash_command
 
 
@@ -30,12 +32,21 @@ def test_completion_only_targets_a_bare_slash_word():
     assert complete_slash_command("/model gpt") == []
 
 
-def test_steer_is_not_a_registered_command_anymore():
+def test_steer_is_not_a_registered_command():
     invocation = parse_slash_command("/steer answer the second question")
 
     assert invocation is not None
     assert invocation.command is None
     assert invocation.args == "answer the second question"
+
+
+@pytest.mark.parametrize("name", ["save", "copy", "logs", "usage", "retry", "undo", "compress"])
+def test_daily04_commands_are_discoverable(name):
+    invocation = parse_slash_command(f"/{name}")
+
+    assert invocation is not None
+    assert invocation.command is not None
+    assert invocation.command.name == name
 
 
 def test_busy_command_is_registered_for_session_configuration():

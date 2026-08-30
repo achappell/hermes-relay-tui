@@ -94,12 +94,33 @@ class TranscriptBuffer:
         self._streaming_message = None
         self._active_activity = None
 
+    def remove_last(self, role: str, text: str) -> bool:
+        """Remove the most recent exact message, returning whether it existed."""
+        for index in range(len(self.messages) - 1, -1, -1):
+            message = self.messages[index]
+            if message.role == role and message.text == text:
+                if message is self._active_activity:
+                    self._active_activity = None
+                if message is self._streaming_message:
+                    self._streaming_message = None
+                del self.messages[index]
+                return True
+        return False
+
     @property
     def plain_text(self) -> str:
         """Return the readable text projection used by diagnostics and tests."""
+        return self.plain_text_for(show_details=True)
+
+    def plain_text_for(self, *, show_details: bool = True) -> str:
+        """Return the readable projection with optional detail messages."""
         if not self.messages:
             return ""
-        blocks = [self._plain_message(message) for message in self.messages]
+        blocks = [
+            self._plain_message(message)
+            for message in self.messages
+            if show_details or not message.detail
+        ]
         return "\n".join(blocks)
 
     def _plain_message(self, message: TranscriptMessage) -> str:

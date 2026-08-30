@@ -12,6 +12,7 @@ LOGGER_NAME = "hermes_relay_tui"
 DEFAULT_LOG_FILE = Path(tempfile.gettempdir()) / "hermes-relay-tui-debug.log"
 
 logger = logging.getLogger(LOGGER_NAME)
+_active_log_file: Optional[Path] = None
 
 
 def summarize_text(value: Any) -> str:
@@ -76,8 +77,10 @@ def configure_logging(*, debug: bool, log_file: Optional[Path] = None) -> Option
     this with ``debug=False`` also resets it, which keeps tests and embedded
     callers from retaining an old file handler.
     """
+    global _active_log_file
     _clear_handlers()
     if not debug and log_file is None:
+        _active_log_file = None
         logger.setLevel(logging.WARNING)
         logger.propagate = True
         return None
@@ -92,4 +95,10 @@ def configure_logging(*, debug: bool, log_file: Optional[Path] = None) -> Option
     logger.setLevel(logging.DEBUG)
     logger.propagate = False
     logger.info("debug logging enabled file=%s", path)
+    _active_log_file = path
     return path
+
+
+def active_log_file() -> Optional[Path]:
+    """Return the currently configured debug log path, if logging is active."""
+    return _active_log_file

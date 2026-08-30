@@ -18,6 +18,7 @@ import asyncio
 import inspect
 import sys
 import threading
+from datetime import datetime
 from pathlib import Path
 from typing import Any, AsyncIterator, Awaitable, Callable, Optional, Protocol
 
@@ -38,6 +39,7 @@ from attachments import (
     resolve_attachment,
 )
 from audio import PCMPlayer, audio_device_list, audio_path, read_wav, write_wav
+from clipboard import ClipboardError, copy_text
 from client import send_hello, send_turn
 from commands import (
     COMMAND_REGISTRY,
@@ -46,7 +48,12 @@ from commands import (
     help_text,
     parse_slash_command,
 )
-from diagnostics import logger as diagnostic_logger, summarize_payload, summarize_text
+from diagnostics import (
+    active_log_file,
+    logger as diagnostic_logger,
+    summarize_payload,
+    summarize_text,
+)
 from history import PromptHistory, history_path_for_url
 from mic import cancel_microphone, load_microphone_class, make_recorder_factory
 from shell import (
@@ -283,6 +290,16 @@ VOICE_SPEAKING = "speaking…"
 VOICE_BUFFERING = "buffering…"
 VOICE_INTERRUPTED = "interrupted"
 VOICE_ERROR = "error"
+PROMPT_NOT_SENT = "not-sent"
+PROMPT_AMBIGUOUS = "ambiguous"
+PROMPT_COMPLETED = "completed"
+PROMPT_UNDONE = "undone"
+
+
+def _write_new_text_file(path: Path, text: str) -> None:
+    """Create a UTF-8 text file and fail safely if it already exists."""
+    with path.open("x", encoding="utf-8") as handle:
+        handle.write(text)
 
 
 class HermesStreamingApp(App):
@@ -339,6 +356,8 @@ class HermesStreamingApp(App):
         self._voice_capture_task: Optional[asyncio.Task[str]] = None
         self._voice_capture_cancelled = False
         self._needs_reconnect = False
+        self._last_prompt: Optional[str] = None
+        self._last_prompt_status: Optional[str] = None
         self.connection_state = CONNECTION_DISCONNECTED
         self._connection_lock = asyncio.Lock()
         self.busy_mode = getattr(args, "busy_mode", "queue")
@@ -375,6 +394,10 @@ class HermesStreamingApp(App):
     def transcript_text(self) -> str:
         """Plain-text projection retained for diagnostics and test assertions."""
         return self.transcript.plain_text
+
+    def _visible_transcript_text(self) -> str:
+        """Return the same plain-text projection currently shown in the UI."""
+        return self.transcript.plain_text_for(show_details=self.show_transcript_details)
 
     def _refresh_transcript(self) -> None:
         self.query_one("#transcript", Static).update(
@@ -614,12 +637,6 @@ class HermesStreamingApp(App):
     async def _handle_command(self, invocation: CommandInvocation) -> None:
         command = invocation.command
         if command is None:
-            if invocation.name == "steer":
-                self._append_block(
-                    "[deprecated] /steer is no longer a command; set "
-                    "--busy-mode steer and submit the replacement normally."
-                )
-                return
             await self._dispatch_command(invocation)
             return
         if command.name == "help":
@@ -653,6 +670,20 @@ class HermesStreamingApp(App):
             await self._handle_image_command(invocation.args)
         elif command.name == "history":
             self._handle_history_command(invocation.args)
+        elif command.name == "save":
+            await self._handle_save_command(invocation.args)
+        elif command.name == "copy":
+            await self._handle_copy_command(invocation.args)
+        elif command.name == "logs":
+            self._handle_logs_command(invocation.args)
+        elif command.name == "usage":
+            self._handle_relay_unavailable(command.name, invocation.args)
+        elif command.name == "retry":
+            await self._handle_retry_command(invocation.args)
+        elif command.name == "undo":
+            self._handle_undo_command(invocation.args)
+        elif command.name == "compress":
+            self._handle_relay_unavailable(command.name, invocation.args)
         elif command.name == "reload":
             self._handle_reload_command()
         elif command.name == "quit":
@@ -685,6 +716,8 @@ class HermesStreamingApp(App):
         return repr(preview)
 
     def _enqueue_prompt(self, text: str) -> None:
+        self._last_prompt = text
+        self._last_prompt_status = PROMPT_NOT_SENT
         self._queued_prompts.append(text)
         self._append_block(f"queued[{len(self._queued_prompts)}]: {self._queue_preview(text)}")
 
@@ -792,6 +825,139 @@ class HermesStreamingApp(App):
         heading = f"Prompt history matching {args.strip()!r}:" if needle else "Prompt history:"
         lines = [f"{index}. {self._queue_preview(text)}" for index, text in recent]
         self._append_block(heading + "\n" + "\n".join(lines))
+
+    async def _handle_save_command(self, args: str) -> None:
+        """Save the current visible transcript without overwriting a file."""
+        if args.strip().count("\n"):
+            self._append_block("usage: /save [path]")
+            return
+        text = self._visible_transcript_text()
+        if not text:
+            self._append_block("[error] /save: transcript is empty")
+            return
+        raw_path = args.strip()
+        path = (
+            Path(raw_path).expanduser()
+            if raw_path
+            else Path.cwd() / f"hermes-transcript-{datetime.now():%Y%m%d-%H%M%S}.txt"
+        )
+        try:
+            await asyncio.to_thread(_write_new_text_file, path, text)
+        except FileExistsError:
+            self._append_block(
+                f"[error] /save: {path} already exists; refusing to overwrite"
+            )
+        except OSError as exc:
+            self._append_block(f"[error] /save {path}: {exc}")
+        else:
+            self._append_block(f"saved visible transcript to {path}")
+
+    async def _handle_copy_command(self, args: str) -> None:
+        """Copy the current visible transcript through the local clipboard."""
+        if args.strip():
+            self._append_block("usage: /copy")
+            return
+        text = self._visible_transcript_text()
+        if not text:
+            self._append_block("[error] /copy: transcript is empty")
+            return
+        try:
+            await copy_text(text)
+        except (ClipboardError, OSError) as exc:
+            self._append_block(f"[error] /copy: {exc}")
+        else:
+            self._append_block("copied visible transcript to the system clipboard")
+
+    def _handle_logs_command(self, args: str) -> None:
+        """Show local diagnostic logging state without exposing log contents."""
+        if args.strip():
+            self._append_block("usage: /logs")
+            return
+        path = active_log_file()
+        if path is None:
+            self._append_block(
+                "logs: debug logging is disabled; restart with --debug or --log-file PATH"
+            )
+            return
+        state = "present" if path.exists() else "missing"
+        self._append_block(f"logs: debug trace {state} at {path}")
+
+    def _handle_relay_unavailable(self, command: str, args: str) -> None:
+        """Report relay-owned commands that this protocol cannot provide."""
+        if args.strip():
+            self._append_block(f"usage: /{command}")
+            return
+        self._append_block(
+            f"[error] /{command} is not exposed by the voice-session protocol; "
+            "no request was sent."
+        )
+
+    def _remove_last_queued_prompt(self, prompt: str) -> bool:
+        """Remove the newest matching queued prompt, preserving FIFO order."""
+        for index in range(len(self._queued_prompts) - 1, -1, -1):
+            if self._queued_prompts[index] == prompt:
+                del self._queued_prompts[index]
+                return True
+        return False
+
+    async def _handle_retry_command(self, args: str) -> None:
+        """Retry only a prompt proven not to have reached Hermes."""
+        if args.strip():
+            self._append_block("usage: /retry")
+            return
+        if self._turn_in_flight:
+            self._append_block("[error] /retry unavailable while a turn is in flight")
+            return
+        prompt = self._last_prompt
+        status = self._last_prompt_status
+        if prompt is None or status is None:
+            self._append_block("retry: no safely retryable prompt")
+            return
+        if status == PROMPT_AMBIGUOUS:
+            self._append_block(
+                "[error] /retry refused: the last prompt may have reached Hermes; "
+                "it will not be replayed automatically."
+            )
+            return
+        if status != PROMPT_NOT_SENT:
+            self._append_block("retry: no safely retryable prompt")
+            return
+        self._remove_last_queued_prompt(prompt)
+        self._append_block(f"retrying: {self._queue_preview(prompt)}")
+        await self._run_turn(prompt)
+
+    def _handle_undo_command(self, args: str) -> None:
+        """Remove an unsent prompt locally; never imply remote undo."""
+        if args.strip():
+            self._append_block("usage: /undo")
+            return
+        if self._turn_in_flight:
+            self._append_block("[error] /undo unavailable while a turn is in flight")
+            return
+        prompt = self._last_prompt
+        status = self._last_prompt_status
+        if status == PROMPT_NOT_SENT and prompt and prompt in self._queued_prompts:
+            self._remove_last_queued_prompt(prompt)
+            self.transcript.remove_last("user", prompt)
+            self._refresh_transcript()
+            self._last_prompt_status = PROMPT_UNDONE
+            self._append_block(f"removed unsent prompt: {self._queue_preview(prompt)}")
+            return
+        if status == PROMPT_AMBIGUOUS:
+            self._append_block(
+                "[error] /undo unavailable: the last prompt may have reached Hermes; "
+                "the relay exposes no undo operation."
+            )
+            return
+        if status == PROMPT_COMPLETED:
+            self._append_block(
+                "[error] /undo unavailable: the last turn was sent and the relay "
+                "exposes no undo operation."
+            )
+            return
+        self._append_block(
+            "undo: no unsent local prompt; the relay exposes no undo operation."
+        )
 
     def _handle_reload_command(self) -> None:
         """Re-read the config file/environment without restarting the client."""
@@ -1162,6 +1328,8 @@ class HermesStreamingApp(App):
         if self._turn_in_flight:
             # Keep one websocket reader while preserving text submitted during
             # a response. The active turn drains this FIFO after it completes.
+            self._last_prompt = text
+            self._last_prompt_status = PROMPT_NOT_SENT
             self._enqueue_prompt(text)
             return
         current_task = asyncio.current_task()
@@ -1191,6 +1359,8 @@ class HermesStreamingApp(App):
                 self._active_turn_task = None
 
     async def _run_single_turn(self, text: str, *, stt_source: str) -> bool:
+        self._last_prompt = text
+        self._last_prompt_status = PROMPT_NOT_SENT
         diagnostic_logger.debug(
             "app.turn.start index=%s stt_source=%s %s",
             getattr(self.session, "turn_index", "?"),
@@ -1205,6 +1375,10 @@ class HermesStreamingApp(App):
 
         index = self.session.turn_index
         self._append_block(text, role="user")
+        # send_turn may have placed the request on the wire before its async
+        # stream reports an error, so every post-user-display failure is
+        # intentionally treated as ambiguous and is never auto-replayed.
+        self._last_prompt_status = PROMPT_AMBIGUOUS
         if stt_source != "local-faster-whisper":
             self._set_voice_state(VOICE_THINKING)
         timeout = getattr(self.args, "turn_timeout", 0) or 0
@@ -1214,6 +1388,7 @@ class HermesStreamingApp(App):
                 await asyncio.wait_for(self._consume_turn(events, index), timeout)
             else:
                 await self._consume_turn(events, index)
+            self._last_prompt_status = PROMPT_COMPLETED
         except asyncio.CancelledError:
             self._set_voice_state(VOICE_INTERRUPTED)
             self._append_block("[interrupted]")
