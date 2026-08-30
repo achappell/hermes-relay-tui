@@ -7,8 +7,10 @@ This repository contains a small Python/Textual terminal UI for the Hermes voice
 - `app.py` — Textual application, transcript rendering, turn lifecycle, and CLI entry point.
 - `client.py` — Hermes `hello` handshake and streamed turn events.
 - `config.py` — command-line arguments, environment variables, token lookup, and connection defaults.
+- `diagnostics.py` — opt-in content-safe protocol and turn tracing for live debugging.
 - `audio.py` — streamed signed 16-bit PCM playback and WAV fallback.
 - `mic.py` — dynamic loading of `LocalMicrophone` from the local Hermes checkout.
+- `transcript.py` — typed transcript records and Rich Markdown rendering.
 - `tests/` — unit and integration-style tests using fakes; do not require a live Hermes endpoint.
 
 The implementation is a laptop-side client. The Hermes server owns sessions, model routing, speech generation, and the voice-session protocol.
@@ -90,6 +92,7 @@ Do not put a real token in this file or in the README.
 - While a turn is active, ordinary prompts follow `--busy-mode` (`queue` by default; `steer` or `interrupt` are alternatives).
 - Use `/queue` to inspect or edit queued prompts.
 - Use `/busy [queue|steer|interrupt]` to change the mode for the current session.
+- Use `/details [show|hide]` or `--hide-thinking` to control thinking/tool detail in the transcript.
 - `Ctrl+C` interrupts the active turn; when idle it clears the draft, clears the queue, or exits.
 - `/steer` is retained only as a migration warning; steering happens when an ordinary message is submitted in `--busy-mode steer`.
 - Slash commands are routed before ordinary text; do not silently send an unknown command as a model prompt.
@@ -111,10 +114,19 @@ The complete source of truth is `config.build_arg_parser()`. The main runtime op
 - `--connect-retries COUNT` — additional connection attempts after the first failure; default is 3.
 - `--connect-retry-delay SECONDS` — base delay before reconnect attempts; default is 1 second.
 - `--busy-mode MODE` — active-turn behavior: `queue` (default), `steer`, or `interrupt`.
+- `--hide-thinking` — hide thinking and tool detail in the transcript.
+- `--debug` — write a content-safe protocol trace to a temporary log file.
+- `--log-file PATH` — choose the debug trace path; supplying it implies `--debug`.
 - `--mic-max-seconds`, `--mic-silence-duration`, `--mic-silence-threshold` — microphone tuning.
 - `--stt-model` — optional local Faster-Whisper model selection.
 
 Relevant environment variables include `HERMES_VOICE_SESSION_URL`, `VOICE_SESSION_TOKEN`, `VOICE_SESSION_CLIENT_ID`, `VOICE_SESSION_DEVICE_ID`, `VOICE_SESSION_ID`, `VOICE_SESSION_MIC_MAX_SECONDS`, `VOICE_SESSION_MIC_SILENCE_DURATION`, `VOICE_SESSION_MIC_SILENCE_THRESHOLD`, `VOICE_SESSION_STT_MODEL`, `VOICE_SESSION_TURN_TIMEOUT`, `VOICE_SESSION_CONNECT_RETRIES`, `VOICE_SESSION_CONNECT_RETRY_DELAY`, and `VOICE_SESSION_BUSY_MODE`.
+
+`HERMES_STREAMING_TUI_DEBUG` and `HERMES_STREAMING_TUI_LOG_FILE` configure the
+optional debug trace without command-line flags. The trace records event
+ordering, protocol event names, payload keys, text/byte lengths, and short
+SHA-256 fingerprints. It intentionally does not record bearer tokens, prompts,
+response text, or audio contents.
 
 ## Integration boundaries
 

@@ -83,11 +83,12 @@ class FlakyConnectSession(FakeSession):
 
 
 def transcript_of(app) -> str:
-    """The text the transcript widget is actually rendering."""
+    """The readable text projection of the typed transcript."""
     content = app.query_one("#transcript", Static).content
-    # The widget must hold the whole accumulated buffer, not just the last write.
-    assert content == app.transcript_text
-    return str(content)
+    # The widget now holds Rich renderables; the app keeps a plain projection
+    # for diagnostics and assertions.
+    assert content is not None
+    return app.transcript_text
 
 
 def voice_status_of(app) -> str:
@@ -328,6 +329,34 @@ async def test_unknown_slash_command_uses_dispatcher_instead_of_model_turn():
         assert "gateway handled it" in transcript_of(app)
 
 
+async def test_details_command_controls_thinking_and_tool_rendering():
+    session = FakeSession(
+        events=[
+            {"type": "thinking_delta", "text": "planning"},
+            {"type": "tool_start", "name": "search"},
+            {"type": "text_delta", "text": "# Answer\n\nDone."},
+            {"type": "turn_end", "turn_id": "details-1"},
+        ]
+    )
+    app = HermesStreamingApp(args=make_args(), session_factory=lambda: session)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await app._run_turn("hi")
+        assert app.show_transcript_details is True
+
+        app.query_one("#composer", Composer).text = "/details hide"
+        await pilot.press("enter")
+        await pilot.pause()
+        assert app.show_transcript_details is False
+        assert "details: hidden" in transcript_of(app)
+
+        app.query_one("#composer", Composer).text = "/details show"
+        await pilot.press("enter")
+        await pilot.pause()
+        assert app.show_transcript_details is True
+        assert "details: shown" in transcript_of(app)
+
+
 async def test_tab_completes_a_unique_slash_command_and_keeps_draft_local():
     session = FakeSession()
     app = HermesStreamingApp(args=make_args(), session_factory=lambda: session)
@@ -416,6 +445,23 @@ async def test_text_deltas_render_inline_as_one_flowing_line():
         # And the deltas occupy exactly one line — no token-per-line splitting.
         reply_line = [line for line in transcript.splitlines() if line.startswith("hermes: ")]
         assert reply_line == ["hermes: Hello there, Amanda."]
+
+
+async def test_replacement_text_updates_the_active_assistant_message():
+    session = FakeSession(
+        events=[
+            {"type": "text_delta", "text": "draft"},
+            {"type": "text_replace", "text": "final answer"},
+            {"type": "turn_end", "turn_id": "replacement-1"},
+        ]
+    )
+    app = HermesStreamingApp(args=make_args(), session_factory=lambda: session)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await app._run_turn("hi")
+
+        lines = [line for line in transcript_of(app).splitlines() if line.startswith("hermes: ")]
+        assert lines == ["hermes: final answer"]
 
 
 async def test_status_and_error_events_render_on_their_own_lines():
