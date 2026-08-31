@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.4.0 (2026-08-31)
+
+<!-- Release notes generated using configuration in .github/release.yml at main -->
+
+## What's Changed
+### Other Changes
+* CORE-01/CORE-02: extract session orchestration and define the core boundary by @achappell in https://github.com/achappell/hermes-relay-tui/pull/18
+* deps(deps-dev): update build requirement from <2,>=1.2.2 to >=1.6.0,<2 by @dependabot[bot] in https://github.com/achappell/hermes-relay-tui/pull/19
+* deps(deps-dev): update textual-dev requirement from >=1.7.0 to >=1.8.0 by @dependabot[bot] in https://github.com/achappell/hermes-relay-tui/pull/20
+* ci(actions): bump pypa/gh-action-pypi-publish from 1.12.4 to 1.14.2 in the actions-minor-and-patch group by @dependabot[bot] in https://github.com/achappell/hermes-relay-tui/pull/21
+* ci(actions): bump actions/setup-python from 5.6.0 to 7.0.0 by @dependabot[bot] in https://github.com/achappell/hermes-relay-tui/pull/22
+* feat: add guided first-run setup by @achappell in https://github.com/achappell/hermes-relay-tui/pull/24
+* feat: forward voice commands through relay by @achappell in https://github.com/achappell/hermes-relay-tui/pull/25
+
+
+**Full Changelog**: https://github.com/achappell/hermes-relay-tui/compare/v0.3.1...v0.4.0
+
 ## 0.3.1 (2026-08-31)
 
 <!-- Release notes generated using configuration in .github/release.yml at main -->
