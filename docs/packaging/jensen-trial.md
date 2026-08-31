@@ -22,20 +22,31 @@ No local Hermes gateway installation or Hermes virtualenv is required for this
 trial. The installed TUI is only a client; it connects to the configured
 voice-session endpoint.
 
-## First typed turn
+## Configure the client
 
-Keep the bearer token in the shell environment or an ignored local profile
-file. Do not put it in the repository or paste it into a shared issue.
+On the trial Mac, run the guided setup. It keeps the token out of the editable
+YAML file and puts the connection details in the app's own dotfolder:
 
 ```bash
-export VOICE_SESSION_TOKEN='redacted-token'
-hermes-relay \
-  --profile-env "$HOME/.hermes/profiles/jensen/.env" \
-  --no-play
+hermes-relay setup
 ```
 
-If the profile file is not being used, the environment variable is sufficient.
-The endpoint must be reachable from the trial Mac.
+When prompted, enter the WebSocket endpoint and bearer token printed by the
+Hermes server's `hermes gateway setup` flow. Choose a stable client ID that is
+included in the server allowlist. The setup saves:
+
+- editable defaults in `~/.hermes-relay-tui/config.yaml`;
+- the bearer token in `~/.hermes-relay-tui/.env` with private permissions.
+
+Then start the client:
+
+```bash
+hermes-relay
+```
+
+Run `hermes-relay setup` again whenever the endpoint, token, or local checkout
+needs to change. Use `hermes-relay setup --no-check` only when the server is
+temporarily offline.
 
 ## Optional microphone voice-turn smoke test
 
@@ -45,9 +56,10 @@ Hermes gateway or the checkout's virtualenv installed or running. Microphone
 permission still belongs to the app that launches the terminal:
 
 ```bash
-hermes-relay \
-  --profile-env "$HOME/.hermes/profiles/jensen/.env" \
-  --checkout "$HOME/.hermes/hermes-agent"
+hermes-relay setup
+# When asked for the Hermes checkout, enter:
+#   $HOME/.hermes/hermes-agent
+hermes-relay
 ```
 
 Use `Ctrl+R` for one microphone turn. On macOS, grant microphone access to
@@ -59,7 +71,7 @@ Privacy & Security → Microphone**, then restart that app.
 - [ ] `brew install` completes on a clean Mac.
 - [ ] `hermes-relay --help` opens without a Python traceback.
 - [ ] A typed turn reaches Hermes and streams inline text.
-- [ ] *(Optional)* A Hermes checkout is supplied with `--checkout`, and
+- [ ] *(Optional)* A Hermes checkout is saved by `hermes-relay setup`, and
       `Ctrl+R` captures speech after microphone permission is granted.
 - [ ] A response plays, or `--no-play --output response.wav` saves valid audio.
 - [ ] Missing token produces an actionable error; if the optional microphone

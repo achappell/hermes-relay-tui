@@ -1,6 +1,7 @@
 # Example hermes-relay config file.
 #
-# Copy this to ~/.hermes-relay-tui/config.yaml (the default location) and
+# Copy this to ~/.hermes-relay-tui/config.yaml (the default location), or run
+# `hermes-relay setup` for a guided first-run flow, and
 # trim it down to just the fiddly bits you don't want to retype every time.
 # Every key here is optional — omit anything you're happy leaving at its
 # built-in default.
@@ -24,7 +25,8 @@
 
 # --- local Hermes install (only needed for the voice/Ctrl+R feature) ---
 # checkout: ~/.hermes/hermes-agent
-# profile_env: ~/.hermes/profiles/amanda/.env
+# profile_env: ~/.hermes-relay-tui/.env
+# Existing installs may continue using ~/.hermes/profiles/amanda/.env.
 
 # --- session identity ----------------------------------------------------
 # client_id: amanda-laptop

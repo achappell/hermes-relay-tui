@@ -156,7 +156,7 @@ The entry point is `app.py`:
 VOICE_SESSION_TOKEN='redacted-token' venv/bin/python app.py
 ```
 
-The client can also read `VOICE_SESSION_TOKEN` from `--profile-env`, which defaults to `~/.hermes/profiles/amanda/.env`. The token precedence is:
+The client can also read `VOICE_SESSION_TOKEN` from `--profile-env`, which defaults to `~/.hermes-relay-tui/.env`. Existing installs using `~/.hermes/profiles/amanda/.env` are recognized as a migration fallback when the new default file is absent. The token precedence is:
 
 1. `--token`
 2. `VOICE_SESSION_TOKEN`
