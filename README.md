@@ -119,8 +119,11 @@ venv/bin/python app.py \
 The endpoint must be reachable from the machine running the TUI, and the server must accept the supplied bearer token.
 
 Richer gateway-style events are normalized when the relay sends them. Thinking
-and tool progress use one replaceable activity line, repeated status updates
-are suppressed, and the final assistant text starts on its own `hermes:` line.
+deltas accumulate into one replaceable detail line and become a short elapsed
+summary when the answer starts. If the relay supplies reasoning only with
+`message.complete`, the client surfaces that fallback through the same lane.
+Tool progress uses the same activity lane, repeated status updates are
+suppressed, and the final assistant text starts on its own `hermes:` line.
 Event types the client does not understand are shown as diagnostic transcript
 entries instead of being discarded.
 

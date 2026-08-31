@@ -3,7 +3,7 @@
 This is the near-term install path for trying the Hermes Streaming TUI on a
 clean Mac. The public tap is `achappell/homebrew-hermes-streaming`.
 
-## Install from the repository
+## Install from the public Homebrew tap
 
 The trial machine needs a working Homebrew installation:
 
@@ -17,6 +17,10 @@ The formula installs Python 3.14, PortAudio, the Python dependencies, and the
 `hermes-relay` command into an isolated Homebrew-managed environment.
 It is pinned to source tag `v0.1.0`; the Faster-Whisper model may download on
 the first microphone turn.
+
+No local Hermes gateway installation or Hermes virtualenv is required for this
+trial. The installed TUI is only a client; it connects to the configured
+voice-session endpoint.
 
 ## First typed turn
 
@@ -33,11 +37,12 @@ hermes-relay \
 If the profile file is not being used, the environment variable is sufficient.
 The endpoint must be reachable from the trial Mac.
 
-## Voice-turn smoke test
+## Optional microphone voice-turn smoke test
 
-Voice turns still need a local Hermes checkout containing
-`scripts/voice-session-client.py` and microphone permission for the app that
-launches the terminal:
+Only the local microphone path needs a Hermes source checkout. The TUI loads
+`LocalMicrophone` from `scripts/voice-session-client.py`; it does not need the
+Hermes gateway or the checkout's virtualenv installed or running. Microphone
+permission still belongs to the app that launches the terminal:
 
 ```bash
 hermes-relay \
@@ -54,9 +59,11 @@ Privacy & Security → Microphone**, then restart that app.
 - [ ] `brew install` completes on a clean Mac.
 - [ ] `hermes-relay --help` opens without a Python traceback.
 - [ ] A typed turn reaches Hermes and streams inline text.
-- [ ] `Ctrl+R` captures speech after microphone permission is granted.
+- [ ] *(Optional)* A Hermes checkout is supplied with `--checkout`, and
+      `Ctrl+R` captures speech after microphone permission is granted.
 - [ ] A response plays, or `--no-play --output response.wav` saves valid audio.
-- [ ] Missing token, checkout, and microphone permission produce actionable errors.
+- [ ] Missing token produces an actionable error; if the optional microphone
+      path is tried, a missing checkout or microphone permission does too.
 - [ ] Record any rough edges in `docs/friction-log.md` before promoting this to
       a published tap/release.
 

@@ -540,12 +540,61 @@ async def test_details_command_controls_thinking_and_tool_rendering():
         await pilot.pause()
         assert app.show_transcript_details is False
         assert "details: hidden" in transcript_of(app)
+        assert "thought for" not in app._visible_transcript_text()
+        assert "hermes: # Answer" in app._visible_transcript_text()
 
         app.query_one("#composer", Composer).text = "/details show"
         await pilot.press("enter")
         await pilot.pause()
         assert app.show_transcript_details is True
         assert "details: shown" in transcript_of(app)
+
+
+async def test_thinking_detail_accumulates_preview_and_reports_elapsed_time(monkeypatch):
+    ticks = iter([10.0, 14.0])
+    monkeypatch.setattr(
+        app_module,
+        "time",
+        types.SimpleNamespace(monotonic=lambda: next(ticks)),
+        raising=False,
+    )
+    thinking_ready = asyncio.Event()
+    release = asyncio.Event()
+
+    class ThinkingSession(FakeSession):
+        async def _stream(self, events):
+            for position, event in enumerate(events):
+                await asyncio.sleep(0)
+                yield event
+                if position == 1:
+                    thinking_ready.set()
+                    await release.wait()
+
+    session = ThinkingSession(
+        events=[
+            {"type": "thinking_delta", "text": "checking the relay"},
+            {"type": "thinking_delta", "text": " response"},
+            {"type": "text_delta", "text": "Done."},
+            {"type": "turn_end", "turn_id": "thinking-1"},
+        ]
+    )
+    app = HermesStreamingApp(args=make_args(), session_factory=lambda: session)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        turn = asyncio.create_task(app._run_turn("hi"))
+        await thinking_ready.wait()
+        await pilot.pause()
+
+        assert "[thinking: checking the relay response]" in transcript_of(app).splitlines()
+
+        release.set()
+        await turn
+        await pilot.pause()
+
+        lines = transcript_of(app).splitlines()
+        assert "[thought for 4s]" in lines
+        assert "hermes: Done." in lines
+        assert "[thinking…]" not in lines
 
 
 async def test_tab_completes_a_unique_slash_command_and_keeps_draft_local():
@@ -1542,6 +1591,58 @@ async def test_audio_end_closes_playback_before_turn_end():
         await app._run_turn("hi")
 
         assert player.close_states == [True, False]
+
+
+async def test_audio_close_runs_off_the_textual_event_loop():
+    close_started = threading.Event()
+    release_close = threading.Event()
+
+    class BlockingPlayer:
+        active = False
+        failure = None
+
+        def __init__(self):
+            self.close_threads = []
+
+        def start(self, audio_format):
+            self.active = True
+
+        def write(self, chunk):
+            pass
+
+        def close(self):
+            self.close_threads.append(threading.current_thread())
+            if not release_close.is_set():
+                close_started.set()
+                release_close.wait(timeout=0.25)
+            self.active = False
+
+    session = FakeSession(
+        events=[
+            {"type": "thinking_delta", "text": "planning"},
+            {"type": "audio_start", "sample_rate": 24000, "channels": 1, "sample_width": 2},
+            {"type": "audio_chunk", "data": b"\x00\x01"},
+            {"type": "audio_end"},
+            {"type": "text_delta", "text": "Done."},
+            {"type": "turn_end", "turn_id": "audio-thread"},
+        ]
+    )
+    app = HermesStreamingApp(args=make_args(no_play=False), session_factory=lambda: session)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        player = BlockingPlayer()
+        app.player = player
+        turn = asyncio.create_task(app._run_turn("hi"))
+        assert await asyncio.to_thread(close_started.wait, 1.0)
+        await pilot.pause()
+        assert not turn.done()
+        assert "[thinking: planning]" in transcript_of(app).splitlines()
+
+        release_close.set()
+        await turn
+
+    assert player.close_threads
+    assert all(thread is not threading.current_thread() for thread in player.close_threads)
 
 
 async def test_audio_status_gets_its_own_line_before_assistant_response():

@@ -135,6 +135,7 @@ async def send_turn(
 
     rendered_preview = ""
     streamed_text = False
+    streamed_reasoning = False
     audio_file_active = False
 
     frame_index = 0
@@ -244,6 +245,10 @@ async def send_turn(
             yield {"type": "message_start"}
         elif kind == "message.complete":
             final_text = str(event_payload.get("text") or event_payload.get("rendered") or "")
+            completion_reasoning = str(event_payload.get("reasoning") or "")
+            if completion_reasoning and not streamed_reasoning:
+                streamed_reasoning = True
+                yield {"type": "thinking_delta", "text": completion_reasoning}
             update = _final_text_update(final_text, rendered_preview, streamed_text)
             logger.debug(
                 "normalize.message_complete final=%s emitted=%s prior_preview=%s streamed=%s",
@@ -266,10 +271,12 @@ async def send_turn(
         elif kind in {"thinking.delta", "reasoning.delta"}:
             thinking_text = str(event_payload.get("text") or "")
             if thinking_text:
+                streamed_reasoning = True
                 yield {"type": "thinking_delta", "text": thinking_text}
         elif kind == "reasoning.available":
             reasoning_text = str(event_payload.get("text") or "")
             if reasoning_text:
+                streamed_reasoning = True
                 yield {"type": "thinking_delta", "text": reasoning_text}
             else:
                 yield {"type": "reasoning_available"}
