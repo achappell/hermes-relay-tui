@@ -1236,7 +1236,7 @@ class HermesStreamingApp(App):
             return False
 
         self._set_voice_state(VOICE_INTERRUPTED)
-        self.player.close()
+        await self._close_player()
         active_task = self._active_turn_task
         current_task = asyncio.current_task()
         if active_task is not None and active_task is not current_task and not active_task.done():
@@ -1448,7 +1448,7 @@ class HermesStreamingApp(App):
         finally:
             # Always tear the stream down; leaving it open leaked a
             # sounddevice stream per failed turn.
-            self.player.close()
+            await self._close_player()
             diagnostic_logger.debug(
                 "app.turn.finish index=%s transcript_chars=%d connection=%s",
                 index,
@@ -1466,6 +1466,15 @@ class HermesStreamingApp(App):
             await self.session.close()
         except Exception as exc:
             self._append_block(f"[error] reconnect cleanup: {exc}")
+
+    async def _close_player(self) -> None:
+        """Stop playback without blocking Textual's event loop.
+
+        sounddevice's ``stop`` may wait for the device buffer to drain. That
+        wait must not prevent transcript refreshes, especially the reasoning
+        preview that is meant to remain visible while a reply is spoken.
+        """
+        await asyncio.to_thread(self.player.close)
 
     async def _consume_turn(self, events: AsyncIterator[dict[str, Any]], index: int) -> None:
         audio = bytearray()
@@ -1611,7 +1620,7 @@ class HermesStreamingApp(App):
                 # Each prior chunk has completed its worker-thread write when
                 # this event arrives, so closing here drains the final tail
                 # before turn_end is processed.
-                self.player.close()
+                await self._close_player()
             elif kind == "audio_file_start":
                 audio_file.clear()
                 metadata = tuple(
@@ -1644,7 +1653,7 @@ class HermesStreamingApp(App):
                     self._set_voice_state(VOICE_SPEAKING)
                     await asyncio.to_thread(self.player.write, file_audio)
                     playback_failed = playback_failed or bool(self.player.failure)
-                    self.player.close()
+                    await self._close_player()
                 elif self.player.failure:
                     self._set_voice_state(VOICE_BUFFERING)
             elif kind == "error":

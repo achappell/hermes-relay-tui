@@ -1593,6 +1593,58 @@ async def test_audio_end_closes_playback_before_turn_end():
         assert player.close_states == [True, False]
 
 
+async def test_audio_close_runs_off_the_textual_event_loop():
+    close_started = threading.Event()
+    release_close = threading.Event()
+
+    class BlockingPlayer:
+        active = False
+        failure = None
+
+        def __init__(self):
+            self.close_threads = []
+
+        def start(self, audio_format):
+            self.active = True
+
+        def write(self, chunk):
+            pass
+
+        def close(self):
+            self.close_threads.append(threading.current_thread())
+            if not release_close.is_set():
+                close_started.set()
+                release_close.wait(timeout=0.25)
+            self.active = False
+
+    session = FakeSession(
+        events=[
+            {"type": "thinking_delta", "text": "planning"},
+            {"type": "audio_start", "sample_rate": 24000, "channels": 1, "sample_width": 2},
+            {"type": "audio_chunk", "data": b"\x00\x01"},
+            {"type": "audio_end"},
+            {"type": "text_delta", "text": "Done."},
+            {"type": "turn_end", "turn_id": "audio-thread"},
+        ]
+    )
+    app = HermesStreamingApp(args=make_args(no_play=False), session_factory=lambda: session)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        player = BlockingPlayer()
+        app.player = player
+        turn = asyncio.create_task(app._run_turn("hi"))
+        assert await asyncio.to_thread(close_started.wait, 1.0)
+        await pilot.pause()
+        assert not turn.done()
+        assert "[thinking: planning]" in transcript_of(app).splitlines()
+
+        release_close.set()
+        await turn
+
+    assert player.close_threads
+    assert all(thread is not threading.current_thread() for thread in player.close_threads)
+
+
 async def test_audio_status_gets_its_own_line_before_assistant_response():
     class ActivePlayer:
         active = False
