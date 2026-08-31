@@ -46,3 +46,6 @@ def test_release_workflow_publishes_python_distributions():
     assert "HOMEBREW_TAP_AUTOMATION" in workflow
     assert "generate_homebrew_formula.py" in workflow
     assert "workflow_dispatch:" in workflow
+    assert "description: \"Existing release tag to package" in workflow
+    assert "ref: ${{ inputs.tag || github.ref }}" in workflow
+    assert "RELEASE_TAG" in workflow
