@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.3.1 (2026-08-31)
+
+<!-- Release notes generated using configuration in .github/release.yml at main -->
+
+## What's Changed
+### Other Changes
+* Turn 02 thinking detail lane by @achappell in https://github.com/achappell/hermes-relay-tui/pull/14
+* ci: target release tags in manual runs by @achappell in https://github.com/achappell/hermes-relay-tui/pull/15
+* fix: align release packaging with relay rename by @achappell in https://github.com/achappell/hermes-relay-tui/pull/17
+
+
+**Full Changelog**: https://github.com/achappell/hermes-relay-tui/compare/v0.3.0...v0.3.1
+
 ## 0.3.0 (2026-08-31)
 
 <!-- Release notes generated using configuration in .github/release.yml at main -->
