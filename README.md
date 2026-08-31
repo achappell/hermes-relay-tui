@@ -44,8 +44,8 @@ That installs the local STT dependencies as well. The first transcription may do
 The public Homebrew tap is ready:
 
 ```bash
-brew tap achappell/hermes-streaming
-brew install achappell/hermes-streaming/hermes-relay-tui
+brew tap achappell/hermes-relay
+brew install achappell/hermes-relay/hermes-relay-tui
 hermes-relay --help
 ```
 

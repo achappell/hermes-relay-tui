@@ -1,21 +1,21 @@
 # Jensen Homebrew trial
 
 This is the near-term install path for trying the Hermes Streaming TUI on a
-clean Mac. The public tap is `achappell/homebrew-hermes-streaming`.
+clean Mac. The public tap is `achappell/homebrew-hermes-relay`.
 
 ## Install from the public Homebrew tap
 
 The trial machine needs a working Homebrew installation:
 
 ```bash
-brew tap achappell/hermes-streaming
-brew install achappell/hermes-streaming/hermes-relay-tui
+brew tap achappell/hermes-relay
+brew install achappell/hermes-relay/hermes-relay-tui
 hermes-relay --help
 ```
 
 The formula installs Python 3.14, PortAudio, the Python dependencies, and the
 `hermes-relay` command into an isolated Homebrew-managed environment.
-It is pinned to source tag `v0.1.0`; the Faster-Whisper model may download on
+It is pinned to the current source release tag; the Faster-Whisper model may download on
 the first microphone turn.
 
 No local Hermes gateway installation or Hermes virtualenv is required for this
