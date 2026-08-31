@@ -28,7 +28,11 @@ COMMAND_REGISTRY: tuple[Command, ...] = (
     Command("queue", "Queue a prompt for the next turn", args_hint="<prompt>"),
     Command("busy", "Show or set active-turn behavior", args_hint="[queue|steer|interrupt]"),
     Command("details", "Show or hide thinking and tool detail", args_hint="[show|hide]"),
-    Command("voice", "Capture and send a microphone turn"),
+    Command(
+        "voice",
+        "Control voice mode through the relay",
+        args_hint="[on|off|tts|status]",
+    ),
     Command("audio", "List or select local audio devices", args_hint="[list|status|input|output]"),
     Command("image", "Stage a local image attachment", args_hint="<path>|list|clear"),
     Command("history", "Search or show prompt history", args_hint="[search term]"),
