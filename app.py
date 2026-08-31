@@ -160,6 +160,7 @@ PROMPT_NOT_SENT = "not-sent"
 PROMPT_AMBIGUOUS = "ambiguous"
 PROMPT_COMPLETED = "completed"
 PROMPT_UNDONE = "undone"
+VOICE_GATEWAY_COMMANDS = frozenset({"on", "off", "tts", "status"})
 
 
 def _write_new_text_file(path: Path, text: str) -> None:
@@ -551,10 +552,11 @@ class HermesStreamingApp(App):
         elif command.name == "details":
             self._handle_details_command(invocation.args)
         elif command.name == "voice":
-            if invocation.args:
-                self._append_block("usage: /voice (capture one microphone turn)")
+            voice_args = invocation.args.strip().lower()
+            if not voice_args or voice_args in VOICE_GATEWAY_COMMANDS:
+                await self._run_turn(invocation.raw, stt_source="command")
             else:
-                await self._capture_voice_turn()
+                self._append_block("usage: /voice [on|off|tts|status]")
         elif command.name == "audio":
             await self._handle_audio_command(invocation.args)
         elif command.name == "image":

@@ -161,6 +161,7 @@ turn state. It does not record bearer tokens, prompts, response text, or audio.
 | `/` | Type a command name; a live suggestion line shows matches as you type |
 | `Tab` | Complete a uniquely-matching slash command in place |
 | `Ctrl+R` | Capture and send a microphone turn |
+| `/voice [on\|off\|tts\|status]` | Control voice mode for this relay session |
 | `/audio` | Show or select local audio devices |
 | `/image` | Stage, list, or clear a local image attachment |
 | `/save [path]` | Save the visible transcript locally without overwriting files |
@@ -187,7 +188,7 @@ name works like any other text — a compact, non-blocking suggestion line
 above the composer lists matching commands and their args/description as you
 type, and disappears once you've typed a space or the text no longer looks
 like a command. `Tab` fills in a uniquely-matching command name without
-moving focus out of the composer. The initial local commands
+moving focus out of the composer. The initial commands
 are `/help`, `/clear`, `/status`, `/queue`, `/busy`, `/details`, `/voice`, `/audio`, `/image`, `/history`, `/save`, `/copy`, `/logs`, `/retry`, `/undo`, `/usage`, `/compress`, and `/quit`;
 `/queue`
 also supports `list`, `edit <number> <replacement>`, `drop <number>`, and
@@ -196,12 +197,14 @@ session. `/details [show|hide]` controls thinking and tool detail. `/audio`
 shows the current devices; `/audio list` lists PortAudio devices, and
 `/audio input <device>` / `/audio output <device>` select a device for the
 current session. Use `default` to return to the system default. `/model`, `/new`,
-`/sessions`, `/resume`, and other commands use the
-gateway-dispatch boundary when one is supplied. The current voice-session
-protocol does not yet expose gateway command dispatch, usage, conversation
-compression, or remote undo, so those commands fail visibly instead of being
-sent to the model as prose. Use `/busy steer` or `--busy-mode steer` to change
-what ordinary submissions do while a turn is active.
+`/voice` is forwarded through the connected voice-session channel, so its
+settings apply only to that client/device session. `/model`, `/new`,
+`/sessions`, `/resume`, and other commands use the gateway-dispatch boundary
+when one is supplied. The current voice-session protocol does not expose
+those other gateway commands, usage, conversation compression, or remote undo,
+so they fail visibly instead of being sent to the model as prose. Use
+`/busy steer` or `--busy-mode steer` to change what ordinary submissions do
+while a turn is active.
 
 `/save` and `/copy` use the exact visible transcript projection, so hidden
 thinking and tool detail is excluded while `/details show` includes it. `/save`

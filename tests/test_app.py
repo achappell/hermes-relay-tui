@@ -849,6 +849,115 @@ async def test_voice_turn_streams_with_the_voice_stt_source():
         assert voice_status_of(app) == "● ready"
 
 
+async def test_voice_tts_forwards_as_a_gateway_command():
+    session = FakeSession(
+        events=[
+            {"type": "text_delta", "text": "voice output enabled"},
+            {"type": "turn_end", "turn_id": "voice-command-1"},
+        ]
+    )
+    app = HermesStreamingApp(args=make_args(), session_factory=lambda: session)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        invocation = parse_slash_command("/voice tts")
+        assert invocation is not None
+
+        await app._handle_command(invocation)
+
+        assert session.sent_turns == [("/voice tts", "command")]
+        assert "you> /voice tts" in transcript_of(app)
+        assert "hermes: voice output enabled" in transcript_of(app)
+
+
+@pytest.mark.parametrize("subcommand", ["on", "off", "status"])
+async def test_voice_gateway_sibling_commands_use_the_same_forwarding_path(subcommand):
+    session = FakeSession()
+    app = HermesStreamingApp(args=make_args(), session_factory=lambda: session)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        invocation = parse_slash_command(f"/voice {subcommand}")
+        assert invocation is not None
+
+        await app._handle_command(invocation)
+
+        assert session.sent_turns == [(f"/voice {subcommand}", "command")]
+
+
+async def test_bare_voice_command_is_forwarded_to_the_relay():
+    session = FakeSession(
+        events=[
+            {"type": "text_delta", "text": "voice mode toggled"},
+            {"type": "turn_end", "turn_id": "voice-command-2"},
+        ]
+    )
+    app = HermesStreamingApp(args=make_args(), session_factory=lambda: session)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        invocation = parse_slash_command("/voice")
+        assert invocation is not None
+
+        await app._handle_command(invocation)
+
+        assert session.capture_calls == 0
+        assert session.sent_turns == [("/voice", "command")]
+        assert "hermes: voice mode toggled" in transcript_of(app)
+
+
+async def test_voice_command_rejects_unsupported_arguments_locally():
+    session = FakeSession()
+    app = HermesStreamingApp(args=make_args(), session_factory=lambda: session)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        invocation = parse_slash_command("/voice channel")
+        assert invocation is not None
+
+        await app._handle_command(invocation)
+
+        assert session.sent_turns == []
+        assert "usage: /voice [on|off|tts|status]" in transcript_of(app)
+
+
+async def test_voice_gateway_command_is_kept_in_queue_when_disconnected():
+    session = FlakyConnectSession(99)
+    app = HermesStreamingApp(args=make_args(), session_factory=lambda: session)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        invocation = parse_slash_command("/voice status")
+        assert invocation is not None
+
+        await app._handle_command(invocation)
+
+        assert session.sent_turns == []
+        assert app._queued_prompts == ["/voice status"]
+        assert "prompt kept in queue" in transcript_of(app)
+
+
+async def test_voice_gateway_command_reports_stream_errors_without_replaying():
+    session = FakeSession()
+
+    def fail_send_turn(text, *, stt_source="local"):
+        session.sent_turns.append((text, stt_source))
+
+        async def stream():
+            raise ConnectionResetError("voice command socket went away")
+            yield  # pragma: no cover - makes this an async generator
+
+        return stream()
+
+    session.send_turn = fail_send_turn
+    app = HermesStreamingApp(args=make_args(), session_factory=lambda: session)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        invocation = parse_slash_command("/voice tts")
+        assert invocation is not None
+
+        await app._handle_command(invocation)
+
+        assert session.sent_turns == [("/voice tts", "command")]
+        assert "voice command socket went away" in transcript_of(app)
+        assert not app._turn_in_flight
+
+
 async def test_voice_turn_with_no_speech_sends_nothing():
     session = FakeSession()
     session.capture_result = ""
