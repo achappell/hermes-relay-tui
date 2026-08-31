@@ -5,6 +5,7 @@
 This repository contains a small Python/Textual terminal UI for the Hermes voice-session WebSocket channel. It keeps the user interface, protocol client, audio playback, microphone loading, and configuration in separate modules:
 
 - `app.py` — Textual application, transcript rendering, turn lifecycle, and CLI entry point.
+- `session.py` — connection, turn lifecycle, and microphone wiring for one session.
 - `client.py` — Hermes `hello` handshake and streamed turn events.
 - `config.py` — command-line arguments, environment variables, token lookup, and connection defaults.
 - `diagnostics.py` — opt-in content-safe protocol and turn tracing for live debugging.
@@ -14,6 +15,54 @@ This repository contains a small Python/Textual terminal UI for the Hermes voice
 - `tests/` — unit and integration-style tests using fakes; do not require a live Hermes endpoint.
 
 The implementation is a laptop-side client. The Hermes server owns sessions, model routing, speech generation, and the voice-session protocol.
+
+## Core and front ends
+
+The repository is expected to hold more than one front end: the Textual TUI
+today, and a household voice/display client (`HOME-*`) alongside it. The
+modules are therefore split into a front-end-agnostic **core** and the front
+ends that consume it.
+
+**Core — must not import a user-interface framework:**
+`session.py`, `client.py`, `config.py`, `diagnostics.py`, `audio.py`,
+`mic.py`, `shell.py`, `attachments.py`, `clipboard.py`, `history.py`.
+
+**Front-end-specific:** `app.py` (Textual) and `transcript.py` (Rich
+rendering for a terminal transcript).
+
+Rules:
+
+- A core module may not import `textual`, and may not assume a terminal,
+  a keyboard, a scrollback transcript, or a human watching a screen.
+  `tests/test_core_boundary.py` enforces the import half of this by
+  importing each core module in a subprocess and failing if Textual
+  appears in `sys.modules`.
+- A front end drives a session through `session.SessionProtocol`. New front
+  ends implement against that protocol rather than importing `app.py`.
+- Presentation decisions — wording, layout, state labels, colour — belong to
+  the front end. The core returns normalized events and raises typed errors;
+  it does not format user-facing strings for a specific surface.
+- When a second front end is added, it gets its own directory and its own
+  `[project.scripts]` console entry point, sharing the core by plain import.
+  Front-end-only dependencies (wake-word engine, TTS, display driver) belong
+  in a `[project.optional-dependencies]` extra, not the base dependency list,
+  so installing the TUI does not drag in appliance hardware libraries.
+
+**When to split into separate repositories:** not yet, and not on
+anticipated growth. The trigger is a genuine, demonstrated dependency
+conflict — a front end needing a package version another front end cannot
+accept, or a platform-specific wheel that will not install alongside the
+existing stack. At that point the core becomes an installable
+`hermes-relay-core` package that each front end depends on. Until `pip
+install` actually fails, one repository is cheaper than keeping two in
+version lockstep.
+
+**Naming:** the repository name `hermes-relay-tui` stops describing the
+contents once a second, non-terminal front end lands. Renaming is deferred
+until that front end exists rather than done speculatively, because the name
+is currently load-bearing in the published package name, the Homebrew tap
+(`achappell/homebrew-hermes-relay`), and the release workflow — see
+`DIST-02`.
 
 ## GitHub Project task management — check this first
 
