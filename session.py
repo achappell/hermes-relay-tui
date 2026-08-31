@@ -57,7 +57,10 @@ class HermesSession:
         connect = config.connect_factory()
         token = config._resolve_token(self.args.token, self.args.profile_env)
         if not token:
-            raise RuntimeError("No voice-session token found. Set VOICE_SESSION_TOKEN or use the profile .env.")
+            raise RuntimeError(
+                "No voice-session token found. Run `hermes-relay setup`, "
+                "set VOICE_SESSION_TOKEN, or configure the profile .env."
+            )
         kwargs = config._connection_kwargs(connect, token)
         diagnostic_logger.debug(
             "connect.start url=%s session_id=%s client_id=%s device_id=%s",

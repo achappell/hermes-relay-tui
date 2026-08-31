@@ -1769,6 +1769,19 @@ async def test_session_connect_closes_a_half_open_context_after_handshake_failur
     assert session.ws is None
 
 
+async def test_session_missing_token_points_to_guided_setup(monkeypatch, tmp_path):
+    monkeypatch.delenv("VOICE_SESSION_TOKEN", raising=False)
+    session = HermesSession(
+        args=make_args(
+            token=None,
+            profile_env=tmp_path / "missing.env",
+        )
+    )
+
+    with pytest.raises(RuntimeError, match="hermes-relay setup"):
+        await session.connect()
+
+
 async def test_session_close_exits_the_connect_context_manager():
     session = HermesSession(args=None)
     fake_cm = FakeConnectContextManager()

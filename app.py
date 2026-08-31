@@ -1562,6 +1562,10 @@ class HermesStreamingApp(App):
 
 
 def main() -> int:
+    if len(sys.argv) > 1 and sys.argv[1] == "setup":
+        from setup_wizard import run_setup
+
+        return run_setup(sys.argv[2:])
     parser = config.build_arg_parser()
     args = parser.parse_args()
     config.ensure_default_config_file(args.config)

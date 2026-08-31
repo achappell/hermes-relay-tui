@@ -49,8 +49,19 @@ brew install achappell/hermes-relay/hermes-relay-tui
 hermes-relay --help
 ```
 
-See [`docs/packaging/jensen-trial.md`](docs/packaging/jensen-trial.md) for the
-token, Hermes checkout, microphone, and smoke-test steps.
+On a new computer, use the guided setup before launching the client:
+
+```bash
+hermes-relay setup
+hermes-relay
+```
+
+It asks for the Hermes WebSocket endpoint, bearer token, client/device names,
+session name, and optional Hermes checkout. It writes editable connection
+defaults to `~/.hermes-relay-tui/config.yaml` and keeps the token in the
+private `~/.hermes-relay-tui/.env`. Use `hermes-relay setup` again to change
+them. See [`docs/packaging/jensen-trial.md`](docs/packaging/jensen-trial.md)
+for the server-side setup and smoke-test steps.
 
 ### Python package
 
@@ -89,7 +100,10 @@ The client looks for the bearer token in this order:
 
 1. `--token`
 2. `VOICE_SESSION_TOKEN`
-3. `VOICE_SESSION_TOKEN` in `~/.hermes/profiles/amanda/.env`
+3. `VOICE_SESSION_TOKEN` in `~/.hermes-relay-tui/.env`
+
+The old `~/.hermes/profiles/amanda/.env` is also recognized as a migration
+fallback when the default relay file does not exist.
 
 For a one-off run:
 
@@ -252,6 +266,13 @@ it. A turn that may already have reached Hermes is never replayed automatically.
 
 Run `venv/bin/python app.py --help` for the full option list.
 
+### Guided setup
+
+Use `hermes-relay setup` on a new computer. It asks for the server endpoint,
+token, client identity, and optional Hermes checkout, then saves the editable
+YAML and private token file under `~/.hermes-relay-tui/`. Add `--no-check` to
+save the answers without probing the server.
+
 ## Audio output
 
 By default, the app plays supported 16-bit PCM as it arrives. If playback is unavailable, it reports the failure and continues buffering the turn. Use `--audio-output-device` or `/audio output <device>` to select a speaker, and `--no-play --output response.wav` to capture audio without using one.
@@ -318,7 +339,8 @@ relay-boundary behavior, see
 
 ### `No voice-session token found`
 
-Set `VOICE_SESSION_TOKEN`, pass `--token`, or point `--profile-env` at a file containing `VOICE_SESSION_TOKEN=...`.
+Run `hermes-relay setup`, set `VOICE_SESSION_TOKEN`, pass `--token`, or point
+`--profile-env` at a file containing `VOICE_SESSION_TOKEN=...`.
 
 ### Microphone capture cannot start
 
