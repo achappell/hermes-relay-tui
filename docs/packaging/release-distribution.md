@@ -9,7 +9,7 @@ Hermes Streaming TUI is distributed through several complementary channels:
   and `uv tool install`.
 - Homebrew remains the easiest clean-Mac path. When the repository variable
   `HOMEBREW_TAP_AUTOMATION` is set to `enabled`, a release opens a formula PR
-  in `achappell/homebrew-hermes-streaming` instead of pushing directly to its
+  in `achappell/homebrew-hermes-relay` instead of pushing directly to its
   protected `main` branch.
 
 ## One-time PyPI setup
@@ -30,7 +30,7 @@ gh variable set PYPI_PUBLISHING --repo achappell/hermes-relay-tui --body enabled
 ## One-time Homebrew automation setup
 
 Create a fine-grained token or GitHub App token with Contents and Pull Request
-write access to `achappell/homebrew-hermes-streaming`. Store it as
+write access to `achappell/homebrew-hermes-relay`. Store it as
 `HOMEBREW_TAP_TOKEN` in the source repository, then enable the workflow:
 
 ```bash

@@ -44,6 +44,8 @@ def test_release_workflow_publishes_python_distributions():
     assert "gh release upload" in workflow
     assert "pypa/gh-action-pypi-publish@" in workflow
     assert "HOMEBREW_TAP_AUTOMATION" in workflow
+    assert "achappell/homebrew-hermes-relay" in workflow
+    assert "homebrew-hermes-streaming" not in workflow
     assert "generate_homebrew_formula.py" in workflow
     assert "tap/Formula/hermes-relay-tui.rb" in workflow
     assert "tap/Formula/hermes-streaming-tui.rb" not in workflow

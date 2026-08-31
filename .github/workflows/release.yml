@@ -88,7 +88,7 @@ jobs:
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          repository: achappell/homebrew-hermes-streaming
+          repository: achappell/homebrew-hermes-relay
           token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
           path: tap
 
@@ -116,7 +116,7 @@ jobs:
           git commit -m "chore: update hermes-relay-tui to ${VERSION}"
           git push --set-upstream origin "$BRANCH"
           gh pr create \
-            --repo achappell/homebrew-hermes-streaming \
+            --repo achappell/homebrew-hermes-relay \
             --base main \
             --head "$BRANCH" \
             --title "chore: update hermes-relay-tui to ${VERSION}" \
