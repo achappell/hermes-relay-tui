@@ -45,6 +45,9 @@ def test_release_workflow_publishes_python_distributions():
     assert "pypa/gh-action-pypi-publish@" in workflow
     assert "HOMEBREW_TAP_AUTOMATION" in workflow
     assert "generate_homebrew_formula.py" in workflow
+    assert "tap/Formula/hermes-relay-tui.rb" in workflow
+    assert "tap/Formula/hermes-streaming-tui.rb" not in workflow
+    assert "automation/hermes-relay-tui" in workflow
     assert "workflow_dispatch:" in workflow
     assert "description: \"Existing release tag to package" in workflow
     assert "ref: ${{ inputs.tag || github.ref }}" in workflow

@@ -15,7 +15,7 @@ hermes-relay --help
 
 The formula installs Python 3.14, PortAudio, the Python dependencies, and the
 `hermes-relay` command into an isolated Homebrew-managed environment.
-It is pinned to source tag `v0.1.0`; the Faster-Whisper model may download on
+It is pinned to the current source release tag; the Faster-Whisper model may download on
 the first microphone turn.
 
 No local Hermes gateway installation or Hermes virtualenv is required for this
