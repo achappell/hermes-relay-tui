@@ -12,7 +12,9 @@ def test_project_metadata_exposes_the_console_command():
     assert metadata["project"]["name"] == "hermes-relay-tui"
     assert metadata["project"]["requires-python"] == ">=3.14,<3.15"
     assert metadata["project"]["scripts"]["hermes-relay"] == "app:main"
-    assert {"attachments", "shell"}.issubset(metadata["tool"]["setuptools"]["py-modules"])
+    assert {"attachments", "shell", "setup_wizard"}.issubset(
+        metadata["tool"]["setuptools"]["py-modules"]
+    )
 
 
 def test_homebrew_trial_formula_declares_runtime_boundaries():

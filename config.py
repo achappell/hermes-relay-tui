@@ -17,7 +17,8 @@ from diagnostics import configure_logging
 
 DEFAULT_URL = "ws://localhost:8792/voice-session"
 DEFAULT_CHECKOUT = Path.home() / ".hermes" / "hermes-agent"
-DEFAULT_PROFILE_ENV = Path.home() / ".hermes" / "profiles" / "amanda" / ".env"
+DEFAULT_PROFILE_ENV = Path.home() / ".hermes-relay-tui" / ".env"
+LEGACY_PROFILE_ENV = Path.home() / ".hermes" / "profiles" / "amanda" / ".env"
 DEFAULT_CONFIG_PATH = Path.home() / ".hermes-relay-tui" / "config.yaml"
 BUSY_MODES = ("queue", "steer", "interrupt")
 
@@ -158,24 +159,31 @@ def _resolve_token(explicit: Optional[str], env_path: Path) -> str:
     from_environment = os.getenv("VOICE_SESSION_TOKEN", "").strip()
     if from_environment:
         return from_environment
-    if not env_path.exists():
-        return ""
-    try:
-        from dotenv import dotenv_values
+    paths = [env_path]
+    if env_path == DEFAULT_PROFILE_ENV and LEGACY_PROFILE_ENV != DEFAULT_PROFILE_ENV:
+        paths.append(LEGACY_PROFILE_ENV)
 
-        value = dotenv_values(env_path).get("VOICE_SESSION_TOKEN")
-        return str(value).strip() if value else ""
-    except ImportError:
-        for raw_line in env_path.read_text(encoding="utf-8").splitlines():
-            line = raw_line.strip()
-            if not line.startswith("VOICE_SESSION_TOKEN="):
-                continue
-            value = line.split("=", 1)[1].strip()
-            if len(value) >= 2 and value[0] == value[-1] and value[0] in "'\"":
-                value = value[1:-1]
-            return value
-    except OSError:
-        return ""
+    for path in paths:
+        if not path.exists():
+            continue
+        try:
+            from dotenv import dotenv_values
+
+            value = dotenv_values(path).get("VOICE_SESSION_TOKEN")
+            if value:
+                return str(value).strip()
+        except ImportError:
+            for raw_line in path.read_text(encoding="utf-8").splitlines():
+                line = raw_line.strip()
+                if not line.startswith("VOICE_SESSION_TOKEN="):
+                    continue
+                value = line.split("=", 1)[1].strip()
+                if len(value) >= 2 and value[0] == value[-1] and value[0] in "'\"":
+                    value = value[1:-1]
+                if value:
+                    return value
+        except (OSError, UnicodeDecodeError):
+            continue
     return ""
 
 
@@ -357,6 +365,7 @@ __all__ = [
     "DEFAULT_CHECKOUT",
     "DEFAULT_CONFIG_PATH",
     "DEFAULT_PROFILE_ENV",
+    "LEGACY_PROFILE_ENV",
     "DEFAULT_URL",
     "_connection_kwargs",
     "_env_bool",

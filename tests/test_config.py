@@ -4,6 +4,7 @@ import pytest
 
 from config import (
     DEFAULT_URL,
+    DEFAULT_PROFILE_ENV,
     _env_choice,
     _env_float,
     _env_int,
@@ -49,6 +50,10 @@ def test_parser_defaults_to_local_voice_session_endpoint(monkeypatch):
     monkeypatch.delenv("HERMES_VOICE_SESSION_URL", raising=False)
     assert build_arg_parser().parse_args([]).url == DEFAULT_URL
     assert DEFAULT_URL == "ws://localhost:8792/voice-session"
+
+
+def test_default_token_file_belongs_to_the_relay_app():
+    assert DEFAULT_PROFILE_ENV.parts[-2:] == (".hermes-relay-tui", ".env")
 
 
 def test_parser_reads_busy_mode_from_environment(monkeypatch):
@@ -134,6 +139,17 @@ def test_resolve_token_reads_env_file(tmp_path, monkeypatch):
 def test_resolve_token_missing_file_returns_empty(tmp_path, monkeypatch):
     monkeypatch.delenv("VOICE_SESSION_TOKEN", raising=False)
     assert _resolve_token(None, tmp_path / "nope.env") == ""
+
+
+def test_resolve_token_falls_back_to_the_legacy_profile_file(tmp_path, monkeypatch):
+    monkeypatch.delenv("VOICE_SESSION_TOKEN", raising=False)
+    default_path = tmp_path / "default.env"
+    legacy_path = tmp_path / "legacy.env"
+    legacy_path.write_text("VOICE_SESSION_TOKEN=legacy-token\n")
+    monkeypatch.setattr("config.DEFAULT_PROFILE_ENV", default_path)
+    monkeypatch.setattr("config.LEGACY_PROFILE_ENV", legacy_path)
+
+    assert _resolve_token(None, default_path) == "legacy-token"
 
 
 def test_connection_kwargs_uses_additional_headers_when_supported():
