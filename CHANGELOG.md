@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.3.0 (2026-08-31)
+
+<!-- Release notes generated using configuration in .github/release.yml at main -->
+
+## What's Changed
+### Other Changes
+* fix: handle Shift+Enter as ctrl+j and preserve newlines in transcript by @achappell in https://github.com/achappell/hermes-relay-tui/pull/7
+* feat: add /reload for live config refresh, auto-create default config file by @achappell in https://github.com/achappell/hermes-relay-tui/pull/9
+* feat: replace blocking slash-command palette with inline suggestions by @achappell in https://github.com/achappell/hermes-relay-tui/pull/10
+* feat: add visible queue shelf by @achappell in https://github.com/achappell/hermes-relay-tui/pull/12
+* Turn 02 thinking detail lane by @achappell in https://github.com/achappell/hermes-relay-tui/pull/13
+
+
+**Full Changelog**: https://github.com/achappell/hermes-relay-tui/compare/v0.2.0...v0.3.0
+
 ## 0.2.0 (2026-08-30)
 
 <!-- Release notes generated using configuration in .github/release.yml at main -->
