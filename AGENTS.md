@@ -10,7 +10,8 @@ This repository contains a small Python/Textual terminal UI for the Hermes voice
 - `config.py` — command-line arguments, environment variables, token lookup, and connection defaults.
 - `diagnostics.py` — opt-in content-safe protocol and turn tracing for live debugging.
 - `audio.py` — streamed signed 16-bit PCM playback and WAV fallback.
-- `mic.py` — dynamic loading of `LocalMicrophone` from the local Hermes checkout.
+- `voice.py` — owned local microphone capture (sounddevice) and speech-to-text (faster-whisper).
+- `mic.py` — device-selection and cancellation glue around `voice.py`'s recorder.
 - `transcript.py` — typed transcript records and Rich Markdown rendering.
 - `tests/` — unit and integration-style tests using fakes; do not require a live Hermes endpoint.
 
@@ -115,7 +116,7 @@ gh project item-list 3 --owner achappell --format json -L 100
 - Keep the code modular and direct. Avoid abstractions that do not remove real duplication.
 - Preserve the existing voice-session protocol and event names unless a protocol change is explicitly requested.
 - Do not commit bearer tokens, profile `.env` files, audio captures, or machine-specific credentials.
-- Treat the default endpoint and local Hermes checkout as runtime configuration, not test fixtures. Tests should use fake sessions and WebSocket objects.
+- Treat the default endpoint as runtime configuration, not a test fixture. Tests should use fake sessions and WebSocket objects.
 - Keep streamed text inline in the transcript. A widget that renders every delta on a separate line is a regression.
 - Keep the UI responsive: blocking microphone capture and audio writes belong off the Textual event loop.
 - Record non-blocking bugs and usability snags in `docs/friction-log.md`; defer them unless they block current work, risk data loss, or repeat.
@@ -129,7 +130,7 @@ Use the repository virtual environment when it exists:
 venv/bin/pip install -r requirements-dev.txt
 ```
 
-The voice path is in-process with Hermes' source modules, so this environment must include the voice stack declared in `requirements.txt` (`PyYAML`, `numpy`, `sounddevice`, and `faster-whisper`). Installing only the Hermes checkout's separate `.venv` is not enough.
+relay-tui owns its voice path directly (`voice.py`), so this environment must include the voice stack declared in `requirements.txt` (`PyYAML`, `numpy`, `sounddevice`, and `faster-whisper`). No Hermes checkout is needed for microphone capture or local transcription.
 
 For a fresh checkout, create it with the repository's supported Python version (currently Python 3.14):
 
@@ -191,7 +192,6 @@ The complete source of truth is `config.build_arg_parser()`. The main runtime op
 
 - `--url` — voice-session WebSocket URL.
 - `--session-id` — session to create or resume.
-- `--checkout` — Hermes checkout containing `scripts/voice-session-client.py`.
 - `--profile-env` — optional `.env` file containing the bearer token.
 - `--no-play` — buffer audio without opening the local speaker.
 - `--output PATH` — save response audio as WAV; later turns receive numbered suffixes.
@@ -223,7 +223,7 @@ response text, or audio contents.
 - Binary WebSocket frames are raw PCM audio. `audio_start` supplies sample rate, channel count, and sample width.
 - `app.py` owns presentation and turn state. It should not grow protocol parsing logic that belongs in `client.py`.
 - Thinking/status/tool activity is rendered as a replaceable transcript line; the assistant response gets its own line once text begins, so repeated activity cannot pollute the final answer.
-- `mic.py` loads `LocalMicrophone` from `<checkout>/scripts/voice-session-client.py`; its adapter supplies session-local input selection and cancellation, while that file and the project's voice dependencies must exist for `Ctrl+R` to work.
+- `voice.py` owns `LocalMicrophone`, its sounddevice-based recorder, and faster-whisper transcription; `mic.py`'s adapter supplies session-local input selection and cancellation on top of it. The project's voice dependencies (`sounddevice`, `numpy`, `faster-whisper`) must be installed for `Ctrl+R` to work.
 - `audio.py` supports signed 16-bit PCM for live playback. If playback cannot start, the app reports buffering and can still save the collected PCM as WAV.
 - Connection setup uses bounded exponential-backoff retries. Prompts that cannot be sent remain FIFO-queued; a turn that may have reached Hermes is never replayed automatically after a socket failure.
 - The current voice-session protocol has no explicit interrupt operation. Interruption closes the current client connection and reconnects before the next turn, preventing stale events from being consumed as new-turn data; server-side generation cancellation remains a protocol concern.

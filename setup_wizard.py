@@ -93,7 +93,6 @@ def save_setup_files(
     token_path: Path,
     url: str,
     token: str,
-    checkout: Path | None,
     client_id: str,
     device_id: str,
     session_id: str,
@@ -121,8 +120,6 @@ def save_setup_files(
             "display_name": display_name,
         }
     )
-    if checkout is not None:
-        config["checkout"] = str(checkout)
 
     config_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     config_path.write_text(
@@ -207,12 +204,6 @@ def run_setup(
     client_id = _ask(input_fn, "Client ID", default=str(existing.get("client_id") or "hermes-relay"))
     device_id = _ask(input_fn, "Device ID", default=str(existing.get("device_id") or hostname))
     session_id = _ask(input_fn, "Session ID", default=str(existing.get("session_id") or "default"))
-    checkout_value = _ask(
-        input_fn,
-        "Hermes checkout path (optional for typed turns)",
-        default=str(existing.get("checkout") or ""),
-    )
-    checkout = Path(checkout_value).expanduser() if checkout_value else None
     display_name = str(existing.get("display_name") or f"{client_id} relay")
 
     try:
@@ -221,7 +212,6 @@ def run_setup(
             token_path=token_path,
             url=url,
             token=token,
-            checkout=checkout,
             client_id=client_id,
             device_id=device_id,
             session_id=session_id,
@@ -231,13 +221,6 @@ def run_setup(
         output_fn(f"Setup failed: {exc}")
         return 1
 
-    if checkout is None:
-        output_fn("Typed turns are ready; add a Hermes checkout later for Ctrl+R voice turns.")
-    elif not (checkout / "scripts" / "voice-session-client.py").exists():
-        output_fn(
-            f"Voice turns are not ready: {checkout} does not contain "
-            "scripts/voice-session-client.py."
-        )
     output_fn(f"Setup complete. Edit {config_path} to change these defaults.")
     if check_connection and not args.no_check and connection_check_fn is not None:
         result = connection_check_fn(url, token, client_id, device_id, session_id)
