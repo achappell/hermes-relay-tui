@@ -6,6 +6,7 @@ session without pulling in a terminal UI framework. These tests fail loudly the
 first time a convenient `textual` import creeps into a core module.
 """
 
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -15,11 +16,15 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 
+# Keep this list in step with the "Core and front ends" section of AGENTS.md.
 CORE_MODULES = [
     "attachments",
     "audio",
     "client",
+    "clipboard",
     "config",
+    "diagnostics",
+    "history",
     "mic",
     "session",
     "shell",
@@ -47,6 +52,25 @@ def test_core_module_does_not_import_a_ui_framework(module):
     assert result.stdout.strip() == "", (
         f"{module}.py pulled in Textual: {result.stdout.strip()}. "
         "Core modules must stay usable by a non-terminal front end."
+    )
+
+
+def test_documented_core_matches_the_enforced_core():
+    """AGENTS.md and this file must not drift apart.
+
+    The documented core list is the one a contributor reads; this list is the
+    one CI enforces. If they disagree, the rule is unenforced somewhere.
+    """
+    agents = (ROOT / "AGENTS.md").read_text(encoding="utf-8")
+    section = agents.split("**Core — must not import a user-interface framework:**")[1]
+    section = section.split("**Front-end-specific:**")[0]
+
+    documented = set(re.findall(r"`(\w+)\.py`", section))
+
+    assert documented == set(CORE_MODULES), (
+        "AGENTS.md core list and CORE_MODULES disagree: "
+        f"documented-only={sorted(documented - set(CORE_MODULES))}, "
+        f"enforced-only={sorted(set(CORE_MODULES) - documented)}"
     )
 
 
