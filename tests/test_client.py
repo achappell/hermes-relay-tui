@@ -373,6 +373,25 @@ async def test_send_turn_normalizes_gateway_activity_events():
     assert events[9]["text"] == "answer"
 
 
+async def test_send_turn_surfaces_completion_reasoning_when_no_delta_was_streamed():
+    events = await collect(
+        [
+            json.dumps(
+                {
+                    "type": "message.complete",
+                    "payload": {"text": "answer", "reasoning": "checked the relay"},
+                }
+            ),
+            json.dumps({"type": "turn_end"}),
+        ]
+    )
+
+    assert events[0] == {"type": "thinking_delta", "text": "checked the relay"}
+    assert events[1] == {"type": "text_delta", "text": "answer"}
+    assert events[2]["type"] == "message_complete"
+    assert events[3]["type"] == "turn_end"
+
+
 async def test_send_turn_uses_error_message_when_error_field_is_absent():
     events = await collect([json.dumps({"type": "error", "message": "gateway failed"})])
 

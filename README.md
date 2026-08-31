@@ -120,10 +120,12 @@ The endpoint must be reachable from the machine running the TUI, and the server 
 
 Richer gateway-style events are normalized when the relay sends them. Thinking
 deltas accumulate into one replaceable detail line and become a short elapsed
-summary when the answer starts; tool progress uses the same activity lane,
-repeated status updates are suppressed, and the final assistant text starts on
-its own `hermes:` line. Event types the client does not understand are shown as
-diagnostic transcript entries instead of being discarded.
+summary when the answer starts. If the relay supplies reasoning only with
+`message.complete`, the client surfaces that fallback through the same lane.
+Tool progress uses the same activity lane, repeated status updates are
+suppressed, and the final assistant text starts on its own `hermes:` line.
+Event types the client does not understand are shown as diagnostic transcript
+entries instead of being discarded.
 
 For a live-session smoke test that needs diagnosis, enable the content-safe
 protocol trace:
