@@ -77,7 +77,7 @@ def test_image_command_is_registered_for_local_attachments():
 
 
 def test_help_can_filter_commands():
-    rendered = help_text("microphone")
+    rendered = help_text("voice")
 
-    assert "/voice" in rendered
+    assert "/voice [on|off|tts|status]" in rendered
     assert "/model" not in rendered
