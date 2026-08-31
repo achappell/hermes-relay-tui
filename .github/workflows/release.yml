@@ -34,7 +34,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install --yes portaudio19-dev
 
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: "3.14"
 
@@ -72,7 +72,7 @@ jobs:
           skip-existing: true
 
   update-homebrew:
-    name: Open Homebrew formula update PR
+    name: Update Homebrew formula
     if: vars.HOMEBREW_TAP_AUTOMATION == 'enabled'
     needs: package
     runs-on: ubuntu-latest
@@ -88,7 +88,7 @@ jobs:
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          repository: achappell/homebrew-hermes-streaming
+          repository: achappell/homebrew-hermes-relay
           token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
           path: tap
 
@@ -99,25 +99,16 @@ jobs:
           python scripts/generate_homebrew_formula.py \
             --version "$VERSION" \
             --revision "$REVISION" \
-            --output tap/Formula/hermes-streaming-tui.rb
+            --output tap/Formula/hermes-relay-tui.rb
 
-      - name: Open a formula update PR
+      - name: Commit formula to tap
         working-directory: tap
-        env:
-          GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
         run: |
           VERSION="${RELEASE_TAG#v}"
-          BRANCH="automation/hermes-streaming-tui-${VERSION}-${GITHUB_RUN_ID}"
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git switch -c "$BRANCH"
-          git add Formula/hermes-streaming-tui.rb
+          git rm --ignore-unmatch Formula/hermes-streaming-tui.rb
+          git add Formula/hermes-relay-tui.rb
           git diff --cached --quiet && exit 0
-          git commit -m "chore: update hermes-streaming-tui to ${VERSION}"
-          git push --set-upstream origin "$BRANCH"
-          gh pr create \
-            --repo achappell/homebrew-hermes-streaming \
-            --base main \
-            --head "$BRANCH" \
-            --title "chore: update hermes-streaming-tui to ${VERSION}" \
-            --body "Updates the formula to source release v${VERSION}. CI and code-owner review are required before merging."
+          git commit -m "chore: update hermes-relay-tui to ${VERSION}"
+          git push origin HEAD:main
