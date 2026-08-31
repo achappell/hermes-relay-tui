@@ -1,72 +1,78 @@
-import asyncio
 import sys
 import threading
 import types
 
-import pytest
-from textual.app import App
-from tqdm import tqdm
-from tqdm.std import TqdmDefaultWriteLock
-
-from mic import load_microphone_class, wrap_recorder
+from mic import prepare_local_stt, wrap_recorder
+from voice import LocalMicrophone, is_whisper_hallucination
 
 
-def test_missing_voice_client_raises(tmp_path):
-    with pytest.raises(RuntimeError, match="not found"):
-        load_microphone_class(tmp_path)
+def test_local_microphone_uses_injected_recorder_and_transcriber():
+    class FakeRecorder:
+        supports_silence_autostop = True
 
+        def start(self, on_silence_stop=None):
+            if on_silence_stop is not None:
+                on_silence_stop()
 
-def test_loads_local_microphone_class(tmp_path):
-    scripts_dir = tmp_path / "scripts"
-    scripts_dir.mkdir()
-    (scripts_dir / "voice-session-client.py").write_text(
-        "class LocalMicrophone:\n"
-        "    def __init__(self, **kwargs):\n"
-        "        self.kwargs = kwargs\n"
-        "    def capture(self):\n"
-        "        return 'hello'\n"
-        "    def close(self):\n"
-        "        pass\n"
+        def stop(self):
+            return "/tmp/fake.wav"
+
+        def cancel(self):
+            pass
+
+    transcribed = {}
+
+    def fake_transcribe(wav_path, model=None):
+        transcribed["wav_path"] = wav_path
+        transcribed["model"] = model
+        return {"success": True, "transcript": "turn on the lights"}
+
+    microphone = LocalMicrophone(
+        max_seconds=5.0,
+        model="base",
+        recorder_factory=FakeRecorder,
+        transcribe_fn=fake_transcribe,
+        hallucination_fn=lambda text: False,
     )
 
-    microphone_class = load_microphone_class(tmp_path)
-    instance = microphone_class(max_seconds=5.0)
-    assert instance.capture() == "hello"
+    assert microphone.capture() == "turn on the lights"
+    assert transcribed == {"wav_path": "/tmp/fake.wav", "model": "base"}
 
 
-async def test_loading_microphone_prepares_tqdm_for_textual_streams(tmp_path, monkeypatch):
-    scripts_dir = tmp_path / "scripts"
-    scripts_dir.mkdir()
-    (scripts_dir / "voice-session-client.py").write_text(
-        "from tqdm import tqdm\n"
-        "tqdm.get_lock()\n"
-        "class LocalMicrophone:\n"
-        "    pass\n"
+def test_local_microphone_filters_hallucinated_transcript():
+    class FakeRecorder:
+        supports_silence_autostop = True
+
+        def start(self, on_silence_stop=None):
+            if on_silence_stop is not None:
+                on_silence_stop()
+
+        def stop(self):
+            return "/tmp/fake.wav"
+
+        def cancel(self):
+            pass
+
+    microphone = LocalMicrophone(
+        max_seconds=5.0,
+        recorder_factory=FakeRecorder,
+        transcribe_fn=lambda wav_path, model=None: {"success": True, "transcript": "thank you"},
     )
 
-    # Force the first get_lock() in the dynamically loaded module to exercise
-    # the multiprocessing path. Under Textual that path rejects stderr's -1
-    # fileno; load_microphone_class must pin tqdm to a thread-only lock first.
-    monkeypatch.delattr(tqdm, "_lock", raising=False)
-    monkeypatch.delattr(TqdmDefaultWriteLock, "mp_lock", raising=False)
+    assert microphone.capture() == ""
 
-    class Probe(App):
-        loaded_class = None
-        error = None
 
-        async def on_mount(self):
-            try:
-                self.loaded_class = await asyncio.to_thread(load_microphone_class, tmp_path)
-            except Exception as exc:  # captured for the assertion below
-                self.error = exc
-            self.exit()
+def test_is_whisper_hallucination_catches_known_phrases_and_silence():
+    assert is_whisper_hallucination("") is True
+    assert is_whisper_hallucination("thank you.") is True
+    assert is_whisper_hallucination("turn off the porch light") is False
 
-    app = Probe()
-    async with app.run_test() as pilot:
-        await pilot.pause()
 
-    assert app.error is None
-    assert app.loaded_class is not None
+def test_prepare_local_stt_pins_tqdm_to_a_thread_lock():
+    from tqdm import tqdm
+
+    prepare_local_stt()
+    assert isinstance(tqdm.get_lock(), type(threading.RLock()))
 
 
 def test_wrapped_recorder_selects_input_device_and_cancellation_wakes_capture(monkeypatch):

@@ -25,10 +25,9 @@ This is a client for the existing Hermes voice-session channel. It does not run 
 - Python 3.14
 - Access to a Hermes voice-session WebSocket endpoint
 - A bearer token for that endpoint
-- A local Hermes checkout containing `scripts/voice-session-client.py` for microphone turns
 - A working audio input/output device for voice and playback
 
-The project virtualenv installs the local voice stack (`PyYAML`, `numpy`, and `faster-whisper`) because the microphone adapter imports Hermes’ source modules in the TUI process.
+The project virtualenv installs its own local voice stack (`PyYAML`, `sounddevice`, `numpy`, and `faster-whisper`) — relay-tui owns microphone capture and local transcription directly, with no dependency on a Hermes checkout.
 
 ## Install
 
@@ -56,8 +55,8 @@ hermes-relay setup
 hermes-relay
 ```
 
-It asks for the Hermes WebSocket endpoint, bearer token, client/device names,
-session name, and optional Hermes checkout. It writes editable connection
+It asks for the Hermes WebSocket endpoint, bearer token, and client/device
+names, session name. It writes editable connection
 defaults to `~/.hermes-relay-tui/config.yaml` and keeps the token in the
 private `~/.hermes-relay-tui/.env`. Use `hermes-relay setup` again to change
 them. See [`docs/packaging/jensen-trial.md`](docs/packaging/jensen-trial.md)
@@ -126,8 +125,7 @@ use `--url` when connecting to a remote gateway:
 ```bash
 venv/bin/python app.py \
   --url ws://example.internal:8792/voice-session \
-  --session-id my-session \
-  --checkout ~/.hermes/hermes-agent
+  --session-id my-session
 ```
 
 The endpoint must be reachable from the machine running the TUI, and the server must accept the supplied bearer token.
@@ -248,7 +246,6 @@ it. A turn that may already have reached Hermes is never replayed automatically.
 | `--url URL` | Override the voice-session WebSocket URL |
 | `--token TOKEN` | Supply the bearer token explicitly |
 | `--session-id ID` | Create or resume a server-side session |
-| `--checkout PATH` | Hermes checkout used for microphone/STT loading |
 | `--profile-env PATH` | `.env` file used for token lookup |
 | `--no-play` | Do not open the local speaker; buffer audio instead |
 | `--output PATH` | Save response audio to WAV |
@@ -272,8 +269,8 @@ Run `venv/bin/python app.py --help` for the full option list.
 ### Guided setup
 
 Use `hermes-relay setup` on a new computer. It asks for the server endpoint,
-token, client identity, and optional Hermes checkout, then saves the editable
-YAML and private token file under `~/.hermes-relay-tui/`. Add `--no-check` to
+token, and client identity, then saves the editable YAML and private token
+file under `~/.hermes-relay-tui/`. Add `--no-check` to
 save the answers without probing the server.
 
 ## Audio output
@@ -347,7 +344,7 @@ Run `hermes-relay setup`, set `VOICE_SESSION_TOKEN`, pass `--token`, or point
 
 ### Microphone capture cannot start
 
-Check that `--checkout` points to a Hermes checkout containing `scripts/voice-session-client.py`, and that the project virtualenv was refreshed with `venv/bin/pip install -r requirements-dev.txt`. The TUI loads `LocalMicrophone` from that file at runtime, using the TUI process' Python environment.
+Check that the project virtualenv was refreshed with `venv/bin/pip install -r requirements-dev.txt` — `voice.py` needs `sounddevice`, `numpy`, and `faster-whisper` installed directly in the TUI's own Python environment.
 
 On macOS, also grant microphone access to the app that launches the TUI (Terminal, iTerm, VS Code, or your IDE) under **System Settings → Privacy & Security → Microphone**, then fully restart that app. `Error querying device -1` means PortAudio cannot see an accessible default input device; check the selected input in **System Settings → Sound → Input** as well.
 

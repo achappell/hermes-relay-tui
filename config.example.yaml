@@ -24,7 +24,6 @@
 # token: ""
 
 # --- local Hermes install (only needed for the voice/Ctrl+R feature) ---
-# checkout: ~/.hermes/hermes-agent
 # profile_env: ~/.hermes-relay-tui/.env
 # Existing installs may continue using ~/.hermes/profiles/amanda/.env.
 

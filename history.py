@@ -25,8 +25,8 @@ def history_path_for_url(url: Optional[str]) -> Path:
     Prompt history is this client's own state, not Hermes's — it lives
     under this app's own dotfolder (``~/.hermes-relay-tui/``), not
     inside ``~/.hermes/``, which belongs to the actual Hermes agent
-    install this app only ever *reads* from (``--checkout``,
-    ``--profile-env``). A laptop that talks to more than one Hermes
+    install this app only ever *reads* from (``--profile-env``).
+    A laptop that talks to more than one Hermes
     backend (a local agent, a media-server gateway) should also not
     interleave their prompts in one file. Falls back to the flat
     ``DEFAULT_HISTORY_PATH`` when the URL has no parseable host, e.g.
