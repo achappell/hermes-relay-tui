@@ -72,7 +72,7 @@ jobs:
           skip-existing: true
 
   update-homebrew:
-    name: Open Homebrew formula update PR
+    name: Update Homebrew formula
     if: vars.HOMEBREW_TAP_AUTOMATION == 'enabled'
     needs: package
     runs-on: ubuntu-latest
@@ -101,23 +101,14 @@ jobs:
             --revision "$REVISION" \
             --output tap/Formula/hermes-relay-tui.rb
 
-      - name: Open a formula update PR
+      - name: Commit formula to tap
         working-directory: tap
-        env:
-          GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
         run: |
           VERSION="${RELEASE_TAG#v}"
-          BRANCH="automation/hermes-relay-tui-${VERSION}-${GITHUB_RUN_ID}"
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git switch -c "$BRANCH"
+          git rm --ignore-unmatch Formula/hermes-streaming-tui.rb
           git add Formula/hermes-relay-tui.rb
           git diff --cached --quiet && exit 0
           git commit -m "chore: update hermes-relay-tui to ${VERSION}"
-          git push --set-upstream origin "$BRANCH"
-          gh pr create \
-            --repo achappell/homebrew-hermes-relay \
-            --base main \
-            --head "$BRANCH" \
-            --title "chore: update hermes-relay-tui to ${VERSION}" \
-            --body "Updates the formula to source release v${VERSION}. CI and code-owner review are required before merging."
+          git push origin HEAD:main

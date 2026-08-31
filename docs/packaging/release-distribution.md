@@ -8,9 +8,9 @@ Hermes Streaming TUI is distributed through several complementary channels:
   variable `PYPI_PUBLISHING` is set to `enabled`. That supports `pip`, `pipx`,
   and `uv tool install`.
 - Homebrew remains the easiest clean-Mac path. When the repository variable
-  `HOMEBREW_TAP_AUTOMATION` is set to `enabled`, a release opens a formula PR
-  in `achappell/homebrew-hermes-relay` instead of pushing directly to its
-  protected `main` branch.
+  `HOMEBREW_TAP_AUTOMATION` is set to `enabled`, a release commits the generated
+  formula directly to `main` in `achappell/homebrew-hermes-relay` after the
+  packages finish building.
 
 ## One-time PyPI setup
 
@@ -29,16 +29,18 @@ gh variable set PYPI_PUBLISHING --repo achappell/hermes-relay-tui --body enabled
 
 ## One-time Homebrew automation setup
 
-Create a fine-grained token or GitHub App token with Contents and Pull Request
-write access to `achappell/homebrew-hermes-relay`. Store it as
-`HOMEBREW_TAP_TOKEN` in the source repository, then enable the workflow:
+Create a fine-grained token or GitHub App token with Contents write access to
+`achappell/homebrew-hermes-relay`, owned by a tap administrator so it can push
+to the protected `main` branch. Store it as `HOMEBREW_TAP_TOKEN` in the source
+repository, then enable the workflow:
 
 ```bash
 gh variable set HOMEBREW_TAP_AUTOMATION --repo achappell/hermes-relay-tui --body enabled
 ```
 
-The tap's protected branch and `CODEOWNERS` file keep each generated formula
-update reviewable.
+The tap's protected branch and `CODEOWNERS` file continue to protect manual
+pull requests; release automation is the deliberate administrator bypass for
+the generated formula commit.
 
 ## Why there are no native binaries
 
