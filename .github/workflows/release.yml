@@ -5,6 +5,11 @@ on:
     tags:
       - "v*"
   workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing release tag to package (for example, v0.3.0)"
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -13,6 +18,8 @@ jobs:
   package:
     name: Build release packages
     runs-on: ubuntu-latest
+    env:
+      RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
     permissions:
       contents: write
       id-token: write
@@ -20,6 +27,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
+          ref: ${{ inputs.tag || github.ref }}
 
       - name: Install PortAudio runtime
         run: |
@@ -45,13 +53,13 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 || \
-            gh release create "$GITHUB_REF_NAME" --verify-tag --title "$GITHUB_REF_NAME" --generate-notes
+          gh release view "$RELEASE_TAG" >/dev/null 2>&1 || \
+            gh release create "$RELEASE_TAG" --verify-tag --title "$RELEASE_TAG" --generate-notes
 
       - name: Upload packages to GitHub Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh release upload "$GITHUB_REF_NAME" dist/*.whl dist/*.tar.gz --clobber
+        run: gh release upload "$RELEASE_TAG" dist/*.whl dist/*.tar.gz --clobber
 
       # Configure a PyPI Trusted Publisher first, then set the repository
       # variable PYPI_PUBLISHING=enabled. Keeping this opt-in makes a tagged
@@ -68,10 +76,15 @@ jobs:
     if: vars.HOMEBREW_TAP_AUTOMATION == 'enabled'
     needs: package
     runs-on: ubuntu-latest
+    env:
+      RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
     permissions:
       contents: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          ref: ${{ inputs.tag || github.ref }}
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -80,11 +93,9 @@ jobs:
           path: tap
 
       - name: Render the pinned formula
-        env:
-          VERSION: ${{ github.ref_name }}
-          REVISION: ${{ github.sha }}
         run: |
-          VERSION="${VERSION#v}"
+          VERSION="${RELEASE_TAG#v}"
+          REVISION="$(git rev-list -n 1 "$RELEASE_TAG")"
           python scripts/generate_homebrew_formula.py \
             --version "$VERSION" \
             --revision "$REVISION" \
@@ -94,9 +105,8 @@ jobs:
         working-directory: tap
         env:
           GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
-          VERSION: ${{ github.ref_name }}
         run: |
-          VERSION="${VERSION#v}"
+          VERSION="${RELEASE_TAG#v}"
           BRANCH="automation/hermes-streaming-tui-${VERSION}-${GITHUB_RUN_ID}"
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
