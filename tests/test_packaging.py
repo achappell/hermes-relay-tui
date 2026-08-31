@@ -45,3 +45,4 @@ def test_release_workflow_publishes_python_distributions():
     assert "pypa/gh-action-pypi-publish@" in workflow
     assert "HOMEBREW_TAP_AUTOMATION" in workflow
     assert "generate_homebrew_formula.py" in workflow
+    assert "workflow_dispatch:" in workflow
