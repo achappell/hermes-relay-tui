@@ -16,7 +16,6 @@ from typing import Any, Optional
 from diagnostics import configure_logging
 
 DEFAULT_URL = "ws://localhost:8792/voice-session"
-DEFAULT_CHECKOUT = Path.home() / ".hermes" / "hermes-agent"
 DEFAULT_PROFILE_ENV = Path.home() / ".hermes-relay-tui" / ".env"
 LEGACY_PROFILE_ENV = Path.home() / ".hermes" / "profiles" / "amanda" / ".env"
 DEFAULT_CONFIG_PATH = Path.home() / ".hermes-relay-tui" / "config.yaml"
@@ -232,7 +231,6 @@ def build_arg_parser(argv: Optional[list[str]] = None) -> argparse.ArgumentParse
         help="Bearer token; prefer VOICE_SESSION_TOKEN or the profile .env",
     )
     parser.add_argument("--profile-env", type=Path, default=_cfg_path(cfg, "profile_env", DEFAULT_PROFILE_ENV))
-    parser.add_argument("--checkout", type=Path, default=_cfg_path(cfg, "checkout", DEFAULT_CHECKOUT))
     parser.add_argument(
         "--client-id",
         default=os.getenv("VOICE_SESSION_CLIENT_ID", _cfg_str(cfg, "client_id", "amanda-laptop")),
@@ -362,7 +360,6 @@ def build_arg_parser(argv: Optional[list[str]] = None) -> argparse.ArgumentParse
 
 __all__ = [
     "BUSY_MODES",
-    "DEFAULT_CHECKOUT",
     "DEFAULT_CONFIG_PATH",
     "DEFAULT_PROFILE_ENV",
     "LEGACY_PROFILE_ENV",

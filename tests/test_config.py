@@ -214,7 +214,6 @@ def test_config_file_fills_the_fiddly_defaults(tmp_path):
         "\n".join(
             [
                 "url: ws://media-server.local:8792/voice-session",
-                "checkout: /custom/checkout",
                 "profile_env: /custom/profile.env",
                 "client_id: laptop-client",
                 "device_id: laptop-device",
@@ -234,7 +233,6 @@ def test_config_file_fills_the_fiddly_defaults(tmp_path):
     args = build_arg_parser(argv).parse_args(argv)
 
     assert args.url == "ws://media-server.local:8792/voice-session"
-    assert str(args.checkout) == "/custom/checkout"
     assert str(args.profile_env) == "/custom/profile.env"
     assert args.client_id == "laptop-client"
     assert args.device_id == "laptop-device"

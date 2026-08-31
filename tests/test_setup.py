@@ -21,7 +21,6 @@ def test_save_setup_files_writes_editable_config_and_private_token(tmp_path):
         token_path=token_path,
         url="wss://hermes.example/voice-session",
         token="secret-token",
-        checkout=tmp_path / "hermes-agent",
         client_id="jensen-laptop",
         device_id="jensen-mac",
         session_id="kitchen",
@@ -32,7 +31,6 @@ def test_save_setup_files_writes_editable_config_and_private_token(tmp_path):
     assert saved == {
         "url": "wss://hermes.example/voice-session",
         "profile_env": str(token_path),
-        "checkout": str(tmp_path / "hermes-agent"),
         "client_id": "jensen-laptop",
         "device_id": "jensen-mac",
         "session_id": "kitchen",
@@ -52,7 +50,6 @@ def test_run_setup_guides_user_and_saves_the_answers(tmp_path):
             "jensen-laptop",
             "jensen-mac",
             "kitchen",
-            str(tmp_path / "hermes-agent"),
         ]
     )
     secrets = iter(["secret-token"])
@@ -175,7 +172,7 @@ def test_probe_connection_verifies_the_voice_session_handshake():
 
 
 def test_run_setup_checks_the_saved_connection_when_requested(tmp_path):
-    answers = iter(["wss://hermes.example/voice-session", "jensen-laptop", "jensen-mac", "kitchen", ""])
+    answers = iter(["wss://hermes.example/voice-session", "jensen-laptop", "jensen-mac", "kitchen"])
     secrets = iter(["secret-token"])
     output = []
     calls = []
@@ -215,7 +212,7 @@ def test_normalize_endpoint_accepts_http_urls_pasted_from_server_docs():
 
 
 def test_run_setup_accepts_async_connection_checker(tmp_path):
-    answers = iter(["wss://hermes.example/voice-session", "jensen-laptop", "jensen-mac", "kitchen", ""])
+    answers = iter(["wss://hermes.example/voice-session", "jensen-laptop", "jensen-mac", "kitchen"])
     secrets = iter(["secret-token"])
 
     async def check(*args):

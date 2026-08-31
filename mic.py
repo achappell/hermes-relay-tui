@@ -1,17 +1,20 @@
-"""Microphone capture wrapper for the Hermes streaming TUI.
-
-Ported from hermes-hybrid-tui.py's _load_microphone, unchanged in
-behavior beyond a clearer public name.
-"""
+"""Device-selection and cancellation glue around voice.py's local recorder."""
 
 from __future__ import annotations
 
-import importlib.util
 import threading
 from contextlib import contextmanager
-from pathlib import Path
 from typing import Any, Iterator
 
+from voice import LocalMicrophone, create_audio_recorder
+
+__all__ = [
+    "LocalMicrophone",
+    "prepare_local_stt",
+    "wrap_recorder",
+    "make_recorder_factory",
+    "cancel_microphone",
+]
 
 DeviceSelector = int | str | None
 
@@ -25,22 +28,9 @@ def prepare_local_stt() -> None:
     tqdm.set_lock(threading.RLock())
 
 
-def load_microphone_class(checkout: Path):
-    source = checkout / "scripts" / "voice-session-client.py"
-    if not source.exists():
-        raise RuntimeError(f"Hermes voice client not found at {source}")
-    prepare_local_stt()
-    spec = importlib.util.spec_from_file_location("hermes_voice_session_client", source)
-    if not spec or not spec.loader:
-        raise RuntimeError(f"Could not load Hermes voice client from {source}")
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module.LocalMicrophone
-
-
 @contextmanager
 def _input_device_context(device: DeviceSelector) -> Iterator[None]:
-    """Temporarily select an input device for Hermes' default-based recorder."""
+    """Temporarily select an input device for the default-based recorder."""
     if device is None:
         yield
         return
@@ -57,7 +47,7 @@ def _input_device_context(device: DeviceSelector) -> Iterator[None]:
 
 
 class _RecorderProxy:
-    """Add device selection and cancellable endpointing to a Hermes recorder."""
+    """Add device selection and cancellable endpointing to a recorder."""
 
     def __init__(
         self,
@@ -121,7 +111,7 @@ def wrap_recorder(
     input_device: DeviceSelector = None,
     cancel_requested: threading.Event | None = None,
 ) -> Any:
-    """Wrap a Hermes recorder for local device selection and cancellation."""
+    """Wrap a recorder for local device selection and cancellation."""
     return _RecorderProxy(
         recorder,
         input_device,
@@ -135,8 +125,6 @@ def make_recorder_factory(
 ) -> Any:
     """Build the dependency-injected recorder factory used by LocalMicrophone."""
     def factory() -> Any:
-        from tools.voice_mode import create_audio_recorder
-
         return wrap_recorder(
             create_audio_recorder(),
             input_device=input_device,
@@ -147,7 +135,7 @@ def make_recorder_factory(
 
 
 def cancel_microphone(microphone: Any) -> None:
-    """Cancel a dynamically loaded LocalMicrophone without blocking the UI."""
+    """Cancel a LocalMicrophone capture without blocking the UI."""
     recorder = getattr(microphone, "_recorder", None)
     cancel = getattr(recorder, "cancel", None)
     if callable(cancel):

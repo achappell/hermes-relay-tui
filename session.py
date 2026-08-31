@@ -15,7 +15,7 @@ from typing import Any, AsyncIterator, Protocol
 import config
 from client import send_hello, send_turn
 from diagnostics import logger as diagnostic_logger, summarize_text
-from mic import cancel_microphone, load_microphone_class, make_recorder_factory
+from mic import LocalMicrophone, cancel_microphone, make_recorder_factory
 
 
 class SessionProtocol(Protocol):
@@ -124,8 +124,7 @@ class HermesSession:
     def capture_voice(self) -> str:
         self._voice_cancel_requested.clear()
         if self.microphone is None:
-            microphone_class = load_microphone_class(self.args.checkout)
-            self.microphone = microphone_class(
+            self.microphone = LocalMicrophone(
                 max_seconds=self.args.mic_max_seconds,
                 silence_duration=self.args.mic_silence_duration,
                 silence_threshold=self.args.mic_silence_threshold,
