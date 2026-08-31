@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.5.0 (2026-08-31)
+
+<!-- Release notes generated using configuration in .github/release.yml at main -->
+
+## What's Changed
+### Other Changes
+* Own local mic capture and STT instead of loading Hermes internals by @achappell in https://github.com/achappell/hermes-relay-tui/pull/26
+* feat: own local mic capture and STT instead of loading Hermes internals by @achappell in https://github.com/achappell/hermes-relay-tui/pull/27
+
+
+**Full Changelog**: https://github.com/achappell/hermes-relay-tui/compare/v0.4.0...v0.5.0
+
 ## 0.4.0 (2026-08-31)
 
 <!-- Release notes generated using configuration in .github/release.yml at main -->
