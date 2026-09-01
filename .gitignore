@@ -5,6 +5,7 @@ dist/
 __pycache__/
 *.pyc
 .worktrees/
+.superpowers/
 .hermes/
 *.wav
 .pytest_cache/
