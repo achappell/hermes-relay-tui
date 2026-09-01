@@ -195,3 +195,46 @@ def test_the_detector_scores_every_full_chunk():
             fired.append(detector.feed(chunk))
 
     assert fired == [False, True]
+
+
+class RecordingModel:
+    """Stands in for openwakeword.model.Model."""
+
+    def __init__(self, **kwargs):
+        self.kwargs = kwargs
+        self.seen = []
+
+    def predict(self, frame):
+        self.seen.append(frame)
+        return {"hey_hermes": 0.42}
+
+
+def test_the_engine_flattens_channel_shaped_frames():
+    """sounddevice delivers (samples, channels); openWakeWord wants 1-D."""
+    import numpy as np
+
+    model = RecordingModel()
+    engine = wake.load_openwakeword_engine(_import_module=lambda: (lambda **kw: model))
+
+    frame = np.zeros((1280, 1), dtype="int16")
+    assert engine.score(frame) == 0.42
+    assert model.seen[0].ndim == 1
+    assert len(model.seen[0]) == 1280
+
+
+def test_the_engine_reports_the_highest_scoring_model():
+    engine = wake.load_openwakeword_engine(
+        _import_module=lambda: (
+            lambda **kw: type("M", (), {"predict": lambda self, f: {"a": 0.1, "b": 0.8}})()
+        )
+    )
+    assert engine.score([0]) == 0.8
+
+
+def test_the_engine_scores_zero_when_the_model_returns_nothing():
+    engine = wake.load_openwakeword_engine(
+        _import_module=lambda: (
+            lambda **kw: type("M", (), {"predict": lambda self, f: {}})()
+        )
+    )
+    assert engine.score([0]) == 0.0

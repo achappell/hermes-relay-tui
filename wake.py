@@ -366,6 +366,10 @@ class _OpenWakeWordEngine:
         self._model = model_factory(**kwargs)
 
     def score(self, frame: Any) -> float:
+        # sounddevice hands back (samples, channels); openWakeWord wants a flat
+        # 1-D int16 array and silently misbehaves on the wrong shape.
+        if getattr(frame, "ndim", 1) > 1:
+            frame = frame.reshape(-1)
         predictions = self._model.predict(frame)
         if not predictions:
             return 0.0
