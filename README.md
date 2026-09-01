@@ -472,10 +472,22 @@ python scripts/wake_check.py
 python scripts/wake_check.py --seconds 600 --quiet
 ```
 
-The summary reports frames scored, detections, and the highest score seen. If
-nothing fired, that peak is the useful number: well under the threshold means
-the detector never heard the phrase, while just over it means
-`--wake-confirmation-frames` rejected the utterance as too brief.
+```bash
+# Prove the detector without a microphone or a voice.
+python scripts/wake_check.py --self-test
+```
+
+The meter shows **two** bars: the microphone input level and the wake score.
+That distinction matters, because "it did not hear the phrase" and "it is not
+hearing anything" look identical otherwise and only one of them is a wake-word
+problem. The summary names which one you hit — silence from the microphone,
+audio arriving but no match, a near miss under the threshold, or a score that
+crossed but was rejected as too brief.
+
+`--self-test` synthesizes the phrase with macOS `say` and scores it with no
+microphone involved. If it fires, the software is fine and the problem is
+between your voice and the input device. If it does not, the problem is in the
+software.
 
 The first run takes about twenty seconds to load the model. Detection itself
 costs roughly 2 ms per 80 ms frame, so there is ample headroom on modest

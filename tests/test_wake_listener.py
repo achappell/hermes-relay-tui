@@ -154,3 +154,24 @@ def test_the_listener_rechunks_before_scoring_when_a_chunker_is_given():
     listener.run_pending()
 
     assert seen == [4, 4]
+
+
+def test_the_queue_is_bounded_by_audio_duration_not_frame_count():
+    """PortAudio chooses the block size and it can be tiny - measured at ~15
+    samples on a MacBook Air, over a thousand callbacks a second. A queue
+    bounded only by frame count then holds milliseconds of audio, not seconds,
+    and drops the middle of the phrase under the slightest stall."""
+    listener, _ = _listener([], max_buffered_samples=1000)
+
+    for _ in range(100):
+        listener.submit([0] * 100)
+
+    assert listener.buffered_samples <= 1000
+    assert listener.dropped_frames > 0
+
+
+def test_frames_without_a_length_still_respect_the_frame_cap():
+    listener, _ = _listener([], queue_size=4)
+    for _ in range(10):
+        listener.submit(object())
+    assert listener.dropped_frames == 6

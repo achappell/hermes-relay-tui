@@ -36,6 +36,7 @@ __all__ = [
     "DEFAULT_SILENCE_PEAK",
     "DEFAULT_SILENCE_ALERT_SECONDS",
     "DEFAULT_QUEUE_SIZE",
+    "DEFAULT_MAX_BUFFERED_SAMPLES",
 ]
 
 DEFAULT_THRESHOLD = 0.6
@@ -60,7 +61,16 @@ DEFAULT_COOLDOWN_SECONDS = 2.0
 DEFAULT_SILENCE_PEAK = 10
 DEFAULT_SILENCE_ALERT_SECONDS = 10.0
 
-DEFAULT_QUEUE_SIZE = 32
+# The frame cap is a backstop only. PortAudio picks the block size and it can
+# be very small - measured at ~15 samples on a MacBook Air, over a thousand
+# callbacks a second - so a queue bounded by frame count alone holds
+# milliseconds of audio rather than seconds. The real bound is the sample
+# budget below.
+DEFAULT_QUEUE_SIZE = 2048
+
+# Roughly two seconds at 16kHz. Enough to ride out a stall without letting an
+# always-on listener grow without limit.
+DEFAULT_MAX_BUFFERED_SAMPLES = 32000
 
 # openWakeWord scores exactly 1280 samples (80ms at 16kHz) per predict() call.
 # AudioRecorder opens its InputStream without a blocksize, so PortAudio picks
@@ -228,6 +238,7 @@ class WakeListener:
         peak_of: Callable[[Any], int] | None = None,
         silence_monitor: SilentStreamMonitor | None = None,
         chunker: FrameChunker | None = None,
+        max_buffered_samples: int = DEFAULT_MAX_BUFFERED_SAMPLES,
     ) -> None:
         self._detector = detector
         self._on_wake = on_wake
@@ -236,26 +247,53 @@ class WakeListener:
         self._peak_of = peak_of
         self._silence_monitor = silence_monitor
         self._chunker = chunker
+        self._max_buffered_samples = max_buffered_samples
+        self.buffered_samples = 0
         self._paused = False
         self._stopping = threading.Event()
         self._thread: threading.Thread | None = None
         self.dropped_frames = 0
 
+    @staticmethod
+    def _samples(frame: Any) -> int:
+        try:
+            return len(frame)
+        except TypeError:
+            return 0
+
+    def _discard_oldest(self) -> None:
+        try:
+            dropped = self._queue.get_nowait()
+        except queue.Empty:
+            return
+        self.buffered_samples = max(0, self.buffered_samples - self._samples(dropped))
+        self.dropped_frames += 1
+
     def submit(self, frame: Any) -> None:
         """Enqueue a frame. Called on the audio thread; never blocks."""
         if self._paused:
             return
+
+        samples = self._samples(frame)
+
+        # Drop the oldest rather than the newest: the freshest audio is the
+        # audio most likely to contain the phrase.
+        while (
+            self._max_buffered_samples
+            and self.buffered_samples + samples > self._max_buffered_samples
+            and not self._queue.empty()
+        ):
+            self._discard_oldest()
+
         try:
             self._queue.put_nowait(frame)
         except queue.Full:
-            # Drop the oldest rather than the newest: the freshest audio is
-            # the audio most likely to contain the phrase.
+            self._discard_oldest()
             try:
-                self._queue.get_nowait()
                 self._queue.put_nowait(frame)
-            except (queue.Empty, queue.Full):
-                pass
-            self.dropped_frames += 1
+            except queue.Full:
+                return
+        self.buffered_samples += samples
 
     def run_pending(self) -> None:
         """Score everything currently queued, on the calling thread."""
@@ -264,6 +302,7 @@ class WakeListener:
                 frame = self._queue.get_nowait()
             except queue.Empty:
                 return
+            self.buffered_samples = max(0, self.buffered_samples - self._samples(frame))
             self._process(frame)
 
     def _process(self, frame: Any) -> None:
@@ -323,6 +362,7 @@ class WakeListener:
                 frame = self._queue.get(timeout=0.1)
             except queue.Empty:
                 continue
+            self.buffered_samples = max(0, self.buffered_samples - self._samples(frame))
             self._process(frame)
 
     def stop(self) -> None:
