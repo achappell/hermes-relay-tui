@@ -4,6 +4,7 @@ from urllib.request import urlopen
 
 import pytest
 from websockets.legacy.client import connect
+from websockets.exceptions import InvalidHandshake
 
 from home_display.server import DisplayServer
 from home_display.state import DisplayStatePublisher
@@ -65,3 +66,37 @@ def test_static_path_rejects_absolute_path_after_url_decoding(tmp_path):
 
     with pytest.raises(ValueError, match="path"):
         server.resolve_static_path("/%2Fetc%2Fpasswd")
+
+
+def test_static_path_rejects_symlink_escape(tmp_path):
+    static_dir = tmp_path / "static"
+    static_dir.mkdir()
+    outside_file = tmp_path / "outside.txt"
+    outside_file.write_text("private", encoding="utf-8")
+    try:
+        (static_dir / "escape.txt").symlink_to(outside_file)
+    except (OSError, NotImplementedError):
+        pytest.skip("platform cannot create symlinks")
+
+    server = DisplayServer(DisplayStatePublisher(), static_dir)
+
+    with pytest.raises(ValueError, match="path"):
+        server.resolve_static_path("/escape.txt")
+
+
+@pytest.mark.asyncio
+async def test_server_rejects_websocket_upgrade_for_non_state_path(tmp_path):
+    (tmp_path / "index.html").write_text("home", encoding="utf-8")
+    (tmp_path / "app.js").write_text("console.log('home')", encoding="utf-8")
+    server = DisplayServer(DisplayStatePublisher(), tmp_path)
+    info = await server.start()
+    try:
+        with pytest.raises(InvalidHandshake) as error:
+            await connect(f"ws://{info.host}:{info.port}/app.js")
+        response = getattr(error.value, "response", None)
+        status_code = getattr(error.value, "status_code", None)
+        if status_code is None:
+            status_code = getattr(response, "status_code", None)
+        assert status_code == 404
+    finally:
+        await server.close()

@@ -9,6 +9,7 @@ from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING
 from urllib.parse import unquote, urlsplit
 
+from websockets.datastructures import Headers
 from websockets.exceptions import ConnectionClosed
 from websockets.legacy.server import WebSocketServer, WebSocketServerProtocol, serve
 
@@ -80,13 +81,22 @@ class DisplayServer:
         if relative_path.is_absolute() or ".." in relative_path.parts:
             raise ValueError("path must stay within the static directory")
 
-        return self._static_dir / Path(*relative_path.parts)
+        candidate = self._static_dir / Path(*relative_path.parts)
+        try:
+            resolved_path = candidate.resolve()
+            resolved_path.relative_to(self._static_dir)
+        except (OSError, RuntimeError, ValueError) as error:
+            raise ValueError("path must stay within the static directory") from error
+        return resolved_path
 
     async def _serve_http_request(
-        self, request_path: str, _headers: object
+        self, request_path: str, headers: Headers
     ) -> tuple[HTTPStatus, list[tuple[str, str]], bytes] | None:
-        if urlsplit(request_path).path == "/state":
+        path = urlsplit(request_path).path
+        if path == "/state":
             return None
+        if headers.get("Upgrade", "").lower() == "websocket":
+            return self._http_response(HTTPStatus.NOT_FOUND, b"Not found\n")
 
         try:
             static_path = self.resolve_static_path(request_path)
@@ -95,7 +105,7 @@ class DisplayServer:
 
         if static_path.name == "":
             static_path /= "index.html"
-        elif urlsplit(request_path).path == "/":
+        elif path == "/":
             static_path /= "index.html"
 
         if not static_path.is_file():
