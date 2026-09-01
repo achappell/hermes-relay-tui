@@ -136,3 +136,62 @@ def test_missing_dependency_names_the_extra():
         wake.load_openwakeword_engine(_import_module=_raise_import_error)
 
     assert "hermes-relay-tui[wake]" in str(excinfo.value)
+
+
+class ListChunker:
+    """Concatenation for plain lists, so the chunker is testable without numpy."""
+
+    @staticmethod
+    def concat(frames):
+        out = []
+        for frame in frames:
+            out.extend(frame)
+        return out
+
+
+def _chunker(size=4):
+    return wake.FrameChunker(chunk_samples=size, concat=ListChunker.concat)
+
+
+def test_a_short_frame_yields_nothing():
+    """openWakeWord needs exactly 1280 samples per predict() call. PortAudio
+    chooses its own block size, so frames must be re-chunked or the model
+    scores garbage."""
+    chunker = _chunker()
+    assert chunker.push([1, 2]) == []
+
+
+def test_frames_accumulate_into_a_full_chunk():
+    chunker = _chunker()
+    assert chunker.push([1, 2]) == []
+    assert chunker.push([3, 4]) == [[1, 2, 3, 4]]
+
+
+def test_a_long_frame_yields_several_chunks():
+    chunker = _chunker()
+    assert chunker.push([1, 2, 3, 4, 5, 6, 7, 8, 9]) == [[1, 2, 3, 4], [5, 6, 7, 8]]
+
+
+def test_the_remainder_is_carried_forward():
+    chunker = _chunker()
+    chunker.push([1, 2, 3, 4, 5])
+    assert chunker.push([6, 7, 8]) == [[5, 6, 7, 8]]
+
+
+def test_an_exactly_sized_frame_passes_straight_through():
+    chunker = _chunker()
+    assert chunker.push([1, 2, 3, 4]) == [[1, 2, 3, 4]]
+
+
+def test_the_detector_scores_every_full_chunk():
+    """The engine sees fixed-size chunks even though frames arrive ragged."""
+    engine = FakeEngine([0.9, 0.9])
+    detector = wake.WakeDetector(engine, confirmation_frames=2, now=FakeClock())
+    chunker = _chunker()
+
+    fired = []
+    for frame in ([1, 2, 3], [4, 5, 6, 7, 8]):
+        for chunk in chunker.push(frame):
+            fired.append(detector.feed(chunk))
+
+    assert fired == [False, True]

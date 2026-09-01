@@ -127,3 +127,30 @@ def test_the_worker_thread_starts_and_stops_cleanly():
         listener.stop()
 
     assert fired == [True]
+
+
+def test_the_listener_rechunks_before_scoring_when_a_chunker_is_given():
+    """Frames arrive at whatever size PortAudio chose; the engine must still
+    see fixed-size chunks."""
+    seen = []
+
+    class RecordingEngine:
+        def score(self, frame):
+            seen.append(len(frame))
+            return 0.0
+
+    detector = wake.WakeDetector(RecordingEngine(), confirmation_frames=1)
+    listener = wake.WakeListener(
+        detector,
+        on_wake=lambda: None,
+        chunker=wake.FrameChunker(
+            chunk_samples=4, concat=lambda frames: [x for f in frames for x in f]
+        ),
+    )
+
+    listener.submit([1, 2, 3])
+    listener.run_pending()
+    listener.submit([4, 5, 6, 7, 8])
+    listener.run_pending()
+
+    assert seen == [4, 4]

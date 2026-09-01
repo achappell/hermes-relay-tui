@@ -56,6 +56,13 @@ def test_a_missing_extra_raises_a_message_naming_the_extra():
     assert "hermes-relay-tui[wake]" in str(excinfo.value)
 
 
+def _frames(count):
+    """Enough samples to complete one openWakeWord-sized chunk."""
+    import numpy as np
+
+    return [np.zeros(wake.OPENWAKEWORD_CHUNK_SAMPLES, dtype="int16") for _ in range(count)]
+
+
 def test_the_built_loop_turns_a_detection_into_a_turn():
     session = FakeSession()
     listener, coordinator = handsfree.build_hands_free(
@@ -64,7 +71,8 @@ def test_the_built_loop_turns_a_detection_into_a_turn():
         _load_engine=lambda path: AlwaysEngine(),
     )
 
-    listener.submit(object())
+    for frame in _frames(1):
+        listener.submit(frame)
     listener.run_pending()
 
     assert session.turns == [("hello", "local")]
@@ -81,7 +89,8 @@ def test_the_built_loop_drops_a_hallucinated_misfire():
         _load_engine=lambda path: AlwaysEngine(),
     )
 
-    listener.submit(object())
+    for frame in _frames(1):
+        listener.submit(frame)
     listener.run_pending()
 
     assert session.turns == []

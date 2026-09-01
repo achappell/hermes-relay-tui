@@ -26,6 +26,8 @@ __all__ = [
     "WakeDetector",
     "WakeListener",
     "SilentStreamMonitor",
+    "FrameChunker",
+    "OPENWAKEWORD_CHUNK_SAMPLES",
     "MissingWakeDependency",
     "load_openwakeword_engine",
     "DEFAULT_THRESHOLD",
@@ -59,6 +61,12 @@ DEFAULT_SILENCE_PEAK = 10
 DEFAULT_SILENCE_ALERT_SECONDS = 10.0
 
 DEFAULT_QUEUE_SIZE = 32
+
+# openWakeWord scores exactly 1280 samples (80ms at 16kHz) per predict() call.
+# AudioRecorder opens its InputStream without a blocksize, so PortAudio picks
+# the frame size and it need not match - frames must be re-chunked or the model
+# is fed the wrong shape and scores meaningless numbers.
+OPENWAKEWORD_CHUNK_SAMPLES = 1280
 
 _INSTALL_HINT = (
     "Wake-word support needs the optional 'wake' extra. "
@@ -158,6 +166,51 @@ class SilentStreamMonitor:
         return True
 
 
+class FrameChunker:
+    """Re-cuts ragged audio frames into fixed-size chunks for the engine."""
+
+    def __init__(
+        self,
+        *,
+        chunk_samples: int = OPENWAKEWORD_CHUNK_SAMPLES,
+        concat: Callable[[list[Any]], Any] | None = None,
+    ) -> None:
+        self._chunk_samples = chunk_samples
+        self._concat = concat
+        self._pending: list[Any] = []
+        self._pending_samples = 0
+
+    def _join(self, frames: list[Any]) -> Any:
+        if self._concat is not None:
+            return self._concat(frames)
+        import numpy as np  # noqa: PLC0415
+
+        return np.concatenate(frames)
+
+    def push(self, frame: Any) -> list[Any]:
+        """Add a frame, returning every whole chunk it completes."""
+        self._pending.append(frame)
+        self._pending_samples += len(frame)
+        if self._pending_samples < self._chunk_samples:
+            return []
+
+        buffer = self._join(self._pending)
+        chunks = []
+        offset = 0
+        while self._pending_samples - offset >= self._chunk_samples:
+            chunks.append(buffer[offset : offset + self._chunk_samples])
+            offset += self._chunk_samples
+
+        remainder = buffer[offset:]
+        self._pending = [remainder] if len(remainder) else []
+        self._pending_samples = len(remainder)
+        return chunks
+
+    def reset(self) -> None:
+        self._pending = []
+        self._pending_samples = 0
+
+
 class WakeListener:
     """Owns the frame queue and the detection worker.
 
@@ -174,6 +227,7 @@ class WakeListener:
         queue_size: int = DEFAULT_QUEUE_SIZE,
         peak_of: Callable[[Any], int] | None = None,
         silence_monitor: SilentStreamMonitor | None = None,
+        chunker: FrameChunker | None = None,
     ) -> None:
         self._detector = detector
         self._on_wake = on_wake
@@ -181,6 +235,7 @@ class WakeListener:
         self._queue: queue.Queue = queue.Queue(maxsize=queue_size)
         self._peak_of = peak_of
         self._silence_monitor = silence_monitor
+        self._chunker = chunker
         self._paused = False
         self._stopping = threading.Event()
         self._thread: threading.Thread | None = None
@@ -223,13 +278,14 @@ class WakeListener:
                 logger.debug("silent-stream check failed", exc_info=True)
 
         try:
-            fired = self._detector.feed(frame)
+            # openWakeWord needs a fixed chunk size; PortAudio does not
+            # promise one, so ragged frames are re-cut before scoring.
+            chunks = self._chunker.push(frame) if self._chunker is not None else [frame]
+            for chunk in chunks:
+                if self._detector.feed(chunk):
+                    self._notify(self._on_wake)
         except Exception:
             logger.debug("wake scoring failed", exc_info=True)
-            return
-
-        if fired:
-            self._notify(self._on_wake)
 
     def _notify(self, callback: Callable[[], Any] | None) -> None:
         if callback is None:
@@ -244,9 +300,13 @@ class WakeListener:
         """Stop scoring — used while a voice turn holds the microphone."""
         self._paused = True
         self._detector.reset()
+        if self._chunker is not None:
+            self._chunker.reset()
 
     def resume(self) -> None:
         self._detector.reset()
+        if self._chunker is not None:
+            self._chunker.reset()
         self._paused = False
 
     def start(self) -> None:

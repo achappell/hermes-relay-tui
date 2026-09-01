@@ -220,5 +220,9 @@ def build_hands_free(
         is_hallucination=is_whisper_hallucination,
     )
 
-    listener = wake.WakeListener(detector, on_wake=coordinator.on_wake)
+    listener = wake.WakeListener(
+        detector,
+        on_wake=coordinator.on_wake,
+        chunker=wake.FrameChunker(),
+    )
     return listener, coordinator
