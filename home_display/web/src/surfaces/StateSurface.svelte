@@ -11,13 +11,19 @@
     listening: "Listening",
     thinking: "Thinking",
     speaking: "Speaking",
-    buffering: "Still working",
-    error: "Something needs attention",
-    disconnected: "Display disconnected",
+    buffering: "Buffering",
+    error: "Error",
+    disconnected: "Disconnected",
+  };
+
+  const fallbackStatus: Partial<Record<DisplayState, string>> = {
+    buffering: "Still working — please wait",
+    error: "Something needs attention — try again",
+    disconnected: "Display disconnected — check the host connection",
   };
 
   $: displayState = connectionState === "disconnected" ? "disconnected" : snapshot.state;
-  $: status = protocolError ?? snapshot.status_text;
+  $: status = protocolError ?? snapshot.status_text ?? fallbackStatus[displayState] ?? null;
   $: showResponse = displayState === "speaking" && snapshot.response_text.length > 0;
 </script>
 

@@ -4,13 +4,13 @@ import { cleanup, render, screen } from "@testing-library/svelte";
 import { afterEach, describe, expect, it } from "vitest";
 import StateSurface from "./StateSurface.svelte";
 
-const snapshot = (state: string, response_text = "") => ({
+const snapshot = (state: string, response_text = "", status_text: string | null = null) => ({
   type: "snapshot" as const,
   schema: 1 as const,
   sequence: 1,
   state: state as never,
   response_text,
-  status_text: null,
+  status_text,
   media: null,
 });
 
@@ -48,7 +48,28 @@ describe("StateSurface", () => {
       props: { snapshot: snapshot("speaking", "stale response"), connectionState: "disconnected" },
     });
 
-    expect(screen.getByText(/disconnected/i)).toBeInTheDocument();
+    expect(screen.getByText("Display disconnected — check the host connection")).toBeInTheDocument();
     expect(screen.queryByText("stale response")).not.toBeInTheDocument();
+  });
+
+  it.each([
+    ["buffering", "Still working — please wait"],
+    ["error", "Something needs attention — try again"],
+    ["disconnected", "Display disconnected — check the host connection"],
+  ])("uses an actionable fallback for %s without server status text", (state, expected) => {
+    render(StateSurface, {
+      props: { snapshot: snapshot(state), connectionState: "connected" },
+    });
+
+    expect(screen.getByText(expected)).toBeInTheDocument();
+  });
+
+  it("preserves server-provided status text", () => {
+    render(StateSurface, {
+      props: { snapshot: snapshot("buffering", "", "The response is catching up"), connectionState: "connected" },
+    });
+
+    expect(screen.getByText("The response is catching up")).toBeInTheDocument();
+    expect(screen.queryByText("Still working — please wait")).not.toBeInTheDocument();
   });
 });

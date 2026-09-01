@@ -3823,9 +3823,14 @@ function StateSurface($$anchor, $$props) {
     listening: "Listening",
     thinking: "Thinking",
     speaking: "Speaking",
-    buffering: "Still working",
-    error: "Something needs attention",
-    disconnected: "Display disconnected"
+    buffering: "Buffering",
+    error: "Error",
+    disconnected: "Disconnected"
+  };
+  const fallbackStatus = {
+    buffering: "Still working — please wait",
+    error: "Something needs attention — try again",
+    disconnected: "Display disconnected — check the host connection"
   };
   legacy_pre_effect(
     () => (deep_read_state(connectionState()), deep_read_state(snapshot())),
@@ -3834,9 +3839,9 @@ function StateSurface($$anchor, $$props) {
     }
   );
   legacy_pre_effect(
-    () => (deep_read_state(protocolError()), deep_read_state(snapshot())),
+    () => (deep_read_state(protocolError()), deep_read_state(snapshot()), get(displayState)),
     () => {
-      set(status, protocolError() ?? snapshot().status_text);
+      set(status, protocolError() ?? snapshot().status_text ?? fallbackStatus[get(displayState)] ?? null);
     }
   );
   legacy_pre_effect(() => (get(displayState), deep_read_state(snapshot())), () => {
