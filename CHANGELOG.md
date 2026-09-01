@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.6.0 (2026-09-01)
+
+<!-- Release notes generated using configuration in .github/release.yml at main -->
+
+## What's Changed
+### Other Changes
+* feat: derive device_id from hostname instead of prompting for it by @achappell in https://github.com/achappell/hermes-relay-tui/pull/32
+* feat: always record content-safe crash reports by @achappell in https://github.com/achappell/hermes-relay-tui/pull/36
+* feat: prepare the local speech model during setup by @achappell in https://github.com/achappell/hermes-relay-tui/pull/35
+* feat: make transcript text selectable and copy on release by @achappell in https://github.com/achappell/hermes-relay-tui/pull/39
+* Home 03 kiosk display by @achappell in https://github.com/achappell/hermes-relay-tui/pull/40
+* fix: install Homebrew formula from a checksummed release archive by @achappell in https://github.com/achappell/hermes-relay-tui/pull/41
+
+
+**Full Changelog**: https://github.com/achappell/hermes-relay-tui/compare/v0.5.0...v0.6.0
+
 ## 0.5.0 (2026-08-31)
 
 <!-- Release notes generated using configuration in .github/release.yml at main -->
