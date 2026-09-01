@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.6.1 (2026-09-01)
+
+<!-- Release notes generated using configuration in .github/release.yml at main -->
+
+## What's Changed
+### Other Changes
+* fix: re-sign relinked venv dylibs in the Homebrew formula by @achappell in https://github.com/achappell/hermes-relay-tui/pull/42
+
+
+**Full Changelog**: https://github.com/achappell/hermes-relay-tui/compare/v0.6.0...v0.6.1
+
 ## 0.6.0 (2026-09-01)
 
 <!-- Release notes generated using configuration in .github/release.yml at main -->
