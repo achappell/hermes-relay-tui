@@ -189,6 +189,11 @@ def build_hands_free(
 
     Raises wake.MissingWakeDependency when the optional extra is absent, so the
     caller can report it plainly instead of dying on an import.
+
+    Wiring order matters. Call ``listener.start()`` *before* opening the audio
+    stream. The other way round, frames pile into a bounded queue with nothing
+    draining it and the entire warm-up is dropped audio - measured at 96 lost
+    frames on a first run, which is roughly three seconds of the room.
     """
     if not getattr(args, "wake_enabled", False):
         return None

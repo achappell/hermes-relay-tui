@@ -85,6 +85,15 @@ class AudioRecorder:
         """
         self._frame_observer = observer
 
+    def open_for_listening(self) -> None:
+        """Open the capture stream without starting a recording.
+
+        Push-to-talk only ever needed the stream while recording. A wake-word
+        listener needs it open the whole time it is idle, which is exactly when
+        frames reach the observer.
+        """
+        self._ensure_stream()
+
     def _dispatch_frame(self, indata) -> None:
         """Hand an idle frame to the observer. Called from the audio thread."""
         if self._recording:

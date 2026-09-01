@@ -58,3 +58,16 @@ def test_observer_exception_never_escapes_the_audio_callback():
     recorder.set_frame_observer(boom)
 
     recorder._dispatch_frame(_FakeFrame("a"))  # must not raise
+
+
+def test_open_for_listening_starts_the_stream_without_recording(monkeypatch):
+    """The appliance needs the microphone open while idle, which is the one
+    thing push-to-talk never had to do."""
+    recorder = _recorder()
+    opened = []
+    monkeypatch.setattr(recorder, "_ensure_stream", lambda: opened.append(True))
+
+    recorder.open_for_listening()
+
+    assert opened == [True]
+    assert recorder.is_recording is False

@@ -445,6 +445,31 @@ instant speech is detected, so it never cuts anyone off mid-sentence; if no
 speech arrives, the unit discards the capture and returns to idle silently. It
 never announces a misfire.
 
+### Checking it hears you
+
+`scripts/wake_check.py` opens the real microphone through the real capture path
+and prints a live score. Nothing is sent to Hermes and no turn is captured — it
+only answers "does it hear me, and does it hear things that are not me".
+
+```bash
+pip install 'hermes-relay-tui[wake]'
+
+# Watch the meter and say the phrase.
+python scripts/wake_check.py
+
+# A ten-minute soak with the fan, the tap and the radio going.
+python scripts/wake_check.py --seconds 600 --quiet
+```
+
+The summary reports frames scored, detections, and the highest score seen. If
+nothing fired, that peak is the useful number: well under the threshold means
+the detector never heard the phrase, while just over it means
+`--wake-confirmation-frames` rejected the utterance as too brief.
+
+The first run takes about twenty seconds to load the model. Detection itself
+costs roughly 2 ms per 80 ms frame, so there is ample headroom on modest
+hardware.
+
 **Do not enable `--wake-barge-in` without echo cancellation.** With a shared
 microphone and speaker the unit hears its own voice, retriggers on itself, and
 interrupts its own sentence. The feature is implemented and tested, and stays
