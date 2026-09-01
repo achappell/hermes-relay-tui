@@ -1,6 +1,7 @@
 # HOME-02 Wake-Word Listener and Hands-Free Turn Capture
 
-Status: Design approved; implementation not started.
+Status: Revised after referencing Hermes' own wake-word implementation;
+pending review. Implementation not started.
 
 Project item: `HOME-02 Wake-word listener and hands-free turn capture`
 
@@ -16,11 +17,12 @@ shared session core, with no keyboard involved.
   `session.SessionProtocol`. Replacing `home_display`'s fake state source with
   real session orchestration is a separate item. HOME-03 deliberately deferred
   that wiring and this slice does not absorb it.
-- **The wake phrase ships as a pretrained openWakeWord model**, with the model
-  path and sensitivity in configuration. Training a bespoke phrase is a
-  multi-hour project with its own tuning loop; it would block the listener from
-  landing on something testable. The phrase is not hardcoded, which is what the
-  acceptance criteria require.
+- **The wake phrase is "hey hermes", using the model Hermes already trained.**
+  `~/.hermes/hermes-agent/tools/wakewords/hey_hermes.onnx` (205 KB) was
+  produced by openWakeWord's training pipeline and is redistributable under the
+  openWakeWord licence (Apache-2.0). Copying that artifact costs nothing and is
+  strictly better than falling back to a stock "hey jarvis". The model path and
+  sensitivity stay configurable, so the phrase is not hardcoded.
 - **Barge-in is implemented and tested, but disabled by default** until HOME-05
   lands echo cancellation. Without it the unit hears its own speech and can
   retrigger on itself, interrupting its own sentence. The code and tests exist
@@ -29,6 +31,63 @@ shared session core, with no keyboard involved.
   `AGENTS.md` requires front-end-only dependencies live in an extra so
   installing the TUI does not drag in appliance hardware libraries. A terminal
   client should not pull an ONNX runtime.
+
+## Prior art: Hermes' own wake-word implementation
+
+Hermes already ships a mature listener at
+`~/.hermes/hermes-agent/tools/wake_word.py` (1,508 lines, three engines:
+openWakeWord, sherpa, porcupine). This design mines it for decisions rather
+than reinventing them.
+
+**What is borrowed:**
+
+- **The trained "hey hermes" model**, as above.
+- **Confirmation frames.** openWakeWord scores one ~80 ms frame at a time, and
+  a stray phoneme in background conversation can spike a single frame over the
+  threshold. A real utterance holds the score high across several consecutive
+  frames. Requiring N-in-a-row before firing is, in Hermes' words, "the primary
+  lever against unintended triggers on ambient talk" — a stronger defence than
+  raising the threshold, which just makes the phrase harder to say. Default 3,
+  clamped 1–10, at a cost of a few tens of milliseconds.
+- **A fire cooldown** between consecutive fires, so one utterance cannot
+  retrigger across frames while the caller is still reacting. Hermes uses 2.0s.
+- **Silent-stream detection.** A stream can be *open and alive but all zeros* —
+  a dead mic reads as an audio device that is present and working. Hermes flags
+  a stream whose peak stays at or below 10 for 10 consecutive seconds. The
+  acceptance criterion "recovers from an audio device disappearing" does not
+  cover this case, and on an appliance nobody is watching, a silently dead
+  microphone is the more likely and more corrosive failure.
+
+**What is corroborated:** Hermes reaches the same conclusion about device
+sharing, independently — its detector exposes `pause()`/`resume()` so callers
+suspend it while a voice turn holds the microphone, because "two input streams
+on one device is unreliable cross-platform." That is the chosen approach here,
+arrived at from `voice.py`'s CoreAudio comment and confirmed by a second
+implementation in production.
+
+**Traps it already found:**
+
+- openWakeWord hardcodes `import tflite_runtime.interpreter` but only declares
+  `tflite-runtime` for some platforms; on others the package is
+  `ai-edge-litert`, and the module must be aliased for the upstream import to
+  succeed.
+- Inference framework selection differs on macOS arm64, so it cannot be assumed.
+
+**What is deliberately NOT borrowed: the code itself.** `voice.py`'s module
+docstring records that relay-tui previously loaded Hermes' `tools/` helpers by
+file path and that this was removed, because it "reached into an upstream
+fork's internal tooling with no stability contract." Importing
+`tools/wake_word.py` from `~/.hermes` would undo a deliberate fix and re-couple
+this client to a checkout it does not control. The model file is a data
+artifact with a licence; the module is someone else's internals.
+
+**One protocol note.** Hermes' gateway exposes `wake.start`, `wake.status`,
+`wake.feed`, and a `wake.detected` event, letting a client stream frames for
+server-side detection. That is the TUI gateway protocol, not the voice-session
+channel relay-tui speaks, and `AGENTS.md` forbids changing the voice-session
+protocol without an explicit request. Local detection is right for this slice;
+whether the home unit should eventually feed frames to Hermes instead is a
+separate question and deserves its own card.
 
 ## Approach: tap the existing audio stream
 
@@ -192,7 +251,12 @@ symptom that is baffling without the context.
 All values have defaults and none of the phrase behaviour is hardcoded.
 
 `--wake-enabled` · `--wake-model` · `--wake-threshold` ·
-`--wake-refractory-seconds` · `--wake-listen-timeout` · `--wake-barge-in`
+`--wake-confirmation-frames` · `--wake-refractory-seconds` ·
+`--wake-listen-timeout` · `--wake-barge-in`
+
+`--wake-confirmation-frames` defaults to 3 and clamps to 1–10, matching
+Hermes. Setting it to 1 restores naive single-frame behaviour, which is the
+configuration most likely to make the unit fire at the radio.
 
 ```toml
 [project.optional-dependencies]
@@ -212,6 +276,7 @@ A broken listener degrades the appliance to "not hands-free". Never to
 | Detection worker raises | Log, restart with backoff, session untouched. |
 | Audio device disappears | Supervisor backs off and re-subscribes when the stream rebuilds. |
 | Transcription fails mid-capture | Return to `IDLE` silently. |
+| Stream open but all zeros (dead mic) | Flag after a sustained near-zero peak; surface it as a state, do not silently pretend to listen. |
 
 The bounded queue is deliberate. An unbounded queue would avoid dropping
 frames, but the frames dropped under load are ones the listener would score as
@@ -231,6 +296,11 @@ No hardware, per the card's validation scenario.
 - a threshold crossing fires once
 - a sustained plateau fires once, not once per frame
 - a second crossing inside the refractory window does not fire
+- a single-frame spike above threshold does **not** fire when
+  `confirmation_frames > 1` — the ambient-speech rejection case
+- N consecutive over-threshold frames do fire
+- a streak broken before N resets, and does not fire
+- an all-zero frame sequence raises the dead-mic condition
 
 `handsfree.py`, driven by a fake `SessionProtocol` and a fake recorder — the
 doubles pattern `session.py` already documents:
