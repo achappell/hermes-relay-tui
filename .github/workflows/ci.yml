@@ -18,6 +18,22 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd4d3f7d6820020 # v4.4.0
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: home_display/web/package-lock.json
+
+      - name: Install web dependencies
+        run: npm ci --prefix home_display/web
+
+      - name: Test and build web display
+        run: |
+          npm --prefix home_display/web test
+          npm --prefix home_display/web run check
+          npm --prefix home_display/web run build
+          git diff --exit-code -- home_display/static
+
       - name: Install PortAudio headers
         run: |
           sudo apt-get update
@@ -44,3 +60,4 @@ jobs:
         run: |
           python -m pip install --no-deps dist/*.whl
           hermes-relay --help
+          hermes-relay-home --help

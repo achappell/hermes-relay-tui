@@ -16,9 +16,31 @@ from urllib.parse import urlsplit, urlunsplit
 import yaml
 
 import config
+from voice import DEFAULT_STT_MODEL
 
 
 DEFAULT_TOKEN_ENV_PATH = config.DEFAULT_PROFILE_ENV
+
+
+def prepare_stt_model(model_name: str) -> str:
+    """Download the local Faster-Whisper model and return its cache path."""
+    model = str(model_name or DEFAULT_STT_MODEL).strip()
+    if not model:
+        model = DEFAULT_STT_MODEL
+
+    local_path = Path(model).expanduser()
+    if local_path.exists():
+        if not local_path.is_dir():
+            raise ValueError(f"STT model path is not a directory: {local_path}")
+        return str(local_path)
+
+    try:
+        from faster_whisper import download_model
+    except ImportError as exc:
+        raise RuntimeError(
+            "local voice dependencies are unavailable; install requirements-dev.txt"
+        ) from exc
+    return str(download_model(model))
 
 
 def _ask(input_fn: Any, question: str, *, default: str = "") -> str:
@@ -96,6 +118,7 @@ def save_setup_files(
     device_id: str,
     session_id: str,
     display_name: str,
+    stt_model: str | None = None,
 ) -> None:
     """Persist setup answers without placing the bearer token in YAML."""
     if config_path.exists():
@@ -119,6 +142,8 @@ def save_setup_files(
             "display_name": display_name,
         }
     )
+    if stt_model:
+        config["stt_model"] = stt_model
 
     config_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     config_path.write_text(
@@ -154,6 +179,11 @@ def run_setup(
         type=Path,
         default=token_path,
         help="private .env path for the bearer token",
+    )
+    parser.add_argument(
+        "--stt-model",
+        default=None,
+        help=f"local Faster-Whisper model to prepare (default: {DEFAULT_STT_MODEL})",
     )
     parser.add_argument("--no-check", action="store_true", help="save without testing the relay")
     args = parser.parse_args([] if argv is None else argv)
@@ -203,6 +233,18 @@ def run_setup(
     device_id = str(existing.get("device_id") or config.default_device_id())
     session_id = _ask(input_fn, "Session ID", default=str(existing.get("session_id") or "default"))
     display_name = str(existing.get("display_name") or f"{client_id} relay")
+    stt_model = (
+        args.stt_model
+        or os.getenv("VOICE_SESSION_STT_MODEL")
+        or str(existing.get("stt_model") or DEFAULT_STT_MODEL)
+    )
+
+    output_fn(f"Preparing local speech model '{stt_model}'...")
+    try:
+        model_path = prepare_stt_model(stt_model)
+    except Exception as exc:
+        output_fn(f"Setup failed: local speech model could not be prepared: {exc}")
+        return 1
 
     try:
         save_setup_files(
@@ -214,11 +256,15 @@ def run_setup(
             device_id=device_id,
             session_id=session_id,
             display_name=display_name,
+            stt_model=stt_model,
         )
     except (OSError, UnicodeDecodeError, ValueError, yaml.YAMLError) as exc:
         output_fn(f"Setup failed: {exc}")
         return 1
 
+    output_fn(
+        f"Local speech model ready at {model_path}."
+    )
     output_fn(f"Setup complete. Edit {config_path} to change these defaults.")
     if check_connection and not args.no_check and connection_check_fn is not None:
         result = connection_check_fn(url, token, client_id, device_id, session_id)

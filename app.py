@@ -22,11 +22,17 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, AsyncIterator, Awaitable, Callable, Optional
 
+from rich.protocol import is_renderable
+from rich.segment import Segment
+from rich.style import Style as RichStyle
 from textual import events
 from textual.app import App, ComposeResult
 from textual.containers import VerticalScroll
 from textual.css.query import NoMatches
 from textual.message import Message
+from textual.selection import Selection
+from textual.strip import Strip
+from textual.visual import RenderOptions, RichVisual, Visual, VisualType, visualize
 from textual.widgets import Footer, Header, Static, TextArea
 
 import config
@@ -49,7 +55,9 @@ from commands import (
 )
 from diagnostics import (
     active_log_file,
+    crash_log_file,
     logger as diagnostic_logger,
+    install_crash_logging,
     summarize_payload,
     summarize_text,
 )
@@ -64,6 +72,149 @@ from shell import (
     standalone_command,
 )
 from transcript import TranscriptBuffer
+
+
+class SelectableRichVisual(RichVisual):
+    """Rich rendering with the selection behavior RichVisual lacks."""
+
+    def __init__(self, widget: Static, renderable: Any) -> None:
+        super().__init__(widget, renderable)
+        self._last_strips: list[Strip] = []
+
+    def render_strips(
+        self, width: int, height: int | None, style: Any, options: RenderOptions
+    ) -> list[Strip]:
+        strips = self._add_selection_offsets(
+            super().render_strips(width, height, style, options)
+        )
+        self._last_strips = strips
+        if options.selection is None or options.selection_style is None:
+            return strips
+
+        # ``Style.rich_style`` resolves a transparent foreground against the
+        # selection background. Applying that as a post-style makes the text
+        # itself the same color as the highlight. Keep only the background so
+        # the transcript's existing foreground remains readable.
+        selection_style = RichStyle(
+            bgcolor=options.selection_style.background.rich_color
+        )
+        selected_strips: list[Strip] = []
+        for line_number, strip in enumerate(strips):
+            span = options.selection.get_span(line_number)
+            if span is None:
+                selected_strips.append(strip)
+                continue
+            start, end = span
+            if end < 0:
+                end = strip.cell_length
+            selected_strips.append(
+                Strip.join(
+                    (
+                        strip.crop(0, start),
+                        self._apply_selection_style(
+                            strip.crop(start, end), selection_style
+                        ),
+                        strip.crop(end),
+                    )
+                )
+            )
+        return self._add_selection_offsets(selected_strips)
+
+    @staticmethod
+    def _add_selection_offsets(strips: list[Strip]) -> list[Strip]:
+        """Add Textual's character-position metadata to Rich segments."""
+        positioned_strips: list[Strip] = []
+        for line_number, strip in enumerate(strips):
+            character_offset = 0
+            positioned_segments: list[Segment] = []
+            for segment in strip._segments:
+                if segment.text:
+                    offset_style = RichStyle(
+                        meta={"offset": (character_offset, line_number)}
+                    )
+                    segment_style = (segment.style or RichStyle.null()) + offset_style
+                    positioned_segments.append(
+                        Segment(segment.text, segment_style, segment.control)
+                    )
+                    character_offset += len(segment.text)
+                else:
+                    positioned_segments.append(segment)
+            positioned_strips.append(
+                Strip(positioned_segments, strip.cell_length)
+            )
+        return positioned_strips
+
+    @staticmethod
+    def _apply_selection_style(strip: Strip, selection_style: Any) -> Strip:
+        """Overlay selection styling on top of the transcript's Rich styling."""
+        return Strip(
+            list(Segment.apply_style(strip._segments, post_style=selection_style)),
+            strip.cell_length,
+        )
+
+    def get_selection(
+        self, selection: Selection, fallback_text: str = ""
+    ) -> tuple[str, str]:
+        """Extract from the rendered lines, including wrapped Rich output."""
+        if self._last_strips:
+            rendered_text = "\n".join(strip.text for strip in self._last_strips)
+        else:
+            rendered_text = fallback_text
+        return selection.extract(rendered_text), "\n"
+
+
+class TranscriptStatic(Static):
+    """Static transcript widget that makes Rich-rendered text selectable."""
+
+    def __init__(self, content: VisualType = "", **kwargs: Any) -> None:
+        super().__init__(content, **kwargs)
+        self._transcript_content = content
+        self._transcript_visual: Visual | None = None
+        self._transcript_plain_text = ""
+
+    def _make_transcript_visual(self, content: VisualType) -> Visual:
+        if isinstance(content, Visual):
+            return content
+        if is_renderable(content) and not isinstance(content, str):
+            return SelectableRichVisual(self, content)
+        return visualize(self, content, markup=self._render_markup)
+
+    @property
+    def visual(self) -> Visual:
+        if self._transcript_visual is None:
+            self._transcript_visual = self._make_transcript_visual(
+                self._transcript_content
+            )
+        return self._transcript_visual
+
+    @property
+    def content(self) -> VisualType:
+        return self._transcript_content
+
+    @content.setter
+    def content(self, content: VisualType) -> None:
+        self._transcript_content = content
+        self._transcript_visual = self._make_transcript_visual(content)
+        self.clear_cached_dimensions()
+        self.refresh(layout=True)
+
+    def update(
+        self,
+        content: VisualType = "",
+        *,
+        layout: bool = True,
+        plain_text: str = "",
+    ) -> None:
+        self._transcript_content = content
+        self._transcript_plain_text = plain_text
+        self._transcript_visual = self._make_transcript_visual(content)
+        self.refresh(layout=layout)
+
+    def get_selection(self, selection: Selection) -> tuple[str, str] | None:
+        visual = self.visual
+        if isinstance(visual, SelectableRichVisual):
+            return visual.get_selection(selection, self._transcript_plain_text)
+        return super().get_selection(selection)
 
 
 class Composer(TextArea):
@@ -88,6 +239,13 @@ class Composer(TextArea):
             super().__init__()
             self.composer = composer
 
+    class SelectionCopyRequested(Message):
+        """Copy a mouse-selected transcript range instead of interrupting."""
+
+        def __init__(self, composer: "Composer") -> None:
+            super().__init__()
+            self.composer = composer
+
     class HistoryPrevRequested(Message):
         """Up at the top line: recall the previous history entry."""
 
@@ -106,6 +264,9 @@ class Composer(TextArea):
         if event.key == "ctrl+c":
             event.stop()
             event.prevent_default()
+            if self.app.screen.get_selected_text():
+                self.post_message(self.SelectionCopyRequested(self))
+                return
             self.post_message(self.InterruptRequested(self))
             return
         if event.key == "tab":
@@ -256,7 +417,7 @@ class HermesStreamingApp(App):
         yield Header()
         with VerticalScroll(id="transcript-scroll"):
             # markup=False so a literal "[error] ..." isn't eaten as Rich markup.
-            yield Static("", id="transcript", markup=False)
+            yield TranscriptStatic("", id="transcript", markup=False)
         yield Static("● ready", id="voice-status")
         yield Static("", id="queue-shelf", markup=False)
         yield Static("", id="command-suggestions", markup=False)
@@ -275,8 +436,9 @@ class HermesStreamingApp(App):
         return self.transcript.plain_text_for(show_details=self.show_transcript_details)
 
     def _refresh_transcript(self) -> None:
-        self.query_one("#transcript", Static).update(
-            self.transcript.render(show_details=self.show_transcript_details)
+        self.query_one("#transcript", TranscriptStatic).update(
+            self.transcript.render(show_details=self.show_transcript_details),
+            plain_text=self._visible_transcript_text(),
         )
         self.query_one("#transcript-scroll", VerticalScroll).scroll_end(animate=False)
 
@@ -526,6 +688,41 @@ class HermesStreamingApp(App):
             exit_on_error=False,
         )
 
+    def _selected_transcript_text(self) -> str | None:
+        """Return a selection only when it belongs solely to the transcript."""
+        transcript_widget = self.query_one("#transcript", TranscriptStatic)
+        if set(self.screen.selections) != {transcript_widget}:
+            return None
+        selected_text = self.screen.get_selected_text()
+        return selected_text or None
+
+    async def on_text_selected(self, event: events.TextSelected) -> None:
+        selected_text = self._selected_transcript_text()
+        if selected_text is None:
+            return
+        try:
+            await copy_text(selected_text)
+        except (ClipboardError, OSError) as exc:
+            self.notify(f"Copy failed: {exc}", severity="error", timeout=3.0)
+            self._append_block(f"[error] copy selection: {exc}")
+        else:
+            self.notify("Copied to clipboard", timeout=1.5)
+            if self.is_running:
+                self.screen.clear_selection()
+
+    async def on_composer_selection_copy_requested(
+        self, event: Composer.SelectionCopyRequested
+    ) -> None:
+        selected_text = self.screen.get_selected_text()
+        if not selected_text:
+            return
+        try:
+            await copy_text(selected_text)
+        except (ClipboardError, OSError) as exc:
+            self._append_block(f"[error] copy selection: {exc}")
+        else:
+            self._append_block("copied selected transcript text")
+
     async def _handle_command(self, invocation: CommandInvocation) -> None:
         command = invocation.command
         if command is None:
@@ -771,14 +968,17 @@ class HermesStreamingApp(App):
         if args.strip():
             self._append_block("usage: /logs")
             return
-        path = active_log_file()
-        if path is None:
-            self._append_block(
-                "logs: debug logging is disabled; restart with --debug or --log-file PATH"
-            )
-            return
-        state = "present" if path.exists() else "missing"
-        self._append_block(f"logs: debug trace {state} at {path}")
+        debug_path = active_log_file()
+        crash_path = crash_log_file()
+        if debug_path is None:
+            debug_state = "disabled"
+        else:
+            state = "present" if debug_path.exists() else "missing"
+            debug_state = f"{state} at {debug_path}"
+        crash_state = "present" if crash_path.exists() else "not created"
+        self._append_block(
+            f"logs: debug trace {debug_state}; crash log {crash_state} at {crash_path}"
+        )
 
     def _handle_relay_unavailable(self, command: str, args: str) -> None:
         """Report relay-owned commands that this protocol cannot provide."""
@@ -1218,7 +1418,9 @@ class HermesStreamingApp(App):
         self._append_block(
             "Bindings: enter = send, shift+enter / alt+enter = newline, "
             "up/down at the top/bottom line = prompt history, "
-            "ctrl+r = voice turn, ctrl+c = interrupt, f1 = help, ctrl+q = quit. "
+            "drag transcript text = copy selection; ctrl+c = copy an existing "
+            "selection or interrupt when none is selected, "
+            "ctrl+r = voice turn, f1 = help, ctrl+q = quit. "
             f"busy-mode = {self.busy_mode} (queue / steer / interrupt); "
             "use /busy to change it."
         )
@@ -1564,6 +1766,7 @@ class HermesStreamingApp(App):
 
 
 def main() -> int:
+    install_crash_logging()
     if len(sys.argv) > 1 and sys.argv[1] == "setup":
         from setup_wizard import run_setup
 

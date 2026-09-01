@@ -36,7 +36,9 @@ python3.14 -m venv venv
 venv/bin/pip install -r requirements-dev.txt
 ```
 
-That installs the local STT dependencies as well. The first transcription may download the selected Faster-Whisper model.
+That installs the local STT dependencies as well. `hermes-relay setup` also
+downloads the selected Faster-Whisper model so the first microphone turn does
+not perform setup inside the TUI.
 
 ### Homebrew install
 
@@ -168,6 +170,14 @@ In another terminal, use `tail -f /tmp/hermes-relay-tui.log`. The trace
 includes frame order, event names, payload keys, text/byte lengths, hashes, and
 turn state. It does not record bearer tokens, prompts, response text, or audio.
 
+Uncaught exceptions are logged independently of `--debug` to
+`~/.hermes-relay-tui/crash.log`. Each report includes the timestamp, installed
+client version, exception type, thread, and file/line traceback locations, but
+not exception messages, prompts, response text, audio, bearer tokens, or local
+variable values. Reports append to this file until it is manually removed; the
+file is created with owner-only permissions. Use `/logs` after relaunch to see
+whether a crash report exists and its path.
+
 ## Controls
 
 | Key | Action |
@@ -182,10 +192,11 @@ turn state. It does not record bearer tokens, prompts, response text, or audio.
 | `/image` | Stage, list, or clear a local image attachment |
 | `/save [path]` | Save the visible transcript locally without overwriting files |
 | `/copy` | Copy the visible transcript to the system clipboard |
-| `/logs` | Show local debug logging status and path |
+| `/logs` | Show local debug and crash logging status and paths |
 | `/retry` | Retry a prompt only when it was proven not to reach Hermes |
 | `/undo` | Remove an unsent local prompt from the queue |
-| `Ctrl+C` | Interrupt the active turn; otherwise clear the draft, queue, or quit |
+| Mouse drag | Select transcript text; release to copy it automatically and show a brief toast |
+| `Ctrl+C` | Copy the current selection; without one, interrupt the active turn or clear/quit when idle |
 | `F1` | Show keyboard help |
 | `Ctrl+Q` | Quit |
 
@@ -227,6 +238,12 @@ thinking and tool detail is excluded while `/details show` includes it. `/save`
 defaults to `hermes-transcript-YYYYMMDD-HHMMSS.txt` in the current directory and
 never overwrites an existing file. `/retry` refuses a turn that may have reached
 Hermes; `/undo` only removes a prompt that is still local and unsent.
+
+Drag across any visible transcript text to select an individual message or
+range. Releasing the mouse copies that selection through the native system
+clipboard and shows a brief confirmation toast. `Ctrl+C` can copy the current
+selection again; after automatic copy the selection is cleared. If nothing is
+selected, `Ctrl+C` keeps its interrupt/idle behavior.
 
 Use `/image <path>` to stage a local image, `/image list` to inspect staged
 metadata, and `/image clear` to cancel them. A unique final `@path` token can
@@ -288,8 +305,10 @@ Run `venv/bin/python app.py --help` for the full option list.
 
 Use `hermes-relay setup` on a new computer. It asks for the server endpoint,
 token, and client identity, then saves the editable YAML and private token
-file under `~/.hermes-relay-tui/`. Add `--no-check` to
-save the answers without probing the server.
+file under `~/.hermes-relay-tui/`, and prepares the local `base`
+Faster-Whisper model. Add `--stt-model NAME` to choose another model, or
+`--no-check` to save the answers without probing the server. The model is still
+prepared when `--no-check` is used.
 
 ## Audio output
 

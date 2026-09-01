@@ -179,7 +179,7 @@ Do not put a real token in this file or in the README.
 - Use `/image <path>`, `/image list`, or `/image clear` to stage and inspect local image attachments. `@path` references support local path completion; the current relay reports attachments as unsupported rather than sending them.
 - Use `!command` or `{!command}` only after opting in with `--allow-shell`; execution is local, bounded, and visible, with shell operators rejected.
 - Use `/reload` to re-read the config file/environment without restarting. Any of busy-mode, show-details, or audio devices you've changed interactively this session are left alone; everything else picks up the new values. A malformed config file reports an error instead of crashing.
-- `Ctrl+C` interrupts the active turn; when idle it clears the draft, clears the queue, or exits.
+- Drag across transcript text to select it; releasing the mouse copies the selection, shows a brief toast, and clears the selection after success. `Ctrl+C` copies an existing selection or, with no selection, interrupts the active turn or, when idle, clears the draft, queue, or exits.
 - Steering happens when an ordinary message is submitted in `--busy-mode steer`; there is no separate slash command.
 - Slash commands are routed before ordinary text; do not silently send an unknown command as a model prompt.
 - `Ctrl+R` captures a local microphone turn and sends its transcript.
@@ -203,6 +203,9 @@ The complete source of truth is `config.build_arg_parser()`. The main runtime op
 - `--hide-thinking` — hide thinking and tool detail in the transcript.
 - `--debug` — write a content-safe protocol trace to a temporary log file.
 - `--log-file PATH` — choose the debug trace path; supplying it implies `--debug`.
+- Uncaught main-thread and worker-thread exceptions are always appended to the
+  private `~/.hermes-relay-tui/crash.log`; `/logs` reports its status without
+  exposing contents.
 - `--mic-max-seconds`, `--mic-silence-duration`, `--mic-silence-threshold` — microphone tuning.
 - `--mic-input-device`, `--audio-output-device` — optional local input/output device name or index; `default` restores the system default.
 - `--stt-model` — optional local Faster-Whisper model selection.
@@ -213,7 +216,9 @@ Relevant environment variables include `HERMES_VOICE_SESSION_URL`, `VOICE_SESSIO
 optional debug trace without command-line flags. The trace records event
 ordering, protocol event names, payload keys, text/byte lengths, and short
 SHA-256 fingerprints. It intentionally does not record bearer tokens, prompts,
-response text, or audio contents.
+response text, or audio contents. The always-on crash report records only
+structural traceback locations and exception types, never exception messages or
+local variable values; it appends until manually removed.
 
 ## Integration boundaries
 

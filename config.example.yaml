@@ -23,7 +23,7 @@
 # profile .env below instead of writing a real token in this file.
 # token: ""
 
-# --- local Hermes install (only needed for the voice/Ctrl+R feature) ---
+# --- local voice stack --------------------------------------------------
 # profile_env: ~/.hermes-relay-tui/.env
 # Existing installs may continue using ~/.hermes/profiles/amanda/.env.
 
@@ -41,7 +41,7 @@
 # mic_silence_threshold: 200
 # mic_input_device: 2               # numeric index or a device name string
 # audio_output_device: "USB Headset"
-# stt_model: null                   # local Faster-Whisper model override
+# stt_model: base                   # local Faster-Whisper model prepared by setup
 
 # --- session/config state -------------------------------------------------
 # model: null                # shown in /status; not yet relay-confirmed (RELAY-02)

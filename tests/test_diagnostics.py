@@ -1,6 +1,15 @@
 import logging
+import stat
+import sys
+import threading
 
-from diagnostics import active_log_file, configure_logging, summarize_payload, summarize_text
+from diagnostics import (
+    active_log_file,
+    configure_logging,
+    install_crash_logging,
+    summarize_payload,
+    summarize_text,
+)
 
 
 def test_summarize_text_reports_shape_without_content():
@@ -51,3 +60,45 @@ def test_active_log_file_tracks_the_local_debug_log(tmp_path):
         configure_logging(debug=False)
 
     assert active_log_file() is None
+
+
+def test_install_crash_logging_records_a_private_safe_traceback(tmp_path, monkeypatch):
+    path = tmp_path / "nested" / "crash.log"
+    monkeypatch.setattr(sys, "excepthook", lambda *args: None)
+    monkeypatch.setattr(threading, "excepthook", lambda args: None)
+
+    install_crash_logging(path)
+    try:
+        raise RuntimeError("private prompt bearer SECRET-TOKEN")
+    except RuntimeError as exc:
+        sys.excepthook(type(exc), exc, exc.__traceback__)
+
+    contents = path.read_text(encoding="utf-8")
+    assert "RuntimeError" in contents
+    assert "test_install_crash_logging_records_a_private_safe_traceback" in contents
+    assert "private prompt" not in contents
+    assert "SECRET-TOKEN" not in contents
+    assert stat.S_IMODE(path.stat().st_mode) == 0o600
+
+
+def test_install_crash_logging_records_uncaught_worker_exception(tmp_path, monkeypatch):
+    path = tmp_path / "crash.log"
+    monkeypatch.setattr(sys, "excepthook", lambda *args: None)
+    monkeypatch.setattr(threading, "excepthook", lambda args: None)
+
+    install_crash_logging(path)
+
+    def crash_worker():
+        raise RuntimeError("worker failure")
+
+    worker = threading.Thread(
+        target=crash_worker,
+        name="crash-worker",
+    )
+    worker.start()
+    worker.join()
+
+    contents = path.read_text(encoding="utf-8")
+    assert "exception: builtins.RuntimeError" in contents
+    assert "thread: crash-worker" in contents
+    assert "worker failure" not in contents
