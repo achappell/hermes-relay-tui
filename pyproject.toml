@@ -19,6 +19,14 @@ dependencies = [
   "faster-whisper>=1.2.1",
 ]
 
+[project.optional-dependencies]
+# Appliance-only. AGENTS.md keeps front-end-specific dependencies out of the
+# base list so a terminal install does not pull an ONNX runtime.
+wake = [
+  "openwakeword>=0.6",
+  "onnxruntime>=1.17",
+]
+
 [project.scripts]
 hermes-relay = "app:main"
 hermes-relay-home = "home_display.demo:main"

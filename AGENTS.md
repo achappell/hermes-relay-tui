@@ -12,6 +12,8 @@ This repository contains a small Python/Textual terminal UI for the Hermes voice
 - `audio.py` — streamed signed 16-bit PCM playback and WAV fallback.
 - `voice.py` — owned local microphone capture (sounddevice) and speech-to-text (faster-whisper).
 - `mic.py` — device-selection and cancellation glue around `voice.py`'s recorder.
+- `wake.py` — wake-word detection and the listener worker for hands-free capture.
+- `handsfree.py` — turns a wake event into exactly one session turn.
 - `transcript.py` — typed transcript records and Rich Markdown rendering.
 - `tests/` — unit and integration-style tests using fakes; do not require a live Hermes endpoint.
 
@@ -26,7 +28,8 @@ ends that consume it.
 
 **Core — must not import a user-interface framework:**
 `session.py`, `client.py`, `config.py`, `diagnostics.py`, `audio.py`,
-`mic.py`, `shell.py`, `attachments.py`, `clipboard.py`, `history.py`.
+`mic.py`, `shell.py`, `attachments.py`, `clipboard.py`, `history.py`,
+`wake.py`, `handsfree.py`.
 
 **Front-end-specific:** `app.py` (Textual) and `transcript.py` (Rich
 rendering for a terminal transcript).

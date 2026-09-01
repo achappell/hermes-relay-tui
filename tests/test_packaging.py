@@ -159,3 +159,16 @@ def test_pypi_and_homebrew_publish_independently():
     assert "update-homebrew" not in str(jobs["publish-pypi"]["needs"])
     # The publish step must not sit inside the job the tap update needs.
     assert "gh-action-pypi-publish" not in yaml.dump(jobs["package"])
+
+
+def test_wake_dependencies_live_in_an_optional_extra():
+    """HOME-02: a terminal install must not pull an ONNX runtime."""
+    metadata = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    extras = metadata["project"]["optional-dependencies"]
+    base = " ".join(metadata["project"]["dependencies"])
+
+    wake_extra = " ".join(extras["wake"])
+    assert "openwakeword" in wake_extra
+    assert "onnxruntime" in wake_extra
+    assert "openwakeword" not in base
+    assert "onnxruntime" not in base
