@@ -413,10 +413,16 @@ hermes-relay --wake-enabled
 Detection is entirely on-device. No audio leaves the machine to decide whether
 the phrase was spoken.
 
+**It is self-contained.** Everything openWakeWord needs ships in the package —
+the trained "hey hermes" model plus the two shared feature-extraction models
+that openWakeWord's own wheel omits and downloads on first use. There is no
+Hermes install to read models out of and no download at first wake, so the unit
+works on a clean machine and on a network that is not up yet when it boots.
+
 | Flag | Default | What it does |
 |---|---|---|
 | `--wake-enabled` | off | Listen continuously for the phrase. |
-| `--wake-model` | bundled default | Path to a `.onnx` model, or a built-in openWakeWord name. |
+| `--wake-model` | bundled `hey_hermes` | Path to a `.onnx` model, or a built-in openWakeWord name. |
 | `--wake-threshold` | `0.6` | Per-frame score above which the phrase counts as present. |
 | `--wake-confirmation-frames` | `3` | Consecutive over-threshold frames required to fire. |
 | `--wake-refractory-seconds` | `2.0` | Minimum gap between two fires. |

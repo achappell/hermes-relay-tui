@@ -17,12 +17,15 @@ shared session core, with no keyboard involved.
   `session.SessionProtocol`. Replacing `home_display`'s fake state source with
   real session orchestration is a separate item. HOME-03 deliberately deferred
   that wiring and this slice does not absorb it.
-- **The wake phrase is "hey hermes", using the model Hermes already trained.**
-  `~/.hermes/hermes-agent/tools/wakewords/hey_hermes.onnx` (205 KB) was
-  produced by openWakeWord's training pipeline and is redistributable under the
-  openWakeWord licence (Apache-2.0). Copying that artifact costs nothing and is
-  strictly better than falling back to a stock "hey jarvis". The model path and
-  sensitivity stay configurable, so the phrase is not hardcoded.
+- **The wake phrase is "hey hermes", and every model it needs is vendored
+  into this package.** The client must work on a clean machine with no Hermes
+  install present and no first-run download (Amanda, 2026-09-01). Three ONNX
+  files ship in `wakewords/`, totalling 2.5 MB: the trained phrase model, plus
+  openWakeWord's two shared feature-extraction models, which its own wheel
+  omits and downloads on first use. Nothing resolves a path into `~/.hermes`
+  at runtime, and the engine forces `inference_framework="onnx"` so the tflite
+  runtime trap never applies. The model path and sensitivity stay configurable,
+  so the phrase is not hardcoded.
 - **Barge-in is implemented and tested, but disabled by default** until HOME-05
   lands echo cancellation. Without it the unit hears its own speech and can
   retrigger on itself, interrupting its own sentence. The code and tests exist

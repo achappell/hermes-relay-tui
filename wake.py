@@ -333,10 +333,34 @@ class WakeListener:
             thread.join(timeout=2.0)
 
 
+def bundled_model_paths() -> dict[str, str]:
+    """Paths to the models shipped inside this package.
+
+    The client must work on a clean machine with no Hermes install and no
+    first-run download, so every model openWakeWord needs is vendored. Returns
+    an empty dict if the bundle did not survive packaging, so the caller can
+    fall back to openWakeWord's own defaults rather than crash.
+    """
+    try:
+        import wakewords  # noqa: PLC0415
+    except ImportError:
+        return {}
+
+    if not wakewords.bundled_models_present():
+        return {}
+
+    return {
+        "wakeword_models": [str(wakewords.WAKE_MODEL)],
+        "melspec_model_path": str(wakewords.MELSPECTROGRAM_MODEL),
+        "embedding_model_path": str(wakewords.EMBEDDING_MODEL),
+    }
+
+
 def load_openwakeword_engine(
     model_path: str | None = None,
     *,
     _import_module: Callable[[], Any] | None = None,
+    _bundled: Callable[[], dict[str, str]] | None = None,
 ) -> WakeEngine:
     """Build the openWakeWord engine, importing it lazily.
 
@@ -355,14 +379,33 @@ def load_openwakeword_engine(
     except ImportError as error:
         raise MissingWakeDependency(_INSTALL_HINT) from error
 
-    return _OpenWakeWordEngine(model_factory, model_path)
+    bundled = (_bundled or bundled_model_paths)()
+    return _OpenWakeWordEngine(model_factory, model_path, bundled)
 
 
 class _OpenWakeWordEngine:
     """Adapts openWakeWord's Model to the WakeEngine interface."""
 
-    def __init__(self, model_factory: Any, model_path: str | None) -> None:
-        kwargs = {"wakeword_models": [model_path]} if model_path else {}
+    def __init__(
+        self,
+        model_factory: Any,
+        model_path: str | None,
+        bundled: dict[str, str] | None = None,
+    ) -> None:
+        bundled = dict(bundled or {})
+
+        # openWakeWord defaults to tflite, whose runtime is 'tflite-runtime' on
+        # some platforms and 'ai-edge-litert' on others while openWakeWord
+        # hardcodes the former's import. Forcing ONNX keeps onnxruntime - which
+        # the 'wake' extra already declares - the only runtime needed.
+        kwargs: dict[str, Any] = {"inference_framework": "onnx"}
+        kwargs.update(bundled)
+
+        if model_path:
+            # An explicit choice overrides the bundled phrase, but keeps the
+            # bundled shared models so the engine still starts offline.
+            kwargs["wakeword_models"] = [model_path]
+
         self._model = model_factory(**kwargs)
 
     def score(self, frame: Any) -> float:

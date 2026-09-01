@@ -32,12 +32,15 @@ hermes-relay = "app:main"
 hermes-relay-home = "home_display.demo:main"
 
 [tool.setuptools]
-py-modules = ["app", "attachments", "audio", "clipboard", "client", "commands", "config", "diagnostics", "history", "mic", "session", "setup_wizard", "shell", "transcript", "voice"]
+py-modules = ["app", "attachments", "audio", "clipboard", "client", "commands", "config", "diagnostics", "history", "mic", "session", "setup_wizard", "shell", "transcript", "voice", "wake", "handsfree"]
 include-package-data = false
 
 [tool.setuptools.packages.find]
-include = ["home_display"]
+include = ["home_display", "wakewords"]
 namespaces = false
 
 [tool.setuptools.package-data]
 home_display = ["static/**/*"]
+# Bundled so hands-free works on a clean machine: no Hermes install to read
+# models out of, and no first-run download.
+wakewords = ["*.onnx", "README.md"]
