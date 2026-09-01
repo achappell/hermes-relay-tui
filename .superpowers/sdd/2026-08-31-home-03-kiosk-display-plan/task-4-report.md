@@ -74,3 +74,31 @@ Validation:
 The design status was corrected from “implementation not started” to
 “implementation complete; pending final visual review.” No design decisions
 were changed. No Python, plan, or ledger files were modified.
+
+## Final-review fix round 1
+
+The final browser review found that duplicate or older valid snapshots were
+filtered before App could clear a visible protocol error. StateChannel now
+exposes an optional `onValidSnapshot` recovery callback after the existing
+socket-factory argument. It fires for every successfully parsed snapshot
+before sequence filtering, while `onSnapshot` remains newer-sequence-only.
+App clears `protocolError` through this explicit recovery signal, including
+when the valid snapshot is not delivered because its sequence is stale.
+
+Added focused regression coverage for malformed data followed by duplicate
+and older valid snapshots, including the distinction between recovery signals
+and `onSnapshot` delivery. Updated the App mock/lifecycle test and rebuilt
+`home_display/static/`.
+
+Validation:
+
+- RED: the new channel and App recovery tests failed before the recovery
+  callback was implemented.
+- `npm --prefix home_display/web test`: 4 files, 35 passed
+- `npm --prefix home_display/web run check`: 0 errors, 0 warnings
+- `npm --prefix home_display/web run build`: passed; output rebuilt under
+  `home_display/static/`
+- `git diff --check`: clean
+
+No Python, plan, or ledger files were modified. The existing physical
+two-metre/browser automation review limitation remains.

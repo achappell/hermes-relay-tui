@@ -29,13 +29,16 @@
       stateChannelUrl(),
       (nextSnapshot) => {
         snapshot = nextSnapshot;
-        protocolError = null;
       },
       (nextConnectionState) => {
         connectionState = nextConnectionState;
       },
       (message) => {
         protocolError = message;
+      },
+      undefined,
+      () => {
+        protocolError = null;
       },
     );
     channel.start();

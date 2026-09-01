@@ -129,6 +129,33 @@ describe("StateChannel", () => {
     expect(protocolErrors).toEqual(["display data unavailable"]);
   });
 
+  it("signals valid snapshot recovery before filtering duplicate or older data", () => {
+    const socket = new FakeSocket();
+    const received: number[] = [];
+    const protocolErrors: string[] = [];
+    const recovered: number[] = [];
+    const channel = new StateChannel(
+      "ws://display.test/state",
+      (snapshot) => received.push(snapshot.sequence),
+      () => {},
+      (message) => protocolErrors.push(message),
+      () => socket,
+      (snapshot) => recovered.push(snapshot.sequence),
+    );
+
+    channel.start();
+    socket.open();
+    socket.message(rawSnapshot(3));
+    socket.message("not JSON");
+    socket.message(rawSnapshot(3));
+    socket.message(rawSnapshot(2));
+
+    expect(protocolErrors).toEqual(["display data unavailable"]);
+    expect(recovered).toEqual([3, 3, 2]);
+    expect(received).toEqual([3]);
+    channel.stop();
+  });
+
   it("does not let a snapshot listener error escape the message callback", () => {
     const socket = new FakeSocket();
     const onSnapshot = vi.fn(() => {

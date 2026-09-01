@@ -3915,7 +3915,8 @@ const defaultSocketFactory = (url) => new WebSocket(url);
 const RECONNECT_DELAYS_MS = [250, 500, 1e3, 2e3, 4e3];
 class StateChannel {
   constructor(url, onSnapshot, onConnectionState, onProtocolError = () => {
-  }, socketFactory = defaultSocketFactory) {
+  }, socketFactory = defaultSocketFactory, onValidSnapshot = () => {
+  }) {
     __publicField(this, "socket", null);
     __publicField(this, "reconnectTimer", null);
     __publicField(this, "reconnectAttempt", 0);
@@ -3926,6 +3927,7 @@ class StateChannel {
     this.onConnectionState = onConnectionState;
     this.onProtocolError = onProtocolError;
     this.socketFactory = socketFactory;
+    this.onValidSnapshot = onValidSnapshot;
   }
   start() {
     if (this.running) {
@@ -4002,6 +4004,7 @@ class StateChannel {
       this.reportProtocolError();
       return;
     }
+    this.deliver(() => this.onValidSnapshot(snapshot));
     if (snapshot.sequence <= this.lastSequence) {
       return;
     }
@@ -4055,13 +4058,16 @@ function App($$anchor, $$props) {
       stateChannelUrl(),
       (nextSnapshot) => {
         set(snapshot, nextSnapshot);
-        set(protocolError, null);
       },
       (nextConnectionState) => {
         set(connectionState, nextConnectionState);
       },
       (message) => {
         set(protocolError, message);
+      },
+      void 0,
+      () => {
+        set(protocolError, null);
       }
     );
     channel.start();

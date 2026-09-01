@@ -10,6 +10,7 @@ type ChannelCallbacks = {
   onSnapshot: (snapshot: DisplaySnapshot) => void;
   onConnectionState: (state: "connecting" | "connected" | "disconnected") => void;
   onProtocolError: (message: string) => void;
+  onValidSnapshot?: () => void;
 };
 
 const channels = vi.hoisted(() => ({
@@ -28,6 +29,7 @@ vi.mock("./state/channel", () => ({
         onSnapshot: args[1] as ChannelCallbacks["onSnapshot"],
         onConnectionState: args[2] as ChannelCallbacks["onConnectionState"],
         onProtocolError: args[3] as ChannelCallbacks["onProtocolError"],
+        onValidSnapshot: args[5] as ChannelCallbacks["onValidSnapshot"],
       });
     }
   },
@@ -58,6 +60,10 @@ describe("App", () => {
     callbacks?.onProtocolError("display data unavailable");
     await tick();
     expect(container.querySelector('[data-state="error"]')).not.toBeNull();
+
+    callbacks?.onValidSnapshot?.();
+    await tick();
+    expect(container.querySelector('[data-state="idle"]')).not.toBeNull();
 
     callbacks?.onSnapshot({
       type: "snapshot",

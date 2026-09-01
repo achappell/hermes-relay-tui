@@ -4,6 +4,7 @@ export type ConnectionState = "connecting" | "connected" | "disconnected";
 export type SnapshotListener = (snapshot: DisplaySnapshot) => void;
 export type SocketFactory = (url: string) => WebSocketLike;
 export type ProtocolErrorListener = (message: string) => void;
+export type ValidSnapshotListener = (snapshot: DisplaySnapshot) => void;
 
 export interface WebSocketLike {
   onopen: (() => void) | null;
@@ -30,6 +31,7 @@ export class StateChannel {
     private readonly onConnectionState: (state: ConnectionState) => void,
     private readonly onProtocolError: ProtocolErrorListener = () => {},
     private readonly socketFactory: SocketFactory = defaultSocketFactory,
+    private readonly onValidSnapshot: ValidSnapshotListener = () => {},
   ) {}
 
   start(): void {
@@ -117,6 +119,8 @@ export class StateChannel {
       this.reportProtocolError();
       return;
     }
+
+    this.deliver(() => this.onValidSnapshot(snapshot));
 
     if (snapshot.sequence <= this.lastSequence) {
       return;
