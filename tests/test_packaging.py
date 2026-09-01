@@ -1,4 +1,5 @@
 import json
+import re
 from pathlib import Path
 import tomllib
 
@@ -38,6 +39,22 @@ def test_homebrew_trial_formula_declares_runtime_boundaries():
     assert '"bin/hermes-relay"' in formula
 
 
+def test_homebrew_formula_installs_a_checksummed_release_archive():
+    """A git-source formula clones full history, including rewritten commits."""
+    formula = (ROOT / "packaging/homebrew/hermes-relay-tui.rb").read_text(encoding="utf-8")
+
+    assert "using: :git" not in formula
+    assert "revision:" not in formula
+    assert "/releases/download/" in formula
+    assert re.search(r'^  sha256 "[0-9a-f]{64}"$', formula, re.MULTILINE)
+
+
+def test_homebrew_formula_links_the_kiosk_entry_point_only_when_present():
+    formula = (ROOT / "packaging/homebrew/hermes-relay-tui.rb").read_text(encoding="utf-8")
+
+    assert 'if (venv / "bin/hermes-relay-home").exist?' in formula
+
+
 def test_release_automation_tracks_the_python_package():
     config = json.loads((ROOT / "release-please-config.json").read_text(encoding="utf-8"))
     manifest = json.loads((ROOT / ".release-please-manifest.json").read_text(encoding="utf-8"))
@@ -62,6 +79,9 @@ def test_release_workflow_publishes_python_distributions():
     assert "achappell/homebrew-hermes-relay" in workflow
     assert "homebrew-hermes-streaming" not in workflow
     assert "generate_homebrew_formula.py" in workflow
+    assert "sha256sum sdist.tar.gz" in workflow
+    assert "--sha256" in workflow
+    assert "--revision" not in workflow
     assert "tap/Formula/hermes-relay-tui.rb" in workflow
     assert "Formula/hermes-streaming-tui.rb" in workflow
     assert "git push origin HEAD:main" in workflow

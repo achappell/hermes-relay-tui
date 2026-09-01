@@ -107,12 +107,20 @@ jobs:
           path: tap
 
       - name: Render the pinned formula
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           VERSION="${RELEASE_TAG#v}"
-          REVISION="$(git rev-list -n 1 "$RELEASE_TAG")"
+          # Checksum the exact sdist asset the package job just published, so
+          # the formula and the release artifact can never disagree.
+          gh release download "$RELEASE_TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --pattern "hermes_relay_tui-${VERSION}.tar.gz" \
+            --output sdist.tar.gz --clobber
+          SHA256="$(sha256sum sdist.tar.gz | cut -d" " -f1)"
           python scripts/generate_homebrew_formula.py \
             --version "$VERSION" \
-            --revision "$REVISION" \
+            --sha256 "$SHA256" \
             --output tap/Formula/hermes-relay-tui.rb
 
       - name: Commit formula to tap

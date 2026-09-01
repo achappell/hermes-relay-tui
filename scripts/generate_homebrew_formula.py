@@ -4,6 +4,10 @@ from argparse import ArgumentParser
 from pathlib import Path
 
 
+# The formula installs from the signed-off sdist attached to the GitHub
+# release rather than cloning the repository. A checksummed archive keeps
+# installs reproducible, avoids shipping the full history to every user,
+# and cannot drift if a tag is ever re-pointed.
 FORMULA = """# typed: strict
 # frozen_string_literal: true
 
@@ -12,9 +16,10 @@ class HermesRelayTui < Formula
   desc \"Textual terminal UI for authenticated Hermes voice sessions\"
   homepage \"https://github.com/achappell/hermes-relay-tui\"
 
-  # Pin the public source tag and revision for reproducible installs.
-  url \"https://github.com/achappell/hermes-relay-tui.git\", using: :git,
-      tag: \"v{version}\", revision: \"{revision}\"
+  # Install from the checksummed release sdist, not a git clone.
+  url \"https://github.com/achappell/hermes-relay-tui/releases/download/v{version}/hermes_relay_tui-{version}.tar.gz\"
+  sha256 \"{sha256}\"
+  version \"{version}\"
   head \"https://github.com/achappell/hermes-relay-tui.git\", branch: \"main\"
 
   depends_on \"portaudio\"
@@ -31,6 +36,15 @@ class HermesRelayTui < Formula
       venv / \"bin/hermes-relay\",
       HERMES_RELAY_TUI_VENV: venv.to_s,
     )
+
+    # The kiosk entry point only exists in releases that ship home_display,
+    # so link it when the installed distribution actually provides it.
+    if (venv / \"bin/hermes-relay-home\").exist?
+      (bin / \"hermes-relay-home\").write_env_script(
+        venv / \"bin/hermes-relay-home\",
+        HERMES_RELAY_TUI_VENV: venv.to_s,
+      )
+    end
   end
 
   test do
@@ -43,7 +57,7 @@ end
 def parse_args() -> ArgumentParser:
     parser = ArgumentParser(description=__doc__)
     parser.add_argument("--version", required=True, help="release version without the v prefix")
-    parser.add_argument("--revision", required=True, help="source commit SHA")
+    parser.add_argument("--sha256", required=True, help="sha256 of the release sdist archive")
     parser.add_argument("--output", type=Path, required=True, help="formula path to write")
     return parser
 
@@ -52,7 +66,7 @@ def main() -> None:
     args = parse_args().parse_args()
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(
-        FORMULA.format(version=args.version, revision=args.revision),
+        FORMULA.format(version=args.version, sha256=args.sha256),
         encoding="utf-8",
     )
 
