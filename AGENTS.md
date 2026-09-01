@@ -203,6 +203,9 @@ The complete source of truth is `config.build_arg_parser()`. The main runtime op
 - `--hide-thinking` — hide thinking and tool detail in the transcript.
 - `--debug` — write a content-safe protocol trace to a temporary log file.
 - `--log-file PATH` — choose the debug trace path; supplying it implies `--debug`.
+- Uncaught main-thread and worker-thread exceptions are always appended to the
+  private `~/.hermes-relay-tui/crash.log`; `/logs` reports its status without
+  exposing contents.
 - `--mic-max-seconds`, `--mic-silence-duration`, `--mic-silence-threshold` — microphone tuning.
 - `--mic-input-device`, `--audio-output-device` — optional local input/output device name or index; `default` restores the system default.
 - `--stt-model` — optional local Faster-Whisper model selection.
@@ -213,7 +216,9 @@ Relevant environment variables include `HERMES_VOICE_SESSION_URL`, `VOICE_SESSIO
 optional debug trace without command-line flags. The trace records event
 ordering, protocol event names, payload keys, text/byte lengths, and short
 SHA-256 fingerprints. It intentionally does not record bearer tokens, prompts,
-response text, or audio contents.
+response text, or audio contents. The always-on crash report records only
+structural traceback locations and exception types, never exception messages or
+local variable values; it appends until manually removed.
 
 ## Integration boundaries
 

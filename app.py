@@ -49,7 +49,9 @@ from commands import (
 )
 from diagnostics import (
     active_log_file,
+    crash_log_file,
     logger as diagnostic_logger,
+    install_crash_logging,
     summarize_payload,
     summarize_text,
 )
@@ -771,14 +773,17 @@ class HermesStreamingApp(App):
         if args.strip():
             self._append_block("usage: /logs")
             return
-        path = active_log_file()
-        if path is None:
-            self._append_block(
-                "logs: debug logging is disabled; restart with --debug or --log-file PATH"
-            )
-            return
-        state = "present" if path.exists() else "missing"
-        self._append_block(f"logs: debug trace {state} at {path}")
+        debug_path = active_log_file()
+        crash_path = crash_log_file()
+        if debug_path is None:
+            debug_state = "disabled"
+        else:
+            state = "present" if debug_path.exists() else "missing"
+            debug_state = f"{state} at {debug_path}"
+        crash_state = "present" if crash_path.exists() else "not created"
+        self._append_block(
+            f"logs: debug trace {debug_state}; crash log {crash_state} at {crash_path}"
+        )
 
     def _handle_relay_unavailable(self, command: str, args: str) -> None:
         """Report relay-owned commands that this protocol cannot provide."""
@@ -1564,6 +1569,7 @@ class HermesStreamingApp(App):
 
 
 def main() -> int:
+    install_crash_logging()
     if len(sys.argv) > 1 and sys.argv[1] == "setup":
         from setup_wizard import run_setup
 
