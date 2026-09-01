@@ -3921,6 +3921,7 @@ class StateChannel {
     __publicField(this, "reconnectTimer", null);
     __publicField(this, "reconnectAttempt", 0);
     __publicField(this, "lastSequence", -1);
+    __publicField(this, "hasHydratedSocket", false);
     __publicField(this, "running", false);
     this.url = url;
     this.onSnapshot = onSnapshot;
@@ -3966,13 +3967,13 @@ class StateChannel {
       return;
     }
     this.socket = socket;
+    this.hasHydratedSocket = false;
     socket.onopen = () => {
       if (!this.isCurrent(socket)) {
         return;
       }
       this.lastSequence = -1;
       this.reconnectAttempt = 0;
-      this.deliver(() => this.onConnectionState("connected"));
     };
     socket.onmessage = (event) => {
       if (!this.isCurrent(socket)) {
@@ -4010,6 +4011,10 @@ class StateChannel {
     }
     this.lastSequence = snapshot.sequence;
     this.deliver(() => this.onSnapshot(snapshot));
+    if (!this.hasHydratedSocket) {
+      this.hasHydratedSocket = true;
+      this.deliver(() => this.onConnectionState("connected"));
+    }
   }
   scheduleReconnect() {
     if (!this.running || this.reconnectTimer !== null) {

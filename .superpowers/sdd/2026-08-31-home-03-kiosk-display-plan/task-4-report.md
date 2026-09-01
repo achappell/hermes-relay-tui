@@ -102,3 +102,34 @@ Validation:
 
 No Python, plan, or ledger files were modified. The existing physical
 two-metre/browser automation review limitation remains.
+
+## Final-review fix round 2
+
+The final browser review found that `StateChannel` emitted `connected` from
+`onopen`, before the reopened socket had supplied an accepted hydration
+snapshot. The channel now remains `connecting` on socket open, resets the
+hydration flag for each socket, and emits `connected` only after it accepts
+and delivers that socket's first newer valid snapshot. This preserves
+per-socket sequence reset, stale filtering, pre-filter valid-snapshot
+protocol-error recovery, callback isolation, and StateSurface's stable single
+response element.
+
+Added an integration-shaped browser regression that drives the real channel
+and real StateSurface through an initial speaking snapshot, close, reopen,
+and hydration. It proves that the reopened socket remains disconnected on the
+surface and hides the stale response/status until the fresh valid snapshot
+arrives, then proves that `connected` and the replacement response appear.
+Updated the existing channel expectations for a socket that closes before
+hydrating, then rebuilt `home_display/static/`.
+
+Validation:
+
+- RED: `npm test -- src/surfaces/StateSurface.test.ts` failed before the fix
+  because socket open emitted `connected` before hydration.
+- `npm test`: 4 files, 36 passed.
+- `npm run check`: 0 errors, 0 warnings.
+- `npm run build`: passed; regenerated `home_display/static/`.
+- `git diff --check`: clean.
+
+Concerns: no new concern. The pre-existing physical two-metre/browser
+automation review limitation remains.

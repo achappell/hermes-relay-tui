@@ -23,6 +23,7 @@ export class StateChannel {
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private reconnectAttempt = 0;
   private lastSequence = -1;
+  private hasHydratedSocket = false;
   private running = false;
 
   constructor(
@@ -77,6 +78,7 @@ export class StateChannel {
     }
 
     this.socket = socket;
+    this.hasHydratedSocket = false;
     socket.onopen = () => {
       if (!this.isCurrent(socket)) {
         return;
@@ -84,7 +86,6 @@ export class StateChannel {
 
       this.lastSequence = -1;
       this.reconnectAttempt = 0;
-      this.deliver(() => this.onConnectionState("connected"));
     };
     socket.onmessage = (event) => {
       if (!this.isCurrent(socket)) {
@@ -128,6 +129,11 @@ export class StateChannel {
 
     this.lastSequence = snapshot.sequence;
     this.deliver(() => this.onSnapshot(snapshot));
+
+    if (!this.hasHydratedSocket) {
+      this.hasHydratedSocket = true;
+      this.deliver(() => this.onConnectionState("connected"));
+    }
   }
 
   private scheduleReconnect(): void {

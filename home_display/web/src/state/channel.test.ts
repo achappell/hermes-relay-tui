@@ -69,7 +69,7 @@ describe("StateChannel", () => {
     expect(received).toEqual([2, 0]);
   });
 
-  it("reports connection state transitions", () => {
+  it("stays connecting when a socket closes before it hydrates", () => {
     const socket = new FakeSocket();
     const states: string[] = [];
     const channel = new StateChannel(
@@ -83,7 +83,7 @@ describe("StateChannel", () => {
     channel.start();
     socket.open();
     socket.closeFromServer();
-    expect(states).toEqual(["connecting", "connected", "disconnected"]);
+    expect(states).toEqual(["connecting", "disconnected"]);
   });
 
   it("uses exponential reconnect backoff with one pending timer", () => {
@@ -193,6 +193,7 @@ describe("StateChannel", () => {
 
     channel.start();
     expect(() => socket.open()).not.toThrow();
+    expect(() => socket.message(rawSnapshot(1))).not.toThrow();
     expect(() => socket.closeFromServer()).not.toThrow();
     expect(onConnectionState).toHaveBeenCalledWith("connected");
     expect(onConnectionState).toHaveBeenCalledWith("disconnected");

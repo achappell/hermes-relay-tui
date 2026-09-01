@@ -1,8 +1,10 @@
 // @vitest-environment jsdom
 import "@testing-library/jest-dom/vitest";
 import { cleanup, render, screen } from "@testing-library/svelte";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import StateSurface from "./StateSurface.svelte";
+import { StateChannel, type ConnectionState, type WebSocketLike } from "../state/channel";
+import type { DisplaySnapshot } from "../state/protocol";
 
 const snapshot = (state: string, response_text = "", status_text: string | null = null) => ({
   type: "snapshot" as const,
@@ -14,8 +16,37 @@ const snapshot = (state: string, response_text = "", status_text: string | null 
   media: null,
 });
 
+class FakeSocket implements WebSocketLike {
+  onopen: (() => void) | null = null;
+  onmessage: ((event: MessageEvent<string>) => void) | null = null;
+  onerror: (() => void) | null = null;
+  onclose: (() => void) | null = null;
+
+  close(): void {}
+
+  open(): void {
+    this.onopen?.();
+  }
+
+  message(data: string): void {
+    this.onmessage?.({ data } as MessageEvent<string>);
+  }
+
+  closeFromServer(): void {
+    this.onclose?.();
+  }
+}
+
+const rawSnapshot = (sequence: number, responseText: string) => JSON.stringify({
+  ...snapshot("speaking", responseText),
+  sequence,
+});
+
 describe("StateSurface", () => {
-  afterEach(cleanup);
+  afterEach(() => {
+    cleanup();
+    vi.useRealTimers();
+  });
 
   it.each(["idle", "listening", "thinking", "speaking", "buffering", "error", "disconnected"])(
     "renders data-state for %s",
@@ -60,6 +91,58 @@ describe("StateSurface", () => {
     expect(container.querySelector('[data-state="disconnected"]')).not.toBeNull();
     expect(screen.getByText("Display disconnected — check the host connection")).toBeInTheDocument();
     expect(screen.queryByText("stale response")).not.toBeInTheDocument();
+  });
+
+  it("waits for a reopened socket to hydrate before replacing the disconnected fallback", async () => {
+    vi.useFakeTimers();
+    const sockets: FakeSocket[] = [];
+    const connectionStates: ConnectionState[] = [];
+    let currentSnapshot: DisplaySnapshot = snapshot("idle");
+    let connectionState: ConnectionState = "connecting";
+    const { container, rerender } = render(StateSurface, {
+      props: { snapshot: currentSnapshot, connectionState },
+    });
+    const channel = new StateChannel(
+      "ws://display.test/state",
+      (nextSnapshot) => {
+        currentSnapshot = nextSnapshot;
+      },
+      (nextConnectionState) => {
+        connectionState = nextConnectionState;
+        connectionStates.push(nextConnectionState);
+      },
+      () => {},
+      () => {
+        const socket = new FakeSocket();
+        sockets.push(socket);
+        return socket;
+      },
+    );
+
+    channel.start();
+    sockets[0].open();
+    sockets[0].message(rawSnapshot(1, "stale speaking response"));
+    await rerender({ snapshot: currentSnapshot, connectionState });
+    expect(container.querySelector('[data-state="speaking"]')).not.toBeNull();
+
+    connectionStates.length = 0;
+    sockets[0].closeFromServer();
+    vi.advanceTimersByTime(250);
+    sockets[1].open();
+    await rerender({ snapshot: currentSnapshot, connectionState });
+
+    expect(connectionStates).toEqual(["disconnected", "connecting"]);
+    expect(container.querySelector('[data-state="disconnected"]')).not.toBeNull();
+    expect(screen.getByText("Display disconnected — check the host connection")).toBeInTheDocument();
+    expect(screen.queryByText("stale speaking response")).not.toBeInTheDocument();
+
+    sockets[1].message(rawSnapshot(2, "fresh speaking response"));
+    await rerender({ snapshot: currentSnapshot, connectionState });
+
+    expect(connectionStates).toEqual(["disconnected", "connecting", "connected"]);
+    expect(container.querySelector('[data-state="speaking"]')).not.toBeNull();
+    expect(screen.getByText("fresh speaking response")).toBeInTheDocument();
+    channel.stop();
   });
 
   it("shows a safe error surface and clears stale response text for protocol errors", () => {
