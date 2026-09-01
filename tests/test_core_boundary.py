@@ -24,10 +24,12 @@ CORE_MODULES = [
     "clipboard",
     "config",
     "diagnostics",
+    "handsfree",
     "history",
     "mic",
     "session",
     "shell",
+    "wake",
 ]
 
 

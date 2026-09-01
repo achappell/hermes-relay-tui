@@ -73,6 +73,45 @@ class AudioRecorder:
         self._max_recording_seconds = 0.0
         self._peak_rms = 0
         self._current_rms = 0
+        self._frame_observer: Any = None
+
+    def set_frame_observer(self, observer) -> None:
+        """Receive frames the recorder would otherwise discard.
+
+        The wake-word listener subscribes here instead of opening its own
+        InputStream: two input streams on one device is unreliable across
+        platforms, and this stream is deliberately kept open for the process
+        lifetime because reopening it can hang on macOS CoreAudio.
+        """
+        self._frame_observer = observer
+
+    def open_for_listening(self) -> None:
+        """Open the capture stream without starting a recording.
+
+        Push-to-talk only ever needed the stream while recording. A wake-word
+        listener needs it open the whole time it is idle, which is exactly when
+        frames reach the observer.
+        """
+        self._ensure_stream()
+
+    def _dispatch_frame(self, indata) -> None:
+        """Hand an idle frame to the observer. Called from the audio thread."""
+        if self._recording:
+            return
+        observer = self._frame_observer
+        if observer is None:
+            return
+        try:
+            # sounddevice recycles indata between callbacks. The listener
+            # queues frames and scores them on another thread, so handing over
+            # the live buffer means scoring whatever PortAudio has since
+            # written into it: audio that measures loud and matches nothing.
+            # The recording path above copies for the same reason.
+            observer(indata.copy() if hasattr(indata, "copy") else indata)
+        except Exception:
+            # The audio callback must survive a broken consumer: raising here
+            # would stop the stream and take recording down with it.
+            logger.debug("wake frame observer failed", exc_info=True)
 
     def _max_duration_reached(self, elapsed: float) -> bool:
         cap = self._max_recording_seconds
@@ -98,6 +137,7 @@ class AudioRecorder:
             if status:
                 logger.debug("sounddevice status: %s", status)
             if not self._recording:
+                self._dispatch_frame(indata)
                 return
             self._frames.append(indata.copy())
 

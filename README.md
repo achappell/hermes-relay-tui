@@ -398,6 +398,106 @@ By default, the app plays supported 16-bit PCM as it arrives. If playback is una
 
 When `--output` is set, the first turn uses that path and later turns use numbered suffixes such as `response-1.wav`. Without `--output`, audio that was not played live is written to the current directory as `hybrid-tui-<turn-id>.wav`.
 
+## Hands-free wake word
+
+The home unit can listen continuously for a spoken phrase instead of waiting
+for a keypress. It is **off by default** and needs an optional extra, because a
+terminal install should not pull an ONNX runtime onto a laptop that will never
+hear a wake word:
+
+```bash
+# On the household appliance — installs everything the home unit needs.
+pip install 'hermes-relay-tui[home]'
+
+# On a laptop, to try the wake word with the terminal client.
+pip install 'hermes-relay-tui[wake]'
+hermes-relay --wake-enabled
+```
+
+**A plain install does not include this.** `pip install hermes-relay-tui` and
+`brew install hermes-relay-tui` give you the `hermes-relay-home` entry point
+and the bundled models, but no wake-word engine, so the listener cannot start.
+That is deliberate: the engine brings an ONNX runtime that a laptop running the
+terminal client would never use. The appliance names its own dependencies with
+the `home` extra.
+
+Detection is entirely on-device. No audio leaves the machine to decide whether
+the phrase was spoken.
+
+**It is self-contained.** Everything openWakeWord needs ships in the package —
+the trained "hey hermes" model plus the two shared feature-extraction models
+that openWakeWord's own wheel omits and downloads on first use. There is no
+Hermes install to read models out of and no download at first wake, so the unit
+works on a clean machine and on a network that is not up yet when it boots.
+
+| Flag | Default | What it does |
+|---|---|---|
+| `--wake-enabled` | off | Listen continuously for the phrase. |
+| `--wake-model` | bundled `hey_hermes` | Path to a `.onnx` model, or a built-in openWakeWord name. |
+| `--wake-threshold` | `0.6` | Per-frame score above which the phrase counts as present. |
+| `--wake-confirmation-frames` | `3` | Consecutive over-threshold frames required to fire. |
+| `--wake-refractory-seconds` | `2.0` | Minimum gap between two fires. |
+| `--wake-listen-timeout` | `8.0` | How long to wait for speech to begin after the phrase. |
+| `--wake-barge-in` | off | Let the phrase interrupt playback. See the warning below. |
+
+**Confirmation frames are the setting that matters.** The detector scores about
+twelve frames a second, and a stray sound can push a single frame over the
+threshold. A real utterance holds the score high across several frames in a
+row, so requiring three consecutive frames rejects background conversation far
+better than raising the threshold — which only makes the phrase harder to say.
+Setting this to `1` restores naive single-frame behaviour and is the fastest
+way to make the unit start answering the radio.
+
+**The listening timeout is not a recording limit.** Silence endpointing already
+decides when you have *stopped* talking. This setting answers a different
+question: did anyone ever *start*? It covers the case where the detector fired
+at an extractor fan and nobody is in the room. The window is cancelled the
+instant speech is detected, so it never cuts anyone off mid-sentence; if no
+speech arrives, the unit discards the capture and returns to idle silently. It
+never announces a misfire.
+
+### Checking it hears you
+
+`scripts/wake_check.py` opens the real microphone through the real capture path
+and prints a live score. Nothing is sent to Hermes and no turn is captured — it
+only answers "does it hear me, and does it hear things that are not me".
+
+```bash
+pip install 'hermes-relay-tui[wake]'
+
+# Watch the meter and say the phrase.
+python scripts/wake_check.py
+
+# A ten-minute soak with the fan, the tap and the radio going.
+python scripts/wake_check.py --seconds 600 --quiet
+```
+
+```bash
+# Prove the detector without a microphone or a voice.
+python scripts/wake_check.py --self-test
+```
+
+The meter shows **two** bars: the microphone input level and the wake score.
+That distinction matters, because "it did not hear the phrase" and "it is not
+hearing anything" look identical otherwise and only one of them is a wake-word
+problem. The summary names which one you hit — silence from the microphone,
+audio arriving but no match, a near miss under the threshold, or a score that
+crossed but was rejected as too brief.
+
+`--self-test` synthesizes the phrase with macOS `say` and scores it with no
+microphone involved. If it fires, the software is fine and the problem is
+between your voice and the input device. If it does not, the problem is in the
+software.
+
+The first run takes about twenty seconds to load the model. Detection itself
+costs roughly 2 ms per 80 ms frame, so there is ample headroom on modest
+hardware.
+
+**Do not enable `--wake-barge-in` without echo cancellation.** With a shared
+microphone and speaker the unit hears its own voice, retriggers on itself, and
+interrupts its own sentence. The feature is implemented and tested, and stays
+off until the audio hardware can cancel its own output.
+
 ## Config file
 
 Instead of retyping flags every launch, put your defaults in a YAML file at

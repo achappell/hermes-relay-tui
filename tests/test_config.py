@@ -312,3 +312,41 @@ def test_ensure_default_config_file_created_content_is_behaviorally_inert(tmp_pa
     args = build_arg_parser(argv).parse_args(argv)
     assert args.busy_mode == "queue"
     assert args.url == DEFAULT_URL
+
+
+def test_wake_word_defaults_are_off_and_conservative():
+    """The listener and barge-in are both opt-in: barge-in without echo
+    cancellation makes the unit interrupt its own sentence."""
+    args = build_arg_parser().parse_args([])
+
+    assert args.wake_enabled is False
+    assert args.wake_barge_in is False
+    assert args.wake_threshold == 0.6
+    assert args.wake_confirmation_frames == 3
+    assert args.wake_refractory_seconds == 2.0
+    assert args.wake_listen_timeout == 8.0
+    assert args.wake_model is None
+
+
+def test_wake_word_settings_are_overridable():
+    args = build_arg_parser().parse_args(
+        [
+            "--wake-enabled",
+            "--wake-model",
+            "/models/hey_idris.onnx",
+            "--wake-threshold",
+            "0.8",
+            "--wake-confirmation-frames",
+            "5",
+            "--wake-listen-timeout",
+            "12",
+            "--wake-barge-in",
+        ]
+    )
+
+    assert args.wake_enabled is True
+    assert args.wake_model == "/models/hey_idris.onnx"
+    assert args.wake_threshold == 0.8
+    assert args.wake_confirmation_frames == 5
+    assert args.wake_listen_timeout == 12.0
+    assert args.wake_barge_in is True

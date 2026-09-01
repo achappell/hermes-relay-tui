@@ -159,3 +159,25 @@ def test_pypi_and_homebrew_publish_independently():
     assert "update-homebrew" not in str(jobs["publish-pypi"]["needs"])
     # The publish step must not sit inside the job the tap update needs.
     assert "gh-action-pypi-publish" not in yaml.dump(jobs["package"])
+
+
+def test_wake_dependencies_live_in_an_optional_extra():
+    """HOME-02: a terminal install must not pull an ONNX runtime."""
+    metadata = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    extras = metadata["project"]["optional-dependencies"]
+    base = " ".join(metadata["project"]["dependencies"])
+
+    wake_extra = " ".join(extras["wake"])
+    assert "openwakeword" in wake_extra
+    assert "onnxruntime" in wake_extra
+    assert "openwakeword" not in base
+    assert "onnxruntime" not in base
+
+
+def test_the_home_extra_pulls_what_the_appliance_needs():
+    """A plain install gives the home entry point without a wake-word engine,
+    so the appliance needs an install line that names its own dependencies."""
+    metadata = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    extras = metadata["project"]["optional-dependencies"]
+
+    assert "hermes-relay-tui[wake]" in extras["home"]

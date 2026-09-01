@@ -290,6 +290,53 @@ def build_arg_parser(argv: Optional[list[str]] = None) -> argparse.ArgumentParse
         help="microphone device name or index (default: system default)",
     )
     parser.add_argument(
+        "--wake-enabled",
+        action="store_true",
+        default=_cfg_bool(cfg, "wake_enabled"),
+        help="listen continuously for the wake phrase (needs the 'wake' extra)",
+    )
+    parser.add_argument(
+        "--wake-model",
+        default=_cfg_str(cfg, "wake_model"),
+        help="path to a wake-word .onnx model, or a built-in openWakeWord name",
+    )
+    parser.add_argument(
+        "--wake-threshold",
+        type=float,
+        default=cfg.get("wake_threshold", 0.6),
+        help="per-frame score above which the wake phrase is considered present",
+    )
+    parser.add_argument(
+        "--wake-confirmation-frames",
+        type=int,
+        default=cfg.get("wake_confirmation_frames", 3),
+        help=(
+            "consecutive over-threshold frames required to fire; the main "
+            "defence against triggering on background conversation"
+        ),
+    )
+    parser.add_argument(
+        "--wake-refractory-seconds",
+        type=float,
+        default=cfg.get("wake_refractory_seconds", 2.0),
+        help="minimum gap between two wake fires",
+    )
+    parser.add_argument(
+        "--wake-listen-timeout",
+        type=float,
+        default=cfg.get("wake_listen_timeout", 8.0),
+        help="how long to wait after the wake phrase for speech to begin",
+    )
+    parser.add_argument(
+        "--wake-barge-in",
+        action="store_true",
+        default=_cfg_bool(cfg, "wake_barge_in"),
+        help=(
+            "allow the wake phrase to interrupt playback; needs echo "
+            "cancellation or the unit retriggers on its own voice"
+        ),
+    )
+    parser.add_argument(
         "--audio-output-device",
         type=_device_selector,
         default=_device_selector(
