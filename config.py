@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import socket
 import sys
 from pathlib import Path
 from typing import Any, Optional
@@ -20,6 +21,16 @@ DEFAULT_PROFILE_ENV = Path.home() / ".hermes-relay-tui" / ".env"
 LEGACY_PROFILE_ENV = Path.home() / ".hermes" / "profiles" / "amanda" / ".env"
 DEFAULT_CONFIG_PATH = Path.home() / ".hermes-relay-tui" / "config.yaml"
 BUSY_MODES = ("queue", "steer", "interrupt")
+
+
+def default_device_id() -> str:
+    """Derive a stable device ID from the machine's hostname.
+
+    device_id is never checked against the server allowlist (client_id is)
+    — it only scopes session state per machine — so deriving it removes a
+    setup question without weakening anything.
+    """
+    return socket.gethostname().split(".", 1)[0] or "computer"
 
 
 def _env_float(name: str, default: float) -> float:
@@ -237,7 +248,7 @@ def build_arg_parser(argv: Optional[list[str]] = None) -> argparse.ArgumentParse
     )
     parser.add_argument(
         "--device-id",
-        default=os.getenv("VOICE_SESSION_DEVICE_ID", _cfg_str(cfg, "device_id", "amanda-mac")),
+        default=os.getenv("VOICE_SESSION_DEVICE_ID", _cfg_str(cfg, "device_id", default_device_id())),
     )
     parser.add_argument(
         "--session-id", default=os.getenv("VOICE_SESSION_ID", _cfg_str(cfg, "session_id", "hybrid-tui"))
@@ -373,6 +384,7 @@ __all__ = [
     "build_arg_parser",
     "configure_logging",
     "connect_factory",
+    "default_device_id",
     "ensure_default_config_file",
     "load_config_file",
 ]

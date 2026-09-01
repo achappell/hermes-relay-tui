@@ -8,7 +8,6 @@ import getpass
 import inspect
 import json
 import os
-import socket
 import tempfile
 from pathlib import Path
 from typing import Any
@@ -200,9 +199,8 @@ def run_setup(
         output_fn("Setup cancelled: a bearer token is required.")
         return 1
 
-    hostname = socket.gethostname().split(".", 1)[0] or "computer"
     client_id = _ask(input_fn, "Client ID", default=str(existing.get("client_id") or "hermes-relay"))
-    device_id = _ask(input_fn, "Device ID", default=str(existing.get("device_id") or hostname))
+    device_id = str(existing.get("device_id") or config.default_device_id())
     session_id = _ask(input_fn, "Session ID", default=str(existing.get("session_id") or "default"))
     display_name = str(existing.get("display_name") or f"{client_id} relay")
 
