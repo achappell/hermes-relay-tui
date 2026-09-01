@@ -4,6 +4,7 @@ dist/
 *.egg-info/
 __pycache__/
 *.pyc
+.worktrees/
 .hermes/
 *.wav
 .pytest_cache/

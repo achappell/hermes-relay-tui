@@ -150,6 +150,14 @@ In another terminal, use `tail -f /tmp/hermes-relay-tui.log`. The trace
 includes frame order, event names, payload keys, text/byte lengths, hashes, and
 turn state. It does not record bearer tokens, prompts, response text, or audio.
 
+Uncaught exceptions are logged independently of `--debug` to
+`~/.hermes-relay-tui/crash.log`. Each report includes the timestamp, installed
+client version, exception type, thread, and file/line traceback locations, but
+not exception messages, prompts, response text, audio, bearer tokens, or local
+variable values. Reports append to this file until it is manually removed; the
+file is created with owner-only permissions. Use `/logs` after relaunch to see
+whether a crash report exists and its path.
+
 ## Controls
 
 | Key | Action |
@@ -164,7 +172,7 @@ turn state. It does not record bearer tokens, prompts, response text, or audio.
 | `/image` | Stage, list, or clear a local image attachment |
 | `/save [path]` | Save the visible transcript locally without overwriting files |
 | `/copy` | Copy the visible transcript to the system clipboard |
-| `/logs` | Show local debug logging status and path |
+| `/logs` | Show local debug and crash logging status and paths |
 | `/retry` | Retry a prompt only when it was proven not to reach Hermes |
 | `/undo` | Remove an unsent local prompt from the queue |
 | `Ctrl+C` | Interrupt the active turn; otherwise clear the draft, queue, or quit |

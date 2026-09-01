@@ -109,11 +109,23 @@ def test_app_main_dispatches_setup_subcommand(monkeypatch):
         called.append(argv)
         return 7
 
+    monkeypatch.setattr(app, "install_crash_logging", lambda: None)
     monkeypatch.setattr("setup_wizard.run_setup", fake_setup)
     monkeypatch.setattr(sys, "argv", ["hermes-relay", "setup", "--no-check"])
 
     assert app.main() == 7
     assert called == [["--no-check"]]
+
+
+def test_app_main_installs_crash_logging_before_dispatch(monkeypatch):
+    installed = []
+
+    monkeypatch.setattr(app, "install_crash_logging", lambda: installed.append(True), raising=False)
+    monkeypatch.setattr("setup_wizard.run_setup", lambda argv: 0)
+    monkeypatch.setattr(sys, "argv", ["hermes-relay", "setup"])
+
+    assert app.main() == 0
+    assert installed == [True]
 
 
 def test_probe_connection_verifies_the_voice_session_handshake():

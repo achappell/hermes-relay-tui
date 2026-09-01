@@ -38,7 +38,7 @@ COMMAND_REGISTRY: tuple[Command, ...] = (
     Command("history", "Search or show prompt history", args_hint="[search term]"),
     Command("save", "Save the visible transcript locally", args_hint="[path]"),
     Command("copy", "Copy the visible transcript to the system clipboard"),
-    Command("logs", "Show local debug logging status and path"),
+    Command("logs", "Show local debug and crash logging status and paths"),
     Command("usage", "Show relay usage information when supported"),
     Command("retry", "Retry the last prompt only when it was never sent"),
     Command("undo", "Remove the last unsent local prompt from the queue"),
