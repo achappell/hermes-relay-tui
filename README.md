@@ -36,7 +36,9 @@ python3.14 -m venv venv
 venv/bin/pip install -r requirements-dev.txt
 ```
 
-That installs the local STT dependencies as well. The first transcription may download the selected Faster-Whisper model.
+That installs the local STT dependencies as well. `hermes-relay setup` also
+downloads the selected Faster-Whisper model so the first microphone turn does
+not perform setup inside the TUI.
 
 ### Homebrew install
 
@@ -270,8 +272,10 @@ Run `venv/bin/python app.py --help` for the full option list.
 
 Use `hermes-relay setup` on a new computer. It asks for the server endpoint,
 token, and client identity, then saves the editable YAML and private token
-file under `~/.hermes-relay-tui/`. Add `--no-check` to
-save the answers without probing the server.
+file under `~/.hermes-relay-tui/`, and prepares the local `base`
+Faster-Whisper model. Add `--stt-model NAME` to choose another model, or
+`--no-check` to save the answers without probing the server. The model is still
+prepared when `--no-check` is used.
 
 ## Audio output
 

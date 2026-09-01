@@ -5,12 +5,19 @@ import json
 import stat
 import sys
 
+import pytest
 import yaml
 
 import app
 import config
+import setup_wizard
 from setup_wizard import save_setup_files
 from setup_wizard import probe_connection, run_setup
+
+
+@pytest.fixture(autouse=True)
+def avoid_real_model_downloads(monkeypatch):
+    monkeypatch.setattr(setup_wizard, "prepare_stt_model", lambda model: model)
 
 
 def test_save_setup_files_writes_editable_config_and_private_token(tmp_path):
@@ -71,6 +78,32 @@ def test_run_setup_guides_user_and_saves_the_answers(tmp_path):
     assert saved["client_id"] == "jensen-laptop"
     assert saved["device_id"] == config.default_device_id()
     assert saved["session_id"] == "kitchen"
+
+
+def test_run_setup_prepares_the_configured_stt_model(tmp_path, monkeypatch):
+    answers = iter(["wss://hermes.example/voice-session", "jensen-laptop", "kitchen"])
+    secrets = iter(["secret-token"])
+    prepared = []
+
+    def prepare(model):
+        prepared.append(model)
+        return "/cached/faster-whisper-base"
+
+    monkeypatch.setattr(setup_wizard, "prepare_stt_model", prepare)
+
+    result = run_setup(
+        config_path=tmp_path / "config.yaml",
+        token_path=tmp_path / ".env",
+        input_fn=lambda prompt: next(answers),
+        secret_fn=lambda prompt: next(secrets),
+        output_fn=lambda message: None,
+        check_connection=False,
+    )
+
+    assert result == 0
+    assert prepared == ["base"]
+    saved = yaml.safe_load((tmp_path / "config.yaml").read_text(encoding="utf-8"))
+    assert saved["stt_model"] == "base"
 
 
 def test_run_setup_reuses_an_existing_custom_token_file(tmp_path):
