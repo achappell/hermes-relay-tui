@@ -1,3 +1,4 @@
+import importlib.util
 import json
 import re
 from pathlib import Path
@@ -7,6 +8,20 @@ import yaml
 
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def rendered_formula() -> str:
+    """Render the formula the release workflow actually publishes to the tap.
+
+    Asserting against a checked-in copy of the formula guards a file nothing
+    installs, and that copy had already drifted a release behind.
+    """
+    spec = importlib.util.spec_from_file_location(
+        "generate_homebrew_formula", ROOT / "scripts/generate_homebrew_formula.py"
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.FORMULA.format(version="9.9.9", sha256="0" * 64)
 
 
 def test_project_metadata_exposes_the_console_command():
@@ -34,7 +49,7 @@ def test_home_display_python_files_do_not_import_textual():
 
 
 def test_homebrew_trial_formula_declares_runtime_boundaries():
-    formula = (ROOT / "packaging/homebrew/hermes-relay-tui.rb").read_text(encoding="utf-8")
+    formula = rendered_formula()
 
     assert 'depends_on "python@3.14"' in formula
     assert 'depends_on "portaudio"' in formula
@@ -43,7 +58,7 @@ def test_homebrew_trial_formula_declares_runtime_boundaries():
 
 def test_homebrew_formula_installs_a_checksummed_release_archive():
     """A git-source formula clones full history, including rewritten commits."""
-    formula = (ROOT / "packaging/homebrew/hermes-relay-tui.rb").read_text(encoding="utf-8")
+    formula = rendered_formula()
 
     assert "using: :git" not in formula
     assert "revision:" not in formula
@@ -52,9 +67,25 @@ def test_homebrew_formula_installs_a_checksummed_release_archive():
 
 
 def test_homebrew_formula_links_the_kiosk_entry_point_only_when_present():
-    formula = (ROOT / "packaging/homebrew/hermes-relay-tui.rb").read_text(encoding="utf-8")
+    formula = rendered_formula()
 
     assert 'if (venv / "bin/hermes-relay-home").exist?' in formula
+
+
+def test_homebrew_formula_resigns_relinked_bundled_dylibs():
+    """DIST-02: Homebrew rewrites Mach-O install names across the keg, which
+    invalidates the signatures PyAV ships on its bundled FFmpeg dylibs. macOS
+    then SIGKILLs any process importing av or faster_whisper, killing local
+    speech-to-text with no traceback."""
+    formula = rendered_formula()
+
+    assert "def post_install" in formula
+    assert '"codesign", "--force", "--sign", "-"' in formula
+    # The affected dylibs sit in hidden ".dylibs" directories, which the
+    # default ** glob skips.
+    assert "File::FNM_DOTMATCH" in formula
+    # The formula's own test block must exercise the imports that break.
+    assert "import av, faster_whisper" in formula
 
 
 def test_release_automation_tracks_the_python_package():
