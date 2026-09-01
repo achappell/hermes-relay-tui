@@ -2163,6 +2163,23 @@ async def test_logs_command_reports_the_local_debug_log(monkeypatch, tmp_path):
     assert f"logs: debug trace present at {path}" in transcript
 
 
+
+async def test_logs_command_reports_the_persistent_crash_log(monkeypatch, tmp_path):
+    path = tmp_path / "crash.log"
+    path.write_text("safe crash trace", encoding="utf-8")
+    monkeypatch.setattr(app_module, "active_log_file", lambda: None)
+    monkeypatch.setattr(app_module, "crash_log_file", lambda: path)
+    app = HermesStreamingApp(args=make_args(), session_factory=lambda: FakeSession())
+    async with app.run_test() as pilot:
+        composer = app.query_one("#composer", Composer)
+        composer.text = "/logs"
+        await pilot.press("enter")
+        await pilot.pause()
+        transcript = transcript_of(app)
+
+    assert f"crash log present at {path}" in transcript
+    assert "safe crash trace" not in transcript
+
 @pytest.mark.parametrize("command", ["/usage", "/compress"])
 async def test_relay_only_daily04_commands_report_protocol_limits(command):
     app = HermesStreamingApp(args=make_args(), session_factory=lambda: FakeSession())

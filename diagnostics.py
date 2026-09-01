@@ -1,18 +1,28 @@
-"""Opt-in, content-safe diagnostics for live Hermes sessions."""
+"""Content-safe diagnostics and persistent crash reporting for Hermes sessions."""
 
 from __future__ import annotations
 
 import hashlib
+import importlib.metadata
 import logging
+import os
+import sys
 import tempfile
+import threading
+import traceback
+from datetime import datetime
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 LOGGER_NAME = "hermes_relay_tui"
 DEFAULT_LOG_FILE = Path(tempfile.gettempdir()) / "hermes-relay-tui-debug.log"
+DEFAULT_CRASH_LOG_FILE = Path.home() / ".hermes-relay-tui" / "crash.log"
 
 logger = logging.getLogger(LOGGER_NAME)
 _active_log_file: Optional[Path] = None
+_crash_log_file: Optional[Path] = None
+_previous_sys_excepthook: Optional[Callable[..., Any]] = None
+_previous_threading_excepthook: Optional[Callable[..., Any]] = None
 
 
 def summarize_text(value: Any) -> str:
@@ -102,3 +112,91 @@ def configure_logging(*, debug: bool, log_file: Optional[Path] = None) -> Option
 def active_log_file() -> Optional[Path]:
     """Return the currently configured debug log path, if logging is active."""
     return _active_log_file
+
+
+def crash_log_file() -> Path:
+    """Return the path used for the persistent crash report."""
+    return _crash_log_file or DEFAULT_CRASH_LOG_FILE
+
+
+def _package_version() -> str:
+    try:
+        return importlib.metadata.version("hermes-relay-tui")
+    except importlib.metadata.PackageNotFoundError:
+        return "unknown"
+
+
+def _crash_report(
+    exc_type: type[BaseException],
+    traceback_object: Any,
+    *,
+    thread_name: Optional[str] = None,
+) -> str:
+    timestamp = datetime.now().astimezone().isoformat()
+    lines = [
+        f"--- crash {timestamp} ---",
+        f"version: {_package_version()}",
+        f"thread: {thread_name or threading.current_thread().name}",
+        f"exception: {exc_type.__module__}.{exc_type.__qualname__}",
+        "traceback:",
+    ]
+    for frame in traceback.extract_tb(traceback_object):
+        lines.append(f'  File "{frame.filename}", line {frame.lineno}, in {frame.name}')
+    lines.append("---")
+    return "\n".join(lines) + "\n"
+
+
+def _write_crash_report(
+    exc_type: type[BaseException],
+    traceback_object: Any,
+    *,
+    thread_name: Optional[str] = None,
+) -> None:
+    path = crash_log_file()
+    try:
+        path.parent.mkdir(parents=True, mode=0o700, exist_ok=True)
+        flags = os.O_WRONLY | os.O_APPEND | os.O_CREAT
+        if hasattr(os, "O_NOFOLLOW"):
+            flags |= os.O_NOFOLLOW
+        descriptor = os.open(path, flags, 0o600)
+        with os.fdopen(descriptor, "a", encoding="utf-8") as handle:
+            os.fchmod(handle.fileno(), 0o600)
+            handle.write(
+                _crash_report(exc_type, traceback_object, thread_name=thread_name)
+            )
+    except BaseException:
+        # A crash reporter must never turn one failure into another failure.
+        return
+
+
+def _handle_uncaught_exception(
+    exc_type: type[BaseException],
+    exc_value: BaseException,
+    traceback_object: Any,
+) -> None:
+    _write_crash_report(exc_type, traceback_object)
+    if _previous_sys_excepthook is not None:
+        _previous_sys_excepthook(exc_type, exc_value, traceback_object)
+
+
+def _handle_uncaught_thread_exception(args: threading.ExceptHookArgs) -> None:
+    _write_crash_report(
+        args.exc_type,
+        args.exc_traceback,
+        thread_name=args.thread.name if args.thread is not None else None,
+    )
+    if _previous_threading_excepthook is not None:
+        _previous_threading_excepthook(args)
+
+
+def install_crash_logging(log_file: Optional[Path] = None) -> Path:
+    """Install persistent, content-safe hooks for uncaught exceptions."""
+    global _crash_log_file, _previous_sys_excepthook, _previous_threading_excepthook
+    _crash_log_file = Path(log_file) if log_file else DEFAULT_CRASH_LOG_FILE
+    if sys.excepthook is not _handle_uncaught_exception:
+        _previous_sys_excepthook = sys.excepthook
+    if threading.excepthook is not _handle_uncaught_thread_exception:
+        _previous_threading_excepthook = threading.excepthook
+    sys.excepthook = _handle_uncaught_exception
+    threading.excepthook = _handle_uncaught_thread_exception
+    return _crash_log_file
