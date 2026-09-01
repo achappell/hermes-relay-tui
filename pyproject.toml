@@ -21,6 +21,7 @@ dependencies = [
 
 [project.scripts]
 hermes-relay = "app:main"
+hermes-relay-home = "home_display.demo:main"
 
 [tool.setuptools]
 py-modules = ["app", "attachments", "audio", "clipboard", "client", "commands", "config", "diagnostics", "history", "mic", "session", "setup_wizard", "shell", "transcript", "voice"]

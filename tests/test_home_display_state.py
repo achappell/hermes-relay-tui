@@ -1,4 +1,5 @@
 import asyncio
+import json
 
 import pytest
 
@@ -30,6 +31,21 @@ def test_publisher_rejects_non_json_serializable_media():
         DisplayStatePublisher().publish(
             state="idle", media={"provider": object()}
         )
+
+
+def test_published_snapshot_is_not_affected_by_media_mutation():
+    publisher = DisplayStatePublisher()
+    media = {"provider": "future", "options": {"limit": 1}}
+    snapshot = publisher.publish(state="idle", media=media)
+
+    media["provider"] = object()
+    media["options"]["limit"] = object()
+
+    serialized = json.dumps(snapshot.to_dict(), allow_nan=False)
+    assert json.loads(serialized)["media"] == {
+        "provider": "future",
+        "options": {"limit": 1},
+    }
 
 
 @pytest.mark.asyncio

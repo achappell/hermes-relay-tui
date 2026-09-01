@@ -73,3 +73,32 @@ The worktree-local virtual environment still lacks `websockets`, so the
 repository venv was used. The only test warning is the expected deprecation
 notice for the required `websockets.legacy` API. No browser files or plan,
 spec, or ledger files were changed.
+
+## Final broad re-review fix round: Python stream and packaging
+
+Added TDD regressions for caller-owned media mutation and the dedicated home
+front-end console entry point. The media regression initially failed with a
+server-facing `TypeError` after the original nested media dictionary was
+mutated; the packaging regression initially failed with `KeyError` because the
+new script was absent.
+
+The fixes are bounded to the Python/packaging path:
+
+- `DisplaySnapshot` deep-copies a supplied media mapping before validating and
+  storing it. Nested mutations to the caller's original JSON data can no
+  longer invalidate `to_dict()` or server serialization; `media=None` and all
+  previously accepted JSON values remain unchanged.
+- `pyproject.toml` now declares the dedicated
+  `hermes-relay-home = "home_display.demo:main"` console entry point. Base
+  runtime dependencies and the existing demo behavior are unchanged.
+
+Validation:
+
+- `/Users/amandachappell/Development/hermes-relay-tui/venv/bin/pytest tests/test_home_display_state.py tests/test_home_display_server.py tests/test_packaging.py -v`: 23 passed
+- `/Users/amandachappell/Development/hermes-relay-tui/venv/bin/pytest`: 281 passed
+- `git diff --check`: clean
+
+The worktree-local virtual environment still lacks `websockets`, so the
+repository venv was used. The only test warning is the expected deprecation
+notice for the required `websockets.legacy` API. Browser files remain
+untouched.

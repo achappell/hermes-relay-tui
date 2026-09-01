@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import json
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
@@ -35,8 +36,10 @@ class DisplaySnapshot:
         if self.media is not None and not isinstance(self.media, dict):
             raise TypeError("media must be a dict or None")
         if self.media is not None:
+            copied_media = copy.deepcopy(self.media)
+            object.__setattr__(self, "media", copied_media)
             try:
-                json.dumps(self.media, allow_nan=False)
+                json.dumps(copied_media, allow_nan=False)
             except (TypeError, ValueError, OverflowError) as error:
                 raise ValueError("media must be JSON serializable") from error
 
