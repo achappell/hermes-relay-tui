@@ -29,6 +29,19 @@ jobs:
           fetch-depth: 0
           ref: ${{ inputs.tag || github.ref }}
 
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: home_display/web/package-lock.json
+
+      - name: Build web display assets
+        run: |
+          npm ci --prefix home_display/web
+          npm --prefix home_display/web run check
+          npm --prefix home_display/web run build
+          git diff --exit-code -- home_display/static
+
       - name: Install PortAudio runtime
         run: |
           sudo apt-get update
@@ -48,6 +61,7 @@ jobs:
           python -m venv /tmp/hermes-release-smoke
           /tmp/hermes-release-smoke/bin/pip install dist/*.whl
           /tmp/hermes-release-smoke/bin/hermes-relay --help
+          /tmp/hermes-release-smoke/bin/hermes-relay-home --help
 
       - name: Ensure the GitHub release exists
         env:

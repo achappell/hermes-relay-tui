@@ -1,0 +1,127 @@
+:root {
+  color-scheme: dark;
+  --canvas-night: #07131d;
+  --canvas-deep: #0d2935;
+  --canvas-light: #1b4c56;
+  --ink-primary: #f6fbfc;
+  --ink-secondary: #c6d9dd;
+  --signal-listening: #86e7cf;
+  --signal-thinking: #9ac8ff;
+  --signal-speaking: #fff0ae;
+  --signal-action: #ffbd83;
+  --signal-error: #ff9b9b;
+  --overlay-scrim: rgb(2 12 18 / 76%);
+  --bottom-sheet-height: min(42dvh, 28rem);
+  --bottom-sheet-padding: clamp(1.5rem, 4vw, 4rem);
+  --bottom-sheet-radius: 2rem 2rem 0 0;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#app {
+  min-height: 100dvh;
+  margin: 0;
+}
+
+body {
+  background: var(--canvas-night);
+  color: var(--ink-primary);
+  font-family: Inter, ui-sans-serif, system-ui, sans-serif;
+}
+
+.state-surface {
+  align-items: center;
+  background: var(--canvas-night);
+  display: grid;
+  isolation: isolate;
+  min-height: 100dvh;
+  overflow: hidden;
+  padding: clamp(1.5rem, 5vw, 6rem);
+  position: relative;
+}
+
+.ambient-canvas {
+  background:
+    radial-gradient(circle at 78% 18%, rgb(134 231 207 / 30%), transparent 30rem),
+    radial-gradient(circle at 18% 80%, rgb(154 200 255 / 24%), transparent 34rem),
+    linear-gradient(125deg, var(--canvas-night), var(--canvas-deep) 55%, var(--canvas-light));
+  inset: 0;
+  position: absolute;
+  z-index: -1;
+}
+
+.state-overlay {
+  max-width: min(74rem, 82vw);
+  text-wrap: balance;
+}
+
+.state-label,
+.status-text,
+.response-text {
+  margin: 0;
+}
+
+.state-label {
+  color: var(--ink-secondary);
+  font-size: clamp(0.9rem, 1.5vw, 1.35rem);
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.status-text {
+  font-size: clamp(1.35rem, 3.2vw, 3rem);
+  font-weight: 620;
+  line-height: 1.2;
+  margin-top: 0.75rem;
+}
+
+.response-text {
+  display: none;
+  font-size: clamp(1.5rem, 3.7vw, 4.5rem);
+  font-weight: 650;
+  line-height: 1.16;
+  margin-top: clamp(1.25rem, 3vw, 3rem);
+  max-width: 22ch;
+  white-space: pre-wrap;
+}
+
+.response-text.visible {
+  display: block;
+}
+
+[data-state="idle"] .state-overlay {
+  opacity: 0;
+}
+
+[data-state="listening"] .status-text {
+  color: var(--signal-listening);
+}
+
+[data-state="thinking"] .status-text {
+  color: var(--signal-thinking);
+}
+
+[data-state="speaking"] .response-text {
+  color: var(--signal-speaking);
+}
+
+[data-state="buffering"] .status-text,
+[data-state="error"] .status-text,
+[data-state="disconnected"] .status-text {
+  color: var(--signal-action);
+}
+
+[data-state="error"] .status-text {
+  color: var(--signal-error);
+}
+
+@media (orientation: portrait) {
+  .state-overlay {
+    max-width: 100%;
+  }
+}
