@@ -242,10 +242,10 @@ Without the window, a misfire holds the microphone until `mic_max_seconds`,
 deaf to a real wake word throughout, then hands a long stretch of noise to
 Whisper.
 
-The 8s default is a starting point, not an answer. The value that matters is
-how long someone takes to cross a kitchen and begin a sentence after the unit
-acknowledges. That is settled by the manual validation scenario, which is why
-it is configuration.
+The 8s default is confirmed (Amanda, 2026-09-01). It is the tolerated pause
+between the wake phrase and the start of the sentence - long enough to turn off
+a tap and turn round before asking. It stays configuration, so a week of real
+use can shorten it if the household turns out to be crisper than that.
 
 ## Barge-in
 
