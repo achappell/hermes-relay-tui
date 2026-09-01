@@ -41,3 +41,11 @@ restart.
 - The frontend test suite covers stale-snapshot filtering, WebSocket reconnect behavior, disconnected-over-stale rendering, all seven rendered state surfaces, and replacement of one `[data-response-text]` DOM element. Browser automation and a physical landscape/two-metre review were unavailable in this environment, so neither was performed or claimed.
 - `git diff --check` passed; pre-documentation `git status --short` was empty. The wheel contains `home_display/state.py`, `home_display/server.py`, and compiled files in `home_display/static/`. No untracked files or audio captures were found. The only credential-pattern match was an existing unrelated documentation example containing `VOICE_SESSION_TOKEN='redacted-token'`; no secret, prompt/response capture, or credential was added by HOME-03.
 - GitHub Project update was attempted with `gh project item-list 3 --owner achappell --format json -L 100`, but GitHub CLI is unauthenticated: `gh auth login` or `GH_TOKEN` is required. HOME-03 was not moved to `Verify` and no board evidence was attached.
+
+## Re-verification evidence — 2026-09-01 (CDT)
+
+- `/Users/amandachappell/Development/hermes-relay-tui/venv/bin/pytest` — 281 passed; one existing `websockets.legacy` deprecation warning. The first sandboxed attempt could not bind loopback sockets; the passing run used permitted loopback access.
+- `npm --prefix home_display/web test` — 36 passed; `npm --prefix home_display/web run check` — 0 errors and 0 warnings; `npm --prefix home_display/web run build` — passed.
+- `/Users/amandachappell/Development/hermes-relay-tui/venv/bin/python -m build` — passed after allowing the isolated build environment to reach PyPI; the wheel contains `home_display`, `home_display/static`, and both console entry points.
+- Live loopback smoke against `python -u -m home_display.demo --interval 0.5`: `GET /` returned `200 text/html`; WebSocket delivery observed `idle`, `listening`, `thinking`, `speaking`, `buffering`, and `error`. The demo was stopped cleanly afterward.
+- `git diff --check` and `git status --short --untracked-files=all` — clean before this evidence update. GUI permissions still prevented rendered-browser/physical two-metre review; `gh project item-list` still failed because GitHub CLI is unauthenticated.
