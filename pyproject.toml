@@ -27,6 +27,13 @@ wake = [
   "onnxruntime>=1.17",
 ]
 
+# Everything the household appliance needs, as one name. The home unit is a
+# different deployment from the terminal client and gets its own install line;
+# a laptop running the TUI should never carry an ONNX runtime it will not use.
+home = [
+  "hermes-relay-tui[wake]",
+]
+
 [project.scripts]
 hermes-relay = "app:main"
 hermes-relay-home = "home_display.demo:main"

@@ -406,9 +406,20 @@ terminal install should not pull an ONNX runtime onto a laptop that will never
 hear a wake word:
 
 ```bash
+# On the household appliance — installs everything the home unit needs.
+pip install 'hermes-relay-tui[home]'
+
+# On a laptop, to try the wake word with the terminal client.
 pip install 'hermes-relay-tui[wake]'
 hermes-relay --wake-enabled
 ```
+
+**A plain install does not include this.** `pip install hermes-relay-tui` and
+`brew install hermes-relay-tui` give you the `hermes-relay-home` entry point
+and the bundled models, but no wake-word engine, so the listener cannot start.
+That is deliberate: the engine brings an ONNX runtime that a laptop running the
+terminal client would never use. The appliance names its own dependencies with
+the `home` extra.
 
 Detection is entirely on-device. No audio leaves the machine to decide whether
 the phrase was spoken.
