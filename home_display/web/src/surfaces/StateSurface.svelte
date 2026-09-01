@@ -22,9 +22,13 @@
     disconnected: "Display disconnected — check the host connection",
   };
 
-  $: displayState = connectionState === "disconnected" ? "disconnected" : snapshot.state;
+  $: displayState = protocolError !== null
+    ? "error"
+    : connectionState === "connected"
+      ? snapshot.state
+      : "disconnected";
   $: status = protocolError ?? snapshot.status_text ?? fallbackStatus[displayState] ?? null;
-  $: showResponse = displayState === "speaking" && snapshot.response_text.length > 0;
+  $: showResponse = protocolError === null && displayState === "speaking" && snapshot.response_text.length > 0;
 </script>
 
 <main class:has-response={showResponse} class="state-surface" data-state={displayState} aria-live="polite">

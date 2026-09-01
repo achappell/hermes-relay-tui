@@ -52,6 +52,31 @@ describe("StateSurface", () => {
     expect(screen.queryByText("stale response")).not.toBeInTheDocument();
   });
 
+  it("hides stale speaking content while the channel is reconnecting", () => {
+    const { container } = render(StateSurface, {
+      props: { snapshot: snapshot("speaking", "stale response"), connectionState: "connecting" },
+    });
+
+    expect(container.querySelector('[data-state="disconnected"]')).not.toBeNull();
+    expect(screen.getByText("Display disconnected — check the host connection")).toBeInTheDocument();
+    expect(screen.queryByText("stale response")).not.toBeInTheDocument();
+  });
+
+  it("shows a safe error surface and clears stale response text for protocol errors", () => {
+    const { container } = render(StateSurface, {
+      props: {
+        snapshot: snapshot("speaking", "stale response"),
+        connectionState: "connected",
+        protocolError: "display data unavailable",
+      },
+    });
+
+    expect(container.querySelector('[data-state="error"]')).not.toBeNull();
+    expect(screen.getByText("display data unavailable")).toBeInTheDocument();
+    expect(screen.queryByText("stale response")).not.toBeInTheDocument();
+    expect(container.querySelector("[data-response-text]")).toHaveTextContent("");
+  });
+
   it.each([
     ["buffering", "Still working — please wait"],
     ["error", "Something needs attention — try again"],

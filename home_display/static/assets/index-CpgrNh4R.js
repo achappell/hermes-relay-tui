@@ -3833,9 +3833,9 @@ function StateSurface($$anchor, $$props) {
     disconnected: "Display disconnected — check the host connection"
   };
   legacy_pre_effect(
-    () => (deep_read_state(connectionState()), deep_read_state(snapshot())),
+    () => (deep_read_state(protocolError()), deep_read_state(connectionState()), deep_read_state(snapshot())),
     () => {
-      set(displayState, connectionState() === "disconnected" ? "disconnected" : snapshot().state);
+      set(displayState, protocolError() !== null ? "error" : connectionState() === "connected" ? snapshot().state : "disconnected");
     }
   );
   legacy_pre_effect(
@@ -3844,9 +3844,12 @@ function StateSurface($$anchor, $$props) {
       set(status, protocolError() ?? snapshot().status_text ?? fallbackStatus[get(displayState)] ?? null);
     }
   );
-  legacy_pre_effect(() => (get(displayState), deep_read_state(snapshot())), () => {
-    set(showResponse, get(displayState) === "speaking" && snapshot().response_text.length > 0);
-  });
+  legacy_pre_effect(
+    () => (deep_read_state(protocolError()), get(displayState), deep_read_state(snapshot())),
+    () => {
+      set(showResponse, protocolError() === null && get(displayState) === "speaking" && snapshot().response_text.length > 0);
+    }
+  );
   legacy_pre_effect_reset();
   init();
   var main = root_1();

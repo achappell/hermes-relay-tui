@@ -1,6 +1,6 @@
 # HOME-03 Kiosk Display Shell and State Channel
 
-Status: Design approved in chat; implementation not started.
+Status: Implementation complete; pending final visual review.
 
 Project item: `HOME-03 Kiosk display shell and state channel`
 
