@@ -90,3 +90,23 @@ def test_release_workflow_publishes_python_distributions():
     assert "description: \"Existing release tag to package" in workflow
     assert "ref: ${{ inputs.tag || github.ref }}" in workflow
     assert "RELEASE_TAG" in workflow
+
+
+def test_readme_documents_upgrade_and_uninstall_state():
+    """DIST-02: a clean Mac must uninstall without orphaned runtime state."""
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+
+    assert "## Upgrade and uninstall" in readme
+    for path in (
+        "~/.hermes-relay-tui/config.yaml",
+        "~/.hermes-relay-tui/.env",
+        "~/.hermes-relay-tui/history.jsonl",
+        "~/.hermes-relay-tui/crash.log",
+    ):
+        assert path in readme, path
+    assert "brew uninstall" in readme
+    assert "pipx uninstall" in readme
+    # The speech model lives in a cache shared with unrelated tools, so the
+    # docs must scope removal to this client's entry only.
+    assert "models--Systran--faster-whisper-*" in readme
+    assert "rm -rf ~/.cache/huggingface\n" not in readme
