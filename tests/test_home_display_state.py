@@ -20,6 +20,11 @@ def test_snapshot_rejects_unknown_state_and_negative_sequence():
         DisplaySnapshot(sequence=-1, state="idle")
 
 
+def test_snapshot_rejects_unknown_schema_version():
+    with pytest.raises(ValueError, match="schema"):
+        DisplaySnapshot(schema=2)
+
+
 @pytest.mark.asyncio
 async def test_subscriber_starts_current_and_receives_newest_update():
     publisher = DisplayStatePublisher()

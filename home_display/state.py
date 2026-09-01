@@ -21,8 +21,8 @@ class DisplaySnapshot:
     media: dict[str, object] | None = None
 
     def __post_init__(self) -> None:
-        if type(self.schema) is not int or self.schema < 1:
-            raise ValueError("schema must be a positive integer")
+        if type(self.schema) is not int or self.schema != 1:
+            raise ValueError("schema must be 1")
         if type(self.sequence) is not int or self.sequence < 0:
             raise ValueError("sequence must be a non-negative integer")
         if self.state not in _STATES:
