@@ -22,10 +22,13 @@ DeviceSelector = int | str | None
 def prepare_local_stt() -> None:
     """Avoid tqdm's multiprocessing lock under Textual's redirected streams."""
     try:
-        from tqdm import tqdm
+        from tqdm import tqdm as base_tqdm
+        from tqdm.auto import tqdm as auto_tqdm
     except ImportError:
         return
-    tqdm.set_lock(threading.RLock())
+    lock = threading.RLock()
+    base_tqdm.set_lock(lock)
+    auto_tqdm.set_lock(lock)
 
 
 @contextmanager

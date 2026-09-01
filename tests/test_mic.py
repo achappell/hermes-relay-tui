@@ -3,6 +3,8 @@ import threading
 import types
 
 from mic import prepare_local_stt, wrap_recorder
+import session as session_module
+from session import HermesSession
 from voice import LocalMicrophone, is_whisper_hallucination
 
 
@@ -69,10 +71,54 @@ def test_is_whisper_hallucination_catches_known_phrases_and_silence():
 
 
 def test_prepare_local_stt_pins_tqdm_to_a_thread_lock():
-    from tqdm import tqdm
+    from tqdm import tqdm as base_tqdm
+    from tqdm.auto import tqdm
 
     prepare_local_stt()
+    assert isinstance(base_tqdm.get_lock(), type(threading.RLock()))
     assert isinstance(tqdm.get_lock(), type(threading.RLock()))
+
+
+def test_session_prepares_tqdm_before_first_model_load(monkeypatch):
+    from tqdm.auto import tqdm
+
+    monkeypatch.delattr(tqdm, "_lock", raising=False)
+
+    class TextualStderr:
+        def fileno(self):
+            return -1
+
+        def isatty(self):
+            return False
+
+        def write(self, value):
+            pass
+
+        def flush(self):
+            pass
+
+    monkeypatch.setattr(sys, "stderr", TextualStderr())
+
+    class FakeMicrophone:
+        def __init__(self, **kwargs):
+            # This is the lock construction triggered by faster-whisper's
+            # first model download. It must not start multiprocessing from a
+            # Textual process whose stderr fd is intentionally unavailable.
+            self.lock = tqdm.get_lock()
+
+        def capture(self):
+            return ""
+
+    monkeypatch.setattr(session_module, "LocalMicrophone", FakeMicrophone)
+    args = types.SimpleNamespace(
+        mic_max_seconds=15.0,
+        mic_silence_duration=3.0,
+        mic_silence_threshold=200,
+        stt_model=None,
+        mic_input_device=None,
+    )
+
+    HermesSession(args).capture_voice()
 
 
 def test_wrapped_recorder_selects_input_device_and_cancellation_wakes_capture(monkeypatch):
