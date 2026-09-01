@@ -179,7 +179,7 @@ Do not put a real token in this file or in the README.
 - Use `/image <path>`, `/image list`, or `/image clear` to stage and inspect local image attachments. `@path` references support local path completion; the current relay reports attachments as unsupported rather than sending them.
 - Use `!command` or `{!command}` only after opting in with `--allow-shell`; execution is local, bounded, and visible, with shell operators rejected.
 - Use `/reload` to re-read the config file/environment without restarting. Any of busy-mode, show-details, or audio devices you've changed interactively this session are left alone; everything else picks up the new values. A malformed config file reports an error instead of crashing.
-- `Ctrl+C` interrupts the active turn; when idle it clears the draft, clears the queue, or exits.
+- Drag across transcript text to select it; releasing the mouse copies the selection, shows a brief toast, and clears the selection after success. `Ctrl+C` copies an existing selection or, with no selection, interrupts the active turn or, when idle, clears the draft, queue, or exits.
 - Steering happens when an ordinary message is submitted in `--busy-mode steer`; there is no separate slash command.
 - Slash commands are routed before ordinary text; do not silently send an unknown command as a model prompt.
 - `Ctrl+R` captures a local microphone turn and sends its transcript.

@@ -6,6 +6,9 @@ import wave
 from io import BytesIO
 
 import pytest
+from textual.events import MouseMove, MouseUp
+from textual.geometry import Offset
+from textual.selection import Selection
 from textual.widgets import Static
 
 import app as app_module
@@ -1820,7 +1823,7 @@ async def test_help_binding_prints_the_bindings_line():
         await pilot.pause()
         await app.action_show_help()
         assert "ctrl+r = voice turn" in transcript_of(app)
-        assert "ctrl+c = interrupt" in transcript_of(app)
+        assert "ctrl+c = copy an existing selection or interrupt when none is selected" in transcript_of(app)
         assert "busy-mode = queue" in transcript_of(app)
 
 
@@ -2148,6 +2151,255 @@ async def test_copy_command_uses_the_visible_transcript(monkeypatch):
     assert "copied visible transcript" in transcript
 
 
+async def test_ctrl_c_copies_mouse_selected_transcript_text(monkeypatch):
+    copied = []
+
+    async def fake_copy(text):
+        copied.append(text)
+
+    monkeypatch.setattr(app_module, "copy_text", fake_copy)
+    app = HermesStreamingApp(args=make_args(), session_factory=lambda: FakeSession())
+    async with app.run_test() as pilot:
+        app.transcript.clear()
+        app._refresh_transcript()
+        app._append_block("[error] send failed", role="error")
+        transcript_widget = app.query_one("#transcript", Static)
+        transcript_widget.text_select_all()
+
+        await pilot.press("ctrl+c")
+        await pilot.pause()
+
+    assert copied == ["[error] send failed"]
+
+
+async def test_mouse_selected_transcript_text_is_visibly_highlighted():
+    app = HermesStreamingApp(args=make_args(), session_factory=lambda: FakeSession())
+    async with app.run_test() as pilot:
+        app.transcript.clear()
+        app._refresh_transcript()
+        app._append_block("[error] send failed", role="error")
+        transcript_widget = app.query_one("#transcript", Static)
+        before_line = app.screen._compositor.render_strips()[
+            transcript_widget.region.y
+        ]
+        before_style = next(
+            segment.style
+            for segment in before_line._segments
+            if segment.text == "[error] send failed"
+        )
+        transcript_widget.text_select_all()
+        await pilot.pause()
+
+        screen_strips = app.screen._compositor.render_strips()
+        line = screen_strips[transcript_widget.region.y]
+
+    assert any(
+        segment.text == "[error] send failed"
+        and segment.style != before_style
+        for segment in line._segments
+    )
+
+
+async def test_mouse_selection_preserves_transcript_text_contrast():
+    app = HermesStreamingApp(args=make_args(), session_factory=lambda: FakeSession())
+    async with app.run_test() as pilot:
+        app.transcript.clear()
+        app._refresh_transcript()
+        app._append_block("[error] send failed", role="error")
+        transcript_widget = app.query_one("#transcript", Static)
+        transcript_widget.text_select_all()
+        await pilot.pause()
+
+        screen_strips = app.screen._compositor.render_strips()
+        line = screen_strips[transcript_widget.region.y]
+
+    selected_segment = next(
+        segment for segment in line._segments if segment.text == "[error] send failed"
+    )
+    assert selected_segment.style.color != selected_segment.style.bgcolor
+
+
+async def test_ctrl_c_copies_only_the_selected_transcript_range(monkeypatch):
+    copied = []
+
+    async def fake_copy(text):
+        copied.append(text)
+
+    monkeypatch.setattr(app_module, "copy_text", fake_copy)
+    app = HermesStreamingApp(args=make_args(), session_factory=lambda: FakeSession())
+    async with app.run_test() as pilot:
+        app.transcript.clear()
+        app._refresh_transcript()
+        app._append_block("[error] send failed", role="error")
+        transcript_widget = app.query_one("#transcript", Static)
+        app.screen.selections = {
+            transcript_widget: Selection(Offset(8, 0), Offset(12, 0))
+        }
+        await pilot.pause()
+
+        await pilot.press("ctrl+c")
+        await pilot.pause()
+
+    assert copied == ["send"]
+
+
+async def test_mouse_drag_selects_a_character_range_in_the_transcript(monkeypatch):
+    async def fake_copy(text):
+        return None
+
+    monkeypatch.setattr(app_module, "copy_text", fake_copy)
+    app = HermesStreamingApp(args=make_args(), session_factory=lambda: FakeSession())
+    async with app.run_test() as pilot:
+        app.transcript.clear()
+        app._refresh_transcript()
+        app._append_block("[error] send failed", role="error")
+        transcript_widget = app.query_one("#transcript", Static)
+        region = transcript_widget.region
+
+        await pilot.mouse_down(transcript_widget, offset=(8, 0))
+        previous_x = region.x + 8
+        for target_offset, expected in ((9, "se"), (10, "sen"), (11, "send")):
+            target_x = region.x + target_offset
+            app.screen._forward_event(
+                MouseMove(
+                    app.screen,
+                    target_x,
+                    region.y,
+                    target_x - previous_x,
+                    0,
+                    1,
+                    False,
+                    False,
+                    False,
+                    screen_x=target_x,
+                    screen_y=region.y,
+                )
+            )
+            await pilot.pause()
+            assert app.screen.get_selected_text() == expected
+            previous_x = target_x
+        app.screen._forward_event(
+            MouseUp(
+                app.screen,
+                region.x + 11,
+                region.y,
+                0,
+                0,
+                1,
+                False,
+                False,
+                False,
+                screen_x=region.x + 11,
+                screen_y=region.y,
+            )
+        )
+        await pilot.pause()
+
+        assert app.screen.get_selected_text() is None
+
+
+async def test_mouse_release_copies_selection_and_shows_a_toast(monkeypatch):
+    copied = []
+    notifications = []
+
+    async def fake_copy(text):
+        copied.append(text)
+
+    def fake_notify(message, **kwargs):
+        notifications.append((message, kwargs))
+
+    monkeypatch.setattr(app_module, "copy_text", fake_copy)
+    app = HermesStreamingApp(args=make_args(), session_factory=lambda: FakeSession())
+    async with app.run_test() as pilot:
+        monkeypatch.setattr(app, "notify", fake_notify)
+        app.transcript.clear()
+        app._refresh_transcript()
+        app._append_block("[error] send failed", role="error")
+        transcript_widget = app.query_one("#transcript", Static)
+        region = transcript_widget.region
+
+        await pilot.mouse_down(transcript_widget, offset=(8, 0))
+        target_x = region.x + 11
+        app.screen._forward_event(
+            MouseMove(
+                app.screen,
+                target_x,
+                region.y,
+                target_x - (region.x + 8),
+                0,
+                1,
+                False,
+                False,
+                False,
+                screen_x=target_x,
+                screen_y=region.y,
+            )
+        )
+        app.screen._forward_event(
+            MouseUp(
+                app.screen,
+                target_x,
+                region.y,
+                0,
+                0,
+                1,
+                False,
+                False,
+                False,
+                screen_x=target_x,
+                screen_y=region.y,
+            )
+        )
+        await pilot.pause()
+        assert app.screen.get_selected_text() is None
+
+    assert copied == ["send"]
+    assert notifications == [("Copied to clipboard", {"timeout": 1.5})]
+
+
+async def test_mouse_click_does_not_copy_or_show_a_toast(monkeypatch):
+    copied = []
+    notifications = []
+
+    async def fake_copy(text):
+        copied.append(text)
+
+    def fake_notify(message, **kwargs):
+        notifications.append((message, kwargs))
+
+    monkeypatch.setattr(app_module, "copy_text", fake_copy)
+    app = HermesStreamingApp(args=make_args(), session_factory=lambda: FakeSession())
+    async with app.run_test() as pilot:
+        monkeypatch.setattr(app, "notify", fake_notify)
+        app.transcript.clear()
+        app._refresh_transcript()
+        app._append_block("[error] send failed", role="error")
+        await pilot.click(app.query_one("#transcript", Static), offset=(8, 0))
+        await pilot.pause()
+
+    assert copied == []
+    assert notifications == []
+
+
+async def test_ctrl_c_reports_mouse_selection_copy_failure(monkeypatch):
+    async def failing_copy(text):
+        raise app_module.ClipboardError("clipboard unavailable")
+
+    monkeypatch.setattr(app_module, "copy_text", failing_copy)
+    app = HermesStreamingApp(args=make_args(), session_factory=lambda: FakeSession())
+    async with app.run_test() as pilot:
+        app.transcript.clear()
+        app._refresh_transcript()
+        app._append_block("[error] send failed", role="error")
+        app.query_one("#transcript", Static).text_select_all()
+
+        await pilot.press("ctrl+c")
+        await pilot.pause()
+        transcript = transcript_of(app)
+
+    assert "[error] copy selection: clipboard unavailable" in transcript
+
+
 async def test_logs_command_reports_the_local_debug_log(monkeypatch, tmp_path):
     path = tmp_path / "session.log"
     path.write_text("safe trace", encoding="utf-8")
@@ -2161,7 +2413,6 @@ async def test_logs_command_reports_the_local_debug_log(monkeypatch, tmp_path):
         transcript = transcript_of(app)
 
     assert f"logs: debug trace present at {path}" in transcript
-
 
 
 async def test_logs_command_reports_the_persistent_crash_log(monkeypatch, tmp_path):
@@ -2179,6 +2430,7 @@ async def test_logs_command_reports_the_persistent_crash_log(monkeypatch, tmp_pa
 
     assert f"crash log present at {path}" in transcript
     assert "safe crash trace" not in transcript
+
 
 @pytest.mark.parametrize("command", ["/usage", "/compress"])
 async def test_relay_only_daily04_commands_report_protocol_limits(command):
