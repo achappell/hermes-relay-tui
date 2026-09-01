@@ -74,6 +74,24 @@ pipx install hermes-relay-tui
 uv tool install hermes-relay-tui
 ```
 
+### HOME-03 kiosk display distribution
+
+The kiosk display ships as compiled browser assets in `home_display/static/`.
+Before building a Python wheel or source distribution, build those assets:
+
+```bash
+npm --prefix home_display/web run build
+venv/bin/python -m build
+```
+
+Node, Svelte, Vite, TypeScript, and browser test packages are build-time tools,
+not appliance runtime dependencies. Follow the
+[HOME-03 kiosk display smoke procedure](docs/testing/home-03-kiosk-display.md)
+to validate the local fake-state display after building.
+
+This slice is only the display shell: touch controls, photo playback,
+YouTube/video, Hermes integration, and audio are outside its scope.
+
 ## Project automation
 
 - GitHub Actions runs the test suite and verifies the installed console command

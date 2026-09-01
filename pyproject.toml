@@ -24,3 +24,11 @@ hermes-relay = "app:main"
 
 [tool.setuptools]
 py-modules = ["app", "attachments", "audio", "clipboard", "client", "commands", "config", "diagnostics", "history", "mic", "session", "setup_wizard", "shell", "transcript", "voice"]
+include-package-data = false
+
+[tool.setuptools.packages.find]
+include = ["home_display"]
+namespaces = false
+
+[tool.setuptools.package-data]
+home_display = ["static/**/*"]

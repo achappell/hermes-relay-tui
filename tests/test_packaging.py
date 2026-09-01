@@ -17,6 +17,18 @@ def test_project_metadata_exposes_the_console_command():
     )
 
 
+def test_home_display_package_and_static_assets_are_declared():
+    text = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
+
+    assert '"home_display"' in text
+    assert "static" in text
+
+
+def test_home_display_python_files_do_not_import_textual():
+    for path in (ROOT / "home_display").rglob("*.py"):
+        assert "import textual" not in path.read_text(encoding="utf-8")
+
+
 def test_homebrew_trial_formula_declares_runtime_boundaries():
     formula = (ROOT / "packaging/homebrew/hermes-relay-tui.rb").read_text(encoding="utf-8")
 
