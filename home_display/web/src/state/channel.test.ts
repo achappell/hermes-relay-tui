@@ -129,6 +129,49 @@ describe("StateChannel", () => {
     expect(protocolErrors).toEqual(["display data unavailable"]);
   });
 
+  it("does not let a snapshot listener error escape the message callback", () => {
+    const socket = new FakeSocket();
+    const onSnapshot = vi.fn(() => {
+      throw new Error("surface failed");
+    });
+    const channel = new StateChannel(
+      "ws://display.test/state",
+      onSnapshot,
+      () => {},
+      () => {},
+      () => socket,
+    );
+
+    channel.start();
+    socket.open();
+    expect(() => socket.message(rawSnapshot(1))).not.toThrow();
+    expect(onSnapshot).toHaveBeenCalledOnce();
+    channel.stop();
+  });
+
+  it("does not let a connection-state listener error escape socket callbacks", () => {
+    const socket = new FakeSocket();
+    const onConnectionState = vi.fn((state: string) => {
+      if (state !== "connecting") {
+        throw new Error("surface failed");
+      }
+    });
+    const channel = new StateChannel(
+      "ws://display.test/state",
+      () => {},
+      onConnectionState,
+      () => {},
+      () => socket,
+    );
+
+    channel.start();
+    expect(() => socket.open()).not.toThrow();
+    expect(() => socket.closeFromServer()).not.toThrow();
+    expect(onConnectionState).toHaveBeenCalledWith("connected");
+    expect(onConnectionState).toHaveBeenCalledWith("disconnected");
+    channel.stop();
+  });
+
   it("cleans up its socket and pending reconnect when stopped", () => {
     vi.useFakeTimers();
     const sockets: FakeSocket[] = [];
@@ -144,5 +187,23 @@ describe("StateChannel", () => {
     vi.advanceTimersByTime(4000);
     expect(sockets[0].closed).toBe(true);
     expect(factory).toHaveBeenCalledTimes(1);
+  });
+
+  it("stopping with a pending reconnect prevents a new socket", () => {
+    vi.useFakeTimers();
+    const sockets: FakeSocket[] = [];
+    const factory = vi.fn(() => {
+      const socket = new FakeSocket();
+      sockets.push(socket);
+      return socket;
+    });
+    const channel = new StateChannel("ws://display.test/state", () => {}, () => {}, () => {}, factory);
+
+    channel.start();
+    sockets[0].closeFromServer();
+    expect(factory).toHaveBeenCalledOnce();
+    channel.stop();
+    vi.advanceTimersByTime(250);
+    expect(factory).toHaveBeenCalledOnce();
   });
 });

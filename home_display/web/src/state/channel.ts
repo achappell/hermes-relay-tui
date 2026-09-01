@@ -64,12 +64,12 @@ export class StateChannel {
       return;
     }
 
-    this.onConnectionState("connecting");
+    this.deliver(() => this.onConnectionState("connecting"));
     let socket: WebSocketLike;
     try {
       socket = this.socketFactory(this.url);
     } catch {
-      this.onConnectionState("disconnected");
+      this.deliver(() => this.onConnectionState("disconnected"));
       this.scheduleReconnect();
       return;
     }
@@ -82,7 +82,7 @@ export class StateChannel {
 
       this.lastSequence = -1;
       this.reconnectAttempt = 0;
-      this.onConnectionState("connected");
+      this.deliver(() => this.onConnectionState("connected"));
     };
     socket.onmessage = (event) => {
       if (!this.isCurrent(socket)) {
@@ -98,7 +98,7 @@ export class StateChannel {
       }
 
       this.socket = null;
-      this.onConnectionState("disconnected");
+      this.deliver(() => this.onConnectionState("disconnected"));
       this.scheduleReconnect();
     };
   }
@@ -123,7 +123,7 @@ export class StateChannel {
     }
 
     this.lastSequence = snapshot.sequence;
-    this.onSnapshot(snapshot);
+    this.deliver(() => this.onSnapshot(snapshot));
   }
 
   private scheduleReconnect(): void {
@@ -144,10 +144,14 @@ export class StateChannel {
   }
 
   private reportProtocolError(): void {
+    this.deliver(() => this.onProtocolError("display data unavailable"));
+  }
+
+  private deliver(callback: () => void): void {
     try {
-      this.onProtocolError("display data unavailable");
+      callback();
     } catch {
-      // A UI error listener must not make the WebSocket callback throw.
+      // Consumer failures must not escape a WebSocket event callback.
     }
   }
 }
