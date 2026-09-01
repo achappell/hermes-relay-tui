@@ -310,6 +310,7 @@ describe("StateSurface", () => {
 - [ ] **Step 1: Write the failing finite-sequence test.**
 
 ```python
+import asyncio
 import pytest
 from home_display.demo import DEMO_STEPS, run_demo
 from home_display.state import DisplayStatePublisher
@@ -318,11 +319,19 @@ from home_display.state import DisplayStatePublisher
 @pytest.mark.asyncio
 async def test_demo_publishes_the_approved_state_sequence():
     publisher = DisplayStatePublisher()
-    await run_demo(publisher, interval=0)
-    assert [state for state, _, _ in DEMO_STEPS] == [
+    subscription = publisher.subscribe()
+    await anext(subscription)
+    task = asyncio.create_task(run_demo(publisher, interval=0))
+    observed = [
+        (await anext(subscription)).state
+        for _ in DEMO_STEPS
+    ]
+    await task
+    assert observed == [
         "idle", "listening", "thinking", "speaking", "buffering", "error", "idle",
     ]
     assert publisher.snapshot.state == "idle"
+    await subscription.aclose()
 ```
 
 - [ ] **Step 2: Run `venv/bin/pytest tests/test_home_display_demo.py -v`; verify failure because `home_display.demo` is missing.**
@@ -353,6 +362,9 @@ venv/bin/python -m home_display.demo --interval 2
 - [ ] **Step 1: Add failing packaging and boundary assertions.**
 
 ```python
+from pathlib import Path
+
+
 def test_home_display_package_and_static_assets_are_declared():
     text = Path("pyproject.toml").read_text(encoding="utf-8")
     assert '"home_display"' in text
