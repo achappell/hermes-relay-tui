@@ -8,6 +8,7 @@ import sys
 import yaml
 
 import app
+import config
 from setup_wizard import save_setup_files
 from setup_wizard import probe_connection, run_setup
 
@@ -48,7 +49,6 @@ def test_run_setup_guides_user_and_saves_the_answers(tmp_path):
         [
             "https://hermes.example/voice-session/",
             "jensen-laptop",
-            "jensen-mac",
             "kitchen",
         ]
     )
@@ -69,7 +69,7 @@ def test_run_setup_guides_user_and_saves_the_answers(tmp_path):
     saved = yaml.safe_load(config_path.read_text(encoding="utf-8"))
     assert saved["url"] == "wss://hermes.example/voice-session"
     assert saved["client_id"] == "jensen-laptop"
-    assert saved["device_id"] == "jensen-mac"
+    assert saved["device_id"] == config.default_device_id()
     assert saved["session_id"] == "kitchen"
 
 
@@ -172,7 +172,7 @@ def test_probe_connection_verifies_the_voice_session_handshake():
 
 
 def test_run_setup_checks_the_saved_connection_when_requested(tmp_path):
-    answers = iter(["wss://hermes.example/voice-session", "jensen-laptop", "jensen-mac", "kitchen"])
+    answers = iter(["wss://hermes.example/voice-session", "jensen-laptop", "kitchen"])
     secrets = iter(["secret-token"])
     output = []
     calls = []
@@ -196,7 +196,7 @@ def test_run_setup_checks_the_saved_connection_when_requested(tmp_path):
             "wss://hermes.example/voice-session",
             "secret-token",
             "jensen-laptop",
-            "jensen-mac",
+            config.default_device_id(),
             "kitchen",
         )
     ]
@@ -212,7 +212,7 @@ def test_normalize_endpoint_accepts_http_urls_pasted_from_server_docs():
 
 
 def test_run_setup_accepts_async_connection_checker(tmp_path):
-    answers = iter(["wss://hermes.example/voice-session", "jensen-laptop", "jensen-mac", "kitchen"])
+    answers = iter(["wss://hermes.example/voice-session", "jensen-laptop", "kitchen"])
     secrets = iter(["secret-token"])
 
     async def check(*args):
