@@ -36,7 +36,8 @@ home = [
 
 [project.scripts]
 hermes-relay = "app:main"
-hermes-relay-home = "home_display.demo:main"
+hermes-relay-home = "home_display.appliance:main"
+hermes-relay-home-demo = "home_display.demo:main"
 
 [tool.setuptools]
 py-modules = ["app", "attachments", "audio", "clipboard", "client", "commands", "config", "diagnostics", "history", "mic", "session", "setup_wizard", "shell", "transcript", "voice", "wake", "handsfree"]

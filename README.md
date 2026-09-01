@@ -409,13 +409,25 @@ hear a wake word:
 # On the household appliance — installs everything the home unit needs.
 pip install 'hermes-relay-tui[home]'
 
-# On a laptop, to try the wake word with the terminal client.
+# Then run the appliance: wake phrase in, spoken answer out, display in step.
+hermes-relay-home --wake-enabled
+
+# On a laptop, to experiment with detection without running the appliance.
 pip install 'hermes-relay-tui[wake]'
-hermes-relay --wake-enabled
+python scripts/wake_check.py
 ```
 
+`hermes-relay-home` is the whole unit: it opens one microphone stream for the
+listener to hear the room, captures a turn when the phrase fires, plays the
+reply, and serves the kiosk display on a loopback URL that reflects what is
+actually happening. `hermes-relay-home-demo` still serves the display alone,
+driven by a scripted fake, for working on the browser shell with no relay and
+no hardware. Use `--display-port` to pin the display to a fixed loopback port
+so a kiosk browser can be pointed at it. The [HOME-09 smoke procedure](docs/testing/home-09-appliance-loop.md)
+is how the real loop gets validated.
+
 **A plain install does not include this.** `pip install hermes-relay-tui` and
-`brew install hermes-relay-tui` give you the `hermes-relay-home` entry point
+`brew install hermes-relay-tui` give you the `hermes-relay-home` command
 and the bundled models, but no wake-word engine, so the listener cannot start.
 That is deliberate: the engine brings an ONNX runtime that a laptop running the
 terminal client would never use. The appliance names its own dependencies with

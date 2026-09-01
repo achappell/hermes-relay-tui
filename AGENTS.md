@@ -14,6 +14,8 @@ This repository contains a small Python/Textual terminal UI for the Hermes voice
 - `mic.py` — device-selection and cancellation glue around `voice.py`'s recorder.
 - `wake.py` — wake-word detection and the listener worker for hands-free capture.
 - `handsfree.py` — turns a wake event into exactly one session turn.
+- `home_display/appliance.py` — the home unit's front end: joins the session,
+  the wake listener, audio playback, and the display state channel.
 - `transcript.py` — typed transcript records and Rich Markdown rendering.
 - `tests/` — unit and integration-style tests using fakes; do not require a live Hermes endpoint.
 
@@ -31,8 +33,9 @@ ends that consume it.
 `mic.py`, `shell.py`, `attachments.py`, `clipboard.py`, `history.py`,
 `wake.py`, `handsfree.py`.
 
-**Front-end-specific:** `app.py` (Textual) and `transcript.py` (Rich
-rendering for a terminal transcript).
+**Front-end-specific:** `app.py` (Textual), `transcript.py` (Rich rendering for
+a terminal transcript), and `home_display/` (the household appliance: its
+display server, state channel, and `appliance.py` loop).
 
 Rules:
 
