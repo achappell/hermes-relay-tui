@@ -15,7 +15,12 @@ from typing import Any, AsyncIterator, Protocol
 import config
 from client import send_hello, send_turn
 from diagnostics import logger as diagnostic_logger, summarize_text
-from mic import LocalMicrophone, cancel_microphone, make_recorder_factory
+from mic import (
+    LocalMicrophone,
+    cancel_microphone,
+    make_recorder_factory,
+    prepare_local_stt,
+)
 
 
 class SessionProtocol(Protocol):
@@ -123,6 +128,10 @@ class HermesSession:
 
     def capture_voice(self) -> str:
         self._voice_cancel_requested.clear()
+        # faster-whisper downloads its model lazily. Its tqdm subclass can
+        # otherwise create multiprocessing's resource tracker, which cannot
+        # pass Textual's intentionally invalid stderr fd on macOS.
+        prepare_local_stt()
         if self.microphone is None:
             self.microphone = LocalMicrophone(
                 max_seconds=self.args.mic_max_seconds,
