@@ -32,6 +32,25 @@ shared session core, with no keyboard involved.
   installing the TUI does not drag in appliance hardware libraries. A terminal
   client should not pull an ONNX runtime.
 
+## Changing the phrase later
+
+The unit answers to "hey hermes" because that model already exists and this
+slice should not carry a training pass. The phrase is configuration, not
+structure, so changing it later is a config edit plus a model — not a redesign.
+
+Two routes exist when that day comes, and the second is much cheaper:
+
+- **Train a bespoke openWakeWord model** with the synthetic-TTS pipeline that
+  produced `hey_hermes.onnx`. Proven, but hours.
+- **Add sherpa-onnx keyword spotting**, which Hermes' `wake_word.py` already
+  implements as a second engine. Open vocabulary: any typed phrase, no training,
+  ~13 MB model fetched once. Choosing a custom phrase would mean adding that
+  engine rather than running a training project.
+
+`wake.py`'s engine seam should therefore stay an injected interface with one
+implementation, not an openWakeWord-shaped class. That costs nothing now and is
+the whole difference between adding an engine and rewriting the module.
+
 ## Prior art: Hermes' own wake-word implementation
 
 Hermes already ships a mature listener at
