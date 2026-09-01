@@ -6,9 +6,10 @@ class HermesRelayTui < Formula
   desc "Textual terminal UI for authenticated Hermes voice sessions"
   homepage "https://github.com/achappell/hermes-relay-tui"
 
-  # Pin the public source tag and revision for reproducible installs.
-  url "https://github.com/achappell/hermes-relay-tui.git", using: :git,
-      tag: "v0.1.0", revision: "9796b63452e8e77b246ffa9119936f36c5a220a9"
+  # Install from the checksummed release sdist, not a git clone.
+  url "https://github.com/achappell/hermes-relay-tui/releases/download/v0.5.0/hermes_relay_tui-0.5.0.tar.gz"
+  sha256 "7a49366db55fc48493bd1233ba920b174fc312213576cf057b182dee6d4bde5e"
+  version "0.5.0"
   head "https://github.com/achappell/hermes-relay-tui.git", branch: "main"
 
   depends_on "portaudio"
@@ -25,6 +26,15 @@ class HermesRelayTui < Formula
       venv / "bin/hermes-relay",
       HERMES_RELAY_TUI_VENV: venv.to_s,
     )
+
+    # The kiosk entry point only exists in releases that ship home_display,
+    # so link it when the installed distribution actually provides it.
+    if (venv / "bin/hermes-relay-home").exist?
+      (bin / "hermes-relay-home").write_env_script(
+        venv / "bin/hermes-relay-home",
+        HERMES_RELAY_TUI_VENV: venv.to_s,
+      )
+    end
   end
 
   test do

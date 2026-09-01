@@ -94,6 +94,88 @@ to validate the local fake-state display after building.
 This slice is only the display shell: touch controls, photo playback,
 YouTube/video, Hermes integration, and audio are outside its scope.
 
+## Upgrade and uninstall
+
+### Upgrade
+
+```bash
+# Homebrew
+brew update
+brew upgrade achappell/hermes-relay/hermes-relay-tui
+
+# Python package
+python3.14 -m pip install --upgrade hermes-relay-tui
+pipx upgrade hermes-relay-tui
+uv tool upgrade hermes-relay-tui
+```
+
+Upgrades never touch `~/.hermes-relay-tui/`, so the endpoint, token, session
+defaults, and prompt history survive. Re-run `hermes-relay setup` only to
+change an answer; it rewrites `config.yaml` in place and leaves unrelated keys
+alone.
+
+Two upgrades are worth knowing about:
+
+- Releases before `home_display` shipped have no `hermes-relay-home` command.
+  Homebrew links it automatically once you upgrade to a release that provides
+  it — no reinstall needed.
+- If `stt_model` is absent from `config.yaml` (installs predating guided model
+  setup), the first `Ctrl+R` after upgrading downloads the model. Run
+  `hermes-relay setup` once to move that download out of the TUI.
+
+### Uninstall
+
+Removing the program leaves your data in place. Uninstall it first:
+
+```bash
+# Homebrew
+brew uninstall achappell/hermes-relay/hermes-relay-tui
+brew untap achappell/hermes-relay
+
+# Python package
+python3.14 -m pip uninstall hermes-relay-tui
+pipx uninstall hermes-relay-tui
+uv tool uninstall hermes-relay-tui
+```
+
+Then remove the runtime state you no longer want. Everything this client
+writes lives in one directory:
+
+| Path | Contents |
+| --- | --- |
+| `~/.hermes-relay-tui/config.yaml` | editable connection defaults |
+| `~/.hermes-relay-tui/.env` | **bearer token** (owner-only) |
+| `~/.hermes-relay-tui/history.jsonl`, `history/` | prompt history, per endpoint |
+| `~/.hermes-relay-tui/crash.log` | crash reports; appends until removed |
+| `$TMPDIR/hermes-relay-tui-debug.log` | debug trace, only with `--debug` |
+
+```bash
+rm -rf ~/.hermes-relay-tui
+rm -f "${TMPDIR:-/tmp}/hermes-relay-tui-debug.log"
+```
+
+The `.env` holds a live bearer token. Remove it even if you keep everything
+else, and rotate the token if the machine is leaving your control.
+
+Older installs may also have a token at
+`~/.hermes/profiles/amanda/.env`, which is still read as a fallback. That path
+belongs to a local Hermes install, so remove the file rather than the
+directory.
+
+### Speech model cache
+
+The local speech model is **not** stored under `~/.hermes-relay-tui`. It goes
+to the shared Hugging Face cache, and only this entry belongs to this client:
+
+```bash
+du -sh ~/.cache/huggingface/hub/models--Systran--faster-whisper-*
+rm -rf ~/.cache/huggingface/hub/models--Systran--faster-whisper-*
+```
+
+Remove only the `Systran--faster-whisper-*` directories. The rest of
+`~/.cache/huggingface` belongs to other tools on the machine, and deleting the
+whole cache will force unrelated software to re-download several gigabytes.
+
 ## Project automation
 
 - GitHub Actions runs the test suite and verifies the installed console command
