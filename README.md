@@ -398,6 +398,52 @@ By default, the app plays supported 16-bit PCM as it arrives. If playback is una
 
 When `--output` is set, the first turn uses that path and later turns use numbered suffixes such as `response-1.wav`. Without `--output`, audio that was not played live is written to the current directory as `hybrid-tui-<turn-id>.wav`.
 
+## Hands-free wake word
+
+The home unit can listen continuously for a spoken phrase instead of waiting
+for a keypress. It is **off by default** and needs an optional extra, because a
+terminal install should not pull an ONNX runtime onto a laptop that will never
+hear a wake word:
+
+```bash
+pip install 'hermes-relay-tui[wake]'
+hermes-relay --wake-enabled
+```
+
+Detection is entirely on-device. No audio leaves the machine to decide whether
+the phrase was spoken.
+
+| Flag | Default | What it does |
+|---|---|---|
+| `--wake-enabled` | off | Listen continuously for the phrase. |
+| `--wake-model` | bundled default | Path to a `.onnx` model, or a built-in openWakeWord name. |
+| `--wake-threshold` | `0.6` | Per-frame score above which the phrase counts as present. |
+| `--wake-confirmation-frames` | `3` | Consecutive over-threshold frames required to fire. |
+| `--wake-refractory-seconds` | `2.0` | Minimum gap between two fires. |
+| `--wake-listen-timeout` | `8.0` | How long to wait for speech to begin after the phrase. |
+| `--wake-barge-in` | off | Let the phrase interrupt playback. See the warning below. |
+
+**Confirmation frames are the setting that matters.** The detector scores about
+twelve frames a second, and a stray sound can push a single frame over the
+threshold. A real utterance holds the score high across several frames in a
+row, so requiring three consecutive frames rejects background conversation far
+better than raising the threshold — which only makes the phrase harder to say.
+Setting this to `1` restores naive single-frame behaviour and is the fastest
+way to make the unit start answering the radio.
+
+**The listening timeout is not a recording limit.** Silence endpointing already
+decides when you have *stopped* talking. This setting answers a different
+question: did anyone ever *start*? It covers the case where the detector fired
+at an extractor fan and nobody is in the room. The window is cancelled the
+instant speech is detected, so it never cuts anyone off mid-sentence; if no
+speech arrives, the unit discards the capture and returns to idle silently. It
+never announces a misfire.
+
+**Do not enable `--wake-barge-in` without echo cancellation.** With a shared
+microphone and speaker the unit hears its own voice, retriggers on itself, and
+interrupts its own sentence. The feature is implemented and tested, and stays
+off until the audio hardware can cancel its own output.
+
 ## Config file
 
 Instead of retyping flags every launch, put your defaults in a YAML file at
