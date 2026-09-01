@@ -71,3 +71,21 @@ def test_open_for_listening_starts_the_stream_without_recording(monkeypatch):
 
     assert opened == [True]
     assert recorder.is_recording is False
+
+
+def test_the_observer_receives_a_copy_not_the_live_buffer():
+    """sounddevice recycles indata between callbacks. The listener queues
+    frames and scores them on another thread, so handing over the live buffer
+    means scoring whatever PortAudio has since overwritten it with - audio
+    that measures loud and recognises as nothing."""
+    import numpy as np
+
+    recorder = _recorder()
+    seen = []
+    recorder.set_frame_observer(seen.append)
+
+    live = np.ones((4, 1), dtype="int16")
+    recorder._dispatch_frame(live)
+    live[:] = 999  # PortAudio reusing its buffer
+
+    assert seen[0].tolist() == [[1], [1], [1], [1]]

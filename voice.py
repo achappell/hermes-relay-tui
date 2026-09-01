@@ -102,7 +102,12 @@ class AudioRecorder:
         if observer is None:
             return
         try:
-            observer(indata)
+            # sounddevice recycles indata between callbacks. The listener
+            # queues frames and scores them on another thread, so handing over
+            # the live buffer means scoring whatever PortAudio has since
+            # written into it: audio that measures loud and matches nothing.
+            # The recording path above copies for the same reason.
+            observer(indata.copy() if hasattr(indata, "copy") else indata)
         except Exception:
             # The audio callback must survive a broken consumer: raising here
             # would stop the stream and take recording down with it.
