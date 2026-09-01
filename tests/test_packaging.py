@@ -3,6 +3,8 @@ import re
 from pathlib import Path
 import tomllib
 
+import yaml
+
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -110,3 +112,19 @@ def test_readme_documents_upgrade_and_uninstall_state():
     # docs must scope removal to this client's entry only.
     assert "models--Systran--faster-whisper-*" in readme
     assert "rm -rf ~/.cache/huggingface\n" not in readme
+
+
+def test_pypi_and_homebrew_publish_independently():
+    """A PyPI failure must not skip the Homebrew tap update."""
+    workflow = yaml.safe_load(
+        (ROOT / ".github/workflows/release.yml").read_text(encoding="utf-8")
+    )
+    jobs = workflow["jobs"]
+
+    assert jobs["publish-pypi"]["needs"] == "package"
+    assert jobs["update-homebrew"]["needs"] == "package"
+    # Neither channel may depend on the other, in either direction.
+    assert "publish-pypi" not in str(jobs["update-homebrew"]["needs"])
+    assert "update-homebrew" not in str(jobs["publish-pypi"]["needs"])
+    # The publish step must not sit inside the job the tap update needs.
+    assert "gh-action-pypi-publish" not in yaml.dump(jobs["package"])
