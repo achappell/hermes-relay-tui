@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import ipaddress
 import json
 import mimetypes
 from dataclasses import dataclass
@@ -26,11 +27,15 @@ class DisplayServerInfo:
 
     @property
     def http_url(self) -> str:
-        return f"http://{self.host}:{self.port}/"
+        return f"http://{_format_url_host(self.host)}:{self.port}/"
 
     @property
     def websocket_url(self) -> str:
-        return f"ws://{self.host}:{self.port}/state"
+        return f"ws://{_format_url_host(self.host)}:{self.port}/state"
+
+
+def _format_url_host(host: str) -> str:
+    return f"[{host}]" if ":" in host else host
 
 
 class DisplayServer:
@@ -42,6 +47,13 @@ class DisplayServer:
         host: str = "127.0.0.1",
         port: int = 0,
     ) -> None:
+        try:
+            host_address = ipaddress.ip_address(host)
+        except (ValueError, TypeError) as error:
+            raise ValueError("host must be a loopback IP address") from error
+        if not host_address.is_loopback:
+            raise ValueError("host must be a loopback IP address")
+
         self._publisher = publisher
         self._static_dir = Path(static_dir).resolve()
         self._host = host
@@ -94,6 +106,8 @@ class DisplayServer:
     ) -> tuple[HTTPStatus, list[tuple[str, str]], bytes] | None:
         path = urlsplit(request_path).path
         if path == "/state":
+            if not self._origin_is_allowed(headers.get("Origin")):
+                return self._http_response(HTTPStatus.FORBIDDEN, b"Forbidden\n")
             return None
         if headers.get("Upgrade", "").lower() == "websocket":
             return self._http_response(HTTPStatus.NOT_FOUND, b"Not found\n")
@@ -116,6 +130,28 @@ class DisplayServer:
             HTTPStatus.OK,
             static_path.read_bytes(),
             content_type=content_type or "application/octet-stream",
+        )
+
+    def _origin_is_allowed(self, origin: str | None) -> bool:
+        if origin is None:
+            return True
+        if self._info is None:
+            return False
+
+        parsed_origin = urlsplit(origin)
+        try:
+            origin_port = parsed_origin.port
+        except ValueError:
+            return False
+        return (
+            parsed_origin.scheme == "http"
+            and parsed_origin.hostname == self._info.host
+            and origin_port == self._info.port
+            and parsed_origin.username is None
+            and parsed_origin.password is None
+            and parsed_origin.path in ("", "/")
+            and not parsed_origin.query
+            and not parsed_origin.fragment
         )
 
     async def _handle_state_connection(self, websocket: WebSocketServerProtocol) -> None:

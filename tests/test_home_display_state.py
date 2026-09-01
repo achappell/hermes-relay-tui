@@ -25,6 +25,13 @@ def test_snapshot_rejects_unknown_schema_version():
         DisplaySnapshot(schema=2)
 
 
+def test_publisher_rejects_non_json_serializable_media():
+    with pytest.raises(ValueError, match="media"):
+        DisplayStatePublisher().publish(
+            state="idle", media={"provider": object()}
+        )
+
+
 @pytest.mark.asyncio
 async def test_subscriber_starts_current_and_receives_newest_update():
     publisher = DisplayStatePublisher()

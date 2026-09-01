@@ -44,3 +44,32 @@ Validation:
 
 The worktree-local virtual environment lacks `websockets`; both commands used
 `/Users/amandachappell/Development/hermes-relay-tui/venv/bin/pytest`.
+
+## Final-review fix round: Python stream
+
+Added TDD regressions for the final Python review findings. The RED run was:
+
+- `venv/bin/pytest tests/test_home_display_server.py tests/test_home_display_state.py -v`: 4 failed, 12 passed; non-loopback hosts were accepted, an unrelated WebSocket origin connected, and non-JSON media was accepted.
+
+The fixes are limited to the Python server/state stream:
+
+- `DisplayServer` now accepts only literal loopback IP addresses, rejecting
+  wildcard and non-loopback hosts before binding. IPv6 loopback URLs are
+  formatted safely when used.
+- `/state` now accepts no-Origin local clients and the server's bound HTTP
+  origin, including its printed trailing-slash URL, while rejecting unrelated
+  origins with HTTP 403.
+- `DisplaySnapshot` now validates `media` with strict JSON serialization
+  (`allow_nan=False`) and raises `ValueError` during snapshot construction or
+  publisher publication for unsupported values. `media=None` is unchanged.
+
+Validation:
+
+- `/Users/amandachappell/Development/hermes-relay-tui/venv/bin/pytest tests/test_home_display_server.py tests/test_home_display_state.py -v`: 16 passed
+- `/Users/amandachappell/Development/hermes-relay-tui/venv/bin/pytest`: 280 passed
+- `git diff --check`: clean
+
+The worktree-local virtual environment still lacks `websockets`, so the
+repository venv was used. The only test warning is the expected deprecation
+notice for the required `websockets.legacy` API. No browser files or plan,
+spec, or ledger files were changed.

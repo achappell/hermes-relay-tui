@@ -3,8 +3,8 @@ import json
 from urllib.request import urlopen
 
 import pytest
-from websockets.legacy.client import connect
 from websockets.exceptions import InvalidHandshake
+from websockets.legacy.client import connect
 
 from home_display.server import DisplayServer
 from home_display.state import DisplayStatePublisher
@@ -84,6 +84,12 @@ def test_static_path_rejects_symlink_escape(tmp_path):
         server.resolve_static_path("/escape.txt")
 
 
+@pytest.mark.parametrize("host", ["0.0.0.0", "192.0.2.1"])
+def test_server_rejects_non_loopback_host(tmp_path, host):
+    with pytest.raises(ValueError, match="loopback"):
+        DisplayServer(DisplayStatePublisher(), tmp_path, host=host)
+
+
 @pytest.mark.asyncio
 async def test_server_rejects_websocket_upgrade_for_non_state_path(tmp_path):
     (tmp_path / "index.html").write_text("home", encoding="utf-8")
@@ -98,5 +104,34 @@ async def test_server_rejects_websocket_upgrade_for_non_state_path(tmp_path):
         if status_code is None:
             status_code = getattr(response, "status_code", None)
         assert status_code == 404
+    finally:
+        await server.close()
+
+
+@pytest.mark.asyncio
+async def test_state_accepts_the_server_http_origin(tmp_path):
+    (tmp_path / "index.html").write_text("home", encoding="utf-8")
+    server = DisplayServer(DisplayStatePublisher(), tmp_path)
+    info = await server.start()
+    try:
+        async with connect(info.websocket_url, origin=info.http_url) as socket:
+            assert json.loads(await socket.recv())["state"] == "idle"
+    finally:
+        await server.close()
+
+
+@pytest.mark.asyncio
+async def test_state_rejects_an_unrelated_origin(tmp_path):
+    (tmp_path / "index.html").write_text("home", encoding="utf-8")
+    server = DisplayServer(DisplayStatePublisher(), tmp_path)
+    info = await server.start()
+    try:
+        with pytest.raises(InvalidHandshake) as error:
+            await connect(info.websocket_url, origin="http://unrelated.example")
+        response = getattr(error.value, "response", None)
+        status_code = getattr(error.value, "status_code", None)
+        if status_code is None:
+            status_code = getattr(response, "status_code", None)
+        assert status_code == 403
     finally:
         await server.close()

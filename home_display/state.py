@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from typing import Literal
@@ -33,6 +34,11 @@ class DisplaySnapshot:
             raise TypeError("status_text must be a string or None")
         if self.media is not None and not isinstance(self.media, dict):
             raise TypeError("media must be a dict or None")
+        if self.media is not None:
+            try:
+                json.dumps(self.media, allow_nan=False)
+            except (TypeError, ValueError, OverflowError) as error:
+                raise ValueError("media must be JSON serializable") from error
 
     def to_dict(self) -> dict[str, object]:
         return {
