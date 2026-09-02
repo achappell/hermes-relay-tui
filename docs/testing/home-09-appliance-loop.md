@@ -69,6 +69,17 @@ websocket, playback, and the display. Useful flags: `--no-audio` for text only,
 `--fail` to make every turn return an error, `--drop` to hang up mid-turn so
 reconnection can be watched, and `--reply` to change what it says.
 
+## What the display deliberately does not show
+
+Hermes packs the model's chain-of-thought and the answer into one text frame —
+a "💭 **Reasoning:**" marker and a fenced block, then the reply. The appliance
+shows only the reply. If deliberation ever appears on the display, the marker
+has changed shape and `display_text` needs updating.
+
+Some gateways also send the response audio *before* the text. Text arriving
+after playback has finished updates the words on screen without dragging the
+state back to `thinking`.
+
 A turn that streams as one word per line means the relay is sending append-only
 chunks as `text_delta`, which the protocol defines as a *cumulative* preview.
 That is a relay bug, not a client one.

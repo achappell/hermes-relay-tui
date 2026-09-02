@@ -495,3 +495,89 @@ async def test_an_undecodable_fallback_with_no_speech_at_all_reports_buffering()
 
     assert "error" not in publisher.sequence
     assert "buffering" in publisher.sequence
+
+
+# --- the reasoning preamble -------------------------------------------------
+#
+# Hermes packs the model's chain-of-thought and the answer into one text frame:
+# a "💭 **Reasoning:**" marker, a fenced block, then the reply. The transcript
+# in the TUI can afford to show that. A kitchen display cannot: the speaker
+# says one sentence while the wall shows four hundred words of deliberation.
+
+
+def test_plain_text_is_left_exactly_as_it_arrived():
+    from home_display.appliance import display_text
+
+    assert display_text("Sunny and warm.") == "Sunny and warm."
+    assert display_text("") == ""
+
+
+def test_a_reasoning_preamble_is_stripped_down_to_the_answer():
+    from home_display.appliance import display_text
+
+    raw = (
+        "\U0001f4ad **Reasoning:**\n```\nThe user wants a short sentence.\n"
+        "I should keep it brief.\n```\n\nOnline. What's the situation?"
+    )
+
+    assert display_text(raw) == "Online. What's the situation?"
+
+
+def test_an_unfinished_reasoning_block_shows_nothing_yet():
+    """Mid-stream the fence has not closed. Showing the half-written thought
+    is worse than showing nothing: the answer is seconds away."""
+    from home_display.appliance import display_text
+
+    raw = "\U0001f4ad **Reasoning:**\n```\nThe user wants a short sen"
+
+    assert display_text(raw) == ""
+
+
+def test_a_code_fence_in_the_answer_itself_survives():
+    from home_display.appliance import display_text
+
+    raw = "Run this:\n```\nbrew upgrade\n```\nThen restart."
+
+    assert display_text(raw) == raw
+
+
+@pytest.mark.asyncio
+async def test_the_display_shows_the_answer_not_the_deliberation():
+    publisher = RecordingPublisher()
+    script = [
+        {
+            "type": "text_delta",
+            "text": "\U0001f4ad **Reasoning:**\n```\nDeliberating at length.\n```\n\nOnline.",
+        },
+        {"type": "turn_end"},
+    ]
+    appliance, state = make_appliance(script, publisher=publisher)
+
+    await _run_until_idle(appliance, state)
+
+    shown = [entry[1] for entry in publisher.history if entry[1]]
+    assert shown and all("Reasoning" not in text for text in shown)
+    assert shown[-1] == "Online."
+
+
+@pytest.mark.asyncio
+async def test_text_arriving_after_the_answer_was_spoken_does_not_say_thinking():
+    """This gateway sends the audio before the text. The reply landing after
+    playback has finished must not push the display back to `thinking` — the
+    unit is not thinking, it has already answered."""
+    publisher = RecordingPublisher()
+    script = [
+        {"type": "audio_start", "sample_rate": 24000, "channels": 1, "sample_width": 2},
+        {"type": "audio_chunk", "data": b"\x01\x02"},
+        {"type": "audio_end"},
+        {"type": "text_delta", "text": "Online."},
+        {"type": "turn_end"},
+    ]
+    appliance, state = make_appliance(script, publisher=publisher)
+
+    await _run_until_idle(appliance, state)
+
+    order = publisher.sequence
+    after_speaking = order[order.index("speaking") + 1 :]
+    assert "thinking" not in after_speaking, order
+    assert publisher.history[-1][1] == "Online."

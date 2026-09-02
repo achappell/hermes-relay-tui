@@ -40,7 +40,33 @@ from .state import DisplayState, DisplayStatePublisher
 
 logger = logging.getLogger("hermes_relay_tui.appliance")
 
-__all__ = ["Appliance", "main"]
+__all__ = ["Appliance", "display_text", "main"]
+
+# Hermes packs the model's chain-of-thought and the answer into a single text
+# frame: this marker, a fenced block, then the reply. A scrollback transcript
+# can afford to show that; a kitchen display cannot. The speaker says one
+# sentence while the wall would show four hundred words of deliberation.
+REASONING_MARKER = "\U0001f4ad"
+FENCE = "```"
+
+
+def display_text(text: str) -> str:
+    """The answer alone, with any reasoning preamble taken off the front.
+
+    Only a preamble at the very start is removed, so a code fence inside a
+    genuine answer is left alone. While the block is still streaming its fence
+    has not closed yet and nothing is shown: the half-written thought is worse
+    than a blank region for the second before the reply arrives.
+    """
+    if not text.startswith(REASONING_MARKER):
+        return text
+    opened = text.find(FENCE)
+    if opened == -1:
+        return ""
+    closed = text.find(FENCE, opened + len(FENCE))
+    if closed == -1:
+        return ""
+    return text[closed + len(FENCE):].strip()
 
 # Coordinator state to what the room is told. The coordinator is the authority
 # on the capture half of a turn; the event stream is the authority on the
@@ -196,10 +222,10 @@ class Appliance:
                 kind = event.get("type")
                 if kind == "text_delta":
                     response += str(event.get("text") or "")
-                    self._publish_response(response, speaking)
+                    self._publish_response(response, speaking, spoke)
                 elif kind == "text_replace":
                     response = str(event.get("text") or "")
-                    self._publish_response(response, speaking)
+                    self._publish_response(response, speaking, spoke)
                 elif kind == "audio_start":
                     begin_playback(
                         (
@@ -296,9 +322,21 @@ class Appliance:
                 with contextlib.suppress(Exception):
                     self._session.cancel_voice()
 
-    def _publish_response(self, response: str, speaking: bool) -> None:
-        """Stream text into the display without lying about the audio state."""
-        self._publish("speaking" if speaking else "thinking", response_text=response)
+    def _publish_response(self, response: str, speaking: bool, spoke: bool) -> None:
+        """Stream text into the display without lying about the audio state.
+
+        Some gateways send the audio before the text. A reply that lands after
+        playback has finished must not drag the display back to `thinking`:
+        the unit is not thinking, it has already answered. In that case only
+        the text changes and whatever state the unit is really in stands.
+        """
+        if speaking:
+            state: DisplayState = "speaking"
+        elif spoke:
+            state = self._published[0] if self._published else "idle"
+        else:
+            state = "thinking"
+        self._publish(state, response_text=display_text(response))
 
     async def _finish_playback(self) -> None:
         if self._player is None or not self._player.active:
