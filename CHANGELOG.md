@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.6.2 (2026-09-02)
+
+<!-- Release notes generated using configuration in .github/release.yml at main -->
+
+## What's Changed
+### Other Changes
+* HOME-02: wake-word listener and hands-free turn capture by @achappell in https://github.com/achappell/hermes-relay-tui/pull/44
+* HOME-09: appliance loop — wire the session and listener into the display by @achappell in https://github.com/achappell/hermes-relay-tui/pull/46
+* Stop the audio popping, and the TUI's bogus fallback error by @achappell in https://github.com/achappell/hermes-relay-tui/pull/47
+* VOICE-08: stop the audio popping and overlapping streams by @achappell in https://github.com/achappell/hermes-relay-tui/pull/48
+* HOME-10: wake acknowledgement and the silence before the answer by @achappell in https://github.com/achappell/hermes-relay-tui/pull/49
+* VOICE-10: wake mode as an in-session toggle for the TUI by @achappell in https://github.com/achappell/hermes-relay-tui/pull/50
+* TURN-03: keep every segment of a multi-segment answer by @achappell in https://github.com/achappell/hermes-relay-tui/pull/51
+* HOME-10: stop the wake word re-firing on audio from before the turn by @achappell in https://github.com/achappell/hermes-relay-tui/pull/52
+
+
+**Full Changelog**: https://github.com/achappell/hermes-relay-tui/compare/v0.6.1...v0.6.2
+
 ## 0.6.1 (2026-09-01)
 
 <!-- Release notes generated using configuration in .github/release.yml at main -->
