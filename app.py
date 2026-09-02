@@ -15,6 +15,7 @@ token-per-line list.
 from __future__ import annotations
 
 import asyncio
+import copy
 import inspect
 import sys
 import time
@@ -36,6 +37,8 @@ from textual.visual import RenderOptions, RichVisual, Visual, VisualType, visual
 from textual.widgets import Footer, Header, Static, TextArea
 
 import config
+import earcons as earcons_module
+import handsfree
 from attachments import (
     Attachment,
     AttachmentError,
@@ -366,6 +369,8 @@ class HermesStreamingApp(App):
         session_factory: Optional[Callable[[], Any]] = None,
         command_dispatcher: Optional[Callable[[CommandInvocation], Awaitable[str] | str]] = None,
         argv: Optional[list[str]] = None,
+        build_hands_free: Optional[Callable[..., Any]] = None,
+        recorder_factory: Optional[Callable[[], Any]] = None,
     ) -> None:
         super().__init__()
         self.args = args
@@ -390,6 +395,20 @@ class HermesStreamingApp(App):
         self._active_turn_task: Optional[asyncio.Task[None]] = None
         self._voice_capture_task: Optional[asyncio.Task[str]] = None
         self._voice_capture_cancelled = False
+        # Wake mode is off at every launch and only ever armed by /wake on.
+        # An always-open microphone is not something a configuration file or a
+        # command-line flag gets to decide on the user's behalf.
+        self.wake_armed = False
+        self._build_hands_free = build_hands_free or handsfree.build_hands_free
+        self._recorder_factory = recorder_factory
+        self._wake_listener: Any = None
+        self._wake_coordinator: Any = None
+        self._wake_recorder: Any = None
+        self._wake_loop: Optional[asyncio.AbstractEventLoop] = None
+        self._earcons = earcons_module.EarconPlayer(
+            enabled=getattr(args, "earcons", True) and not (args and args.no_play),
+            output_device=getattr(args, "audio_output_device", None),
+        )
         self._needs_reconnect = False
         self._last_prompt: Optional[str] = None
         self._last_prompt_status: Optional[str] = None
@@ -556,8 +575,169 @@ class HermesStreamingApp(App):
             return False
 
     async def on_unmount(self) -> None:
+        # Release the device before anything else. A quit that leaves the
+        # microphone open is the worst possible way to end a session.
+        self._disarm_wake()
         if self.session is not None:
             await self.session.close()
+
+    # --- wake mode ------------------------------------------------------
+
+    async def _handle_wake_command(self, args: str) -> None:
+        """/wake [on|off|status] — hands-free listening, armed on purpose."""
+        choice = args.strip().lower()
+        if choice in ("", "status"):
+            self._report_wake_status()
+        elif choice == "on":
+            self._arm_wake()
+        elif choice == "off":
+            if not self.wake_armed:
+                self._append_block("wake mode is already off")
+                return
+            self._disarm_wake()
+            self._append_block("wake mode off — microphone released")
+        else:
+            self._append_block("usage: /wake [on|off|status]")
+
+    def _report_wake_status(self) -> None:
+        if not self.wake_armed:
+            self._append_block(
+                "wake mode: off — the microphone is closed. Turn it on with /wake on."
+            )
+            return
+        model = getattr(self.args, "wake_model", None) or "bundled hey_hermes"
+        threshold = getattr(self.args, "wake_threshold", 0.6)
+        self._append_block(
+            f"wake mode: on — listening · model: {model} · threshold: {threshold}"
+        )
+
+    def _arm_wake(self) -> None:
+        if self.wake_armed:
+            self._append_block("wake mode is already on")
+            return
+
+        # The builder reads --wake-* settings off args, but wake_enabled is
+        # refused at launch for this front end, so arm it here instead of
+        # asking the user to have set a flag they are not allowed to pass.
+        args = copy.copy(self.args)
+        args.wake_enabled = True
+
+        try:
+            built = self._build_hands_free(
+                self.session,
+                args,
+                send=self._send_wake_turn,
+                speech_detected=self._wake_speech_detected,
+                stop_playback=self.player.close,
+                acknowledge=self._acknowledge_wake,
+                capture_finished=self._acknowledge_capture,
+            )
+        except Exception as error:
+            self._append_block(f"[error] wake mode: {self._wake_failure_text(error)}")
+            return
+        if built is None:
+            self._append_block("[error] wake mode could not be started")
+            return
+
+        listener, coordinator = built
+        factory = self._recorder_factory
+        if factory is None:
+            from voice import create_audio_recorder
+
+            factory = create_audio_recorder
+        recorder = factory()
+
+        self._wake_loop = asyncio.get_running_loop()
+        self._wake_listener = listener
+        self._wake_coordinator = coordinator
+        self._wake_recorder = recorder
+        self.session.use_shared_recorder(recorder)
+
+        # Start the worker before opening the stream. Reversed, frames pile
+        # into a bounded queue with nothing draining it and the entire warm-up
+        # is dropped audio — measured at 96 frames on the appliance.
+        listener.start()
+        recorder.set_frame_observer(listener.submit)
+        recorder.open_for_listening()
+
+        self.wake_armed = True
+        self._set_wake_listening(busy=self._turn_in_flight)
+        self._append_block(
+            "wake mode on — say the phrase. The microphone stays open until "
+            "/wake off."
+        )
+
+    def _wake_failure_text(self, error: Exception) -> str:
+        """Turn an arming failure into the one sentence that fixes it."""
+        import wake  # noqa: PLC0415 - the optional-dependency seam
+
+        if isinstance(error, wake.MissingWakeDependency):
+            return (
+                "the wake-word engine is not installed. "
+                "Install it with: pip install 'hermes-relay-tui[wake]'"
+            )
+        return str(error)
+
+    def _disarm_wake(self) -> None:
+        """Stop listening and give the device back. Safe to call when off."""
+        listener, recorder = self._wake_listener, self._wake_recorder
+        self._wake_listener = None
+        self._wake_coordinator = None
+        self._wake_recorder = None
+        self._wake_loop = None
+        self.wake_armed = False
+        if listener is not None:
+            try:
+                listener.stop()
+            except Exception:
+                diagnostic_logger.debug("stopping the wake listener failed", exc_info=True)
+        if recorder is not None:
+            try:
+                # shutdown() closes the input stream on a guarded timeout, so
+                # the microphone indicator clears and other applications get
+                # the device back. Pausing the detector would not do either.
+                recorder.shutdown()
+            except Exception:
+                diagnostic_logger.debug("closing the wake recorder failed", exc_info=True)
+
+    def _set_wake_listening(self, *, busy: bool) -> None:
+        """Listen only when nothing else holds the microphone.
+
+        A turn or a Ctrl+R capture owns the input stream, and pausing resets
+        the detector's rolling buffer. Without this the client wakes itself on
+        the tail of the phrase it has just recorded.
+        """
+        listener = self._wake_listener
+        if listener is None:
+            return
+        if busy:
+            listener.pause()
+        else:
+            listener.resume()
+
+    def _wake_speech_detected(self) -> bool:
+        return bool(getattr(self._wake_recorder, "has_detected_speech", False))
+
+    def _acknowledge_wake(self) -> None:
+        self._earcons.play(earcons_module.WAKE)
+
+    def _acknowledge_capture(self) -> None:
+        self._earcons.play(earcons_module.CAPTURE_DONE)
+
+    def _send_wake_turn(self, text: str) -> None:
+        """Run one wake turn on the event loop, blocking the listener thread.
+
+        Blocking is the point: the coordinator is single-flight, so while this
+        is outstanding a second detection is dropped instead of becoming an
+        overlapping turn.
+        """
+        loop = self._wake_loop
+        if loop is None:
+            return
+        future = asyncio.run_coroutine_threadsafe(
+            self._run_turn(text, stt_source="local"), loop
+        )
+        future.result()
 
     # --- input paths ----------------------------------------------------------
 
@@ -754,6 +934,8 @@ class HermesStreamingApp(App):
                 await self._run_turn(invocation.raw, stt_source="command")
             else:
                 self._append_block("usage: /voice [on|off|tts|status]")
+        elif command.name == "wake":
+            await self._handle_wake_command(invocation.args)
         elif command.name == "audio":
             await self._handle_audio_command(invocation.args)
         elif command.name == "image":
@@ -1438,6 +1620,7 @@ class HermesStreamingApp(App):
         current_task = asyncio.current_task()
         self._active_turn_task = current_task
         self._turn_in_flight = True
+        self._set_wake_listening(busy=True)
         if self._busy_transition_owner is current_task:
             self._busy_transition_owner = None
         try:
@@ -1462,6 +1645,7 @@ class HermesStreamingApp(App):
             self._turn_in_flight = False
             if self._active_turn_task is current_task:
                 self._active_turn_task = None
+            self._set_wake_listening(busy=False)
 
     async def _run_single_turn(self, text: str, *, stt_source: str) -> bool:
         self._last_prompt = text
@@ -1783,6 +1967,19 @@ def main() -> int:
     config.ensure_default_config_file(args.config)
     if args.log_file is not None:
         args.debug = True
+    if getattr(args, "wake_enabled", False):
+        # The flag used to parse here and do nothing whatsoever: app.py had no
+        # reference to wake or handsfree, so only the appliance honoured it.
+        # Refusing is honest. Silently ignoring a flag about the microphone is
+        # not, and it is the microphone.
+        print(
+            "hermes-relay does not arm hands-free listening at launch.\n"
+            "Start the client, then turn it on in-session with: /wake on\n"
+            "For the always-on household unit, use: hermes-relay-home "
+            "--wake-enabled",
+            file=sys.stderr,
+        )
+        return 2
     log_path = config.configure_logging(debug=args.debug, log_file=args.log_file)
     if log_path is not None:
         diagnostic_logger.info("app.start url=%s", args.url.split("?", 1)[0])

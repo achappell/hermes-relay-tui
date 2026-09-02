@@ -270,6 +270,7 @@ whether a crash report exists and its path.
 | `Tab` | Complete a uniquely-matching slash command in place |
 | `Ctrl+R` | Capture and send a microphone turn |
 | `/voice [on\|off\|tts\|status]` | Control voice mode for this relay session |
+| `/wake` | Arm or release local hands-free listening (`on`/`off`/`status`) |
 | `/audio` | Show or select local audio devices |
 | `/image` | Stage, list, or clear a local image attachment |
 | `/save [path]` | Save the visible transcript locally without overwriting files |
@@ -298,7 +299,7 @@ above the composer lists matching commands and their args/description as you
 type, and disappears once you've typed a space or the text no longer looks
 like a command. `Tab` fills in a uniquely-matching command name without
 moving focus out of the composer. The initial commands
-are `/help`, `/clear`, `/status`, `/queue`, `/busy`, `/details`, `/voice`, `/audio`, `/image`, `/history`, `/save`, `/copy`, `/logs`, `/retry`, `/undo`, `/usage`, `/compress`, and `/quit`;
+are `/help`, `/clear`, `/status`, `/queue`, `/busy`, `/details`, `/voice`, `/wake`, `/audio`, `/image`, `/history`, `/save`, `/copy`, `/logs`, `/retry`, `/undo`, `/usage`, `/compress`, and `/quit`;
 `/queue`
 also supports `list`, `edit <number> <replacement>`, `drop <number>`, and
 `clear`. `/busy [queue|steer|interrupt]` changes the mode for the current
@@ -418,6 +419,9 @@ venv/bin/python -m home_display.appliance --wake-enabled
 # On a laptop, to experiment with detection without running the appliance.
 pip install 'hermes-relay-tui[wake]'
 python scripts/wake_check.py
+
+# In the terminal client, hands-free is armed in-session, never at launch.
+hermes-relay          # then type: /wake on
 ```
 
 `hermes-relay-home` is the whole unit: it opens one microphone stream for the
@@ -449,7 +453,7 @@ works on a clean machine and on a network that is not up yet when it boots.
 
 | Flag | Default | What it does |
 |---|---|---|
-| `--wake-enabled` | off | Listen continuously for the phrase. |
+| `--wake-enabled` | off | Listen continuously for the phrase. **Appliance only** — `hermes-relay` refuses it and points at `/wake on`. |
 | `--wake-model` | bundled `hey_hermes` | Path to a `.onnx` model, or a built-in openWakeWord name. |
 | `--wake-threshold` | `0.6` | Per-frame score above which the phrase counts as present. |
 | `--wake-confirmation-frames` | `3` | Consecutive over-threshold frames required to fire. |
@@ -473,6 +477,25 @@ at an extractor fan and nobody is in the room. The window is cancelled the
 instant speech is detected, so it never cuts anyone off mid-sentence; if no
 speech arrives, the unit discards the capture and returns to idle silently. It
 never announces a misfire.
+
+### Hands-free in the terminal client
+
+`hermes-relay` never arms the microphone at launch. Wake mode is turned on
+inside the session and stays on until you turn it off:
+
+| Command | What happens |
+|---|---|
+| `/wake on` | Opens the input stream and starts listening. Saying the phrase runs one full turn, with the same two tones the appliance uses. |
+| `/wake off` | Stops the listener **and closes the stream**, so the system microphone indicator clears and other applications get the device back. |
+| `/wake` or `/wake status` | Whether it is armed, and the model and threshold in use. |
+
+Quitting the client releases the microphone whether or not wake mode was on.
+
+This is deliberately not a command-line flag. An always-open microphone should
+be something you did on purpose and can see, not a side effect of how the
+process was started — which is why `hermes-relay --wake-enabled` refuses rather
+than silently arming. The household appliance is the opposite case by design:
+it exists to listen, so it takes the flag.
 
 ### Knowing it heard you
 
