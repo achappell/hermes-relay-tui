@@ -41,12 +41,33 @@ def _decode_audio_data(value: Any) -> Optional[bytes]:
     return None
 
 
+# What separates one segment of an answer from the next in the rendered
+# transcript. The relay speaks the segments as one continuous reply, so they
+# are joined rather than kept apart.
+SEGMENT_BREAK = "\n\n"
+
+
+def _joined(committed: str, preview: str) -> str:
+    """The whole answer so far: finished segments plus the one in progress."""
+    if not committed:
+        return preview
+    if not preview:
+        return committed
+    return committed + SEGMENT_BREAK + preview
+
+
 def _final_text_update(
     final_text: str,
     rendered_preview: str,
     streamed_text: bool,
+    committed: str = "",
 ) -> Optional[dict[str, str]]:
-    """Return the append-or-replace update needed for a terminal text frame."""
+    """Return the append-or-replace update needed for a terminal text frame.
+
+    `final_text` is terminal for the *current segment* only. A replacement
+    therefore has to carry the finished segments back with it, or finalising
+    segment three would delete segments one and two.
+    """
     if not final_text:
         return None
     if not streamed_text:
@@ -56,7 +77,7 @@ def _final_text_update(
         return None
     if final_text.startswith(preview):
         return {"type": "text_delta", "text": final_text[len(preview):]}
-    return {"type": "text_replace", "text": final_text}
+    return {"type": "text_replace", "text": _joined(committed, final_text)}
 
 
 async def _receive_json(ws: Any) -> dict[str, Any]:
@@ -135,6 +156,13 @@ async def send_turn(
 
     rendered_preview = ""
     streamed_text = False
+    # Hermes splits one answer into segments, each carrying its own draft_id
+    # and its own terminal text frame. `committed` holds the segments already
+    # finished; `rendered_preview` is only ever the segment in progress.
+    # Measured live 2026-09-02: a single turn arrived as 338 + 83 + 268
+    # characters, and treating each boundary as a revision left 309 of them.
+    committed = ""
+    current_draft: Any = None
     streamed_reasoning = False
     audio_file_active = False
 
@@ -181,6 +209,18 @@ async def send_turn(
         if kind == "turn_accepted":
             continue
         elif kind in {"text_delta", "message.delta"}:
+            draft_id = event_payload.get("draft_id")
+            if (
+                draft_id is not None
+                and current_draft is not None
+                and draft_id != current_draft
+            ):
+                # A new segment, stated by the server rather than guessed at.
+                # Bank the finished one before anything can overwrite it.
+                committed = _joined(committed, rendered_preview)
+                rendered_preview = ""
+            if draft_id is not None:
+                current_draft = draft_id
             preview_value = event_payload.get("text")
             has_rendered_preview = (
                 kind == "message.delta" and event_payload.get("rendered") is not None
@@ -197,16 +237,21 @@ async def send_turn(
                 mode = "raw_delta"
             elif preview.startswith(rendered_preview):
                 delta = preview[len(rendered_preview):]
+                # Opening a fresh segment: the break belongs in front of it, or
+                # the last word of one segment runs into the first of the next.
+                if committed and not rendered_preview:
+                    delta = SEGMENT_BREAK + delta
                 emitted_type = "text_delta"
                 rendered_preview = preview
-                mode = "cumulative_suffix"
+                mode = "segment_open" if committed and not rendered_preview else "cumulative_suffix"
             elif event_payload.get("replace"):
-                # Hermes can revise a cumulative preview (for example when a
-                # late token changes formatting). Replace the active display
-                # record instead of appending the complete preview again.
-                delta = preview
-                emitted_type = "text_replace"
+                # A genuine revision *within* the current segment — Hermes
+                # rewriting a preview when a late token changes formatting.
+                # The replacement carries the finished segments with it, so
+                # revising segment three cannot erase segments one and two.
                 rendered_preview = preview
+                delta = _joined(committed, preview)
+                emitted_type = "text_replace"
                 mode = "cumulative_replace"
             else:
                 delta = f"\n{preview}"
@@ -227,7 +272,9 @@ async def send_turn(
                 yield {"type": emitted_type, "text": delta}
         elif kind in {"text", "text_final"}:
             final_text = str(event_payload.get("text") or event_payload.get("rendered") or "")
-            update = _final_text_update(final_text, rendered_preview, streamed_text)
+            update = _final_text_update(
+                final_text, rendered_preview, streamed_text, committed
+            )
             logger.debug(
                 "normalize.text_final source=%s final=%s emitted=%s prior_preview=%s streamed=%s",
                 kind,
@@ -249,7 +296,9 @@ async def send_turn(
             if completion_reasoning and not streamed_reasoning:
                 streamed_reasoning = True
                 yield {"type": "thinking_delta", "text": completion_reasoning}
-            update = _final_text_update(final_text, rendered_preview, streamed_text)
+            update = _final_text_update(
+                final_text, rendered_preview, streamed_text, committed
+            )
             logger.debug(
                 "normalize.message_complete final=%s emitted=%s prior_preview=%s streamed=%s",
                 summarize_text(final_text),
