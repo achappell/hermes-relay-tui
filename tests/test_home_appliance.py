@@ -450,3 +450,48 @@ async def test_a_wake_nobody_follows_with_speech_cancels_the_capture():
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await task
+
+
+@pytest.mark.asyncio
+async def test_an_undecodable_file_fallback_after_speech_is_not_an_error():
+    """Hermes sends a file fallback *as well as* the PCM it already streamed.
+    Failing to decode the spare copy must not turn a turn that was spoken
+    aloud into a red screen."""
+    publisher = RecordingPublisher()
+    script = [
+        {"type": "text_delta", "text": "Potato."},
+        {"type": "audio_start", "sample_rate": 24000, "channels": 1, "sample_width": 2},
+        {"type": "audio_chunk", "data": b"\x01\x02"},
+        {"type": "audio_end"},
+        {"type": "audio_file_start"},
+        {"type": "audio_file_chunk", "data": b"not a wav file at all"},
+        {"type": "audio_file_end"},
+        {"type": "turn_end"},
+    ]
+    appliance, state = make_appliance(script, publisher=publisher)
+
+    await _run_until_idle(appliance, state)
+
+    assert "error" not in publisher.sequence
+    assert "speaking" in publisher.sequence
+    assert publisher.sequence[-1] == "idle"
+
+
+@pytest.mark.asyncio
+async def test_an_undecodable_fallback_with_no_speech_at_all_reports_buffering():
+    """Nothing was spoken and nothing can be. The answer is on screen but the
+    room heard silence — that is what `buffering` means, not `error`."""
+    publisher = RecordingPublisher()
+    script = [
+        {"type": "text_delta", "text": "Potato."},
+        {"type": "audio_file_start"},
+        {"type": "audio_file_chunk", "data": b"not a wav file at all"},
+        {"type": "audio_file_end"},
+        {"type": "turn_end"},
+    ]
+    appliance, state = make_appliance(script, publisher=publisher)
+
+    await _run_until_idle(appliance, state)
+
+    assert "error" not in publisher.sequence
+    assert "buffering" in publisher.sequence

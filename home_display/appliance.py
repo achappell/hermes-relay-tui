@@ -174,14 +174,17 @@ class Appliance:
         file_audio = bytearray()
         file_format: tuple[int, int, int] | None = None
         speaking = False
+        spoke = False
 
         def begin_playback(fmt: tuple[int, int, int]) -> bool:
             nonlocal speaking
+            nonlocal spoke
             self._player.start(fmt)
             if self._player.active:
                 self._coordinator.playback_started()
                 self._publish("speaking")
                 speaking = True
+                spoke = True
                 return True
             # Audio is arriving but nothing can play it. Say so rather than
             # showing "speaking" over a silent room.
@@ -222,7 +225,11 @@ class Appliance:
                         if all(value is not None for value in metadata)
                         else None
                     )
-                    self._publish("buffering")
+                    # Hermes streams PCM *and* sends a file copy. Do not
+                    # announce a state change for the spare copy when the
+                    # answer has already been spoken aloud.
+                    if not spoke:
+                        self._publish("buffering")
                 elif kind == "audio_file_chunk":
                     file_audio.extend(event["data"])
                 elif kind == "audio_file_end":
@@ -232,7 +239,14 @@ class Appliance:
                         decoded, fmt = audio_module.read_wav(bytes(file_audio))
                     except ValueError:
                         if file_format is None:
-                            self._publish("error", status_text="Unplayable audio")
+                            # An undecodable fallback is not a failed turn. If
+                            # the answer was already spoken, the spare copy is
+                            # simply unused; if it was not, the room heard
+                            # silence and `buffering` is what that means.
+                            # `error` is reserved for the relay saying so.
+                            logger.debug("undecodable audio fallback, ignoring")
+                            if not spoke:
+                                self._publish("buffering")
                             continue
                         decoded, fmt = bytes(file_audio), file_format
                     if begin_playback(fmt):
