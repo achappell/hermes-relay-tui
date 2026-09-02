@@ -63,27 +63,55 @@ def audio_device_list() -> list[dict[str, Any]]:
     ]
 
 
+# Response audio is generated as it is spoken, so it arrives in fits. Measured
+# against a live gateway: 14 of 19 chunks arrived slower than they play — 379ms
+# of audio every ~470ms. Without a cushion the device runs dry between chunks,
+# and every underrun is an audible pop. This is the cushion, in seconds; it is
+# added to the delay before the first word is heard, so it buys smoothness at
+# a price and should stay small.
+DEFAULT_PREBUFFER_SECONDS = 0.6
+
+
 class PCMPlayer:
     """Play signed 16-bit PCM chunks locally, with a safe buffering fallback."""
 
-    def __init__(self, enabled: bool, output_device: int | str | None = None) -> None:
+    def __init__(
+        self,
+        enabled: bool,
+        output_device: int | str | None = None,
+        prebuffer_seconds: float = DEFAULT_PREBUFFER_SECONDS,
+    ) -> None:
         self.enabled = enabled
         self.output_device = output_device
+        self.prebuffer_seconds = max(0.0, float(prebuffer_seconds))
         self.stream: Any = None
         self.failure: Optional[str] = None
+        self.playing = False
+        self._pending = bytearray()
+        self._prebuffer_bytes = 0
 
     @property
     def active(self) -> bool:
         return self.stream is not None
 
     def start(self, audio_format: tuple[int, int, int]) -> None:
+        # A stream can still be open and draining: not every gateway sends
+        # `audio_end`. Replacing it silently orphans it and cuts off whatever
+        # was left to play.
+        if self.stream is not None:
+            self.close()
         self.failure = None
+        self.playing = False
+        self._pending.clear()
         if not self.enabled:
             return
         sample_rate, channels, sample_width = audio_format
         if sample_width != 2:
             self.failure = f"unsupported {sample_width * 8}-bit PCM"
             return
+        self._prebuffer_bytes = int(
+            sample_rate * channels * sample_width * self.prebuffer_seconds
+        )
         try:
             import sounddevice as sd
 
@@ -91,7 +119,10 @@ class PCMPlayer:
                 "samplerate": sample_rate,
                 "channels": channels,
                 "dtype": "int16",
-                "latency": "low",
+                # Deliberately not "low": that asks PortAudio for the smallest
+                # possible buffer, which is the wrong request for audio
+                # arriving off a network in irregular chunks.
+                "latency": "high",
             }
             if self.output_device is not None:
                 stream_kwargs["device"] = self.output_device
@@ -106,6 +137,13 @@ class PCMPlayer:
     def write(self, chunk: bytes) -> None:
         if self.stream is None:
             return
+        if not self.playing:
+            self._pending.extend(chunk)
+            if len(self._pending) < self._prebuffer_bytes:
+                return
+            chunk = bytes(self._pending)
+            self._pending.clear()
+            self.playing = True
         try:
             self.stream.write(chunk)
         except Exception as exc:
@@ -115,8 +153,19 @@ class PCMPlayer:
     def close(self) -> None:
         if self.stream is None:
             return
+        # A reply shorter than the cushion is still a reply. Flush it rather
+        # than swallowing the whole answer in the buffer.
+        if self._pending:
+            tail = bytes(self._pending)
+            self._pending.clear()
+            self.playing = True
+            try:
+                self.stream.write(tail)
+            except Exception as exc:
+                self.failure = str(exc)
         try:
             self.stream.stop()
         finally:
             self.stream.close()
             self.stream = None
+            self.playing = False

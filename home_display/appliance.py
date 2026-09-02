@@ -276,8 +276,12 @@ class Appliance:
                     )
                 elif kind == "audio_chunk":
                     if self._player.active:
-                        enter_speaking()
                         await asyncio.to_thread(self._player.write, event["data"])
+                        # The player holds a cushion before its first sample,
+                        # so announce speech when it starts playing, not when
+                        # it starts buffering.
+                        if getattr(self._player, "playing", True):
+                            enter_speaking()
                 elif kind == "audio_end":
                     await self._finish_playback()
                     speaking = False
@@ -317,8 +321,9 @@ class Appliance:
                             continue
                         decoded, fmt = bytes(file_audio), file_format
                     if open_playback(fmt):
-                        enter_speaking()
                         await asyncio.to_thread(self._player.write, decoded)
+                        if getattr(self._player, "playing", True):
+                            enter_speaking()
                         await self._finish_playback()
                         speaking = False
                 elif kind == "error":

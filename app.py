@@ -1710,7 +1710,14 @@ class HermesStreamingApp(App):
                     file_audio, file_format = read_wav(bytes(audio_file))
                 except ValueError:
                     if audio_file_format is None:
-                        self._append_block("[error] unsupported audio file fallback")
+                        # Hermes sends a file copy alongside the PCM it has
+                        # already streamed. Failing to decode the spare copy
+                        # is not a failed turn when the answer already
+                        # arrived — whether or not a device could play it.
+                        if not audio:
+                            self._append_block(
+                                "[error] unsupported audio file fallback"
+                            )
                         continue
                     file_audio, file_format = bytes(audio_file), audio_file_format
                 audio.extend(file_audio)

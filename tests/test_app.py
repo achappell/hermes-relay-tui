@@ -1817,6 +1817,56 @@ async def test_audio_file_fallback_is_recovered_as_wav(tmp_path):
             assert handle.readframes(2) == b"\x00\x01\x02\x03"
 
 
+async def test_a_turn_that_ends_without_audio_end_still_closes_the_speaker():
+    """This gateway ends turns with `turn_end` and never sends `audio_end`.
+    Leaving the stream open holds the tail of the reply in the device buffer
+    until something else tears it down, which cuts off the last of it."""
+    session = FakeSession(
+        events=[
+            {"type": "audio_start", "sample_rate": 24000, "channels": 1, "sample_width": 2},
+            {"type": "audio_chunk", "data": b"\x00\x01"},
+            {"type": "turn_end", "turn_id": "no-audio-end"},
+        ]
+    )
+    app = HermesStreamingApp(args=make_args(), session_factory=lambda: session)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        class StillPlaying:
+            def write(self, chunk): pass
+            def stop(self): pass
+            def close(self): pass
+
+        app.player.enabled = True
+        app.player.stream = StillPlaying()
+        await app._run_turn("hi")
+
+        assert app.player.active is False, "the speaker was left open after the turn"
+
+
+async def test_an_undecodable_fallback_after_live_playback_is_not_an_error():
+    """Hermes sends a file copy alongside the PCM it already streamed. Failing
+    to decode the spare copy is not a failed turn: the answer was heard.
+    Observed live in the TUI as "[error] unsupported audio file fallback"
+    printed under a response that had just played correctly."""
+    session = FakeSession(
+        events=[
+            {"type": "audio_start", "sample_rate": 24000, "channels": 1, "sample_width": 2},
+            {"type": "audio_chunk", "data": b"\x00\x01"},
+            {"type": "audio_end"},
+            {"type": "audio_file_start"},
+            {"type": "audio_file_chunk", "data": b"not a wav at all"},
+            {"type": "audio_file_end"},
+            {"type": "turn_end", "turn_id": "spare-copy"},
+        ]
+    )
+    app = HermesStreamingApp(args=make_args(), session_factory=lambda: session)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await app._run_turn("hi")
+
+        assert "unsupported audio file fallback" not in transcript_of(app)
+
+
 async def test_help_binding_prints_the_bindings_line():
     app = HermesStreamingApp(args=make_args(), session_factory=lambda: FakeSession())
     async with app.run_test() as pilot:

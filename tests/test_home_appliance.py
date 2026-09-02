@@ -73,6 +73,7 @@ class FakePlayer:
         self.can_play = can_play
         self.stream = None
         self.failure = None
+        self.playing = False
         self.written = bytearray()
         self.formats: list[tuple[int, int, int]] = []
 
@@ -89,9 +90,11 @@ class FakePlayer:
 
     def write(self, chunk: bytes) -> None:
         self.written.extend(chunk)
+        self.playing = True
 
     def close(self) -> None:
         self.stream = None
+        self.playing = False
 
 
 class FakeRecorder:
@@ -674,3 +677,31 @@ async def test_the_listener_is_deaf_while_a_turn_holds_the_microphone():
     # pause for the duration of the turn, resume when idle again — and a final
     # pause as the appliance shuts down.
     assert state["listener"].paused[:4] == [True, False, True, False]
+
+
+@pytest.mark.asyncio
+async def test_speech_is_announced_when_the_cushion_flushes_not_when_it_fills():
+    """The player holds a cushion before its first sample. Announcing speech
+    on the first write would put "Speaking" on screen while the buffer is
+    still filling and the room is silent."""
+    publisher = RecordingPublisher()
+
+    class SlowToStart(FakePlayer):
+        def write(self, chunk: bytes) -> None:
+            self.written.extend(chunk)
+            self.playing = len(self.written) >= 4  # cushion of 4 bytes
+
+    script = [
+        {"type": "audio_start", "sample_rate": 24000, "channels": 1, "sample_width": 2},
+        {"type": "audio_chunk", "data": b"\x01\x02"},
+        {"type": "text_delta", "text": "Half a cushion in."},
+        {"type": "audio_chunk", "data": b"\x03\x04"},
+        {"type": "audio_end"},
+        {"type": "turn_end"},
+    ]
+    appliance, state = make_appliance(script, player=SlowToStart(), publisher=publisher)
+
+    await _run_until_idle(appliance, state)
+
+    order = publisher.sequence
+    assert order.index("thinking") < order.index("speaking")
