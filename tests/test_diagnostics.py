@@ -3,6 +3,7 @@ import stat
 import sys
 import threading
 
+import diagnostics
 from diagnostics import (
     active_log_file,
     configure_logging,
@@ -102,3 +103,51 @@ def test_install_crash_logging_records_uncaught_worker_exception(tmp_path, monke
     assert "exception: builtins.RuntimeError" in contents
     assert "thread: crash-worker" in contents
     assert "worker failure" not in contents
+
+
+# ---- every module's trace actually reaches the file (HOME-10) ---------
+
+
+def test_the_debug_trace_captures_the_wake_and_hands_free_modules(tmp_path):
+    """The trace attaches its handler to the `hermes_relay_tui` logger.
+
+    Modules that name their logger anything else inherit nothing and log into
+    the void. `wake.py`, `handsfree.py` and `earcons.py` each used
+    `getLogger(__name__)`, which for a top-level module is a bare name outside
+    that tree — so the entire hands-free subsystem was invisible under
+    --debug, and HOME-02, HOME-09 and HOME-10 were all diagnosed by ear.
+    """
+    import earcons
+    import handsfree
+    import wake
+
+    path = tmp_path / "trace.log"
+    diagnostics.configure_logging(debug=True, log_file=path)
+    try:
+        wake.logger.debug("wake-probe")
+        handsfree.logger.debug("handsfree-probe")
+        earcons.logger.debug("earcons-probe")
+        for handler in diagnostics.logger.handlers:
+            handler.flush()
+        written = path.read_text(encoding="utf-8")
+    finally:
+        diagnostics.configure_logging(debug=False)
+
+    assert "wake-probe" in written
+    assert "handsfree-probe" in written
+    assert "earcons-probe" in written
+
+
+def test_every_traced_module_logs_inside_the_configured_namespace():
+    """A guard against the next module quietly logging nowhere."""
+    import client
+    import earcons
+    import handsfree
+    import wake
+    from home_display import appliance
+
+    for module in (wake, handsfree, earcons, client, appliance):
+        name = module.logger.name
+        assert name == diagnostics.LOGGER_NAME or name.startswith(
+            diagnostics.LOGGER_NAME + "."
+        ), f"{module.__name__} logs to {name!r}, outside the debug trace"

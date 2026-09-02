@@ -249,6 +249,11 @@ local variable values; it appends until manually removed.
 - `app.py` owns presentation and turn state. It should not grow protocol parsing logic that belongs in `client.py`.
 - Thinking/status/tool activity is rendered as a replaceable transcript line; the assistant response gets its own line once text begins, so repeated activity cannot pollute the final answer.
 - `voice.py` owns `LocalMicrophone`, its sounddevice-based recorder, and faster-whisper transcription; `mic.py`'s adapter supplies session-local input selection and cancellation on top of it. The project's voice dependencies (`sounddevice`, `numpy`, `faster-whisper`) must be installed for `Ctrl+R` to work.
+- `wake.WakeListener.pause()` and `resume()` both drain the frame queue.
+  `on_wake` blocks the listener's worker for the whole turn, so frames
+  captured just before the pause pile up with nothing consuming them, and
+  `resume()` runs before `on_wake` returns — scoring that backlog re-detects
+  the same spoken phrase. Resetting the detector alone does not prevent it.
 - `earcons.py` generates its own tones and plays them on a stream of its own.
   It must never share `audio.PCMPlayer`: the appliance closes that player for
   barge-in and end-of-turn, so a shared stream lets a courtesy tone cut off a

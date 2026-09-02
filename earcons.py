@@ -18,7 +18,10 @@ import math
 import struct
 from typing import Any, Callable
 
-logger = logging.getLogger(__name__)
+# Inside the `hermes_relay_tui` tree on purpose: diagnostics.configure_logging
+# attaches the debug file handler there, and a bare top-level name inherits
+# none of it. This module logged into the void until 2026-09-02.
+logger = logging.getLogger("hermes_relay_tui.earcons")
 
 __all__ = ["WAKE", "CAPTURE_DONE", "EarconPlayer", "render"]
 
