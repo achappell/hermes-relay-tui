@@ -127,6 +127,16 @@ class AudioRecorder:
     def is_recording(self) -> bool:
         return self._recording
 
+    @property
+    def has_detected_speech(self) -> bool:
+        """Whether the current recording has heard anyone speak yet.
+
+        Hands-free capture is the only caller: it has to tell "the user is
+        still thinking about what to ask" apart from "the wake word misfired
+        and nobody is there".
+        """
+        return self._recording and self._has_spoken
+
     def _ensure_stream(self) -> None:
         if self._stream is not None:
             return

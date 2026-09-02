@@ -216,3 +216,51 @@ def test_a_capture_failure_returns_to_idle_silently():
     assert coordinator.on_wake() is False
     assert session.turns == []
     assert coordinator.state == handsfree.IDLE
+
+
+def test_playback_during_a_turn_makes_speaking_a_real_state():
+    """Response audio arrives while the turn is still streaming, so the
+    appliance calls playback_started from SENDING, not from idle."""
+    seen = []
+    session = FakeSession()
+
+    def send(text):
+        session.send_turn(text)
+        coordinator.playback_started()
+        seen.append(("during-playback", coordinator.state))
+        coordinator.playback_finished()
+
+    coordinator = handsfree.HandsFreeCoordinator(
+        session,
+        capture=lambda: "what is the weather",
+        send=send,
+        on_state_change=lambda state: seen.append(state),
+    )
+
+    assert coordinator.on_wake() is True
+
+    assert ("during-playback", handsfree.SPEAKING) in seen
+    assert coordinator.state == handsfree.IDLE
+
+
+def test_a_detection_while_the_answer_is_playing_is_still_refused():
+    """Barge-in stays gated off until echo cancellation exists: the unit would
+    otherwise wake itself on its own voice."""
+    session = FakeSession()
+    captures = []
+
+    def send(text):
+        session.send_turn(text)
+        coordinator.playback_started()
+        assert coordinator.on_wake() is False
+
+    def capture():
+        captures.append(True)
+        return "what is the weather"
+
+    coordinator = handsfree.HandsFreeCoordinator(session, capture=capture, send=send)
+
+    coordinator.on_wake()
+
+    assert captures == [True]
+    assert len(session.turns) == 1

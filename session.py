@@ -55,6 +55,18 @@ class HermesSession:
         self.microphone: Any = None
         self.input_device = getattr(args, "mic_input_device", None)
         self._voice_cancel_requested = threading.Event()
+        self._shared_recorder: Any = None
+
+    def use_shared_recorder(self, recorder: Any) -> None:
+        """Capture through a recorder somebody else already opened.
+
+        The hands-free appliance keeps one input stream open for the whole
+        process so its wake-word listener can hear the room. Capture has to
+        borrow that stream: two input streams on one device is unreliable, and
+        reopening one can hang on macOS CoreAudio.
+        """
+        self._shared_recorder = recorder
+        self.microphone = None
 
     async def connect(self) -> dict[str, Any]:
         if self._connect_cm is not None or self.ws is not None:
@@ -105,7 +117,10 @@ class HermesSession:
         self.cancel_voice()
         microphone = self.microphone
         self.microphone = None
-        if microphone is not None:
+        # A shared recorder outlives the session that borrowed it: closing the
+        # microphone here would shut down the appliance's listening stream on
+        # every reconnect.
+        if microphone is not None and self._shared_recorder is None:
             await asyncio.to_thread(microphone.close)
         if self._connect_cm is not None:
             try:
@@ -141,6 +156,7 @@ class HermesSession:
                 recorder_factory=make_recorder_factory(
                     self.input_device,
                     self._voice_cancel_requested,
+                    recorder=self._shared_recorder,
                 ),
             )
         return self.microphone.capture()
@@ -158,5 +174,5 @@ class HermesSession:
         microphone = self.microphone
         self.microphone = None
         self.input_device = device
-        if microphone is not None:
+        if microphone is not None and self._shared_recorder is None:
             await asyncio.to_thread(microphone.close)

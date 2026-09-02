@@ -78,7 +78,7 @@ def _device_selector(value: Optional[str | int]) -> int | str | None:
         return normalized
 
 
-def _config_path_from_argv(argv: Optional[list[str]]) -> Path:
+def config_path_from_argv(argv: Optional[list[str]]) -> Path:
     """Find --config's value without building the full parser yet.
 
     Needed because YAML values become argparse *defaults*, so the config
@@ -223,7 +223,7 @@ def build_arg_parser(argv: Optional[list[str]] = None) -> argparse.ArgumentParse
     ``argv`` only affects finding ``--config`` before the full parser exists;
     the returned parser still needs ``parse_args(argv)`` called on it as usual.
     """
-    config_path = _config_path_from_argv(argv)
+    config_path = config_path_from_argv(argv)
     cfg = load_config_file(config_path)
 
     parser = argparse.ArgumentParser(description="Hermes streaming TUI")
@@ -429,6 +429,7 @@ __all__ = [
     "_env_int",
     "_resolve_token",
     "build_arg_parser",
+    "config_path_from_argv",
     "configure_logging",
     "connect_factory",
     "default_device_id",

@@ -83,6 +83,31 @@ def test_session_orchestration_lives_outside_the_tui_module():
     assert session.SessionProtocol.__module__ == "session"
 
 
+def test_the_home_appliance_does_not_import_the_terminal_client():
+    """The two front ends are siblings. The appliance must be able to run on a
+    machine that never installs Textual, so importing its loop must not drag
+    the TUI in behind it."""
+    probe = (
+        "import sys, importlib;"
+        "importlib.import_module('home_display.appliance');"
+        "leaked = sorted(m for m in sys.modules"
+        " if m == 'app' or m == 'textual' or m.startswith('textual.'));"
+        "print(','.join(leaked))"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", probe],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+
+    assert result.stdout.strip() == "", (
+        f"home_display/appliance.py pulled in the terminal front end: "
+        f"{result.stdout.strip()}."
+    )
+
+
 def test_app_consumes_the_shared_session_rather_than_defining_it():
     import app
 

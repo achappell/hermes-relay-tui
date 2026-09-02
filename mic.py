@@ -11,6 +11,7 @@ from voice import LocalMicrophone, create_audio_recorder
 __all__ = [
     "LocalMicrophone",
     "prepare_local_stt",
+    "input_device_context",
     "wrap_recorder",
     "make_recorder_factory",
     "cancel_microphone",
@@ -32,7 +33,7 @@ def prepare_local_stt() -> None:
 
 
 @contextmanager
-def _input_device_context(device: DeviceSelector) -> Iterator[None]:
+def input_device_context(device: DeviceSelector) -> Iterator[None]:
     """Temporarily select an input device for the default-based recorder."""
     if device is None:
         yield
@@ -78,7 +79,7 @@ class _RecorderProxy:
             if on_silence_stop is not None:
                 on_silence_stop()
             return
-        with _input_device_context(self._input_device):
+        with input_device_context(self._input_device):
             self._recorder.start(on_silence_stop=on_silence_stop)
 
     def cancel(self) -> None:
@@ -125,11 +126,18 @@ def wrap_recorder(
 def make_recorder_factory(
     input_device: DeviceSelector,
     cancel_requested: threading.Event,
+    recorder: Any = None,
 ) -> Any:
-    """Build the dependency-injected recorder factory used by LocalMicrophone."""
+    """Build the dependency-injected recorder factory used by LocalMicrophone.
+
+    Pass ``recorder`` to capture through an already-open recorder instead of
+    opening a second one. The wake-word appliance needs this: its listener
+    holds one input stream open for the life of the process, and a second
+    stream on the same device is unreliable across platforms.
+    """
     def factory() -> Any:
         return wrap_recorder(
-            create_audio_recorder(),
+            recorder if recorder is not None else create_audio_recorder(),
             input_device=input_device,
             cancel_requested=cancel_requested,
         )

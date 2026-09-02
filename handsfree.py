@@ -87,12 +87,24 @@ class HandsFreeCoordinator:
             logger.debug("hands-free state callback failed", exc_info=True)
 
     def playback_started(self) -> None:
+        """Enter SPEAKING, from idle or from the turn that produced the audio.
+
+        Response audio arrives while the turn is still streaming, so SENDING is
+        the normal state to enter SPEAKING from. Idle is allowed too, for audio
+        the appliance plays outside a turn.
+        """
         with self._lock:
-            if self._state != IDLE:
+            if self._state not in (IDLE, SENDING):
                 return
             self._set_state(SPEAKING)
 
     def playback_finished(self) -> None:
+        """Leave SPEAKING for IDLE — the unit is ready for the phrase again.
+
+        Playback is the last phase of a turn, so returning to idle rather than
+        to SENDING is what the room actually sees: the answer has been spoken
+        and the user may speak again.
+        """
         with self._lock:
             if self._state != SPEAKING:
                 return
@@ -183,6 +195,9 @@ def build_hands_free(
     args: Any,
     *,
     on_state_change: Callable[[str], Any] | None = None,
+    send: Callable[[str], Any] | None = None,
+    speech_detected: Callable[[], bool] | None = None,
+    stop_playback: Callable[[], Any] | None = None,
     _load_engine: Callable[[str | None], Any] | None = None,
 ):
     """Assemble the hands-free loop for a front end, or None when disabled.
@@ -218,9 +233,14 @@ def build_hands_free(
     coordinator = HandsFreeCoordinator(
         session,
         capture=session.capture_voice,
-        send=session.send_turn,
+        # `session.send_turn` returns an async iterator, so a front end with an
+        # event loop passes its own `send` that drives the turn there and
+        # blocks until it is finished.
+        send=send or session.send_turn,
+        speech_detected=speech_detected,
         listen_timeout=getattr(args, "wake_listen_timeout", DEFAULT_LISTEN_TIMEOUT),
         barge_in=getattr(args, "wake_barge_in", False),
+        stop_playback=stop_playback,
         on_state_change=on_state_change,
         is_hallucination=is_whisper_hallucination,
     )
