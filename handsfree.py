@@ -22,6 +22,7 @@ logger = logging.getLogger(__name__)
 
 __all__ = [
     "IDLE",
+    "ACKNOWLEDGING",
     "CAPTURING",
     "SENDING",
     "SPEAKING",
@@ -31,6 +32,11 @@ __all__ = [
 ]
 
 IDLE = "idle"
+# The moment between hearing the phrase and opening the microphone: the unit
+# has claimed the turn and is telling the room so. Short — the length of a
+# tone — but a real phase, and the display must not call it listening when the
+# microphone is still shut.
+ACKNOWLEDGING = "acknowledging"
 CAPTURING = "capturing"
 SENDING = "sending"
 SPEAKING = "speaking"
@@ -54,6 +60,8 @@ class HandsFreeCoordinator:
         listen_timeout: float = DEFAULT_LISTEN_TIMEOUT,
         speech_detected: Callable[[], bool] | None = None,
         stop_playback: Callable[[], Any] | None = None,
+        acknowledge: Callable[[], Any] | None = None,
+        capture_finished: Callable[[], Any] | None = None,
         barge_in: bool = False,
         on_state_change: Callable[[str], Any] | None = None,
         is_hallucination: Callable[[str], bool] | None = None,
@@ -65,6 +73,8 @@ class HandsFreeCoordinator:
         self._listen_timeout = listen_timeout
         self._speech_detected = speech_detected
         self._stop_playback = stop_playback
+        self._acknowledge = acknowledge
+        self._capture_finished = capture_finished
         self._barge_in = barge_in
         self._on_state_change = on_state_change
         self._is_hallucination = is_hallucination
@@ -85,6 +95,19 @@ class HandsFreeCoordinator:
             self._on_state_change(state)
         except Exception:
             logger.debug("hands-free state callback failed", exc_info=True)
+
+    def _notify(self, callback: Callable[[], Any] | None, what: str) -> None:
+        """Run an acknowledgement hook, swallowing whatever it does wrong.
+
+        These hooks make sounds. A sound is a courtesy, and a courtesy that
+        fails must never cost the user their question.
+        """
+        if callback is None:
+            return
+        try:
+            callback()
+        except Exception:
+            logger.debug("%s acknowledgement failed", what, exc_info=True)
 
     def playback_started(self) -> None:
         """Enter SPEAKING, from idle or from the turn that produced the audio.
@@ -127,6 +150,18 @@ class HandsFreeCoordinator:
                 # becomes several turns.
                 return False
 
+            # Claim the turn before releasing the lock. Acknowledging is a
+            # busy state, so a second detection during the tone is dropped by
+            # the same single-flight rule as one during a capture.
+            self._set_state(ACKNOWLEDGING)
+
+        # Blocking here is the ordering guarantee: the microphone does not
+        # open until the tone has finished leaving the speaker, so the unit
+        # can never record its own acknowledgement. Deliberately outside the
+        # lock — this waits on hardware, and the lock guards state.
+        self._notify(self._acknowledge, "wake")
+
+        with self._lock:
             self._begin_capture()
 
         try:
@@ -163,6 +198,9 @@ class HandsFreeCoordinator:
             except Exception:
                 logger.debug("hallucination check failed", exc_info=True)
 
+        # Only now is there work to announce. A misfire has already been
+        # acknowledged and withdrawn without this.
+        self._notify(self._capture_finished, "capture")
         self._set_state(SENDING)
         try:
             self._send(text)
@@ -198,6 +236,8 @@ def build_hands_free(
     send: Callable[[str], Any] | None = None,
     speech_detected: Callable[[], bool] | None = None,
     stop_playback: Callable[[], Any] | None = None,
+    acknowledge: Callable[[], Any] | None = None,
+    capture_finished: Callable[[], Any] | None = None,
     _load_engine: Callable[[str | None], Any] | None = None,
 ):
     """Assemble the hands-free loop for a front end, or None when disabled.
@@ -241,6 +281,8 @@ def build_hands_free(
         listen_timeout=getattr(args, "wake_listen_timeout", DEFAULT_LISTEN_TIMEOUT),
         barge_in=getattr(args, "wake_barge_in", False),
         stop_playback=stop_playback,
+        acknowledge=acknowledge,
+        capture_finished=capture_finished,
         on_state_change=on_state_change,
         is_hallucination=is_whisper_hallucination,
     )

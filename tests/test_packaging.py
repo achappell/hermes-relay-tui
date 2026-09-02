@@ -45,6 +45,28 @@ def test_project_metadata_exposes_the_console_command():
     )
 
 
+def test_every_top_level_module_is_declared_in_the_wheel():
+    """py-modules is an explicit list, so a new module is invisible to the
+    wheel until someone remembers to add it.
+
+    Nothing used to check this: the assertion above names three modules and
+    could never notice a fourth going missing. HOME-10 added `earcons.py`,
+    the wheel shipped without it, and `hermes-relay-home` died on import in
+    CI — after the push, which is the expensive place to find out. The source
+    tree is the authority; this test makes the drift impossible instead of
+    merely detectable.
+    """
+    metadata = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    declared = set(metadata["tool"]["setuptools"]["py-modules"])
+    present = {path.stem for path in ROOT.glob("*.py")}
+
+    assert present == declared, (
+        "pyproject.toml py-modules and the repository root disagree: "
+        f"undeclared={sorted(present - declared)}, "
+        f"declared-but-missing={sorted(declared - present)}"
+    )
+
+
 def test_home_display_package_and_static_assets_are_declared():
     text = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
 

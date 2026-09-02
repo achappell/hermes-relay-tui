@@ -456,6 +456,7 @@ works on a clean machine and on a network that is not up yet when it boots.
 | `--wake-refractory-seconds` | `2.0` | Minimum gap between two fires. |
 | `--wake-listen-timeout` | `8.0` | How long to wait for speech to begin after the phrase. |
 | `--wake-barge-in` | off | Let the phrase interrupt playback. See the warning below. |
+| `--no-earcons` | tones on | Silence the acknowledgement tones. Does not disable the wake word. |
 
 **Confirmation frames are the setting that matters.** The detector scores about
 twelve frames a second, and a stray sound can push a single frame over the
@@ -472,6 +473,34 @@ at an extractor fan and nobody is in the room. The window is cancelled the
 instant speech is detected, so it never cuts anyone off mid-sentence; if no
 speech arrives, the unit discards the capture and returns to idle silently. It
 never announces a misfire.
+
+### Knowing it heard you
+
+Between your last word and the unit's first is about four seconds: silence
+endpointing, transcription, and — the largest part — roughly two seconds
+between Hermes announcing the audio format and producing a sample anyone can
+hear. Left empty, that gap reads as a hang.
+
+The unit fills it honestly:
+
+| Moment | What you get |
+|---|---|
+| The phrase lands | A short rising tone, and `Heard you` on the display. The microphone is not open yet. |
+| You stop talking | A single lower tone. Listening has stopped and work has started. |
+| Waiting for speech | `Thinking`, with a slowly breathing dot — a sign of life that is not a claim to be talking. |
+| A sample really plays | `Speaking`, and not one moment sooner. |
+
+The wake tone finishes *before* the microphone opens. That ordering is
+deliberate and enforced in the coordinator: a tone that overlapped the capture
+would either be transcribed into your question or re-trigger the detector.
+
+A misfire is acknowledged and then withdrawn in silence — one tone, a wait, and
+back to idle. The unit never makes the second sound unless it has something to
+work on, so a chirp followed by nothing means "I thought I heard you, I was
+wrong" without ever saying so out loud.
+
+`--no-earcons` (or `earcons: false` in the config file) silences both tones and
+leaves the display and the wake word alone.
 
 ### Checking it hears you
 

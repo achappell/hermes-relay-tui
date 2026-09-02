@@ -8,7 +8,14 @@ from dataclasses import dataclass
 from typing import Literal
 
 DisplayState = Literal[
-    "idle", "listening", "thinking", "speaking", "buffering", "error", "disconnected"
+    "idle",
+    "heard",
+    "listening",
+    "thinking",
+    "speaking",
+    "buffering",
+    "error",
+    "disconnected",
 ]
 _STATES = frozenset(DisplayState.__args__)
 

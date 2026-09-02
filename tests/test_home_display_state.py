@@ -58,3 +58,10 @@ async def test_subscriber_starts_current_and_receives_newest_update():
     received = await asyncio.wait_for(anext(subscription), timeout=0.2)
     assert received.state == "thinking"
     await subscription.aclose()
+
+
+def test_heard_is_a_valid_display_state():
+    """The moment between the phrase landing and the microphone opening."""
+    snapshot = DisplaySnapshot(state="heard")
+    assert snapshot.state == "heard"
+    assert snapshot.to_dict()["state"] == "heard"
