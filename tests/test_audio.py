@@ -88,9 +88,9 @@ def test_start_success_makes_player_active(monkeypatch):
     assert player.active
 
     player.write(b"\x00\x01")
+    player.close()  # shorter than the cushion, so it flushes on close
     assert started["wrote"] == b"\x00\x01"
 
-    player.close()
     assert started["stopped"] and started["closed"]
     assert not player.active
 
@@ -146,3 +146,83 @@ def test_start_failure_sets_failure_message(monkeypatch):
     player.start((24000, 1, 2))
     assert not player.active
     assert player.failure == "no device"
+
+
+# --- prebuffering -----------------------------------------------------------
+#
+# Measured against a live gateway: 14 of 19 chunks arrived slower than they
+# play — 379ms of audio every ~470ms. With no cushion the device runs dry
+# between chunks, and every underrun is an audible pop.
+
+
+def _fake_stream(monkeypatch, log):
+    class FakeStream:
+        def start(self):
+            log.append(("start",))
+
+        def write(self, chunk):
+            log.append(("write", bytes(chunk)))
+
+        def stop(self):
+            log.append(("stop",))
+
+        def close(self):
+            log.append(("close",))
+
+    received = {}
+
+    def raw_output_stream(**kwargs):
+        received.update(kwargs)
+        return FakeStream()
+
+    monkeypatch.setitem(
+        sys.modules, "sounddevice", types.SimpleNamespace(RawOutputStream=raw_output_stream)
+    )
+    return received
+
+
+def test_playback_holds_a_cushion_before_the_first_sample(monkeypatch):
+    log = []
+    _fake_stream(monkeypatch, log)
+
+    # 24kHz mono 16-bit: 48 bytes per millisecond.
+    player = PCMPlayer(enabled=True, prebuffer_seconds=0.01)  # 480 bytes
+    player.start((24000, 1, 2))
+
+    player.write(b"\x00" * 200)
+    assert player.playing is False
+    assert ("write", b"\x00" * 200) not in log
+
+    player.write(b"\x01" * 400)
+
+    # The cushion is full: everything buffered goes out in one write, and the
+    # player is only now actually making a sound.
+    assert player.playing is True
+    assert ("write", b"\x00" * 200 + b"\x01" * 400) in log
+
+
+def test_audio_shorter_than_the_cushion_is_still_played(monkeypatch):
+    """A one-word reply must not be swallowed by the buffer."""
+    log = []
+    _fake_stream(monkeypatch, log)
+
+    player = PCMPlayer(enabled=True, prebuffer_seconds=1.0)
+    player.start((24000, 1, 2))
+    player.write(b"\x07" * 100)
+    assert player.playing is False
+
+    player.close()
+
+    assert ("write", b"\x07" * 100) in log
+    assert log.index(("write", b"\x07" * 100)) < log.index(("stop",))
+
+
+def test_the_output_stream_is_not_opened_at_minimum_latency(monkeypatch):
+    """`latency="low"` asks PortAudio for the smallest possible buffer, which
+    is precisely the wrong request for audio arriving off a network."""
+    log = []
+    received = _fake_stream(monkeypatch, log)
+
+    PCMPlayer(enabled=True).start((24000, 1, 2))
+
+    assert received.get("latency") != "low"
