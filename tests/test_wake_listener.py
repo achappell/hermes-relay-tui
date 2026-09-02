@@ -175,3 +175,59 @@ def test_frames_without_a_length_still_respect_the_frame_cap():
     for _ in range(10):
         listener.submit(object())
     assert listener.dropped_frames == 6
+
+
+# ---- stale audio across a turn (HOME-10 / C3) -------------------------
+
+
+def test_a_pause_throws_away_audio_captured_before_it():
+    """The double-fire found on real hardware, 2026-09-02.
+
+    `on_wake` blocks the listener thread for the whole capture — deliberately,
+    so a detection during a turn cannot start a second one. But nothing drains
+    the queue while it is blocked, so the tail of the spoken phrase piles up
+    behind it. `resume()` runs before `on_wake` returns, so by the time the
+    worker reaches that backlog it is scoring the *original* phrase again with
+    the detector already live.
+
+    Symptom in the kitchen: say the phrase, stay silent, and the unit chirps a
+    second time and listens again.
+    """
+    listener, fired = _listener([0.9])
+    listener.submit(object())  # the tail of the phrase, still queued
+
+    listener.pause()
+    listener.resume()
+    listener.run_pending()
+
+    assert fired == [], "audio from before the turn must never be scored after it"
+
+
+def test_resuming_scores_audio_that_arrives_afterwards():
+    """The guard must not deafen the unit — only discard the backlog."""
+    listener, fired = _listener([0.9])
+
+    listener.pause()
+    listener.resume()
+    listener.submit(object())
+    listener.run_pending()
+
+    assert fired == [True]
+
+
+def test_a_pause_clears_the_buffered_sample_count():
+    """Dropped frames must not leave the queue accounting believing they are
+    still in flight, or the drop-oldest guard mis-sizes the backlog."""
+
+    class Frame:
+        def __len__(self):
+            return 128
+
+    listener, _ = _listener([])
+    listener.submit(Frame())
+    listener.submit(Frame())
+    assert listener.buffered_samples > 0
+
+    listener.pause()
+
+    assert listener.buffered_samples == 0

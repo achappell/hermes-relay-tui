@@ -322,6 +322,7 @@ class WakeListener:
             chunks = self._chunker.push(frame) if self._chunker is not None else [frame]
             for chunk in chunks:
                 if self._detector.feed(chunk):
+                    logger.debug("wake.detected")
                     self._notify(self._on_wake)
         except Exception:
             logger.debug("wake scoring failed", exc_info=True)
@@ -335,18 +336,44 @@ class WakeListener:
             # A broken consumer must not take the listener down with it.
             logger.debug("wake callback failed", exc_info=True)
 
+    def _drain(self) -> None:
+        """Throw away everything queued but not yet scored.
+
+        Resetting the detector is not enough on its own. `on_wake` blocks this
+        listener's worker for the whole turn, so frames captured just before
+        the pause sit in the queue with nothing consuming them; `resume()`
+        runs before `on_wake` returns, and the worker then scores that backlog
+        with the detector live again — re-detecting the same spoken phrase.
+
+        Observed on hardware 2026-09-02: say the phrase, stay silent, and the
+        unit chirps a second time and starts listening again.
+        """
+        while True:
+            try:
+                self._queue.get_nowait()
+            except queue.Empty:
+                break
+        self.buffered_samples = 0
+
     def pause(self) -> None:
         """Stop scoring — used while a voice turn holds the microphone."""
         self._paused = True
+        self._drain()
         self._detector.reset()
         if self._chunker is not None:
             self._chunker.reset()
+        logger.debug("wake.pause")
 
     def resume(self) -> None:
+        # Drained again on the way back in: the pause and the backlog are
+        # filled by different threads, so anything that landed in between is
+        # still audio from before the turn.
+        self._drain()
         self._detector.reset()
         if self._chunker is not None:
             self._chunker.reset()
         self._paused = False
+        logger.debug("wake.resume")
 
     def start(self) -> None:
         if self._thread is not None:
