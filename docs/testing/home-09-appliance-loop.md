@@ -9,13 +9,21 @@ browser assets have changed.
 
 ## Prerequisites
 
+From a checkout, run the appliance as a module — no install needed, and it
+picks up your working tree:
+
 ```bash
-venv/bin/pip install -e '.[home]'
-npm --prefix home_display/web run build   # only if the shell has changed
+venv/bin/python -m home_display.appliance --wake-enabled
 ```
 
-The `home` extra brings the wake-word engine. Without it the appliance reports
-the missing dependency and exits rather than starting deaf.
+The `venv/bin/hermes-relay-home` console script only exists once the package
+itself is installed (`venv/bin/pip install -e '.[home]'`). A venv built from
+`requirements-dev.txt`, or one holding an older release, will not have it.
+
+Either way the wake-word engine must be present — the `home` extra brings it.
+Without it the appliance reports the missing dependency and exits rather than
+starting deaf. Run `npm --prefix home_display/web run build` only if the
+browser shell has changed.
 
 A token must be resolvable: `--token`, `VOICE_SESSION_TOKEN`, or the profile
 `.env`. Grant the terminal microphone permission in System Settings → Privacy &
@@ -24,8 +32,11 @@ Security → Microphone.
 ## Run it
 
 ```bash
-venv/bin/hermes-relay-home --wake-enabled
+venv/bin/python -m home_display.appliance --wake-enabled
 ```
+
+Add `--url ws://127.0.0.1:8792/voice-session` to use a Hermes gateway running
+on this machine rather than the configured default.
 
 It prints a loopback URL. Open it in a browser — that is the kitchen display.
 
@@ -60,7 +71,7 @@ macOS `say`. No model, no network, no relay.
 venv/bin/python scripts/fake_relay.py
 
 # Another:
-venv/bin/hermes-relay-home --wake-enabled \
+venv/bin/python -m home_display.appliance --wake-enabled \
     --url ws://127.0.0.1:8799/voice-session --token stub
 ```
 

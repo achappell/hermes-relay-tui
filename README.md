@@ -412,6 +412,9 @@ pip install 'hermes-relay-tui[home]'
 # Then run the appliance: wake phrase in, spoken answer out, display in step.
 hermes-relay-home --wake-enabled
 
+# From a checkout, with no install, the same thing:
+venv/bin/python -m home_display.appliance --wake-enabled
+
 # On a laptop, to experiment with detection without running the appliance.
 pip install 'hermes-relay-tui[wake]'
 python scripts/wake_check.py
