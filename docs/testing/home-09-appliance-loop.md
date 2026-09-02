@@ -153,7 +153,8 @@ That is a relay bug, not a client one.
   turn, which is what `wake.WakeListener.pause` is for — it resets that
   buffer. Re-verified on the real microphone: capture at 3.00s pauses the
   listener, and it resumes at 11.11s when the unit returns to idle, with no
-  second detection.
+  second detection. Amanda re-ran the check afterwards and confirmed the
+  blink is gone: all four checks pass.
 - A misfire still holds `listening` for the full `--wake-listen-timeout` (8s
   by default) before clearing. That is the confirmed value for "long enough to
   turn off a tap and turn round", and is a tuning decision rather than a
