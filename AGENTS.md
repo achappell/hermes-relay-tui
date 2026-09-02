@@ -237,6 +237,13 @@ local variable values; it appends until manually removed.
 
 - `client.send_hello()` sends the protocol v1 `hello` payload and requires a `hello_ack` response.
 - `client.send_turn()` sends a transcript turn and yields normalized events for text, activity, audio, errors, and turn completion; unknown server events become explicit diagnostics.
+- Hermes splits one answer into segments, each carrying its own `draft_id`,
+  streaming cumulatively, and finishing with its own `text` frame. `client.py`
+  banks each finished segment in `committed` and keeps `rendered_preview` for
+  the segment in progress; segments are joined with a blank line into one
+  assistant message. A `text_replace` must always carry the finished segments
+  with it — emitting only the current segment silently deletes the earlier
+  ones, which is exactly what TURN-03 fixed.
 - `app.py` prepares local attachment metadata and optional shell substitutions before submission. The current channel remains text-only: attachment-bearing prompts stop visibly before `client.send_turn()` rather than using an invented wire payload.
 - Binary WebSocket frames are raw PCM audio. `audio_start` supplies sample rate, channel count, and sample width.
 - `app.py` owns presentation and turn state. It should not grow protocol parsing logic that belongs in `client.py`.

@@ -406,3 +406,168 @@ async def test_non_object_json_frame_yields_an_error_and_stops():
     assert events == [{"type": "error", "error": "server sent a non-object JSON frame"}]
     # The generator stopped: the queued turn_end was never read.
     assert ws._frames == [json.dumps({"type": "turn_end"})]
+
+
+# ---- multi-segment answers (TURN-03) ---------------------------------
+
+# Captured from a live gateway on 2026-09-02. One turn carried three
+# segments: 338, 83 and 268 characters, each with its own draft_id and its own
+# terminal frame. The client kept 309 characters of it. The speaker said all
+# 689, which is how the loss was noticed at all.
+
+
+async def test_a_new_draft_id_continues_the_answer_instead_of_erasing_it():
+    """The bug this exists to prevent.
+
+    draft_id marks a *segment* of one answer, not a revision of it. Treating a
+    boundary as a replacement silently deletes everything the relay has
+    already said.
+    """
+    frames = [
+        json.dumps({"type": "text_delta", "text": "First part.", "replace": True, "draft_id": 508}),
+        json.dumps({"type": "text", "text": "First part."}),
+        json.dumps({"type": "text_delta", "text": "Second part.", "replace": True, "draft_id": 510}),
+        json.dumps({"type": "text_final", "text": "Second part."}),
+        json.dumps({"type": "turn_end"}),
+    ]
+    ws = FakeWebSocket(frames)
+
+    events = [event async for event in send_turn(ws, session_id="s1", text="hi", stt_source="local")]
+
+    rendered = _render(events)
+    assert "First part." in rendered
+    assert "Second part." in rendered
+    assert rendered == "First part.\n\nSecond part."
+
+
+async def test_three_segments_all_survive():
+    frames = [
+        json.dumps({"type": "text_delta", "text": "One.", "replace": True, "draft_id": 1}),
+        json.dumps({"type": "text_delta", "text": "One. Two.", "replace": True, "draft_id": 1}),
+        json.dumps({"type": "text", "text": "One. Two."}),
+        json.dumps({"type": "text_delta", "text": "Three.", "replace": True, "draft_id": 2}),
+        json.dumps({"type": "text", "text": "Three."}),
+        json.dumps({"type": "text_delta", "text": "Four.", "replace": True, "draft_id": 3}),
+        json.dumps({"type": "text_final", "text": "Four."}),
+        json.dumps({"type": "turn_end"}),
+    ]
+    ws = FakeWebSocket(frames)
+
+    events = [event async for event in send_turn(ws, session_id="s1", text="hi", stt_source="local")]
+
+    assert _render(events) == "One. Two.\n\nThree.\n\nFour."
+
+
+async def test_a_segment_boundary_is_taken_from_draft_id_not_from_prefix_luck():
+    """A segment that happens to begin with the previous one's text is still a
+    new segment. Guessing from the prefix gets this wrong in the direction
+    that loses words."""
+    frames = [
+        json.dumps({"type": "text_delta", "text": "Yes.", "replace": True, "draft_id": 1}),
+        json.dumps({"type": "text", "text": "Yes."}),
+        json.dumps({"type": "text_delta", "text": "Yes. And more.", "replace": True, "draft_id": 2}),
+        json.dumps({"type": "text_final", "text": "Yes. And more."}),
+        json.dumps({"type": "turn_end"}),
+    ]
+    ws = FakeWebSocket(frames)
+
+    events = [event async for event in send_turn(ws, session_id="s1", text="hi", stt_source="local")]
+
+    assert _render(events) == "Yes.\n\nYes. And more."
+
+
+async def test_a_revision_inside_one_segment_still_replaces():
+    """The original behaviour must survive: within a single draft, a
+    non-prefix preview is a genuine revision and replaces."""
+    frames = [
+        json.dumps({"type": "text_delta", "text": "draft", "draft_id": 7}),
+        json.dumps({"type": "text_delta", "text": "final answer", "replace": True, "draft_id": 7}),
+        json.dumps({"type": "text_final", "text": "final answer"}),
+        json.dumps({"type": "turn_end"}),
+    ]
+    ws = FakeWebSocket(frames)
+
+    events = [event async for event in send_turn(ws, session_id="s1", text="hi", stt_source="local")]
+
+    assert _render(events) == "final answer"
+
+
+async def test_a_replacement_after_a_boundary_keeps_the_earlier_segment():
+    """A revision inside segment two must not take segment one with it."""
+    frames = [
+        json.dumps({"type": "text_delta", "text": "Kept.", "replace": True, "draft_id": 1}),
+        json.dumps({"type": "text", "text": "Kept."}),
+        json.dumps({"type": "text_delta", "text": "rough", "replace": True, "draft_id": 2}),
+        json.dumps({"type": "text_delta", "text": "polished", "replace": True, "draft_id": 2}),
+        json.dumps({"type": "text_final", "text": "polished"}),
+        json.dumps({"type": "turn_end"}),
+    ]
+    ws = FakeWebSocket(frames)
+
+    events = [event async for event in send_turn(ws, session_id="s1", text="hi", stt_source="local")]
+
+    assert _render(events) == "Kept.\n\npolished"
+
+
+async def test_turns_without_draft_ids_are_unchanged():
+    """Not every gateway sends draft_id. Absent it, nothing about the existing
+    append-and-revise behaviour may change."""
+    frames = [
+        json.dumps({"type": "text_delta", "text": "Hello"}),
+        json.dumps({"type": "text_delta", "text": "Hello world"}),
+        json.dumps({"type": "text_final", "text": "Hello world"}),
+        json.dumps({"type": "turn_end"}),
+    ]
+    ws = FakeWebSocket(frames)
+
+    events = [event async for event in send_turn(ws, session_id="s1", text="hi", stt_source="local")]
+
+    assert _render(events) == "Hello world"
+
+
+def _render(events) -> str:
+    """Apply the emitted updates the way the transcript does."""
+    text = ""
+    for event in events:
+        if event["type"] == "text_delta":
+            text += event["text"]
+        elif event["type"] == "text_replace":
+            text = event["text"]
+    return text
+
+
+async def test_the_captured_live_turn_keeps_every_segment():
+    """Replayed from the real trace that exposed this: turn 9066a53f,
+    2026-09-02 17:51:29, against the live gateway.
+
+    Three segments — 338, 83 and 268 characters, finalised at 309 — arrived as
+    one answer and were spoken in full. The client rendered 309 of them, which
+    is why it read as "the second half of what was actually said".
+    """
+    spec = [
+        (508, [8, 60, 74, 149, 198, 255, 321, 338], ("text", 338)),
+        (510, [41, 72, 83], ("text", 83)),
+        (512, [11, 41, 114, 125, 199, 244, 260, 268], ("text_final", 309)),
+    ]
+    frames = []
+    for draft, lengths, (final_kind, final_length) in spec:
+        for length in lengths:
+            frames.append(
+                json.dumps(
+                    {
+                        "type": "text_delta",
+                        "text": "x" * length,
+                        "replace": True,
+                        "draft_id": draft,
+                    }
+                )
+            )
+        frames.append(json.dumps({"type": final_kind, "text": "x" * final_length}))
+    frames.append(json.dumps({"type": "turn_end"}))
+    ws = FakeWebSocket(frames)
+
+    events = [event async for event in send_turn(ws, session_id="s1", text="hi", stt_source="local")]
+
+    rendered = _render(events)
+    assert rendered.count("\n\n") == 2, "each segment boundary is one break"
+    assert len(rendered) == 338 + 83 + 309 + 4, "every spoken character survives"
