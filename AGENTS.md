@@ -182,6 +182,10 @@ Do not put a real token in this file or in the README.
 - Use `/queue` to inspect or edit queued prompts.
 - Use `/busy [queue|steer|interrupt]` to change the mode for the current session.
 - Use `/details [show|hide]` or `--hide-thinking` to control thinking/tool detail in the transcript.
+- Use `/wake [on|off|status]` to arm or release local hands-free listening.
+  It is off at every launch; `hermes-relay --wake-enabled` refuses rather than
+  arming a microphone from a command-line flag. `/wake off` closes the input
+  stream, it does not merely pause the detector.
 - Use `/audio [list|status|input <device>|output <device>]` to inspect and select local audio devices for the current session.
 - Use `/image <path>`, `/image list`, or `/image clear` to stage and inspect local image attachments. `@path` references support local path completion; the current relay reports attachments as unsupported rather than sending them.
 - Use `!command` or `{!command}` only after opting in with `--allow-shell`; execution is local, bounded, and visible, with shell operators rejected.
