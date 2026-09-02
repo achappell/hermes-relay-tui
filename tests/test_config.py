@@ -350,3 +350,38 @@ def test_wake_word_settings_are_overridable():
     assert args.wake_confirmation_frames == 5
     assert args.wake_listen_timeout == 12.0
     assert args.wake_barge_in is True
+
+
+# ---- earcons (HOME-10) -----------------------------------------------
+
+
+def test_earcons_are_on_by_default():
+    args = build_arg_parser([]).parse_args([])
+    assert args.earcons is True
+
+
+def test_no_earcons_silences_them():
+    args = build_arg_parser([]).parse_args(["--no-earcons"])
+    assert args.earcons is False
+
+
+def test_the_config_file_can_silence_earcons(tmp_path, monkeypatch):
+    """A kitchen appliance that chirps at the wrong moment must be quietable
+    without going and finding the launch command."""
+    path = tmp_path / "config.yaml"
+    path.write_text("earcons: false\n", encoding="utf-8")
+
+    args = build_arg_parser(["--config", str(path)]).parse_args(
+        ["--config", str(path)]
+    )
+
+    assert args.earcons is False
+
+
+def test_silencing_earcons_does_not_disable_the_wake_word(tmp_path):
+    """The whole point of the off switch: quiet, not deaf."""
+    parser = build_arg_parser([])
+    args = parser.parse_args(["--no-earcons", "--wake-enabled"])
+
+    assert args.earcons is False
+    assert args.wake_enabled is True

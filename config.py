@@ -337,6 +337,15 @@ def build_arg_parser(argv: Optional[list[str]] = None) -> argparse.ArgumentParse
         ),
     )
     parser.add_argument(
+        "--no-earcons",
+        dest="earcons",
+        action="store_false",
+        # Deliberately independent of --wake-enabled. An appliance that chirps
+        # at the wrong moment has to be quietable without being made deaf.
+        default=_cfg_bool(cfg, "earcons", hardcoded=True),
+        help="silence the wake and end-of-capture tones on the home unit",
+    )
+    parser.add_argument(
         "--audio-output-device",
         type=_device_selector,
         default=_device_selector(

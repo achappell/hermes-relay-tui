@@ -48,7 +48,7 @@ describe("StateSurface", () => {
     vi.useRealTimers();
   });
 
-  it.each(["idle", "listening", "thinking", "speaking", "buffering", "error", "disconnected"])(
+  it.each(["idle", "heard", "listening", "thinking", "speaking", "buffering", "error", "disconnected"])(
     "renders data-state for %s",
     (state) => {
       const { container } = render(StateSurface, {
@@ -179,5 +179,56 @@ describe("StateSurface", () => {
 
     expect(screen.getByText("The response is catching up")).toBeInTheDocument();
     expect(screen.queryByText("Still working — please wait")).not.toBeInTheDocument();
+  });
+});
+
+describe("StateSurface acknowledgement (HOME-10)", () => {
+  afterEach(cleanup);
+
+  it("names the moment the wake phrase lands", () => {
+    // The label and the status line both say it, exactly as they do for
+    // "Listening" — so assert on the elements rather than on the text.
+    const { container } = render(StateSurface, {
+      props: { snapshot: snapshot("heard", "", "Heard you"), connectionState: "connected" },
+    });
+
+    expect(container.querySelector(".state-label")?.textContent).toBe("Heard you");
+    expect(container.querySelector(".status-text")?.textContent?.trim()).toBe("Heard you");
+  });
+
+  it("does not claim to be listening before the microphone is open", () => {
+    const { container } = render(StateSurface, {
+      props: { snapshot: snapshot("heard"), connectionState: "connected" },
+    });
+
+    expect(container.querySelector('[data-state="heard"]')).not.toBeNull();
+    expect(container.querySelector('[data-state="listening"]')).toBeNull();
+  });
+
+  it("shows a sign of life across the silence before the answer", () => {
+    const { container } = render(StateSurface, {
+      props: { snapshot: snapshot("thinking", "", "Thinking"), connectionState: "connected" },
+    });
+
+    expect(container.querySelector("[data-working-dot]")).not.toBeNull();
+  });
+
+  it("keeps the sign of life up while audio is buffering", () => {
+    const { container } = render(StateSurface, {
+      props: { snapshot: snapshot("buffering", "", "Buffering"), connectionState: "connected" },
+    });
+
+    expect(container.querySelector("[data-working-dot]")).not.toBeNull();
+  });
+
+  it("never shows the working indicator over a spoken answer", () => {
+    const { container } = render(StateSurface, {
+      props: {
+        snapshot: snapshot("speaking", "Sunny and warm.", "Speaking"),
+        connectionState: "connected",
+      },
+    });
+
+    expect(container.querySelector("[data-working-dot]")).toBeNull();
   });
 });

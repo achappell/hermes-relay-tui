@@ -140,6 +140,23 @@ class FakeListener:
         pass
 
 
+class FakeEarcons:
+    """Records which tones were asked for, in order, and when."""
+
+    def __init__(self, *, enabled: bool = True, log=None) -> None:
+        self.enabled = enabled
+        self.played: list[str] = []
+        self.failure = None
+        self._log = log
+
+    def play(self, name: str) -> None:
+        if not self.enabled:
+            return
+        self.played.append(name)
+        if self._log is not None:
+            self._log.append(f"earcon:{name}")
+
+
 class FakeServer:
     def __init__(self) -> None:
         self.info = types.SimpleNamespace(http_url="http://127.0.0.1:9/")
@@ -168,13 +185,25 @@ def _args(**overrides):
 def _build(appliance_state: dict):
     """A `build_hands_free` that returns the fake listener and a real coordinator."""
 
-    def build(session, args, *, on_state_change=None, send=None, speech_detected=None, stop_playback=None):
+    def build(
+        session,
+        args,
+        *,
+        on_state_change=None,
+        send=None,
+        speech_detected=None,
+        stop_playback=None,
+        acknowledge=None,
+        capture_finished=None,
+    ):
         listener = FakeListener()
         coordinator = handsfree.HandsFreeCoordinator(
             session,
             capture=session.capture_voice,
             send=send,
             speech_detected=speech_detected,
+            acknowledge=acknowledge,
+            capture_finished=capture_finished,
             listen_timeout=getattr(args, "wake_listen_timeout", 8.0),
             barge_in=getattr(args, "wake_barge_in", False),
             stop_playback=stop_playback,
@@ -188,12 +217,17 @@ def _build(appliance_state: dict):
     return build
 
 
-def make_appliance(script=None, *, player=None, session=None, args=None, state=None, **kwargs):
+def make_appliance(
+    script=None, *, player=None, session=None, args=None, state=None, earcons=None, **kwargs
+):
     state = state if state is not None else {}
     session = session if session is not None else FakeSession(script)
+    earcons = earcons if earcons is not None else FakeEarcons()
+    state["earcons"] = earcons
     appliance = Appliance(
         args or _args(),
         session=session,
+        earcons=earcons,
         player=player or FakePlayer(),
         recorder=FakeRecorder(),
         server=FakeServer(),
@@ -705,3 +739,124 @@ async def test_speech_is_announced_when_the_cushion_flushes_not_when_it_fills():
 
     order = publisher.sequence
     assert order.index("thinking") < order.index("speaking")
+
+
+# ---- acknowledgement (HOME-10) ---------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_the_wake_is_shown_and_sounded_before_the_unit_listens():
+    """Four seconds of nothing is what this card exists to remove. The first
+    of those seconds now has something in it."""
+    publisher = RecordingPublisher()
+    appliance, state = make_appliance(publisher=publisher)
+
+    await _run_until_idle(appliance, state)
+
+    ordered = publisher.sequence
+    assert "heard" in ordered
+    assert ordered.index("heard") < ordered.index("listening")
+    assert state["earcons"].played[0] == "wake"
+
+
+@pytest.mark.asyncio
+async def test_the_wake_tone_finishes_before_the_microphone_opens():
+    """The ordering guarantee, end to end: the unit must never record the
+    sound it makes to say it is recording."""
+    order: list[str] = []
+    earcons = FakeEarcons(log=order)
+
+    class LoggingSession(FakeSession):
+        def capture_voice(self) -> str:
+            order.append("capture")
+            return self.transcript
+
+    appliance, state = make_appliance(session=LoggingSession(), earcons=earcons)
+
+    await _run_until_idle(appliance, state)
+
+    assert order.index("earcon:wake") < order.index("capture")
+
+
+@pytest.mark.asyncio
+async def test_the_end_of_capture_is_sounded_for_a_real_question():
+    appliance, state = make_appliance()
+
+    await _run_until_idle(appliance, state)
+
+    assert state["earcons"].played == ["wake", "capture_done"]
+
+
+@pytest.mark.asyncio
+async def test_a_silent_misfire_is_acknowledged_but_never_announces_work():
+    """It chirps once to say it heard you, then withdraws in silence."""
+    session = FakeSession()
+    session.transcript = ""
+    appliance, state = make_appliance(session=session)
+
+    await _run_until_idle(appliance, state)
+
+    assert state["earcons"].played == ["wake"]
+    assert session.turns == []
+
+
+@pytest.mark.asyncio
+async def test_silenced_earcons_still_show_the_wake_on_screen():
+    """The off switch quiets the room. It does not blind the display."""
+    publisher = RecordingPublisher()
+    appliance, state = make_appliance(
+        earcons=FakeEarcons(enabled=False), publisher=publisher
+    )
+
+    await _run_until_idle(appliance, state)
+
+    assert state["earcons"].played == []
+    assert "heard" in publisher.sequence
+
+
+@pytest.mark.asyncio
+async def test_an_earcon_never_overlaps_the_spoken_response():
+    """Earcons live in the gap between the question and the answer. If one
+    ever lands during playback it is coming out over the reply."""
+    order: list[str] = []
+    earcons = FakeEarcons(log=order)
+    script = [
+        {"type": "audio_start", "sample_rate": 24000, "channels": 1, "sample_width": 2},
+        {"type": "audio_chunk", "data": b"\x01\x02"},
+        {"type": "audio_end"},
+        {"type": "turn_end"},
+    ]
+
+    class LoggingPlayer(FakePlayer):
+        def write(self, chunk: bytes) -> None:
+            order.append("response-audio")
+            super().write(chunk)
+
+    appliance, state = make_appliance(script, player=LoggingPlayer(), earcons=earcons)
+
+    await _run_until_idle(appliance, state)
+
+    assert order == ["earcon:wake", "earcon:capture_done", "response-audio"]
+
+
+@pytest.mark.asyncio
+async def test_earcons_do_not_share_the_response_player():
+    """Sharing would let a courtesy chirp close the stream mid-sentence."""
+    appliance, state = make_appliance()
+
+    await _run_until_idle(appliance, state)
+
+    assert appliance._earcons is not appliance._player
+
+
+@pytest.mark.asyncio
+async def test_a_dead_speaker_costs_the_chirp_and_nothing_else():
+    class BrokenEarcons(FakeEarcons):
+        def play(self, name: str) -> None:
+            raise RuntimeError("no output device")
+
+    appliance, state = make_appliance(earcons=BrokenEarcons())
+
+    await _run_until_idle(appliance, state)
+
+    assert state["session"].turns == ["what is the weather"]

@@ -3808,18 +3808,21 @@ if (typeof window !== "undefined") {
   ((_b = window.__svelte ?? (window.__svelte = {})).v ?? (_b.v = /* @__PURE__ */ new Set())).add(PUBLIC_VERSION);
 }
 enable_legacy_mode_flag();
-var root = /* @__PURE__ */ from_html(`<p class="status-text"> </p>`);
-var root_1 = /* @__PURE__ */ from_html(`<main aria-live="polite"><div class="ambient-canvas" aria-hidden="true"></div> <section class="state-overlay"><p class="state-label"> </p> <!> <p data-response-text=""> </p></section></main>`);
+var root = /* @__PURE__ */ from_html(`<span class="working-dot" data-working-dot="" aria-hidden="true"></span>`);
+var root_1 = /* @__PURE__ */ from_html(`<p class="status-text"> <!></p>`);
+var root_2 = /* @__PURE__ */ from_html(`<main aria-live="polite"><div class="ambient-canvas" aria-hidden="true"></div> <section class="state-overlay"><p class="state-label"> </p> <!> <p data-response-text=""> </p></section></main>`);
 function StateSurface($$anchor, $$props) {
   push($$props, false);
   const displayState = /* @__PURE__ */ mutable_source();
   const status = /* @__PURE__ */ mutable_source();
   const showResponse = /* @__PURE__ */ mutable_source();
+  const working = /* @__PURE__ */ mutable_source();
   let snapshot = prop($$props, "snapshot", 8);
   let connectionState = prop($$props, "connectionState", 8);
   let protocolError = prop($$props, "protocolError", 8, null);
   const labels = {
     idle: "Ready",
+    heard: "Heard you",
     listening: "Listening",
     thinking: "Thinking",
     speaking: "Speaking",
@@ -3850,23 +3853,36 @@ function StateSurface($$anchor, $$props) {
       set(showResponse, protocolError() === null && get(displayState) === "speaking" && snapshot().response_text.length > 0);
     }
   );
+  legacy_pre_effect(() => get(displayState), () => {
+    set(working, get(displayState) === "thinking" || get(displayState) === "buffering");
+  });
   legacy_pre_effect_reset();
   init();
-  var main = root_1();
+  var main = root_2();
   let classes;
   var section = sibling(child(main), 2);
   var p = child(section);
   var text = only_child(p, true);
   var node = sibling(p, 2);
   {
-    var consequent = ($$anchor2) => {
-      var p_1 = root();
-      var text_1 = only_child(p_1, true);
+    var consequent_1 = ($$anchor2) => {
+      var p_1 = root_1();
+      var text_1 = child(p_1);
+      var node_1 = sibling(text_1);
+      {
+        var consequent = ($$anchor3) => {
+          var span = root();
+          append($$anchor3, span);
+        };
+        if_block(node_1, ($$render) => {
+          if (get(working)) $$render(consequent);
+        });
+      }
       template_effect(() => set_text(text_1, get(status)));
       append($$anchor2, p_1);
     };
     if_block(node, ($$render) => {
-      if (get(status)) $$render(consequent);
+      if (get(status)) $$render(consequent_1);
     });
   }
   var p_2 = sibling(node, 2);
@@ -3885,6 +3901,7 @@ function StateSurface($$anchor, $$props) {
 }
 const displayStates = [
   "idle",
+  "heard",
   "listening",
   "thinking",
   "speaking",

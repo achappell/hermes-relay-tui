@@ -41,6 +41,8 @@
 # mic_silence_threshold: 200
 # mic_input_device: 2               # numeric index or a device name string
 # audio_output_device: "USB Headset"
+# earcons: true             # home unit: wake and end-of-capture tones.
+                            # false quiets them without disabling the wake word.
 # stt_model: base                   # local Faster-Whisper model prepared by setup
 
 # --- session/config state -------------------------------------------------

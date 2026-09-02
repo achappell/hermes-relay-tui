@@ -10,6 +10,7 @@ This repository contains a small Python/Textual terminal UI for the Hermes voice
 - `config.py` — command-line arguments, environment variables, token lookup, and connection defaults.
 - `diagnostics.py` — opt-in content-safe protocol and turn tracing for live debugging.
 - `audio.py` — streamed signed 16-bit PCM playback and WAV fallback.
+- `earcons.py` — short generated tones for wake and end-of-capture acknowledgement.
 - `voice.py` — owned local microphone capture (sounddevice) and speech-to-text (faster-whisper).
 - `mic.py` — device-selection and cancellation glue around `voice.py`'s recorder.
 - `wake.py` — wake-word detection and the listener worker for hands-free capture.
@@ -30,8 +31,8 @@ ends that consume it.
 
 **Core — must not import a user-interface framework:**
 `session.py`, `client.py`, `config.py`, `diagnostics.py`, `audio.py`,
-`mic.py`, `shell.py`, `attachments.py`, `clipboard.py`, `history.py`,
-`wake.py`, `handsfree.py`.
+`earcons.py`, `mic.py`, `shell.py`, `attachments.py`, `clipboard.py`,
+`history.py`, `wake.py`, `handsfree.py`.
 
 **Front-end-specific:** `app.py` (Textual), `transcript.py` (Rich rendering for
 a terminal transcript), and `home_display/` (the household appliance: its
@@ -206,6 +207,8 @@ The complete source of truth is `config.build_arg_parser()`. The main runtime op
 - `--connect-retry-delay SECONDS` — base delay before reconnect attempts; default is 1 second.
 - `--busy-mode MODE` — active-turn behavior: `queue` (default), `steer`, or `interrupt`.
 - `--allow-shell` — opt in to bounded local `!command` execution and `{!command}` interpolation; disabled by default.
+- `--no-earcons` — silence the home unit's wake and end-of-capture tones; the
+  wake word keeps working.
 - `--hide-thinking` — hide thinking and tool detail in the transcript.
 - `--debug` — write a content-safe protocol trace to a temporary log file.
 - `--log-file PATH` — choose the debug trace path; supplying it implies `--debug`.
@@ -235,6 +238,13 @@ local variable values; it appends until manually removed.
 - `app.py` owns presentation and turn state. It should not grow protocol parsing logic that belongs in `client.py`.
 - Thinking/status/tool activity is rendered as a replaceable transcript line; the assistant response gets its own line once text begins, so repeated activity cannot pollute the final answer.
 - `voice.py` owns `LocalMicrophone`, its sounddevice-based recorder, and faster-whisper transcription; `mic.py`'s adapter supplies session-local input selection and cancellation on top of it. The project's voice dependencies (`sounddevice`, `numpy`, `faster-whisper`) must be installed for `Ctrl+R` to work.
+- `earcons.py` generates its own tones and plays them on a stream of its own.
+  It must never share `audio.PCMPlayer`: the appliance closes that player for
+  barge-in and end-of-turn, so a shared stream lets a courtesy tone cut off a
+  sentence. An earcon failure is logged and dropped, never raised.
+- The wake tone blocks in `HandsFreeCoordinator.on_wake` between
+  `ACKNOWLEDGING` and the capture. That ordering is the guarantee that the
+  unit cannot record its own acknowledgement; do not make it asynchronous.
 - `audio.py` supports signed 16-bit PCM for live playback. If playback cannot start, the app reports buffering and can still save the collected PCM as WAV.
 - Connection setup uses bounded exponential-backoff retries. Prompts that cannot be sent remain FIFO-queued; a turn that may have reached Hermes is never replayed automatically after a socket failure.
 - The current voice-session protocol has no explicit interrupt operation. Interruption closes the current client connection and reconnects before the next turn, preventing stale events from being consumed as new-turn data; server-side generation cancellation remains a protocol concern.

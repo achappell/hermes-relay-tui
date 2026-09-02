@@ -33,6 +33,7 @@ from typing import Any, Callable
 
 import audio as audio_module
 import config
+import earcons as earcons_module
 import handsfree
 from session import HermesSession
 
@@ -74,6 +75,7 @@ def display_text(text: str) -> str:
 # response half, and publishes over the top of these.
 DISPLAY_FOR_COORDINATOR: dict[str, DisplayState] = {
     handsfree.IDLE: "idle",
+    handsfree.ACKNOWLEDGING: "heard",
     handsfree.CAPTURING: "listening",
     handsfree.SENDING: "thinking",
     handsfree.SPEAKING: "speaking",
@@ -81,6 +83,7 @@ DISPLAY_FOR_COORDINATOR: dict[str, DisplayState] = {
 
 STATUS_TEXT: dict[str, str | None] = {
     "idle": None,
+    "heard": "Heard you",
     "listening": "Listening",
     "thinking": "Thinking",
     "speaking": "Speaking",
@@ -113,6 +116,7 @@ class Appliance:
         publisher: DisplayStatePublisher | None = None,
         session: Any = None,
         player: Any = None,
+        earcons: Any = None,
         recorder: Any = None,
         server: Any = None,
         build_hands_free: Callable[..., Any] = handsfree.build_hands_free,
@@ -124,6 +128,7 @@ class Appliance:
         self.publisher = publisher or DisplayStatePublisher()
         self._session = session
         self._player = player
+        self._earcons = earcons
         self._recorder = recorder
         self._server = server
         self._build_hands_free = build_hands_free
@@ -200,15 +205,43 @@ class Appliance:
     def _on_coordinator_state(self, state: str) -> None:
         """Called on the listener thread as the capture half of a turn moves."""
         self._set_listening()
-        if state == handsfree.CAPTURING:
+        if state == handsfree.ACKNOWLEDGING:
             # A new question replaces the last answer: leaving the previous
             # response on screen while listening claims a conversation that
-            # has already moved on.
+            # has already moved on. Cleared here rather than at capture, so
+            # the screen turns over the moment the phrase is heard.
+            self._publish("heard", response_text="")
+            return
+        if state == handsfree.CAPTURING:
             self._publish("listening", response_text="")
             return
         display = DISPLAY_FOR_COORDINATOR.get(state)
         if display is not None:
             self._publish(display)
+
+    # ---- acknowledgement -----------------------------------------------
+
+    def _acknowledge_wake(self) -> None:
+        """Say "heard you" on the screen and out loud, then get out of the way.
+
+        Called on the listener thread, between ACKNOWLEDGING and the capture.
+        It blocks for the length of the tone — roughly 200ms — which is what
+        keeps the chirp out of the recording that follows it. Measured against
+        four seconds of silence, that is a bargain.
+
+        The screen is driven by the coordinator state, not from here, so the
+        display changes the instant the phrase lands rather than after the
+        tone has finished playing.
+        """
+        self._earcons.play(earcons_module.WAKE)
+
+    def _acknowledge_capture(self) -> None:
+        """Mark the moment listening stops and work starts.
+
+        Only reached once there is a real transcript to send, so the room never
+        hears the unit announce work it is not doing.
+        """
+        self._earcons.play(earcons_module.CAPTURE_DONE)
 
     # ---- turn ----------------------------------------------------------
 
@@ -448,6 +481,12 @@ class Appliance:
                 enabled=not getattr(self.args, "no_play", False),
                 output_device=getattr(self.args, "audio_output_device", None),
             )
+        if self._earcons is None:
+            self._earcons = earcons_module.EarconPlayer(
+                enabled=getattr(self.args, "earcons", True)
+                and not getattr(self.args, "no_play", False),
+                output_device=getattr(self.args, "audio_output_device", None),
+            )
         if self._recorder is None:
             from voice import create_audio_recorder
 
@@ -459,6 +498,8 @@ class Appliance:
             send=self._send,
             speech_detected=self._speech_detected,
             stop_playback=self._player.close,
+            acknowledge=self._acknowledge_wake,
+            capture_finished=self._acknowledge_capture,
         )
         if built is None:
             raise RuntimeError(

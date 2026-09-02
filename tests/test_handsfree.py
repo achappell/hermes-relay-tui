@@ -157,12 +157,21 @@ def test_the_window_does_not_expire_early():
 
 
 def test_state_changes_are_reported():
+    """ACKNOWLEDGING is reported even with no acknowledgement wired: the phase
+    is real either way — the turn is claimed and the microphone is still
+    shut — and a front end that shows CAPTURING there is claiming to listen
+    through a closed microphone."""
     seen = []
     coordinator, _, _, _ = _coordinator(on_state_change=seen.append)
 
     coordinator.on_wake()
 
-    assert seen == [handsfree.CAPTURING, handsfree.SENDING, handsfree.IDLE]
+    assert seen == [
+        handsfree.ACKNOWLEDGING,
+        handsfree.CAPTURING,
+        handsfree.SENDING,
+        handsfree.IDLE,
+    ]
 
 
 def test_barge_in_is_off_by_default():
@@ -264,3 +273,174 @@ def test_a_detection_while_the_answer_is_playing_is_still_refused():
 
     assert captures == [True]
     assert len(session.turns) == 1
+
+
+# ---- acknowledgement (HOME-10) ---------------------------------------
+
+
+def _ordered(transcript="what is the weather", **kwargs):
+    """A coordinator that records acknowledgement and capture in one order."""
+    session = FakeSession()
+    events = []
+
+    def capture():
+        events.append("capture")
+        return transcript
+
+    coordinator = handsfree.HandsFreeCoordinator(
+        session,
+        capture=capture,
+        send=lambda text: session.send_turn(text),
+        acknowledge=lambda: events.append("acknowledge"),
+        capture_finished=lambda: events.append("capture_finished"),
+        **kwargs,
+    )
+    return coordinator, session, events
+
+
+def test_the_wake_is_acknowledged_before_the_microphone_opens():
+    """The whole ordering guarantee. The acknowledgement blocks, so a chirp
+    can never end up inside the recording it is announcing."""
+    coordinator, _, events = _ordered()
+
+    coordinator.on_wake()
+
+    assert events.index("acknowledge") < events.index("capture")
+
+
+def test_the_full_acknowledgement_order_for_a_real_turn():
+    coordinator, session, events = _ordered()
+
+    coordinator.on_wake()
+
+    assert events == ["acknowledge", "capture", "capture_finished"]
+    assert session.turns == [("what is the weather", "local")]
+
+
+def test_end_of_capture_is_announced_before_the_turn_is_sent():
+    """The sound means "I have stopped listening and started working", so it
+    has to land before the work, not after it."""
+    session = FakeSession()
+    events = []
+
+    coordinator = handsfree.HandsFreeCoordinator(
+        session,
+        capture=lambda: "hello",
+        send=lambda text: events.append("send"),
+        capture_finished=lambda: events.append("capture_finished"),
+    )
+
+    coordinator.on_wake()
+
+    assert events == ["capture_finished", "send"]
+
+
+def test_a_dropped_detection_is_not_acknowledged():
+    """Single-flight refuses a detection during a turn. Chirping at one would
+    tell the room something happened when nothing did."""
+    session = FakeSession()
+    events = []
+    coordinator = handsfree.HandsFreeCoordinator(
+        session,
+        capture=lambda: "hello",
+        send=lambda text: None,
+        acknowledge=lambda: events.append("acknowledge"),
+    )
+    coordinator.playback_started()
+
+    assert coordinator.on_wake() is False
+
+    assert events == []
+
+
+def test_a_silent_misfire_acknowledges_the_wake_and_then_says_nothing():
+    """The card's misfire rule: it heard something, it withdrew, it never
+    claimed to be working."""
+    coordinator, session, events = _ordered(transcript="")
+
+    coordinator.on_wake()
+
+    assert events == ["acknowledge", "capture"]
+    assert session.turns == []
+    assert coordinator.state == handsfree.IDLE
+
+
+def test_a_hallucinated_transcript_does_not_announce_work():
+    coordinator, session, events = _ordered(
+        transcript="Thank you.", is_hallucination=lambda text: text == "Thank you."
+    )
+
+    coordinator.on_wake()
+
+    assert "capture_finished" not in events
+    assert session.turns == []
+
+
+def test_a_failed_capture_does_not_announce_work():
+    session = FakeSession()
+    events = []
+
+    def capture():
+        raise RuntimeError("the microphone went away")
+
+    coordinator = handsfree.HandsFreeCoordinator(
+        session,
+        capture=capture,
+        send=lambda text: None,
+        acknowledge=lambda: events.append("acknowledge"),
+        capture_finished=lambda: events.append("capture_finished"),
+    )
+
+    assert coordinator.on_wake() is False
+
+    assert events == ["acknowledge"]
+    assert coordinator.state == handsfree.IDLE
+
+
+def test_an_expired_listening_window_never_announces_work():
+    session = FakeSession()
+    clock = Clock()
+    events = []
+    coordinator = handsfree.HandsFreeCoordinator(
+        session,
+        capture=lambda: "ignored",
+        send=lambda text: session.send_turn(text),
+        capture_finished=lambda: events.append("capture_finished"),
+        listen_timeout=8.0,
+        speech_detected=lambda: False,
+        now=clock,
+    )
+    coordinator._begin_capture_for_test()
+
+    clock.advance(9.0)
+    coordinator.tick()
+
+    assert events == []
+
+
+def test_a_failing_acknowledgement_never_costs_the_turn():
+    """A chirp is a courtesy. A dead speaker must not eat the question."""
+    session = FakeSession()
+
+    def explode():
+        raise RuntimeError("no output device")
+
+    coordinator = handsfree.HandsFreeCoordinator(
+        session,
+        capture=lambda: "what is the weather",
+        send=lambda text: session.send_turn(text),
+        acknowledge=explode,
+        capture_finished=explode,
+    )
+
+    assert coordinator.on_wake() is True
+
+    assert session.turns == [("what is the weather", "local")]
+
+
+def test_the_coordinator_works_with_no_acknowledgement_wiring():
+    """Earcons are optional. With nothing injected the machine is unchanged."""
+    coordinator, session, _, _ = _coordinator()
+
+    assert coordinator.on_wake() is True
+    assert session.turns == [("what is the weather", "local")]

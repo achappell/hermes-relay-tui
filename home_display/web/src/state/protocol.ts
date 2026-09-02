@@ -1,5 +1,6 @@
 export const displayStates = [
   "idle",
+  "heard",
   "listening",
   "thinking",
   "speaking",
