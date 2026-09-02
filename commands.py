@@ -33,6 +33,11 @@ COMMAND_REGISTRY: tuple[Command, ...] = (
         "Control voice mode through the relay",
         args_hint="[on|off|tts|status]",
     ),
+    Command(
+        "wake",
+        "Arm or release local hands-free wake-word listening",
+        args_hint="[on|off|status]",
+    ),
     Command("audio", "List or select local audio devices", args_hint="[list|status|input|output]"),
     Command("image", "Stage a local image attachment", args_hint="<path>|list|clear"),
     Command("history", "Search or show prompt history", args_hint="[search term]"),
