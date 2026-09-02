@@ -80,6 +80,21 @@ websocket, playback, and the display. Useful flags: `--no-audio` for text only,
 `--fail` to make every turn return an error, `--drop` to hang up mid-turn so
 reconnection can be watched, and `--reply` to change what it says.
 
+## If it feels slow to notice you have stopped
+
+The delay between the last word and the reply is two things: a fixed wait for
+silence, then transcription. The appliance waits 1.2s where the terminal
+client waits 3s — three seconds of nothing happening in a kitchen reads as
+broken. Transcription with the `base` model is around 0.7s once it is warm.
+
+Tune with `--mic-silence-duration`. Lower it if the unit feels sluggish; raise
+it if it cuts you off when you pause mid-sentence. A value in `config.yaml` or
+`VOICE_SESSION_MIC_SILENCE_DURATION` overrides the hands-free default.
+
+If the wait is much longer than that, it is transcription, not endpointing:
+check `stt_model`. A larger model is slower per turn, and the very first turn
+after a cold start also pays for loading it.
+
 ## What the display deliberately does not show
 
 Hermes packs the model's chain-of-thought and the answer into one text frame —

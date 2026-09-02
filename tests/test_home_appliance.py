@@ -14,6 +14,7 @@ import types
 
 import pytest
 
+import config
 import handsfree
 from home_display.appliance import Appliance
 
@@ -581,3 +582,35 @@ async def test_text_arriving_after_the_answer_was_spoken_does_not_say_thinking()
     after_speaking = order[order.index("speaking") + 1 :]
     assert "thinking" not in after_speaking, order
     assert publisher.history[-1][1] == "Online."
+
+
+# --- endpointing ------------------------------------------------------------
+#
+# The TUI waits 3s of silence before deciding you have finished, which is fine
+# when you pressed a key on purpose and can see the screen. Standing in a
+# kitchen it is an age: three seconds of nothing happening reads as broken.
+
+
+def test_the_appliance_ends_an_utterance_sooner_than_the_terminal_client():
+    from home_display import appliance
+
+    hands_free = appliance.build_arg_parser().parse_args([])
+    terminal = config.build_arg_parser().parse_args([])
+
+    assert hands_free.mic_silence_duration == appliance.HANDS_FREE_SILENCE_DURATION
+    assert hands_free.mic_silence_duration < terminal.mic_silence_duration
+
+
+def test_an_explicit_silence_duration_still_wins(tmp_path, monkeypatch):
+    """A hands-free default must not overrule someone who set the value."""
+    from home_display import appliance
+
+    configured = tmp_path / "config.yaml"
+    configured.write_text("mic_silence_duration: 2.5\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_RELAY_TUI_CONFIG", str(configured))
+
+    from_file = appliance.build_arg_parser().parse_args([])
+    from_flag = appliance.build_arg_parser().parse_args(["--mic-silence-duration", "4"])
+
+    assert from_file.mic_silence_duration == 2.5
+    assert from_flag.mic_silence_duration == 4.0

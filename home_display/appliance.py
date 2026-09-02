@@ -25,6 +25,7 @@ import argparse
 import asyncio
 import contextlib
 import logging
+import os
 import sys
 import threading
 from pathlib import Path
@@ -86,6 +87,13 @@ STATUS_TEXT: dict[str, str | None] = {
     "buffering": "Buffering",
     "disconnected": "Reconnecting to Hermes",
 }
+
+# How long the unit waits, after you stop talking, before deciding you have
+# finished. The terminal client waits 3s, which is fine when you pressed a key
+# on purpose and can watch the screen. Standing in a kitchen, three seconds of
+# nothing happening reads as broken. Short enough to feel immediate, long
+# enough to survive the pause in the middle of a sentence.
+HANDS_FREE_SILENCE_DURATION = 1.2
 
 INITIAL_RECONNECT_DELAY = 1.0
 MAX_RECONNECT_DELAY = 30.0
@@ -467,14 +475,23 @@ class Appliance:
                 await self._server.close()
 
 
-def build_arg_parser() -> argparse.ArgumentParser:
-    parser = config.build_arg_parser()
+def build_arg_parser(argv: list[str] | None = None) -> argparse.ArgumentParser:
+    parser = config.build_arg_parser(argv)
     parser.add_argument(
         "--display-port",
         type=int,
         default=0,
         help="loopback port for the display; 0 selects an available port",
     )
+
+    # Only substitute the hands-free default when nobody has said otherwise.
+    # An explicit flag beats a default anyway; a configured value must too.
+    settings = config.load_config_file(config.config_path_from_argv(argv))
+    configured = "mic_silence_duration" in settings or os.getenv(
+        "VOICE_SESSION_MIC_SILENCE_DURATION"
+    )
+    if not configured:
+        parser.set_defaults(mic_silence_duration=HANDS_FREE_SILENCE_DURATION)
     return parser
 
 
