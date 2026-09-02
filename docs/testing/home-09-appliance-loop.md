@@ -47,6 +47,32 @@ It prints a loopback URL. Open it in a browser — that is the kitchen display.
 
 Stop with `Ctrl+C`.
 
+## Testing without Hermes
+
+"Does the appliance work" and "is Hermes up" are two questions, and answering
+them together answers neither. `scripts/fake_relay.py` is a stand-in server
+that speaks enough of the protocol to be indistinguishable for one turn: it
+answers the handshake, streams a canned reply word by word, and speaks it with
+macOS `say`. No model, no network, no relay.
+
+```bash
+# One terminal:
+venv/bin/python scripts/fake_relay.py
+
+# Another:
+venv/bin/hermes-relay-home --wake-enabled \
+    --url ws://127.0.0.1:8799/voice-session --token stub
+```
+
+Everything except Hermes itself is real — the wake word, the microphone, the
+websocket, playback, and the display. Useful flags: `--no-audio` for text only,
+`--fail` to make every turn return an error, `--drop` to hang up mid-turn so
+reconnection can be watched, and `--reply` to change what it says.
+
+A turn that streams as one word per line means the relay is sending append-only
+chunks as `text_delta`, which the protocol defines as a *cumulative* preview.
+That is a relay bug, not a client one.
+
 ## What this slice does not cover
 
 Barge-in stays off (`--wake-barge-in`) until HOME-05 delivers echo

@@ -424,7 +424,9 @@ actually happening. `hermes-relay-home-demo` still serves the display alone,
 driven by a scripted fake, for working on the browser shell with no relay and
 no hardware. Use `--display-port` to pin the display to a fixed loopback port
 so a kiosk browser can be pointed at it. The [HOME-09 smoke procedure](docs/testing/home-09-appliance-loop.md)
-is how the real loop gets validated.
+is how the real loop gets validated — including
+`scripts/fake_relay.py`, a stand-in server that lets the whole appliance be
+tested with no Hermes at all.
 
 **A plain install does not include this.** `pip install hermes-relay-tui` and
 `brew install hermes-relay-tui` give you the `hermes-relay-home` command
