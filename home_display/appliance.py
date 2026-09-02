@@ -311,7 +311,14 @@ class Appliance:
             # The connection is the usual reason a turn stops mid-stream.
             # Report it as what the unit is: not talking to Hermes.
             logger.debug("appliance turn failed", exc_info=True)
-            self._publish("disconnected", status_text=STATUS_TEXT["disconnected"])
+            # Clear the partial reply. A finished answer stays up to be read;
+            # half a sentence from a turn the connection killed is not an
+            # answer, and must not sit there looking like one.
+            self._publish(
+                "disconnected",
+                response_text="",
+                status_text=STATUS_TEXT["disconnected"],
+            )
             self._request_reconnect()
             raise RuntimeError("the turn ended without a reply") from error
         finally:

@@ -130,6 +130,22 @@ A turn that streams as one word per line means the relay is sending append-only
 chunks as `text_delta`, which the protocol defines as a *cumulative* preview.
 That is a relay bug, not a client one.
 
+## Verification evidence — 2026-09-01 (CDT)
+
+- `venv/bin/pytest` — 401 passed (one pre-existing `websockets.legacy`
+  deprecation warning).
+- Checks 1 and 2 (wake to spoken answer, display matching the hardware): run
+  against a live local Hermes gateway on loopback. Amanda confirmed a spoken
+  answer with no keyboard; the display walked
+  `idle → listening → thinking → speaking → idle`.
+- Check 4 (connection loss and recovery): run against
+  `scripts/fake_relay.py --drop`, which hangs up mid-turn. The display showed
+  `disconnected`, reconnected on its own, and the next wake produced a
+  complete turn with no restart of the appliance. The relay log confirmed two
+  separate client connections.
+- Check 3 (misfire timeout): **not yet run** — it needs a person in the room
+  to say the phrase and then stay silent.
+
 ## What this slice does not cover
 
 Barge-in stays off (`--wake-barge-in`) until HOME-05 delivers echo

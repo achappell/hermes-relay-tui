@@ -639,3 +639,21 @@ async def test_speaking_waits_for_audio_that_can_actually_be_heard():
     assert order.index("thinking") < order.index("speaking")
     thinking_entries = [e for e in publisher.history if e[0] == "thinking"]
     assert thinking_entries[-1][1] == "Working on it."
+
+
+@pytest.mark.asyncio
+async def test_a_dropped_turn_does_not_leave_half_an_answer_on_screen():
+    """A completed answer stays up to be read. A partial one, from a turn the
+    connection killed, is not an answer and must not sit there looking like
+    one under a "Reconnecting" banner."""
+    publisher = RecordingPublisher()
+    session = FakeSession(
+        [{"type": "text_delta", "text": "The oven is at four hundred and"},
+         ConnectionError("socket closed")]
+    )
+    appliance, state = make_appliance(session=session, publisher=publisher)
+
+    await _run_until_idle(appliance, state)
+
+    dropped = [entry for entry in publisher.history if entry[0] == "disconnected"]
+    assert dropped and dropped[-1][1] == ""
