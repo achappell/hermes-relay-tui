@@ -210,20 +210,30 @@ class Appliance:
         speaking = False
         spoke = False
 
-        def begin_playback(fmt: tuple[int, int, int]) -> bool:
-            nonlocal speaking
-            nonlocal spoke
+        def open_playback(fmt: tuple[int, int, int]) -> bool:
+            """Open the output device. Not the same as making a sound."""
             self._player.start(fmt)
             if self._player.active:
-                self._coordinator.playback_started()
-                self._publish("speaking")
-                speaking = True
-                spoke = True
                 return True
             # Audio is arriving but nothing can play it. Say so rather than
             # showing "speaking" over a silent room.
             self._publish("buffering")
             return False
+
+        def enter_speaking() -> None:
+            """Announce speech only once a sample is actually going out.
+
+            `audio_start` is a header. Measured against a live gateway, the
+            first audible sample arrived 2.2s after it — two seconds of a
+            display claiming to talk over a silent room.
+            """
+            nonlocal speaking, spoke
+            if speaking:
+                return
+            self._coordinator.playback_started()
+            self._publish("speaking")
+            speaking = True
+            spoke = True
 
         try:
             async for event in self._session.send_turn(text, stt_source="local"):
@@ -235,7 +245,7 @@ class Appliance:
                     response = str(event.get("text") or "")
                     self._publish_response(response, speaking, spoke)
                 elif kind == "audio_start":
-                    begin_playback(
+                    open_playback(
                         (
                             event["sample_rate"],
                             event["channels"],
@@ -244,6 +254,7 @@ class Appliance:
                     )
                 elif kind == "audio_chunk":
                     if self._player.active:
+                        enter_speaking()
                         await asyncio.to_thread(self._player.write, event["data"])
                 elif kind == "audio_end":
                     await self._finish_playback()
@@ -283,7 +294,8 @@ class Appliance:
                                 self._publish("buffering")
                             continue
                         decoded, fmt = bytes(file_audio), file_format
-                    if begin_playback(fmt):
+                    if open_playback(fmt):
+                        enter_speaking()
                         await asyncio.to_thread(self._player.write, decoded)
                         await self._finish_playback()
                         speaking = False

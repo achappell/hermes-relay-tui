@@ -80,6 +80,26 @@ websocket, playback, and the display. Useful flags: `--no-audio` for text only,
 `--fail` to make every turn return an error, `--drop` to hang up mid-turn so
 reconnection can be watched, and `--reply` to change what it says.
 
+## Where the time actually goes
+
+Measured against a live local gateway, one turn:
+
+| Stage | Time |
+|---|---|
+| Silence before the utterance is considered finished | 1.2s |
+| Transcription (`base` model, warm) | 0.7s |
+| Turn sent → `audio_start` header | 0.1s |
+| Header → first audible sample | ~2.2s |
+| Speech delivered | real time, 1:1 with playback |
+
+So roughly four seconds from your last word to the first of its. Response
+audio is streamed and played chunk by chunk as it arrives — nothing waits for
+the complete utterance at either end.
+
+`audio_start` is a header, not a sound. The display enters `speaking` on the
+first sample actually written to the device, not on the header, or it would
+claim to be talking over two seconds of silence.
+
 ## If it feels slow to notice you have stopped
 
 The delay between the last word and the reply is two things: a fixed wait for

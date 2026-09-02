@@ -614,3 +614,28 @@ def test_an_explicit_silence_duration_still_wins(tmp_path, monkeypatch):
 
     assert from_file.mic_silence_duration == 2.5
     assert from_flag.mic_silence_duration == 4.0
+
+
+@pytest.mark.asyncio
+async def test_speaking_waits_for_audio_that_can_actually_be_heard():
+    """`audio_start` is a header, not a sound. Against a live gateway the
+    first audible sample arrived 2.2s after it. Showing "Speaking" over a
+    silent room for two seconds is the exact lie this display must not tell."""
+    publisher = RecordingPublisher()
+    script = [
+        {"type": "audio_start", "sample_rate": 24000, "channels": 1, "sample_width": 2},
+        {"type": "text_delta", "text": "Working on it."},
+        {"type": "audio_chunk", "data": b"\x01\x02"},
+        {"type": "audio_end"},
+        {"type": "turn_end"},
+    ]
+    appliance, state = make_appliance(script, publisher=publisher)
+
+    await _run_until_idle(appliance, state)
+
+    order = publisher.sequence
+    # The text frame lands between the header and the first sample: at that
+    # moment the unit is still thinking, not speaking.
+    assert order.index("thinking") < order.index("speaking")
+    thinking_entries = [e for e in publisher.history if e[0] == "thinking"]
+    assert thinking_entries[-1][1] == "Working on it."
