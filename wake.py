@@ -142,8 +142,27 @@ class WakeDetector:
         return True
 
     def reset(self) -> None:
-        """Drop any partial streak — used when the listener is paused."""
+        """Drop any partial streak, and clear the engine's own audio buffer.
+
+        Zeroing the streak is not enough. openWakeWord keeps its own rolling
+        melspectrogram and embedding history, so the spoken phrase survives a
+        pause inside the engine; once fresh frames arrive it scores a window
+        that still contains the phrase and fires a second time. Measured on
+        hardware 2026-09-02 at 2.2s after resume, twice, consistently — heard
+        in the kitchen as a second beep and a second listening phase after a
+        misfire that should have withdrawn in silence.
+
+        The engine protocol only promises `score`, so a stub or an older
+        engine without `reset` is left alone rather than broken.
+        """
         self._streak = 0
+        engine_reset = getattr(self._engine, "reset", None)
+        if engine_reset is None:
+            return
+        try:
+            engine_reset()
+        except Exception:
+            logger.debug("wake engine reset failed", exc_info=True)
 
 
 class SilentStreamMonitor:
@@ -477,6 +496,17 @@ class _OpenWakeWordEngine:
             kwargs["wakeword_models"] = [model_path]
 
         self._model = model_factory(**kwargs)
+
+    def reset(self) -> None:
+        """Clear openWakeWord's prediction and audio-feature buffers.
+
+        `Model.reset()` empties the prediction buffer and calls
+        `preprocessor.reset()`, which is where the retained audio actually
+        lives. Its own docstring warns against calling this too frequently;
+        the listener only calls it on pause and resume, so at most twice a
+        turn.
+        """
+        self._model.reset()
 
     def score(self, frame: Any) -> float:
         # sounddevice hands back (samples, channels); openWakeWord wants a flat

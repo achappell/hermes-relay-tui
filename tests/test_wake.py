@@ -238,3 +238,61 @@ def test_the_engine_scores_zero_when_the_model_returns_nothing():
         )
     )
     assert engine.score([0]) == 0.0
+
+
+# ---- resetting reaches the engine (HOME-10 / C3) ----------------------
+
+
+class ResettableEngine:
+    def __init__(self, scores):
+        self.scores = list(scores)
+        self.resets = 0
+
+    def score(self, frame):  # noqa: ARG002
+        return self.scores.pop(0) if self.scores else 0.0
+
+    def reset(self) -> None:
+        self.resets += 1
+
+
+def test_resetting_the_detector_also_clears_the_engine():
+    """The second beep, found on hardware 2026-09-02.
+
+    openWakeWord keeps its own rolling melspectrogram and embedding buffers.
+    Clearing only the detector's streak counter leaves the spoken phrase
+    sitting in the engine, so once fresh frames resume it scores a window that
+    still contains the phrase and fires again — measured at 2.2s after resume,
+    twice, consistently.
+    """
+    engine = ResettableEngine([])
+    detector = wake.WakeDetector(engine, confirmation_frames=1, cooldown_seconds=0.0)
+
+    detector.reset()
+
+    assert engine.resets == 1
+
+
+def test_an_engine_without_reset_is_still_usable():
+    """The WakeEngine protocol only promises `score`. A stub, a fake, or an
+    older engine must not break the listener."""
+
+    class BareEngine:
+        def score(self, frame):  # noqa: ARG002
+            return 0.0
+
+    detector = wake.WakeDetector(BareEngine(), confirmation_frames=1)
+
+    detector.reset()  # must not raise
+
+
+def test_pausing_the_listener_clears_the_engine_buffer():
+    """pause() and resume() are the only places this matters, and they are on
+    the path a misfire takes."""
+    engine = ResettableEngine([])
+    detector = wake.WakeDetector(engine, confirmation_frames=1, cooldown_seconds=0.0)
+    listener = wake.WakeListener(detector, on_wake=lambda: None)
+
+    listener.pause()
+    listener.resume()
+
+    assert engine.resets == 2, "both directions have to clear it"
