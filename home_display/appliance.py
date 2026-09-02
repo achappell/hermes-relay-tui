@@ -137,6 +137,8 @@ class Appliance:
         self._response_text = ""
         self._published: tuple[Any, ...] | None = None
         self._reconnect: asyncio.Event | None = None
+        self._connected = False
+        self._is_listening: bool | None = None
         self._stopping = threading.Event()
         self.info: Any = None
 
@@ -176,8 +178,28 @@ class Appliance:
         else:
             loop.call_soon_threadsafe(_apply)
 
+    def _set_listening(self) -> None:
+        """Listen only when idle and connected — never during a turn.
+
+        A turn holds the microphone, and `pause` resets the detector's rolling
+        buffer. Without this the unit wakes itself: observed live, a misfire
+        expired after 8s and the tail of the same spoken phrase was still in
+        the buffer, firing again the moment the microphone came free.
+        """
+        if self._listener is None:
+            return
+        listening = self._connected and self._coordinator.state == handsfree.IDLE
+        if listening == self._is_listening:
+            return
+        self._is_listening = listening
+        if listening:
+            self._listener.resume()
+        else:
+            self._listener.pause()
+
     def _on_coordinator_state(self, state: str) -> None:
         """Called on the listener thread as the capture half of a turn moves."""
+        self._set_listening()
         if state == handsfree.CAPTURING:
             # A new question replaces the last answer: leaving the previous
             # response on screen while listening claims a conversation that
@@ -400,12 +422,14 @@ class Appliance:
             self._publish("idle")
             # Only listen while there is somewhere for a turn to go. A wake
             # phrase the unit cannot act on must do nothing at all, not queue.
-            self._listener.resume()
+            self._connected = True
+            self._set_listening()
             try:
                 await self._reconnect.wait()
             finally:
                 self._reconnect.clear()
-                self._listener.pause()
+                self._connected = False
+                self._set_listening()
                 with contextlib.suppress(Exception):
                     await self._session.close()
 

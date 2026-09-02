@@ -143,8 +143,21 @@ That is a relay bug, not a client one.
   `disconnected`, reconnected on its own, and the next wake produced a
   complete turn with no restart of the appliance. The relay log confirmed two
   separate client connections.
-- Check 3 (misfire timeout): **not yet run** — it needs a person in the room
-  to say the phrase and then stay silent.
+- Check 3 (misfire timeout): run by Amanda, and it **found a bug**. The
+  display showed `listening`, blinked, and showed it again before finally
+  clearing. `--debug` recorded two "listening window expired" lines 8.3s
+  apart: one spoken phrase produced two captures. The listener was paused
+  only around the *connection*, never around a *turn*, so the detector still
+  held the tail of the phrase in its rolling buffer and fired again the moment
+  the microphone came free. The listener is now deaf for the duration of a
+  turn, which is what `wake.WakeListener.pause` is for — it resets that
+  buffer. Re-verified on the real microphone: capture at 3.00s pauses the
+  listener, and it resumes at 11.11s when the unit returns to idle, with no
+  second detection.
+- A misfire still holds `listening` for the full `--wake-listen-timeout` (8s
+  by default) before clearing. That is the confirmed value for "long enough to
+  turn off a tap and turn round", and is a tuning decision rather than a
+  fault.
 
 ## What this slice does not cover
 

@@ -657,3 +657,20 @@ async def test_a_dropped_turn_does_not_leave_half_an_answer_on_screen():
 
     dropped = [entry for entry in publisher.history if entry[0] == "disconnected"]
     assert dropped and dropped[-1][1] == ""
+
+
+@pytest.mark.asyncio
+async def test_the_listener_is_deaf_while_a_turn_holds_the_microphone():
+    """Otherwise the unit wakes itself. Observed live: a misfire expired after
+    8s, the detector still had the tail of the phrase in its rolling buffer,
+    and it fired again the instant the microphone came free — two Listening
+    windows from one spoken phrase. `pause()` resets that buffer."""
+    state: dict = {}
+    appliance, state = make_appliance(state=state)
+
+    await _run_until_idle(appliance, state)
+
+    # True is a pause, False a resume. Startup pause, resume once connected,
+    # pause for the duration of the turn, resume when idle again — and a final
+    # pause as the appliance shuts down.
+    assert state["listener"].paused[:4] == [True, False, True, False]
