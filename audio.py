@@ -95,6 +95,11 @@ class PCMPlayer:
         return self.stream is not None
 
     def start(self, audio_format: tuple[int, int, int]) -> None:
+        # A stream can still be open and draining: not every gateway sends
+        # `audio_end`. Replacing it silently orphans it and cuts off whatever
+        # was left to play.
+        if self.stream is not None:
+            self.close()
         self.failure = None
         self.playing = False
         self._pending.clear()

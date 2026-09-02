@@ -226,3 +226,18 @@ def test_the_output_stream_is_not_opened_at_minimum_latency(monkeypatch):
     PCMPlayer(enabled=True).start((24000, 1, 2))
 
     assert received.get("latency") != "low"
+
+
+def test_starting_again_closes_a_stream_that_is_still_playing(monkeypatch):
+    """Some gateways never send `audio_end`, so a stream can still be open and
+    draining when the next turn begins. Replacing it silently orphans it and
+    cuts off whatever was left to play."""
+    log = []
+    _fake_stream(monkeypatch, log)
+
+    player = PCMPlayer(enabled=True)
+    player.start((24000, 1, 2))
+    player.start((24000, 1, 2))
+
+    assert log.count(("stop",)) == 1, log
+    assert log.count(("close",)) == 1, log
