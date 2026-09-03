@@ -51,6 +51,10 @@ SPEAKING = "speaking"
 DEFAULT_LISTEN_TIMEOUT = 8.0
 
 
+def _is_local_stop_command(transcript: str) -> bool:
+    return transcript.strip().casefold() == "stop"
+
+
 class HandsFreeCoordinator:
     """Wake event in, one turn plus one optional follow-up out."""
 
@@ -188,7 +192,9 @@ class HandsFreeCoordinator:
                 logger.debug("hands-free follow-up capture failed", exc_info=True)
                 self._finish()
                 return True
-            if not (follow_up or "").strip():
+            if _is_local_stop_command(follow_up or ""):
+                self._finish()
+            elif not (follow_up or "").strip():
                 self._finish()
             else:
                 self._deliver(follow_up)

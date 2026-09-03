@@ -99,6 +99,55 @@ def test_silence_in_the_follow_up_window_returns_to_wake_listening():
     assert coordinator.state == handsfree.IDLE
 
 
+def test_exact_stop_in_the_follow_up_window_is_local_and_silent():
+    session = FakeSession()
+    events = []
+
+    coordinator = handsfree.HandsFreeCoordinator(
+        session,
+        capture=lambda: "what is the weather",
+        send=lambda text: session.send_turn(text),
+        follow_up_capture=lambda: "  STOP  ",
+        on_state_change=events.append,
+    )
+
+    assert coordinator.on_wake() is True
+
+    assert session.turns == [("what is the weather", "local")]
+    assert events[-2:] == [handsfree.CAPTURING, handsfree.IDLE]
+    assert coordinator.state == handsfree.IDLE
+
+
+def test_a_longer_stop_phrase_in_the_follow_up_window_is_sent():
+    session = FakeSession()
+    coordinator = handsfree.HandsFreeCoordinator(
+        session,
+        capture=lambda: "what is the weather",
+        send=lambda text: session.send_turn(text),
+        follow_up_capture=lambda: "stop the timer",
+    )
+
+    coordinator.on_wake()
+
+    assert session.turns == [
+        ("what is the weather", "local"),
+        ("stop the timer", "local"),
+    ]
+
+
+def test_stop_remains_ordinary_content_for_the_initial_wake_turn():
+    session = FakeSession()
+    coordinator = handsfree.HandsFreeCoordinator(
+        session,
+        capture=lambda: " STOP ",
+        send=lambda text: session.send_turn(text),
+    )
+
+    coordinator.on_wake()
+
+    assert session.turns == [("STOP", "local")]
+
+
 def test_detections_during_a_capture_do_not_stack_turns():
     """Repeated detections during an active capture must be dropped, not
     queued: queuing them is how a single utterance becomes three turns."""
