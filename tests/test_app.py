@@ -9,7 +9,7 @@ import pytest
 from textual.events import MouseMove, MouseUp
 from textual.geometry import Offset
 from textual.selection import Selection
-from textual.widgets import Static
+from textual.widgets import Header, Static
 
 import app as app_module
 from app import Composer, HermesSession, HermesStreamingApp
@@ -101,6 +101,10 @@ def voice_status_of(app) -> str:
     return str(app.query_one("#voice-status", Static).content)
 
 
+def connection_status_of(app) -> str:
+    return str(app.query_one("#connection-status", Static).content)
+
+
 def make_args(**overrides):
     args = types.SimpleNamespace(
         no_play=True,
@@ -126,6 +130,97 @@ async def test_app_mounts_with_transcript_and_input():
         assert app.query_one("#transcript", Static) is not None
         assert app.query_one("#composer", Composer) is not None
         assert voice_status_of(app) == "● ready"
+
+
+async def test_app_shell_exposes_connection_state_and_honest_startup_surface():
+    class SlowConnectSession(FakeSession):
+        def __init__(self):
+            super().__init__(connected=False)
+            self.release = asyncio.Event()
+
+        async def connect(self):
+            self.connect_calls += 1
+            await self.release.wait()
+            self.connected = True
+            return self.hello
+
+    session = SlowConnectSession()
+    app = HermesStreamingApp(args=make_args(), session_factory=lambda: session)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+
+        assert app.query_one(Header) is not None
+        assert app.title == "Hermes Relay"
+        assert app.sub_title == "connecting · session s1"
+        assert connection_status_of(app) == "◌ connecting · session s1"
+        empty_state = app.query_one("#empty-state", Static)
+        assert empty_state.display is True
+        assert str(empty_state.content) == "Connecting to Hermes…"
+
+        session.release.set()
+        await pilot.pause()
+        await pilot.pause()
+
+        assert app.sub_title == "connected · session s1"
+        assert connection_status_of(app) == "● connected · session s1"
+        assert app.query_one("#connection-status", Static).has_class("-connected")
+        assert app.query_one("#voice-status", Static).has_class("-ready")
+        assert empty_state.display is False
+
+
+async def test_disconnected_surface_is_explicit_and_recoverable():
+    session = FlakyConnectSession(99)
+    app = HermesStreamingApp(args=make_args(), session_factory=lambda: session)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+
+        connection = app.query_one("#connection-status", Static)
+        assert connection_status_of(app) == "○ disconnected · session s1"
+        assert connection.has_class("-disconnected")
+        assert app.query_one("#voice-status", Static).has_class("-disconnected")
+        assert "The app remains open; retry when the endpoint recovers." in transcript_of(app)
+
+        app.transcript.clear()
+        app._refresh_transcript()
+        await pilot.pause()
+        empty_state = app.query_one("#empty-state", Static)
+        assert empty_state.display is True
+        assert str(empty_state.content) == (
+            "Hermes is disconnected. Prompts stay queued until it returns."
+        )
+
+
+async def test_composer_hint_confirms_draft_and_survives_terminal_resize():
+    app = HermesStreamingApp(args=make_args(), session_factory=lambda: FakeSession())
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        composer = app.query_one("#composer", Composer)
+        hint = app.query_one("#composer-hint", Static)
+
+        assert str(hint.content) == "Enter send · Shift+Enter newline"
+
+        composer.text = "draft that must survive"
+        await pilot.pause()
+        assert str(hint.content) == "Draft ready · Enter send · Shift+Enter newline"
+
+        await pilot.resize_terminal(40, 12)
+        await pilot.pause()
+        assert composer.text == "draft that must survive"
+        assert app.focused is composer
+        assert str(hint.content) == "Draft ready · Enter send · Shift+Enter newline"
+
+
+async def test_transcript_remains_rendered_after_terminal_resize():
+    app = HermesStreamingApp(args=make_args(), session_factory=lambda: FakeSession())
+    async with app.run_test(size=(80, 24)) as pilot:
+        await pilot.pause()
+        await pilot.pause()
+        assert "Connected&#160;to&#160;s1" in app.export_screenshot()
+
+        await pilot.resize_terminal(40, 12)
+        await pilot.pause()
+
+        assert "Connected&#160;to&#160;s1" in app.export_screenshot()
 
 
 async def test_queue_shelf_shows_count_and_previews_pending_prompts():
@@ -155,12 +250,16 @@ async def test_voice_status_surface_displays_lifecycle_states():
         "speaking…",
         "buffering…",
         "interrupted",
+        "error",
     )
     async with app.run_test() as pilot:
         await pilot.pause()
         for state in states:
             app._set_voice_state(state)
             assert voice_status_of(app) == f"● {state}"
+            assert app.query_one("#voice-status", Static).has_class(
+                f"-{state.rstrip('…')}"
+            )
 
 
 async def test_connect_banner_is_appended_from_the_worker():
@@ -1309,7 +1408,9 @@ async def test_busy_command_rejects_unknown_modes():
 
 async def test_reload_command_picks_up_untouched_config_changes(tmp_path):
     config_path = tmp_path / "config.yaml"
-    config_path.write_text("turn_timeout: 42\nhide_thinking: true\n")
+    config_path.write_text(
+        "session_id: s2\nturn_timeout: 42\nhide_thinking: true\n"
+    )
     argv = ["--config", str(config_path)]
     session = FakeSession()
     app = HermesStreamingApp(args=make_args(), session_factory=lambda: session, argv=argv)
@@ -1323,6 +1424,8 @@ async def test_reload_command_picks_up_untouched_config_changes(tmp_path):
         await pilot.pause()
 
         assert app.args.turn_timeout == 42
+        assert app.sub_title == "connected · session s2"
+        assert connection_status_of(app) == "● connected · session s2"
         assert app.show_transcript_details is False
         assert "config reloaded from" in transcript_of(app)
 

@@ -27,7 +27,7 @@ from rich.protocol import is_renderable
 from rich.segment import Segment
 from rich.style import Style as RichStyle
 from textual import events
-from textual.app import App, ComposeResult
+from textual.app import App, ComposeResult, ScreenStackError
 from textual.containers import VerticalScroll
 from textual.css.query import NoMatches
 from textual.message import Message
@@ -346,23 +346,131 @@ def _write_new_text_file(path: Path, text: str) -> None:
 class HermesStreamingApp(App):
     """A Textual TUI for a Hermes voice-session chat."""
 
+    TITLE = "Hermes Relay"
+    SUB_TITLE = "disconnected"
+
     CSS = """
+    # The transcript is the work surface. Keep the controls visually quiet so
+    # a long answer remains the thing the eye lands on first.
+    #transcript-scroll {
+        height: 1fr;
+        margin: 0 1;
+        padding: 1 2;
+        border: round $panel-lighten-1;
+        background: $surface;
+    }
+
+    #transcript {
+        width: 100%;
+    }
+
+    #empty-state {
+        width: 100%;
+        height: 1fr;
+        min-height: 3;
+        padding: 1 2;
+        color: $text-muted;
+        content-align: center middle;
+    }
+
+    #connection-status {
+        height: 1;
+        padding: 0 2;
+        color: $text-muted;
+    }
+
+    #connection-status.-connected {
+        color: $success;
+    }
+
+    #connection-status.-connecting,
+    #connection-status.-retrying {
+        color: $warning;
+    }
+
+    #connection-status.-disconnected {
+        color: $error;
+    }
+
     #voice-status {
         height: 1;
-        padding: 0 1;
+        padding: 0 2;
         color: $text-muted;
+    }
+
+    #voice-status.-ready,
+    #voice-status.-speaking {
+        color: $success;
+    }
+
+    #voice-status.-connecting,
+    #voice-status.-reconnecting,
+    #voice-status.-listening,
+    #voice-status.-transcribing,
+    #voice-status.-thinking,
+    #voice-status.-buffering,
+    #voice-status.-interrupted {
+        color: $warning;
+    }
+
+    #voice-status.-disconnected,
+    #voice-status.-error {
+        color: $error;
     }
 
     #composer {
         height: 5;
         max-height: 10;
+        margin: 0 1;
+        padding: 0 1;
+        border: round $panel-lighten-1;
+        background: $surface;
+    }
+
+    #composer:focus {
+        border: round $accent;
+    }
+
+    #composer-hint {
+        height: 1;
+        padding: 0 2;
+        color: $text-muted;
     }
 
     #queue-shelf {
         height: auto;
         max-height: 6;
+        margin: 0 1;
         padding: 0 1;
+        border-top: solid $panel-lighten-1;
         color: $text-muted;
+    }
+
+    #command-suggestions {
+        height: auto;
+        max-height: 6;
+        margin: 0 1;
+        padding: 0 1;
+        border-top: solid $accent;
+        color: $accent;
+    }
+
+    #transcript-scroll.-compact {
+        padding: 0;
+        border: none;
+    }
+
+    #empty-state.-compact {
+        min-height: 1;
+        padding: 0 1;
+    }
+
+    #composer.-compact {
+        height: 3;
+    }
+
+    #composer-hint.-compact {
+        display: none;
     }
     """
 
@@ -443,14 +551,17 @@ class HermesStreamingApp(App):
         self._audio_output_touched = False
 
     def compose(self) -> ComposeResult:
-        yield Header()
+        yield Header(icon="◈")
         with VerticalScroll(id="transcript-scroll"):
+            yield Static("Connecting to Hermes…", id="empty-state", markup=False)
             # markup=False so a literal "[error] ..." isn't eaten as Rich markup.
             yield TranscriptStatic("", id="transcript", markup=False)
+        yield Static("◌ connecting · session", id="connection-status", markup=False)
         yield Static("● ready", id="voice-status")
         yield Static("", id="queue-shelf", markup=False)
         yield Static("", id="command-suggestions", markup=False)
         yield Composer(placeholder="you>", id="composer")
+        yield Static("Enter send · Shift+Enter newline", id="composer-hint", markup=False)
         yield Footer()
 
     # --- transcript rendering -------------------------------------------------
@@ -465,6 +576,7 @@ class HermesStreamingApp(App):
         return self.transcript.plain_text_for(show_details=self.show_transcript_details)
 
     def _refresh_transcript(self) -> None:
+        self._refresh_empty_state()
         self.query_one("#transcript", TranscriptStatic).update(
             self.transcript.render(show_details=self.show_transcript_details),
             plain_text=self._visible_transcript_text(),
@@ -486,6 +598,67 @@ class HermesStreamingApp(App):
     def _set_voice_state(self, state: str) -> None:
         self.voice_state = state
         self._refresh_voice_status()
+
+    def _set_connection_state(self, state: str) -> None:
+        self.connection_state = state
+        self._refresh_connection_status()
+
+    def _refresh_empty_state(self) -> None:
+        try:
+            widget = self.query_one("#empty-state", Static)
+        except (NoMatches, ScreenStackError):
+            return
+        if self.transcript.messages:
+            widget.display = False
+            return
+        messages = {
+            CONNECTION_CONNECTING: "Connecting to Hermes…",
+            CONNECTION_RETRYING: "Reconnecting to Hermes…",
+            CONNECTION_DISCONNECTED: (
+                "Hermes is disconnected. Prompts stay queued until it returns."
+            ),
+        }
+        widget.update(
+            messages.get(self.connection_state, "No messages yet — type below to begin.")
+        )
+        widget.display = True
+
+    def _refresh_compact_layout(self, height: int) -> None:
+        """Trade decoration for usable space in short terminal windows."""
+        compact = height <= 15
+        for selector in (
+            "#transcript-scroll",
+            "#empty-state",
+            "#composer",
+            "#composer-hint",
+        ):
+            try:
+                self.query_one(selector).set_class(compact, "-compact")
+            except (NoMatches, ScreenStackError):
+                return
+
+    def _refresh_connection_status(self) -> None:
+        session_id = getattr(self.args, "session_id", None) or "session"
+        symbol = {
+            CONNECTION_CONNECTED: "●",
+            CONNECTION_CONNECTING: "◌",
+            CONNECTION_RETRYING: "◌",
+            CONNECTION_DISCONNECTED: "○",
+        }.get(self.connection_state, "○")
+        line = f"{symbol} {self.connection_state} · session {session_id}"
+        self.sub_title = f"{self.connection_state} · session {session_id}"
+        try:
+            widget = self.query_one("#connection-status", Static)
+        except (NoMatches, ScreenStackError):
+            return
+        widget.update(line)
+        for state in (
+            CONNECTION_CONNECTED,
+            CONNECTION_CONNECTING,
+            CONNECTION_RETRYING,
+            CONNECTION_DISCONNECTED,
+        ):
+            widget.set_class(state == self.connection_state, f"-{state}")
 
     @property
     def microphone_is_open(self) -> bool:
@@ -511,8 +684,23 @@ class HermesStreamingApp(App):
         if self.microphone_is_open:
             line += f"   [$warning]◉ {MIC_OPEN_LABEL}[/]"
         try:
-            self.query_one("#voice-status", Static).update(line)
-        except NoMatches:
+            widget = self.query_one("#voice-status", Static)
+            widget.update(line)
+            for state in (
+                VOICE_READY,
+                VOICE_CONNECTING,
+                VOICE_RECONNECTING,
+                VOICE_DISCONNECTED,
+                VOICE_LISTENING,
+                VOICE_TRANSCRIBING,
+                VOICE_THINKING,
+                VOICE_SPEAKING,
+                VOICE_BUFFERING,
+                VOICE_INTERRUPTED,
+                VOICE_ERROR,
+            ):
+                widget.set_class(state == self.voice_state, f"-{state.rstrip('…')}")
+        except (NoMatches, ScreenStackError):
             # A state change can still be in flight during teardown.
             pass
 
@@ -539,9 +727,22 @@ class HermesStreamingApp(App):
         self._refresh_queue_shelf()
         self.query_one("#command-suggestions", Static).display = False
         self.set_focus(self.query_one("#composer", Composer))
+        self._refresh_compact_layout(self.size.height)
+        self._set_connection_state(CONNECTION_CONNECTING)
         self._set_voice_state(VOICE_CONNECTING)
+        self._refresh_empty_state()
         # In a worker so a hanging endpoint can't freeze the UI (or block ctrl+q).
         self.run_worker(self._connect(force=True), exclusive=True)
+
+    def on_resize(self, event: events.Resize) -> None:
+        """Rebuild wrapped Rich content after the terminal changes shape."""
+        self._refresh_compact_layout(event.size.height)
+        try:
+            self._refresh_transcript()
+        except (NoMatches, ScreenStackError):
+            # Resize events can arrive while the app is mounting or tearing
+            # down; there is no transcript to refresh in either case.
+            pass
 
     async def _connect(self, *, force: bool = False) -> bool:
         """Establish a session with bounded exponential-backoff retries."""
@@ -552,7 +753,7 @@ class HermesStreamingApp(App):
                     "Run /wake on after reconnect."
                 )
             if self.session.is_connected() and not force:
-                self.connection_state = CONNECTION_CONNECTED
+                self._set_connection_state(CONNECTION_CONNECTED)
                 self._set_voice_state(VOICE_READY)
                 return True
 
@@ -564,14 +765,14 @@ class HermesStreamingApp(App):
 
             for attempt in range(attempts):
                 if attempt == 0:
-                    self.connection_state = CONNECTION_CONNECTING
+                    self._set_connection_state(CONNECTION_CONNECTING)
                     self._set_voice_state(
                         VOICE_RECONNECTING if reconnecting else VOICE_CONNECTING
                     )
                     if reconnecting:
                         self._append_block("reconnecting…")
                 else:
-                    self.connection_state = CONNECTION_RETRYING
+                    self._set_connection_state(CONNECTION_RETRYING)
                     self._set_voice_state(VOICE_RECONNECTING)
                     delay = min(retry_delay * (2 ** (attempt - 1)), MAX_CONNECT_RETRY_DELAY)
                     if delay:
@@ -587,12 +788,12 @@ class HermesStreamingApp(App):
                     if not self.session.is_connected():
                         raise ConnectionError("session did not establish a connection")
                 except asyncio.CancelledError:
-                    self.connection_state = CONNECTION_DISCONNECTED
+                    self._set_connection_state(CONNECTION_DISCONNECTED)
                     self._set_voice_state(VOICE_DISCONNECTED)
                     raise
                 except Exception as exc:
                     last_error = exc
-                    self.connection_state = CONNECTION_DISCONNECTED
+                    self._set_connection_state(CONNECTION_DISCONNECTED)
                     self._set_voice_state(VOICE_DISCONNECTED)
                     try:
                         await self.session.close()
@@ -603,14 +804,14 @@ class HermesStreamingApp(App):
                     )
                     continue
 
-                self.connection_state = CONNECTION_CONNECTED
+                self._set_connection_state(CONNECTION_CONNECTED)
                 self._set_voice_state(VOICE_READY)
                 self._needs_reconnect = False
                 session_id = getattr(self.args, "session_id", "session")
                 self._append_block(f"Connected to {session_id} (chat {hello.get('chat_id')}).")
                 return True
 
-            self.connection_state = CONNECTION_DISCONNECTED
+            self._set_connection_state(CONNECTION_DISCONNECTED)
             self._set_voice_state(VOICE_DISCONNECTED)
             self._append_block(
                 f"[error] {last_error}; unable to connect after {attempts} attempt(s)"
@@ -827,7 +1028,18 @@ class HermesStreamingApp(App):
 
     def on_text_area_changed(self, event: TextArea.Changed) -> None:
         if event.text_area.id == "composer":
+            self._refresh_composer_hint(event.text_area.text)
             self._update_command_suggestions(event.text_area.text)
+
+    def _refresh_composer_hint(self, text: Optional[str] = None) -> None:
+        try:
+            widget = self.query_one("#composer-hint", Static)
+        except (NoMatches, ScreenStackError):
+            return
+        if text is None:
+            text = self.query_one("#composer", Composer).text
+        prefix = "Draft ready · " if text.strip() else ""
+        widget.update(f"{prefix}Enter send · Shift+Enter newline")
 
     def _update_command_suggestions(self, text: str) -> None:
         try:
@@ -1303,6 +1515,7 @@ class HermesStreamingApp(App):
                 "Run /wake on to arm again."
             )
         self.args = new_args
+        self._refresh_connection_status()
         skipped: list[str] = []
 
         new_busy_mode = getattr(new_args, "busy_mode", "queue")
@@ -1560,7 +1773,7 @@ class HermesStreamingApp(App):
             await self.session.close()
         except Exception as exc:
             self._append_block(f"[error] interrupt cleanup: {exc}")
-        self.connection_state = CONNECTION_DISCONNECTED
+        self._set_connection_state(CONNECTION_DISCONNECTED)
         self._needs_reconnect = True
         return True
 
@@ -1739,7 +1952,7 @@ class HermesStreamingApp(App):
         except asyncio.CancelledError:
             self._set_voice_state(VOICE_INTERRUPTED)
             self._append_block("[interrupted]")
-            self.connection_state = CONNECTION_DISCONNECTED
+            self._set_connection_state(CONNECTION_DISCONNECTED)
             self._needs_reconnect = True
             raise
         except (asyncio.TimeoutError, TimeoutError):
@@ -1774,7 +1987,7 @@ class HermesStreamingApp(App):
             "wake mode off — connection lost; microphone released. "
             "Run /wake on after reconnect."
         )
-        self.connection_state = CONNECTION_DISCONNECTED
+        self._set_connection_state(CONNECTION_DISCONNECTED)
         self._set_voice_state(VOICE_DISCONNECTED)
         self._needs_reconnect = True
         try:
