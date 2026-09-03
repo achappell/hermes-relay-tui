@@ -195,7 +195,10 @@ Do not put a real token in this file or in the README.
 - Use `/wake [on|off|status]` to arm or release local hands-free listening.
   It is off at every launch; `hermes-relay --wake-enabled` refuses rather than
   arming a microphone from a command-line flag. `/wake off` closes the input
-  stream, it does not merely pause the detector.
+  stream, it does not merely pause the detector. A successful `/reload` and a
+  connection loss both disarm wake mode and report that `/wake on` is required
+  to arm it again; reconnect never reopens the microphone silently. A malformed
+  reload leaves an already-armed listener unchanged.
 - Use `/audio [list|status|input <device>|output <device>]` to inspect and select local audio devices for the current session.
 - Use `/image <path>`, `/image list`, or `/image clear` to stage and inspect local image attachments. `@path` references support local path completion; the current relay reports attachments as unsupported rather than sending them.
 - Use `!command` or `{!command}` only after opting in with `--allow-shell`; execution is local, bounded, and visible, with shell operators rejected.

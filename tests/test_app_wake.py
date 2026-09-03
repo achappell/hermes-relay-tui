@@ -78,9 +78,11 @@ class WakeFakes:
         self.coordinator = None
         self.recorders: list[FakeRecorder] = []
         self.builds = 0
+        self.build_args = []
 
     def build(self, session, args, **kwargs):
         self.builds += 1
+        self.build_args.append(args)
         if not self.available:
             import wake
 
@@ -106,7 +108,7 @@ class WakeFakes:
         return recorder
 
 
-def make_app(*, fakes=None, session=None, **arg_overrides):
+def make_app(*, fakes=None, session=None, argv=None, **arg_overrides):
     fakes = fakes if fakes is not None else WakeFakes()
     session = session if session is not None else FakeSession()
     app = HermesStreamingApp(
@@ -114,6 +116,7 @@ def make_app(*, fakes=None, session=None, **arg_overrides):
         session_factory=lambda: session,
         build_hands_free=fakes.build,
         recorder_factory=fakes.recorder_factory,
+        argv=argv,
     )
     return app, fakes, session
 
@@ -279,6 +282,106 @@ async def test_quitting_releases_the_microphone():
         recorder = fakes.recorders[-1]
 
     assert recorder.shutdowns == 1
+
+
+# ---- reload and reconnect are explicit microphone boundaries ----------
+
+
+async def test_reload_disarms_wake_mode_and_releases_the_microphone(tmp_path):
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text("wake_threshold: 0.8\n")
+    app, fakes, _ = make_app(argv=["--config", str(config_path)])
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await app._handle_wake_command("on")
+        recorder = fakes.recorders[-1]
+
+        app._handle_reload_command()
+
+        assert app.wake_armed is False
+        assert fakes.listener.stopped is True
+        assert recorder.shutdowns == 1
+        assert recorder.listening is False
+        assert "wake mode off — config reloaded" in transcript_text(app)
+        assert "config reloaded from" in transcript_text(app)
+
+
+async def test_rearming_after_reload_uses_the_new_wake_settings(tmp_path):
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text("wake_threshold: 0.8\n")
+    app, fakes, _ = make_app(argv=["--config", str(config_path)])
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await app._handle_wake_command("on")
+        app._handle_reload_command()
+        await app._handle_wake_command("on")
+
+        assert len(fakes.build_args) == 2
+        assert fakes.build_args[-1].wake_threshold == 0.8
+
+
+async def test_malformed_reload_keeps_active_wake_mode(tmp_path):
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(":\n  - not: [valid\n")
+    app, fakes, _ = make_app(argv=["--config", str(config_path)])
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await app._handle_wake_command("on")
+        recorder = fakes.recorders[-1]
+
+        app._handle_reload_command()
+
+        assert app.wake_armed is True
+        assert fakes.listener.stopped is False
+        assert recorder.shutdowns == 0
+        assert recorder.listening is True
+        assert "[error] /reload:" in transcript_text(app)
+
+
+async def test_connection_loss_disarms_wake_mode_and_releases_the_microphone():
+    app, fakes, session = make_app()
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await app._handle_wake_command("on")
+        recorder = fakes.recorders[-1]
+
+        await app._mark_connection_lost()
+
+        assert app.wake_armed is False
+        assert fakes.listener.stopped is True
+        assert recorder.shutdowns == 1
+        assert recorder.listening is False
+        assert session.closed is True
+        assert "wake mode off — connection lost" in transcript_text(app)
+
+
+async def test_reconnect_disarms_wake_mode_before_opening_a_new_session():
+    class ReconnectingSession(FakeSession):
+        async def connect(self):
+            self.connect_calls += 1
+            self.connected = True
+            return self.hello
+
+    session = ReconnectingSession()
+    app, fakes, _ = make_app(session=session)
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await app._handle_wake_command("on")
+        recorder = fakes.recorders[-1]
+        session.connected = False
+
+        assert await app._connect() is True
+
+        assert app.wake_armed is False
+        assert fakes.listener.stopped is True
+        assert recorder.shutdowns == 1
+        assert recorder.listening is False
+        assert "wake mode off — connection lost" in transcript_text(app)
 
 
 # ---- the launch flag stops lying --------------------------------------

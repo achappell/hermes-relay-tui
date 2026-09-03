@@ -498,6 +498,12 @@ should never have to remember whether your microphone is on.
 
 Quitting the client releases the microphone whether or not wake mode was on.
 
+Wake mode is deliberately session-local. A successful `/reload` disarms it so
+new wake settings take effect only after an explicit `/wake on`; a connection
+loss also releases the microphone and reconnecting never re-arms it. The
+transcript reports both transitions. A malformed reload is not applied, so an
+already-armed listener remains unchanged while the error is shown.
+
 This is deliberately not a command-line flag. An always-open microphone should
 be something you did on purpose and can see, not a side effect of how the
 process was started — which is why `hermes-relay --wake-enabled` refuses rather
