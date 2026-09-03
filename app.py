@@ -546,6 +546,11 @@ class HermesStreamingApp(App):
     async def _connect(self, *, force: bool = False) -> bool:
         """Establish a session with bounded exponential-backoff retries."""
         async with self._connection_lock:
+            if self.wake_armed and not self.session.is_connected():
+                self._disarm_wake(
+                    "wake mode off — connection lost; microphone released. "
+                    "Run /wake on after reconnect."
+                )
             if self.session.is_connected() and not force:
                 self.connection_state = CONNECTION_CONNECTED
                 self._set_voice_state(VOICE_READY)
@@ -718,13 +723,14 @@ class HermesStreamingApp(App):
             )
         return str(error)
 
-    def _disarm_wake(self) -> None:
+    def _disarm_wake(self, message: Optional[str] = None) -> None:
         """Stop listening and give the device back. Safe to call when off."""
         listener, recorder = self._wake_listener, self._wake_recorder
         self._wake_listener = None
         self._wake_coordinator = None
         self._wake_recorder = None
         self._wake_loop = None
+        was_armed = self.wake_armed
         self.wake_armed = False
         self._refresh_voice_status()
         if listener is not None:
@@ -740,6 +746,8 @@ class HermesStreamingApp(App):
                 recorder.shutdown()
             except Exception:
                 diagnostic_logger.debug("closing the wake recorder failed", exc_info=True)
+        if message and was_armed:
+            self._append_block(message)
 
     def _set_wake_listening(self, *, busy: bool) -> None:
         """Listen only when nothing else holds the microphone.
@@ -1289,6 +1297,11 @@ class HermesStreamingApp(App):
             self._append_block(f"[error] /reload: {exc}")
             return
 
+        if self.wake_armed:
+            self._disarm_wake(
+                "wake mode off — config reloaded; microphone released. "
+                "Run /wake on to arm again."
+            )
         self.args = new_args
         skipped: list[str] = []
 
@@ -1757,6 +1770,10 @@ class HermesStreamingApp(App):
 
     async def _mark_connection_lost(self) -> None:
         """Close a failed stream so the next turn cannot reuse a dead socket."""
+        self._disarm_wake(
+            "wake mode off — connection lost; microphone released. "
+            "Run /wake on after reconnect."
+        )
         self.connection_state = CONNECTION_DISCONNECTED
         self._set_voice_state(VOICE_DISCONNECTED)
         self._needs_reconnect = True
