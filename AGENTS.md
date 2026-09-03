@@ -279,7 +279,7 @@ local variable values; it appends until manually removed.
   unit cannot record its own acknowledgement; do not make it asynchronous.
 - `audio.py` supports signed 16-bit PCM for live playback. If playback cannot start, the app reports buffering and can still save the collected PCM as WAV.
 - Connection setup uses bounded exponential-backoff retries. Prompts that cannot be sent remain FIFO-queued; a turn that may have reached Hermes is never replayed automatically after a socket failure.
-- The current voice-session protocol has no explicit interrupt operation. Interruption closes the current client connection and reconnects before the next turn, preventing stale events from being consumed as new-turn data; server-side generation cancellation remains a protocol concern.
+- When `hello_ack` advertises the `interrupt` capability, the client sends an explicit interrupt frame for the active turn and waits for `turn_interrupted`; `audio_abort` is a typed, intentional playback event rather than an unhandled server event. Late JSON frames carrying another turn ID are discarded. Older endpoints without the capability retain the close-and-reconnect fallback and are never described as server-confirmed cancellation.
 - On macOS, microphone permission belongs to the launching app (Terminal, iTerm, VS Code, or the IDE), and a missing accessible default input is reported by PortAudio as device `-1`.
 
 ## Change checklist

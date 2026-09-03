@@ -125,6 +125,21 @@ async def send_hello(
     return hello
 
 
+async def send_interrupt(ws: Any, *, session_id: str, turn_id: str) -> None:
+    """Request cancellation of one active remote turn."""
+    logger.debug("interrupt.send turn_id=%s session_id=%s", turn_id, session_id)
+    await ws.send(
+        json.dumps(
+            {
+                "type": "interrupt",
+                "protocol_version": 1,
+                "turn_id": turn_id,
+                "session_id": session_id,
+            }
+        )
+    )
+
+
 async def send_turn(
     ws: Any,
     *,
@@ -205,6 +220,18 @@ async def send_turn(
         event_payload = payload.get("payload")
         if not isinstance(event_payload, dict):
             event_payload = payload
+        frame_turn_id = event_payload.get("turn_id")
+        if frame_turn_id is None and event_payload is not payload:
+            frame_turn_id = payload.get("turn_id")
+        if frame_turn_id is not None and str(frame_turn_id) != turn_id:
+            logger.debug(
+                "frame.stale index=%d kind=%s expected_turn_id=%s frame_turn_id=%s",
+                frame_index,
+                kind or "missing",
+                turn_id,
+                frame_turn_id,
+            )
+            continue
 
         if kind == "turn_accepted":
             continue
@@ -389,6 +416,30 @@ async def send_turn(
             }
         elif kind == "audio_end":
             yield {"type": "audio_end"}
+        elif kind == "audio_abort":
+            yield {
+                "type": "audio_abort",
+                "turn_id": str(event_payload.get("turn_id") or turn_id),
+                "session_id": str(event_payload.get("session_id") or session_id),
+                "error": str(
+                    event_payload.get("error")
+                    or event_payload.get("reason")
+                    or "audio stream aborted"
+                ),
+            }
+        elif kind == "turn_interrupted":
+            yield {
+                "type": "turn_interrupted",
+                "turn_id": str(event_payload.get("turn_id") or turn_id),
+                "session_id": str(event_payload.get("session_id") or session_id),
+                "reason": str(
+                    event_payload.get("reason")
+                    or event_payload.get("error")
+                    or event_payload.get("message")
+                    or "turn interrupted"
+                ),
+            }
+            return
         elif kind == "audio_file_start":
             audio_file_active = True
             event = {"type": "audio_file_start"}

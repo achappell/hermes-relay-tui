@@ -1352,6 +1352,107 @@ async def test_interrupt_busy_mode_stops_an_active_turn_without_sending_message(
         assert not app._turn_in_flight
 
 
+async def test_ctrl_c_uses_remote_interrupt_confirmation_without_closing_session():
+    class RemoteInterruptSession(FakeSession):
+        def __init__(self):
+            super().__init__()
+            self.interrupt_calls = 0
+            self.release = asyncio.Event()
+
+        def send_turn(self, text, *, stt_source="local"):
+            self.sent_turns.append((text, stt_source))
+            self.turn_index += 1
+
+            async def stream():
+                yield {"type": "text_delta", "text": "partial answer"}
+                await self.release.wait()
+                yield {
+                    "type": "audio_abort",
+                    "turn_id": "turn-1",
+                    "session_id": "s1",
+                    "error": "client interrupt",
+                }
+                yield {
+                    "type": "turn_interrupted",
+                    "turn_id": "turn-1",
+                    "session_id": "s1",
+                    "reason": "turn interrupted",
+                }
+
+            return stream()
+
+        async def interrupt_active_turn(self):
+            self.interrupt_calls += 1
+            self.release.set()
+            return True
+
+    session = RemoteInterruptSession()
+    app = HermesStreamingApp(args=make_args(), session_factory=lambda: session)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        first = asyncio.create_task(app._run_turn("first"))
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        assert "partial answer" in transcript_of(app)
+
+        await app.action_interrupt()
+
+        assert first.done()
+        assert session.interrupt_calls == 1
+        assert session.closed is False
+        assert "[interrupted]" in transcript_of(app)
+        assert "unhandled server event" not in transcript_of(app)
+        assert voice_status_of(app) == "● interrupted"
+
+
+async def test_audio_abort_stops_playback_without_rendering_an_error_event():
+    class RecordingPlayer:
+        failure = None
+
+        def __init__(self):
+            self.active = False
+            self.close_calls = 0
+
+        def start(self, audio_format):
+            self.active = True
+
+        def write(self, chunk):
+            pass
+
+        def close(self):
+            self.close_calls += 1
+            self.active = False
+
+    session = FakeSession(
+        events=[
+            {"type": "audio_start", "sample_rate": 24000, "channels": 1, "sample_width": 2},
+            {"type": "audio_chunk", "data": b"\x00\x01"},
+            {
+                "type": "audio_abort",
+                "turn_id": "turn-1",
+                "session_id": "s1",
+                "error": "client interrupt",
+            },
+            {
+                "type": "turn_interrupted",
+                "turn_id": "turn-1",
+                "session_id": "s1",
+            },
+        ]
+    )
+    app = HermesStreamingApp(args=make_args(no_play=False), session_factory=lambda: session)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        player = RecordingPlayer()
+        app.player = player
+        await app._run_turn("first")
+
+        assert player.close_calls >= 1
+        assert "unhandled server event" not in transcript_of(app)
+        assert "[error]" not in transcript_of(app)
+        assert voice_status_of(app) == "● interrupted"
+
+
 async def test_steer_slash_command_is_no_longer_handled_locally():
     session = FakeSession()
     app = HermesStreamingApp(args=make_args(), session_factory=lambda: session)

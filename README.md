@@ -345,11 +345,13 @@ and produce at most 64 KiB of combined output. `VOICE_SESSION_TOKEN`,
 `GH_TOKEN`, and `GITHUB_TOKEN` are removed from child environments. Errors,
 timeouts, and malformed commands remain local and preserve the composer draft.
 
-Because the current voice-session protocol has no explicit interrupt frame,
-`Ctrl+C` and busy-mode `steer` cancel local stream consumption, close the
-current connection, and reconnect before the next turn. This prevents stale
-audio and events from corrupting the replacement; remote generation itself
-remains best-effort until the protocol grows a server-side interrupt operation.
+When the connected endpoint advertises the `interrupt` capability, `Ctrl+C` and
+busy-mode `steer`/`interrupt` send an explicit interrupt for the active turn
+and wait for Hermes to confirm it. `audio_abort` and `turn_interrupted` are
+handled as intentional lifecycle events, and late JSON frames from another
+turn are discarded. Older endpoints without that capability retain the safe
+close-and-reconnect fallback; the client does not claim remote cancellation in
+that case.
 
 Connection setup retries up to three additional times by default, using an
 exponential delay capped at eight seconds. Override this with
