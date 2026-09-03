@@ -118,6 +118,20 @@ def test_exact_stop_in_the_follow_up_window_is_local_and_silent():
     assert coordinator.state == handsfree.IDLE
 
 
+def test_terminal_punctuation_from_stt_does_not_escape_local_stop():
+    session = FakeSession()
+    coordinator = handsfree.HandsFreeCoordinator(
+        session,
+        capture=lambda: "what is the weather",
+        send=lambda text: session.send_turn(text),
+        follow_up_capture=lambda: "Stop.",
+    )
+
+    coordinator.on_wake()
+
+    assert session.turns == [("what is the weather", "local")]
+
+
 def test_a_longer_stop_phrase_in_the_follow_up_window_is_sent():
     session = FakeSession()
     coordinator = handsfree.HandsFreeCoordinator(

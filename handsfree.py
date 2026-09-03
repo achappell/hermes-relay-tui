@@ -52,7 +52,7 @@ DEFAULT_LISTEN_TIMEOUT = 8.0
 
 
 def _is_local_stop_command(transcript: str) -> bool:
-    return transcript.strip().casefold() == "stop"
+    return transcript.strip().casefold().rstrip(".,!?").strip() == "stop"
 
 
 class HandsFreeCoordinator:
