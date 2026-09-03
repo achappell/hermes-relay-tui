@@ -3,7 +3,7 @@ import logging
 
 import pytest
 
-from client import ProtocolError, send_hello, send_turn
+from client import ProtocolError, send_hello, send_interrupt, send_turn
 
 
 class FakeWebSocket:
@@ -50,6 +50,19 @@ async def test_send_hello_skips_binary_frames_and_rejects_non_objects():
     ws = FakeWebSocket([b"\x00\x01", json.dumps(["not", "an", "object"])])
     with pytest.raises(ProtocolError):
         await send_hello(ws, client_id="c", device_id="d", session_id="s", display_name="n")
+
+
+async def test_send_interrupt_sends_the_active_turn_frame():
+    ws = FakeWebSocket([])
+
+    await send_interrupt(ws, session_id="s1", turn_id="turn-7")
+
+    assert json.loads(ws.sent[0]) == {
+        "type": "interrupt",
+        "protocol_version": 1,
+        "turn_id": "turn-7",
+        "session_id": "s1",
+    }
 
 
 async def test_send_turn_yields_text_deltas_and_turn_end():
@@ -191,6 +204,106 @@ async def test_send_turn_yields_audio_end_and_file_fallback_frames():
         "mime_type": "audio/wav",
     }
     assert events[4]["data"] == b"RIFF..."
+
+
+async def test_send_turn_normalizes_audio_abort_and_turn_interrupted():
+    ws = FakeWebSocket(
+        [
+            json.dumps(
+                {
+                    "type": "audio_abort",
+                    "turn_id": "turn-7",
+                    "session_id": "s1",
+                    "error": "client interrupt",
+                }
+            ),
+            json.dumps(
+                {
+                    "type": "turn_interrupted",
+                    "turn_id": "turn-7",
+                    "session_id": "s1",
+                }
+            ),
+            json.dumps({"type": "turn_end", "turn_id": "turn-7"}),
+        ]
+    )
+    events = [
+        event
+        async for event in send_turn(
+            ws, session_id="s1", text="hi", stt_source="local", turn_id="turn-7"
+        )
+    ]
+
+    assert events == [
+        {
+            "type": "audio_abort",
+            "turn_id": "turn-7",
+            "session_id": "s1",
+            "error": "client interrupt",
+        },
+        {
+            "type": "turn_interrupted",
+            "turn_id": "turn-7",
+            "session_id": "s1",
+            "reason": "turn interrupted",
+        },
+    ]
+
+
+async def test_send_turn_ignores_json_frames_for_a_different_turn():
+    ws = FakeWebSocket(
+        [
+            json.dumps({"type": "text_delta", "turn_id": "old", "text": "stale"}),
+            json.dumps({"type": "text_delta", "turn_id": "new", "text": "fresh"}),
+            json.dumps({"type": "turn_end", "turn_id": "new"}),
+        ]
+    )
+
+    events = [
+        event
+        async for event in send_turn(
+            ws, session_id="s1", text="hi", stt_source="local", turn_id="new"
+        )
+    ]
+
+    assert events == [
+        {"type": "text_delta", "text": "fresh"},
+        {"type": "turn_end", "turn_id": "new"},
+    ]
+
+
+async def test_send_turn_checks_top_level_turn_id_with_nested_payload():
+    ws = FakeWebSocket(
+        [
+            json.dumps(
+                {
+                    "type": "message.delta",
+                    "turn_id": "old",
+                    "payload": {"text": "stale"},
+                }
+            ),
+            json.dumps(
+                {
+                    "type": "message.delta",
+                    "turn_id": "new",
+                    "payload": {"text": "fresh"},
+                }
+            ),
+            json.dumps({"type": "turn_end", "turn_id": "new"}),
+        ]
+    )
+
+    events = [
+        event
+        async for event in send_turn(
+            ws, session_id="s1", text="hi", stt_source="local", turn_id="new"
+        )
+    ]
+
+    assert events == [
+        {"type": "text_delta", "text": "fresh"},
+        {"type": "turn_end", "turn_id": "new"},
+    ]
 
 
 async def test_send_turn_restarts_the_line_when_the_preview_rewinds():

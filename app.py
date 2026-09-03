@@ -308,6 +308,7 @@ CONNECTION_CONNECTING = "connecting"
 CONNECTION_RETRYING = "retrying"
 CONNECTION_CONNECTED = "connected"
 MAX_CONNECT_RETRY_DELAY = 8.0
+REMOTE_INTERRUPT_TIMEOUT = 2.0
 RETRY_HINT = "The app remains open; retry when the endpoint recovers."
 VOICE_READY = "ready"
 VOICE_CONNECTING = "connecting…"
@@ -1825,12 +1826,7 @@ class HermesStreamingApp(App):
         return True
 
     async def _interrupt_active_turn(self) -> bool:
-        """Cancel local consumption and reset the stream before reuse.
-
-        The current voice-session protocol has no interrupt operation. Closing
-        the connection is the safe client-side fallback: it prevents late
-        events from the canceled turn being consumed as the next turn's data.
-        """
+        """Interrupt the remote turn, falling back to reconnect if needed."""
         if not self._turn_in_flight:
             return False
 
@@ -1838,6 +1834,39 @@ class HermesStreamingApp(App):
         await self._close_player()
         active_task = self._active_turn_task
         current_task = asyncio.current_task()
+
+        interrupt = getattr(self.session, "interrupt_active_turn", None)
+        remote_interrupt_sent = False
+        if callable(interrupt):
+            try:
+                result = interrupt()
+                if inspect.isawaitable(result):
+                    result = await result
+                remote_interrupt_sent = bool(result)
+            except Exception as exc:
+                diagnostic_logger.error(
+                    "app.interrupt.send_failed type=%s", type(exc).__name__
+                )
+
+        if remote_interrupt_sent:
+            if active_task is None or active_task is current_task:
+                self._append_block("[interrupted]")
+                self._turn_in_flight = False
+                return True
+            try:
+                # The active task owns the one websocket reader. Let it
+                # consume Hermes' turn_interrupted/audio_abort confirmation
+                # before considering the connection stale.
+                await asyncio.wait_for(
+                    asyncio.shield(active_task), REMOTE_INTERRUPT_TIMEOUT
+                )
+            except asyncio.TimeoutError:
+                diagnostic_logger.warning("app.interrupt.confirmation_timeout")
+            except asyncio.CancelledError:
+                pass
+            if active_task.done():
+                return True
+
         if active_task is not None and active_task is not current_task and not active_task.done():
             active_task.cancel()
             try:
@@ -2228,6 +2257,12 @@ class HermesStreamingApp(App):
                 # this event arrives, so closing here drains the final tail
                 # before turn_end is processed.
                 await self._close_player()
+            elif kind == "audio_abort":
+                # An abort is an intentional end to the remote audio stream,
+                # not a failed voice turn. The following turn_interrupted
+                # event owns the transcript boundary.
+                await self._close_player()
+                self._set_voice_state(VOICE_INTERRUPTED)
             elif kind == "audio_file_start":
                 audio_file.clear()
                 metadata = tuple(
@@ -2274,6 +2309,13 @@ class HermesStreamingApp(App):
                 self._set_voice_state(VOICE_ERROR)
                 thinking_activity_active = False
                 self._append_block(f"[error] {event['error']}", role="error")
+            elif kind == "turn_interrupted":
+                await self._close_player()
+                complete_thinking()
+                self.transcript.finish_stream()
+                self._append_block("[interrupted]")
+                self._set_voice_state(VOICE_INTERRUPTED)
+                return
             elif kind == "turn_end":
                 complete_thinking()
                 self.transcript.finish_stream()

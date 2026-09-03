@@ -10,10 +10,11 @@ from __future__ import annotations
 
 import asyncio
 import threading
+import uuid
 from typing import Any, AsyncIterator, Protocol
 
 import config
-from client import send_hello, send_turn
+from client import send_hello, send_interrupt, send_turn
 from diagnostics import logger as diagnostic_logger, summarize_text
 from mic import (
     LocalMicrophone,
@@ -34,6 +35,8 @@ class SessionProtocol(Protocol):
     def is_connected(self) -> bool: ...
 
     def send_turn(self, text: str, *, stt_source: str = "local") -> AsyncIterator[dict[str, Any]]: ...
+
+    async def interrupt_active_turn(self) -> bool: ...
 
     def capture_voice(self, *, wait_timeout: float | None = None) -> str: ...
 
@@ -56,6 +59,14 @@ class HermesSession:
         self.input_device = getattr(args, "mic_input_device", None)
         self._voice_cancel_requested = threading.Event()
         self._shared_recorder: Any = None
+        self._capabilities: frozenset[str] = frozenset()
+        self.active_turn_id: str | None = None
+        self._interrupt_sent_for_turn: str | None = None
+
+    @property
+    def supports_interrupt(self) -> bool:
+        """Whether the connected endpoint advertised remote interruption."""
+        return "interrupt" in self._capabilities
 
     def use_shared_recorder(self, recorder: Any) -> None:
         """Capture through a recorder somebody else already opened.
@@ -96,10 +107,20 @@ class HermesSession:
                 session_id=self.args.session_id,
                 display_name=self.args.display_name,
             )
+            capabilities = hello.get("capabilities")
+            if not isinstance(capabilities, (list, tuple, set, frozenset)):
+                nested = hello.get("payload")
+                capabilities = nested.get("capabilities") if isinstance(nested, dict) else ()
+            self._capabilities = frozenset(
+                str(capability).strip().lower()
+                for capability in capabilities
+                if str(capability).strip()
+            )
             diagnostic_logger.debug(
-                "connect.hello_ack keys=%s chat_id_present=%s",
+                "connect.hello_ack keys=%s chat_id_present=%s capabilities=%s",
                 ",".join(sorted(str(key) for key in hello)),
                 bool(hello.get("chat_id")),
+                ",".join(sorted(self._capabilities)) or "-",
             )
             return hello
         except BaseException as exc:
@@ -128,6 +149,9 @@ class HermesSession:
             finally:
                 self._connect_cm = None
                 self.ws = None
+        self._capabilities = frozenset()
+        self.active_turn_id = None
+        self._interrupt_sent_for_turn = None
 
     def send_turn(self, text: str, *, stt_source: str = "local"):
         # turn_index stays 0-based for the first turn, matching the reference
@@ -139,7 +163,31 @@ class HermesSession:
             stt_source,
             summarize_text(text),
         )
-        return send_turn(self.ws, session_id=self.args.session_id, text=text, stt_source=stt_source)
+        turn_id = uuid.uuid4().hex
+        self.active_turn_id = turn_id
+        self._interrupt_sent_for_turn = None
+        return send_turn(
+            self.ws,
+            session_id=self.args.session_id,
+            text=text,
+            stt_source=stt_source,
+            turn_id=turn_id,
+        )
+
+    async def interrupt_active_turn(self) -> bool:
+        """Ask Hermes to stop the current turn when the endpoint supports it."""
+        turn_id = self.active_turn_id
+        if not self.is_connected() or not self.supports_interrupt or not turn_id:
+            return False
+        if self._interrupt_sent_for_turn == turn_id:
+            return True
+        await send_interrupt(
+            self.ws,
+            session_id=self.args.session_id,
+            turn_id=turn_id,
+        )
+        self._interrupt_sent_for_turn = turn_id
+        return True
 
     def capture_voice(self, *, wait_timeout: float | None = None) -> str:
         self._voice_cancel_requested.clear()
