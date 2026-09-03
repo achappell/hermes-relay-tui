@@ -182,6 +182,11 @@ Do not put a real token in this file or in the README.
 - Use `/queue` to inspect or edit queued prompts.
 - Use `/busy [queue|steer|interrupt]` to change the mode for the current session.
 - Use `/details [show|hide]` or `--hide-thinking` to control thinking/tool detail in the transcript.
+- While wake mode is armed the voice status line carries a standing
+  `◉ mic open` marker, distinct in colour and wording from the transient
+  `listening…` state. Arming while idle does not change `voice_state`, so
+  `_arm_wake`/`_disarm_wake` repaint the surface directly; a status line that
+  only refreshed on a state change would say nothing about an open microphone.
 - Use `/wake [on|off|status]` to arm or release local hands-free listening.
   It is off at every launch; `hermes-relay --wake-enabled` refuses rather than
   arming a microphone from a command-line flag. `/wake off` closes the input

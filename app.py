@@ -320,6 +320,12 @@ VOICE_SPEAKING = "speaking…"
 VOICE_BUFFERING = "buffering…"
 VOICE_INTERRUPTED = "interrupted"
 VOICE_ERROR = "error"
+
+# The standing condition, not a phase of a turn. `listening…` means a capture
+# is running right now; this means the input device is held open and will stay
+# held until /wake off. Worded as the fact rather than the subsystem: what
+# matters at a glance is that the microphone is on, not which feature has it.
+MIC_OPEN_LABEL = "mic open"
 PROMPT_NOT_SENT = "not-sent"
 PROMPT_AMBIGUOUS = "ambiguous"
 PROMPT_COMPLETED = "completed"
@@ -475,7 +481,25 @@ class HermesStreamingApp(App):
 
     def _set_voice_state(self, state: str) -> None:
         self.voice_state = state
-        self.query_one("#voice-status", Static).update(f"● {state}")
+        self._refresh_voice_status()
+
+    def _refresh_voice_status(self) -> None:
+        """Repaint the status line: the turn's phase, and whether the
+        microphone is held.
+
+        Called on arming and disarming as well as on state changes. Arming
+        while idle leaves `voice_state` untouched, so a surface that only
+        repainted on a state change would say nothing at all about an open
+        microphone — which is the failure this indicator exists to prevent.
+        """
+        line = f"● {self.voice_state}"
+        if self.wake_armed:
+            line += f"   [$warning]◉ {MIC_OPEN_LABEL}[/]"
+        try:
+            self.query_one("#voice-status", Static).update(line)
+        except NoMatches:
+            # A state change can still be in flight during teardown.
+            pass
 
     def _refresh_queue_shelf(self) -> None:
         try:
@@ -661,6 +685,7 @@ class HermesStreamingApp(App):
         recorder.open_for_listening()
 
         self.wake_armed = True
+        self._refresh_voice_status()
         self._set_wake_listening(busy=self._turn_in_flight)
         self._append_block(
             "wake mode on — say the phrase. The microphone stays open until "
@@ -686,6 +711,7 @@ class HermesStreamingApp(App):
         self._wake_recorder = None
         self._wake_loop = None
         self.wake_armed = False
+        self._refresh_voice_status()
         if listener is not None:
             try:
                 listener.stop()
