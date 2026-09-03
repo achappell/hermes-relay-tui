@@ -182,6 +182,16 @@ Do not put a real token in this file or in the README.
 - Use `/queue` to inspect or edit queued prompts.
 - Use `/busy [queue|steer|interrupt]` to change the mode for the current session.
 - Use `/details [show|hide]` or `--hide-thinking` to control thinking/tool detail in the transcript.
+- The voice status line carries a `◉ mic open` marker whenever the input
+  device is open — `app.microphone_is_open` is the single source: a capture in
+  flight, or wake mode holding the stream. Gate it on a feature rather than on
+  the device and the same open microphone renders two ways depending on which
+  path opened it. The state word describes the phase; the marker describes the
+  hardware.
+- Repainting is not automatic. Arming while idle does not change `voice_state`,
+  and a capture starting does not always either, so `_arm_wake`, `_disarm_wake`
+  and the capture teardown all call `_refresh_voice_status` directly. The
+  capture task must also be assigned *before* the listening state paints.
 - Use `/wake [on|off|status]` to arm or release local hands-free listening.
   It is off at every launch; `hermes-relay --wake-enabled` refuses rather than
   arming a microphone from a command-line flag. `/wake off` closes the input

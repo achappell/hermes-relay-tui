@@ -320,6 +320,16 @@ VOICE_SPEAKING = "speaking…"
 VOICE_BUFFERING = "buffering…"
 VOICE_INTERRUPTED = "interrupted"
 VOICE_ERROR = "error"
+
+# A fact about the device, not about a feature. It appears whenever the input
+# stream is open — a Ctrl+R capture, a wake capture, or wake mode holding it
+# between turns — so one physical condition always looks the same. The state
+# word beside it describes the phase; this describes the microphone.
+#
+# Gating this on wake mode alone was the first cut, and it was wrong: a name
+# promising device state cannot be driven by feature state, or the same open
+# microphone renders two different ways depending on which path opened it.
+MIC_OPEN_LABEL = "mic open"
 PROMPT_NOT_SENT = "not-sent"
 PROMPT_AMBIGUOUS = "ambiguous"
 PROMPT_COMPLETED = "completed"
@@ -475,7 +485,36 @@ class HermesStreamingApp(App):
 
     def _set_voice_state(self, state: str) -> None:
         self.voice_state = state
-        self.query_one("#voice-status", Static).update(f"● {state}")
+        self._refresh_voice_status()
+
+    @property
+    def microphone_is_open(self) -> bool:
+        """Whether the input device is open right now, for any reason.
+
+        Two ways it can be: a capture is running (Ctrl+R, or the wake path's
+        own capture), or wake mode is armed and holding the stream between
+        turns. The user does not care which; they care that the microphone is
+        on.
+        """
+        return bool(self.wake_armed or self._voice_capture_task is not None)
+
+    def _refresh_voice_status(self) -> None:
+        """Repaint the status line: the turn's phase, and whether the
+        microphone is held.
+
+        Called on arming and disarming as well as on state changes. Arming
+        while idle leaves `voice_state` untouched, so a surface that only
+        repainted on a state change would say nothing at all about an open
+        microphone — which is the failure this indicator exists to prevent.
+        """
+        line = f"● {self.voice_state}"
+        if self.microphone_is_open:
+            line += f"   [$warning]◉ {MIC_OPEN_LABEL}[/]"
+        try:
+            self.query_one("#voice-status", Static).update(line)
+        except NoMatches:
+            # A state change can still be in flight during teardown.
+            pass
 
     def _refresh_queue_shelf(self) -> None:
         try:
@@ -661,6 +700,7 @@ class HermesStreamingApp(App):
         recorder.open_for_listening()
 
         self.wake_armed = True
+        self._refresh_voice_status()
         self._set_wake_listening(busy=self._turn_in_flight)
         self._append_block(
             "wake mode on — say the phrase. The microphone stays open until "
@@ -686,6 +726,7 @@ class HermesStreamingApp(App):
         self._wake_recorder = None
         self._wake_loop = None
         self.wake_armed = False
+        self._refresh_voice_status()
         if listener is not None:
             try:
                 listener.stop()
@@ -1399,10 +1440,13 @@ class HermesStreamingApp(App):
         if self._turn_in_flight:
             self._append_block("[a turn is already in flight]")
             return
-        self._set_voice_state(VOICE_LISTENING)
         self._voice_capture_cancelled = False
         capture_task = asyncio.create_task(asyncio.to_thread(self.session.capture_voice))
+        # Assigned before the repaint below: `_set_voice_state` reads
+        # `microphone_is_open`, and the one state that most obviously means
+        # "the microphone is on" would otherwise render without the marker.
         self._voice_capture_task = capture_task
+        self._set_voice_state(VOICE_LISTENING)
         try:
             transcript_text = await capture_task
         except asyncio.CancelledError:
@@ -1417,6 +1461,7 @@ class HermesStreamingApp(App):
             if self._voice_capture_task is capture_task:
                 self._voice_capture_task = None
             self._voice_capture_cancelled = False
+            self._refresh_voice_status()
         if self.voice_state == VOICE_INTERRUPTED:
             return
         if not transcript_text:
