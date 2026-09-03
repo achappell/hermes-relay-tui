@@ -27,7 +27,7 @@ CHANNELS = 1
 DTYPE = "int16"
 SAMPLE_WIDTH = 2
 SILENCE_RMS_THRESHOLD = 200
-SILENCE_DURATION_SECONDS = 3.0
+SILENCE_DURATION_SECONDS = 1.5
 DEFAULT_STT_MODEL = "base"
 
 _TEMP_DIR = os.path.join(tempfile.gettempdir(), "hermes_relay_tui_voice")
@@ -434,7 +434,7 @@ class LocalMicrophone:
         self,
         *,
         max_seconds: float = 15.0,
-        silence_duration: float = 3.0,
+        silence_duration: float = SILENCE_DURATION_SECONDS,
         silence_threshold: int = 200,
         model: Optional[str] = None,
         recorder_factory: Any = None,
@@ -468,14 +468,26 @@ class LocalMicrophone:
         self._recorder._silence_duration = self.silence_duration
         self._recorder._max_recording_seconds = self.max_seconds
 
-    def capture(self) -> str:
+    def capture(self, *, wait_timeout: float | None = None) -> str:
         """Record one utterance, return its transcript, or "" for silence."""
         self._load()
         finished = threading.Event()
+        original_max_wait = getattr(self._recorder, "_max_wait", None)
+        if wait_timeout is not None:
+            if wait_timeout <= 0:
+                raise ValueError("microphone wait timeout must be greater than zero")
+            self._recorder._max_wait = float(wait_timeout)
 
         try:
             self._recorder.start(on_silence_stop=finished.set)
-            finished.wait(max(self.max_seconds + 2.0, 5.0))
+            capture_wait = max(self.max_seconds + 2.0, 5.0)
+            if wait_timeout is not None:
+                # A follow-up is deliberately a short no-speech window. If a
+                # broken backend never invokes the callback, do not fall back
+                # to the full recording limit and turn eight seconds into
+                # seventeen.
+                capture_wait = max(float(wait_timeout) + 2.0, 5.0)
+            finished.wait(capture_wait)
             wav_path = self._recorder.stop()
         except KeyboardInterrupt:
             self._recorder.cancel()
@@ -486,6 +498,9 @@ class LocalMicrophone:
             except Exception:
                 pass
             raise RuntimeError(f"microphone capture failed: {exc}") from exc
+        finally:
+            if wait_timeout is not None and original_max_wait is not None:
+                self._recorder._max_wait = original_max_wait
 
         if not wav_path:
             return ""

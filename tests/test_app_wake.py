@@ -5,6 +5,8 @@ of a deliberate act. These tests drive that with fakes: no wake engine, no
 audio device, no relay.
 """
 
+import asyncio
+import threading
 import types
 
 import pytest
@@ -79,10 +81,12 @@ class WakeFakes:
         self.recorders: list[FakeRecorder] = []
         self.builds = 0
         self.build_args = []
+        self.build_kwargs = []
 
     def build(self, session, args, **kwargs):
         self.builds += 1
         self.build_args.append(args)
+        self.build_kwargs.append(kwargs)
         if not self.available:
             import wake
 
@@ -90,8 +94,9 @@ class WakeFakes:
         listener = FakeListener()
         coordinator = handsfree.HandsFreeCoordinator(
             session,
-            capture=session.capture_voice,
+            capture=kwargs.get("capture") or session.capture_voice,
             send=kwargs.get("send") or session.send_turn,
+            follow_up_capture=kwargs.get("follow_up_capture"),
             speech_detected=kwargs.get("speech_detected"),
             stop_playback=kwargs.get("stop_playback"),
             acknowledge=kwargs.get("acknowledge"),
@@ -244,6 +249,141 @@ async def test_a_wake_turn_is_announced_with_the_same_tones_as_the_appliance():
 
         assert fakes.coordinator._acknowledge is not None
         assert fakes.coordinator._capture_finished is not None
+
+
+async def test_wake_mode_wires_a_bounded_follow_up_capture():
+    app, fakes, _ = make_app()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await app._handle_wake_command("on")
+
+        assert callable(fakes.build_kwargs[0]["capture"])
+        assert callable(fakes.build_kwargs[0]["follow_up_capture"])
+        assert callable(fakes.build_kwargs[0]["on_state_change"])
+
+
+async def test_wake_capture_uses_the_initial_and_follow_up_timeouts():
+    app, fakes, session = make_app(wake_listen_timeout=6.0, wake_followup_seconds=5.0)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await app._handle_wake_command("on")
+
+        fakes.build_kwargs[0]["capture"]()
+        fakes.build_kwargs[0]["follow_up_capture"]()
+
+        assert session.capture_wait_timeouts == [6.0, 5.0]
+
+
+async def test_wake_turn_can_send_a_follow_up_without_a_second_wake():
+    app, fakes, session = make_app()
+    session.capture_results = iter(["what is the weather", "and tomorrow"])
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await app._handle_wake_command("on")
+
+        completed = await asyncio.wait_for(
+            asyncio.to_thread(fakes.coordinator.on_wake), 1.0
+        )
+        assert completed is True
+        await pilot.pause()
+        await pilot.pause()
+
+        assert session.sent_turns == [
+            ("what is the weather", "local"),
+            ("and tomorrow", "local"),
+        ]
+        assert session.capture_wait_timeouts == [8.0, 8.0]
+
+
+async def test_coordinator_states_pause_the_detector_during_capture():
+    app, fakes, _ = make_app()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await app._handle_wake_command("on")
+        fakes.listener.paused.clear()
+
+        fakes.coordinator._set_state(handsfree.CAPTURING)
+        await pilot.pause()
+        assert fakes.listener.paused[-1] is True
+        assert app.voice_state == app_module.VOICE_LISTENING
+
+        fakes.coordinator._set_state(handsfree.IDLE)
+        await pilot.pause()
+        assert fakes.listener.paused[-1] is False
+        assert app.voice_state == app_module.VOICE_READY
+
+
+async def test_ctrl_r_does_not_compete_with_an_active_wake_capture():
+    app, fakes, _ = make_app()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await app._handle_wake_command("on")
+        fakes.coordinator._begin_capture_for_test()
+
+        await app._capture_voice_turn()
+
+        assert app._voice_capture_task is None
+        assert "wake turn is already in flight" in transcript_text(app)
+
+
+async def test_ctrl_r_keeps_the_wake_detector_paused_until_its_turn_finishes():
+    app, fakes, session = make_app()
+    session.gate = asyncio.Event()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await app._handle_wake_command("on")
+        fakes.listener.paused.clear()
+
+        capture = asyncio.create_task(app._capture_voice_turn())
+        for _ in range(20):
+            await pilot.pause()
+            if app._turn_in_flight:
+                break
+
+        assert app._turn_in_flight is True
+        assert fakes.listener.paused
+        assert False not in fakes.listener.paused
+
+        session.gate.set()
+        await asyncio.wait_for(capture, 1.0)
+        assert fakes.listener.paused[-1] is False
+
+
+async def test_ctrl_c_cancels_a_wake_follow_up_capture():
+    class BlockingFollowUpSession(FakeSession):
+        def __init__(self):
+            super().__init__()
+            self.capture_started = threading.Event()
+            self.capture_release = threading.Event()
+            self.cancel_voice_calls = 0
+
+        def capture_voice(self, *, wait_timeout=None):
+            self.capture_calls += 1
+            self.capture_wait_timeouts.append(wait_timeout)
+            if self.capture_calls == 1:
+                return "what is the weather"
+            self.capture_started.set()
+            self.capture_release.wait(1.0)
+            return ""
+
+        def cancel_voice(self):
+            self.cancel_voice_calls += 1
+            self.capture_release.set()
+
+    session = BlockingFollowUpSession()
+    app, fakes, _ = make_app(session=session)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await app._handle_wake_command("on")
+        wake = asyncio.create_task(asyncio.to_thread(fakes.coordinator.on_wake))
+        await asyncio.to_thread(session.capture_started.wait, 1.0)
+
+        await app.action_interrupt()
+        await asyncio.wait_for(wake, 1.0)
+
+        assert session.cancel_voice_calls == 1
+        assert app.wake_armed is True
+        assert app.voice_state == app_module.VOICE_READY
 
 
 # ---- failures say what to do -----------------------------------------

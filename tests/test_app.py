@@ -37,7 +37,9 @@ class FakeSession:
         self.closed = False
         self.connect_calls = 0
         self.capture_calls = 0
+        self.capture_wait_timeouts = []
         self.capture_result = "spoken words"
+        self.capture_results = None
         self.connected = connected
         self.hello = hello if hello is not None else {"chat_id": "chat-1"}
         self.events = DEFAULT_EVENTS if events is None else events
@@ -64,8 +66,11 @@ class FakeSession:
             await asyncio.sleep(0)
             yield event
 
-    def capture_voice(self):
+    def capture_voice(self, *, wait_timeout=None):
         self.capture_calls += 1
+        self.capture_wait_timeouts.append(wait_timeout)
+        if self.capture_results is not None:
+            return next(self.capture_results)
         return self.capture_result
 
     async def close(self):

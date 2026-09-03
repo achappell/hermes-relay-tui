@@ -623,7 +623,7 @@ async def test_text_arriving_after_the_answer_was_spoken_does_not_say_thinking()
 
 # --- endpointing ------------------------------------------------------------
 #
-# The TUI waits 3s of silence before deciding you have finished, which is fine
+# The TUI waits 1.5s of silence before deciding you have finished, which is fine
 # when you pressed a key on purpose and can see the screen. Standing in a
 # kitchen it is an age: three seconds of nothing happening reads as broken.
 

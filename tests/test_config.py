@@ -325,6 +325,8 @@ def test_wake_word_defaults_are_off_and_conservative():
     assert args.wake_confirmation_frames == 3
     assert args.wake_refractory_seconds == 2.0
     assert args.wake_listen_timeout == 8.0
+    assert args.wake_followup_seconds == 8.0
+    assert args.mic_silence_duration == 1.5
     assert args.wake_model is None
 
 
@@ -340,6 +342,8 @@ def test_wake_word_settings_are_overridable():
             "5",
             "--wake-listen-timeout",
             "12",
+            "--wake-followup-seconds",
+            "5",
             "--wake-barge-in",
         ]
     )
@@ -349,6 +353,7 @@ def test_wake_word_settings_are_overridable():
     assert args.wake_threshold == 0.8
     assert args.wake_confirmation_frames == 5
     assert args.wake_listen_timeout == 12.0
+    assert args.wake_followup_seconds == 5.0
     assert args.wake_barge_in is True
 
 

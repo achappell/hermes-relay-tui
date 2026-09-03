@@ -197,8 +197,10 @@ Do not put a real token in this file or in the README.
   arming a microphone from a command-line flag. `/wake off` closes the input
   stream, it does not merely pause the detector. A successful `/reload` and a
   connection loss both disarm wake mode and report that `/wake on` is required
-  to arm it again; reconnect never reopens the microphone silently. A malformed
-  reload leaves an already-armed listener unchanged.
+  to arm it again; reconnect never reopens the microphone silently. After a
+  wake-triggered response, the TUI listens for a bounded follow-up window
+  (`--wake-followup-seconds`, default 8 seconds) without another wake phrase.
+  A malformed reload leaves an already-armed listener unchanged.
 - Use `/audio [list|status|input <device>|output <device>]` to inspect and select local audio devices for the current session.
 - Use `/image <path>`, `/image list`, or `/image clear` to stage and inspect local image attachments. `@path` references support local path completion; the current relay reports attachments as unsupported rather than sending them.
 - Use `!command` or `{!command}` only after opting in with `--allow-shell`; execution is local, bounded, and visible, with shell operators rejected.
@@ -232,11 +234,12 @@ The complete source of truth is `config.build_arg_parser()`. The main runtime op
 - Uncaught main-thread and worker-thread exceptions are always appended to the
   private `~/.hermes-relay-tui/crash.log`; `/logs` reports its status without
   exposing contents.
-- `--mic-max-seconds`, `--mic-silence-duration`, `--mic-silence-threshold` — microphone tuning.
+- `--mic-max-seconds`, `--mic-silence-duration`, `--mic-silence-threshold` — microphone tuning; TUI silence endpointing defaults to 1.5 seconds.
+- `--wake-followup-seconds` — silence window after a wake-triggered response before returning to wake-word detection.
 - `--mic-input-device`, `--audio-output-device` — optional local input/output device name or index; `default` restores the system default.
 - `--stt-model` — optional local Faster-Whisper model selection.
 
-Relevant environment variables include `HERMES_VOICE_SESSION_URL`, `VOICE_SESSION_TOKEN`, `VOICE_SESSION_CLIENT_ID`, `VOICE_SESSION_DEVICE_ID`, `VOICE_SESSION_ID`, `VOICE_SESSION_MIC_MAX_SECONDS`, `VOICE_SESSION_MIC_SILENCE_DURATION`, `VOICE_SESSION_MIC_SILENCE_THRESHOLD`, `VOICE_SESSION_MIC_INPUT_DEVICE`, `VOICE_SESSION_AUDIO_OUTPUT_DEVICE`, `VOICE_SESSION_STT_MODEL`, `VOICE_SESSION_TURN_TIMEOUT`, `VOICE_SESSION_CONNECT_RETRIES`, `VOICE_SESSION_CONNECT_RETRY_DELAY`, `VOICE_SESSION_BUSY_MODE`, and `HERMES_RELAY_TUI_ALLOW_SHELL`.
+Relevant environment variables include `HERMES_VOICE_SESSION_URL`, `VOICE_SESSION_TOKEN`, `VOICE_SESSION_CLIENT_ID`, `VOICE_SESSION_DEVICE_ID`, `VOICE_SESSION_ID`, `VOICE_SESSION_MIC_MAX_SECONDS`, `VOICE_SESSION_MIC_SILENCE_DURATION`, `VOICE_SESSION_MIC_SILENCE_THRESHOLD`, `VOICE_SESSION_MIC_INPUT_DEVICE`, `VOICE_SESSION_AUDIO_OUTPUT_DEVICE`, `VOICE_SESSION_STT_MODEL`, `VOICE_SESSION_WAKE_FOLLOWUP_SECONDS`, `VOICE_SESSION_TURN_TIMEOUT`, `VOICE_SESSION_CONNECT_RETRIES`, `VOICE_SESSION_CONNECT_RETRY_DELAY`, `VOICE_SESSION_BUSY_MODE`, and `HERMES_RELAY_TUI_ALLOW_SHELL`.
 
 `HERMES_RELAY_TUI_DEBUG` and `HERMES_RELAY_TUI_LOG_FILE` configure the
 optional debug trace without command-line flags. The trace records event

@@ -41,6 +41,34 @@ def test_local_microphone_uses_injected_recorder_and_transcriber():
     assert transcribed == {"wav_path": "/tmp/fake.wav", "model": "base"}
 
 
+def test_local_microphone_can_bound_the_no_speech_wait_for_follow_up_capture():
+    observed = {}
+
+    class FakeRecorder:
+        supports_silence_autostop = True
+
+        def __init__(self):
+            self._max_wait = 15.0
+
+        def start(self, on_silence_stop=None):
+            observed["max_wait_during_start"] = self._max_wait
+            if on_silence_stop is not None:
+                on_silence_stop()
+
+        def stop(self):
+            return None
+
+    microphone = LocalMicrophone(
+        max_seconds=15.0,
+        recorder_factory=FakeRecorder,
+        transcribe_fn=lambda wav_path, model=None: {"success": True, "transcript": ""},
+    )
+
+    assert microphone.capture(wait_timeout=8.0) == ""
+    assert observed["max_wait_during_start"] == 8.0
+    assert microphone._recorder._max_wait == 15.0
+
+
 def test_local_microphone_filters_hallucinated_transcript():
     class FakeRecorder:
         supports_silence_autostop = True

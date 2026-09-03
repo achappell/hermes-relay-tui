@@ -35,7 +35,7 @@ class SessionProtocol(Protocol):
 
     def send_turn(self, text: str, *, stt_source: str = "local") -> AsyncIterator[dict[str, Any]]: ...
 
-    def capture_voice(self) -> str: ...
+    def capture_voice(self, *, wait_timeout: float | None = None) -> str: ...
 
     def cancel_voice(self) -> None: ...
 
@@ -141,7 +141,7 @@ class HermesSession:
         )
         return send_turn(self.ws, session_id=self.args.session_id, text=text, stt_source=stt_source)
 
-    def capture_voice(self) -> str:
+    def capture_voice(self, *, wait_timeout: float | None = None) -> str:
         self._voice_cancel_requested.clear()
         # faster-whisper downloads its model lazily. Its tqdm subclass can
         # otherwise create multiprocessing's resource tracker, which cannot
@@ -159,7 +159,9 @@ class HermesSession:
                     recorder=self._shared_recorder,
                 ),
             )
-        return self.microphone.capture()
+        if wait_timeout is None:
+            return self.microphone.capture()
+        return self.microphone.capture(wait_timeout=wait_timeout)
 
     def cancel_voice(self) -> None:
         self._voice_cancel_requested.set()

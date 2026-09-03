@@ -871,11 +871,14 @@ class HermesStreamingApp(App):
             built = self._build_hands_free(
                 self.session,
                 args,
+                capture=self._capture_wake_voice,
+                follow_up_capture=self._capture_wake_follow_up,
                 send=self._send_wake_turn,
                 speech_detected=self._wake_speech_detected,
                 stop_playback=self.player.close,
                 acknowledge=self._acknowledge_wake,
                 capture_finished=self._acknowledge_capture,
+                on_state_change=self._wake_state_changed,
             )
         except Exception as error:
             self._append_block(f"[error] wake mode: {self._wake_failure_text(error)}")
@@ -964,6 +967,51 @@ class HermesStreamingApp(App):
             listener.pause()
         else:
             listener.resume()
+
+    def _wake_state_changed(self, state: str) -> None:
+        """Keep detection and the TUI honest while the worker owns capture.
+
+        ``HandsFreeCoordinator`` runs on the wake listener thread. Pausing the
+        listener there is intentional: the shared recorder keeps producing
+        frames while local transcription runs, and those frames must not pile
+        up to be scored as a stale wake after the turn. Textual repainting is
+        handed back to its event loop.
+        """
+        self._set_wake_listening(busy=state != handsfree.IDLE)
+        loop = self._wake_loop
+        if loop is None:
+            return
+        try:
+            loop.call_soon_threadsafe(self._apply_wake_state, state)
+        except RuntimeError:
+            # Teardown can close the loop between reading the reference and
+            # scheduling the repaint. Disarm already refreshed the surface.
+            return
+
+    def _apply_wake_state(self, state: str) -> None:
+        """Apply a worker-reported wake phase on Textual's event loop."""
+        if not self.wake_armed:
+            return
+        if state == handsfree.CAPTURING and not self._turn_in_flight:
+            self._set_voice_state(VOICE_LISTENING)
+        elif (
+            state == handsfree.IDLE
+            and not self._turn_in_flight
+            and self._voice_capture_task is None
+        ):
+            self._set_voice_state(VOICE_READY)
+
+    def _capture_wake_voice(self) -> str:
+        """Capture the utterance after the wake phrase with a real bound."""
+        timeout = getattr(
+            self.args, "wake_listen_timeout", handsfree.DEFAULT_LISTEN_TIMEOUT
+        )
+        return self.session.capture_voice(wait_timeout=float(timeout))
+
+    def _capture_wake_follow_up(self) -> str:
+        """Give a speaker one quiet, wake-word-free conversational window."""
+        timeout = getattr(self.args, "wake_followup_seconds", 8.0)
+        return self.session.capture_voice(wait_timeout=float(timeout))
 
     def _wake_speech_detected(self) -> bool:
         return bool(getattr(self._wake_recorder, "has_detected_speech", False))
@@ -1666,36 +1714,52 @@ class HermesStreamingApp(App):
         if self._turn_in_flight:
             self._append_block("[a turn is already in flight]")
             return
-        self._voice_capture_cancelled = False
-        capture_task = asyncio.create_task(asyncio.to_thread(self.session.capture_voice))
-        # Assigned before the repaint below: `_set_voice_state` reads
-        # `microphone_is_open`, and the one state that most obviously means
-        # "the microphone is on" would otherwise render without the marker.
-        self._voice_capture_task = capture_task
-        self._set_voice_state(VOICE_LISTENING)
-        try:
-            transcript_text = await capture_task
-        except asyncio.CancelledError:
-            if self._voice_capture_cancelled:
+        if self.wake_armed:
+            coordinator = self._wake_coordinator
+            if coordinator is not None and coordinator.state != handsfree.IDLE:
+                self._append_block("[a wake turn is already in flight]")
                 return
-            raise
-        except Exception as exc:
-            self._set_voice_state(VOICE_ERROR)
-            self._append_block(f"[error] microphone: {exc}")
-            return
+        self._voice_capture_cancelled = False
+        wake_was_armed = self.wake_armed
+        if wake_was_armed:
+            self._set_wake_listening(busy=True)
+        resume_wake = wake_was_armed
+        try:
+            capture_task = asyncio.create_task(asyncio.to_thread(self.session.capture_voice))
+            # Assigned before the repaint below: `_set_voice_state` reads
+            # `microphone_is_open`, and the one state that most obviously means
+            # "the microphone is on" would otherwise render without the marker.
+            self._voice_capture_task = capture_task
+            self._set_voice_state(VOICE_LISTENING)
+            try:
+                transcript_text = await capture_task
+            except asyncio.CancelledError:
+                if self._voice_capture_cancelled:
+                    return
+                raise
+            except Exception as exc:
+                self._set_voice_state(VOICE_ERROR)
+                self._append_block(f"[error] microphone: {exc}")
+                return
+            finally:
+                if self._voice_capture_task is capture_task:
+                    self._voice_capture_task = None
+                self._voice_capture_cancelled = False
+                self._refresh_voice_status()
+            if self.voice_state == VOICE_INTERRUPTED:
+                return
+            if not transcript_text:
+                self._set_voice_state(VOICE_READY)
+                self._append_block("no speech detected.")
+                return
+            self._set_voice_state(VOICE_TRANSCRIBING)
+            # Keep the detector paused through transcription and the whole
+            # turn. `_run_turn` owns the matching resume after the reply.
+            await self._run_turn(transcript_text, stt_source="local-faster-whisper")
+            resume_wake = False
         finally:
-            if self._voice_capture_task is capture_task:
-                self._voice_capture_task = None
-            self._voice_capture_cancelled = False
-            self._refresh_voice_status()
-        if self.voice_state == VOICE_INTERRUPTED:
-            return
-        if not transcript_text:
-            self._set_voice_state(VOICE_READY)
-            self._append_block("no speech detected.")
-            return
-        self._set_voice_state(VOICE_TRANSCRIBING)
-        await self._run_turn(transcript_text, stt_source="local-faster-whisper")
+            if resume_wake and self.wake_armed:
+                self._set_wake_listening(busy=False)
 
     async def action_interrupt(self) -> None:
         if await self._cancel_active_voice_capture():
@@ -1730,7 +1794,22 @@ class HermesStreamingApp(App):
         """Stop microphone capture without treating Ctrl+C as an idle exit."""
         capture_task = self._voice_capture_task
         if capture_task is None or capture_task.done():
-            return False
+            coordinator = self._wake_coordinator
+            if not (
+                self.wake_armed
+                and coordinator is not None
+                and coordinator.state == handsfree.CAPTURING
+            ):
+                return False
+
+            # Wake captures run on the listener worker rather than through a
+            # Textual task. Cancel the shared recorder so that worker can
+            # leave its bounded capture and return to wake-only listening.
+            self._set_voice_state(VOICE_INTERRUPTED)
+            cancel = getattr(self.session, "cancel_voice", None)
+            if callable(cancel):
+                await asyncio.to_thread(cancel)
+            return True
 
         self._voice_capture_cancelled = True
         self._set_voice_state(VOICE_INTERRUPTED)

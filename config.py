@@ -274,7 +274,7 @@ def build_arg_parser(argv: Optional[list[str]] = None) -> argparse.ArgumentParse
     parser.add_argument(
         "--mic-silence-duration",
         type=float,
-        default=_env_float("VOICE_SESSION_MIC_SILENCE_DURATION", cfg.get("mic_silence_duration", 3.0)),
+        default=_env_float("VOICE_SESSION_MIC_SILENCE_DURATION", cfg.get("mic_silence_duration", 1.5)),
     )
     parser.add_argument(
         "--mic-silence-threshold",
@@ -326,6 +326,15 @@ def build_arg_parser(argv: Optional[list[str]] = None) -> argparse.ArgumentParse
         type=float,
         default=cfg.get("wake_listen_timeout", 8.0),
         help="how long to wait after the wake phrase for speech to begin",
+    )
+    parser.add_argument(
+        "--wake-followup-seconds",
+        type=float,
+        default=_env_float(
+            "VOICE_SESSION_WAKE_FOLLOWUP_SECONDS",
+            cfg.get("wake_followup_seconds", 8.0),
+        ),
+        help="how long to listen for a follow-up after a wake-triggered response",
     )
     parser.add_argument(
         "--wake-barge-in",

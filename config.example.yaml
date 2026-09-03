@@ -37,7 +37,7 @@
 # no_play: false            # true buffers audio instead of opening the speaker
 # output: ~/hermes-responses/response.wav   # also save each response WAV
 # mic_max_seconds: 15.0
-# mic_silence_duration: 3.0
+# mic_silence_duration: 1.5
 # mic_silence_threshold: 200
 # mic_input_device: 2               # numeric index or a device name string
 # audio_output_device: "USB Headset"
@@ -54,6 +54,7 @@
 # busy_mode: queue           # queue | steer | interrupt
 # hide_thinking: false
 # allow_shell: false         # enables bounded local !command execution
+# wake_followup_seconds: 8.0 # silence window after a wake-triggered reply
 
 # --- debugging ---------------------------------------------------------
 # debug: false

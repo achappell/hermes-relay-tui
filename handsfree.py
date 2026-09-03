@@ -52,7 +52,7 @@ DEFAULT_LISTEN_TIMEOUT = 8.0
 
 
 class HandsFreeCoordinator:
-    """Wake event in, at most one session turn out."""
+    """Wake event in, one turn plus one optional follow-up out."""
 
     def __init__(
         self,
@@ -60,6 +60,7 @@ class HandsFreeCoordinator:
         *,
         capture: Callable[[], str],
         send: Callable[[str], Any],
+        follow_up_capture: Callable[[], str] | None = None,
         listen_timeout: float = DEFAULT_LISTEN_TIMEOUT,
         speech_detected: Callable[[], bool] | None = None,
         stop_playback: Callable[[], Any] | None = None,
@@ -73,6 +74,7 @@ class HandsFreeCoordinator:
         self._session = session
         self._capture = capture
         self._send = send
+        self._follow_up_capture = follow_up_capture
         self._listen_timeout = listen_timeout
         self._speech_detected = speech_detected
         self._stop_playback = stop_playback
@@ -137,7 +139,7 @@ class HandsFreeCoordinator:
             self._set_state(IDLE)
 
     def on_wake(self) -> bool:
-        """Handle a detection. Returns whether a capture was started."""
+        """Handle a detection and its one optional wake-word-free follow-up."""
         with self._lock:
             if self._state == SPEAKING:
                 if not self._barge_in:
@@ -176,7 +178,20 @@ class HandsFreeCoordinator:
             self._finish()
             return False
 
-        self._deliver(transcript)
+        delivered = self._deliver(transcript)
+        if delivered and self._follow_up_capture is not None:
+            with self._lock:
+                self._begin_capture()
+            try:
+                follow_up = self._follow_up_capture()
+            except Exception:
+                logger.debug("hands-free follow-up capture failed", exc_info=True)
+                self._finish()
+                return True
+            if not (follow_up or "").strip():
+                self._finish()
+            else:
+                self._deliver(follow_up)
         return True
 
     def _begin_capture(self) -> None:
@@ -188,16 +203,16 @@ class HandsFreeCoordinator:
         with self._lock:
             self._begin_capture()
 
-    def _deliver(self, transcript: str) -> None:
+    def _deliver(self, transcript: str) -> bool:
         text = (transcript or "").strip()
         if not text:
             self._finish()
-            return
+            return False
         if self._is_hallucination is not None:
             try:
                 if self._is_hallucination(text):
                     self._finish()
-                    return
+                    return False
             except Exception:
                 logger.debug("hallucination check failed", exc_info=True)
 
@@ -205,12 +220,15 @@ class HandsFreeCoordinator:
         # acknowledged and withdrawn without this.
         self._notify(self._capture_finished, "capture")
         self._set_state(SENDING)
+        delivered = True
         try:
             self._send(text)
         except Exception:
             logger.debug("hands-free send failed", exc_info=True)
+            delivered = False
         finally:
             self._finish()
+        return delivered
 
     def _finish(self) -> None:
         self._set_state(IDLE)
@@ -237,6 +255,8 @@ def build_hands_free(
     *,
     on_state_change: Callable[[str], Any] | None = None,
     send: Callable[[str], Any] | None = None,
+    capture: Callable[[], str] | None = None,
+    follow_up_capture: Callable[[], str] | None = None,
     speech_detected: Callable[[], bool] | None = None,
     stop_playback: Callable[[], Any] | None = None,
     acknowledge: Callable[[], Any] | None = None,
@@ -275,11 +295,12 @@ def build_hands_free(
 
     coordinator = HandsFreeCoordinator(
         session,
-        capture=session.capture_voice,
+        capture=capture or session.capture_voice,
         # `session.send_turn` returns an async iterator, so a front end with an
         # event loop passes its own `send` that drives the turn there and
         # blocks until it is finished.
         send=send or session.send_turn,
+        follow_up_capture=follow_up_capture,
         speech_detected=speech_detected,
         listen_timeout=getattr(args, "wake_listen_timeout", DEFAULT_LISTEN_TIMEOUT),
         barge_in=getattr(args, "wake_barge_in", False),

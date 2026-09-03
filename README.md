@@ -459,6 +459,7 @@ works on a clean machine and on a network that is not up yet when it boots.
 | `--wake-confirmation-frames` | `3` | Consecutive over-threshold frames required to fire. |
 | `--wake-refractory-seconds` | `2.0` | Minimum gap between two fires. |
 | `--wake-listen-timeout` | `8.0` | How long to wait for speech to begin after the phrase. |
+| `--wake-followup-seconds` | `8.0` | How long to wait for a follow-up after the reply, without another wake phrase. |
 | `--wake-barge-in` | off | Let the phrase interrupt playback. See the warning below. |
 | `--no-earcons` | tones on | Silence the acknowledgement tones. Does not disable the wake word. |
 
@@ -485,9 +486,16 @@ inside the session and stays on until you turn it off:
 
 | Command | What happens |
 |---|---|
-| `/wake on` | Opens the input stream and starts listening. Saying the phrase runs one full turn, with the same two tones the appliance uses. |
+| `/wake on` | Opens the input stream and starts listening. Saying the phrase runs a turn, then leaves an 8-second follow-up window after the reply so one next question needs no wake phrase. |
 | `/wake off` | Stops the listener **and closes the stream**, so the system microphone indicator clears and other applications get the device back. |
 | `/wake` or `/wake status` | Whether it is armed, and the model and threshold in use. |
+
+During the follow-up window, the wake detector is paused while the same local
+capture path waits for speech. Silence returns to wake-word listening; spoken
+text starts one normal turn, then returns to wake-word listening. Set the
+window with `--wake-followup-seconds` or
+`VOICE_SESSION_WAKE_FOLLOWUP_SECONDS`. The normal TUI silence endpoint is 1.5
+seconds, so it no longer waits three seconds after the user stops talking.
 
 Whenever the microphone is open the status line above the composer carries a
 `◉ mic open` marker in a colour of its own — during a `Ctrl+R` capture, during
@@ -608,8 +616,9 @@ hermes-relay
 | `VOICE_SESSION_DEVICE_ID` | `amanda-mac` |
 | `VOICE_SESSION_ID` | `hybrid-tui` |
 | `VOICE_SESSION_MIC_MAX_SECONDS` | `15.0` |
-| `VOICE_SESSION_MIC_SILENCE_DURATION` | `3.0` |
+| `VOICE_SESSION_MIC_SILENCE_DURATION` | `1.5` |
 | `VOICE_SESSION_MIC_SILENCE_THRESHOLD` | `200` |
+| `VOICE_SESSION_WAKE_FOLLOWUP_SECONDS` | `8.0` seconds of silence after a wake-triggered reply |
 | `VOICE_SESSION_MIC_INPUT_DEVICE` | Microphone name or index; unset uses the system default |
 | `VOICE_SESSION_AUDIO_OUTPUT_DEVICE` | Speaker name or index; unset uses the system default |
 | `VOICE_SESSION_STT_MODEL` | unset; use the Hermes/local-STT default |

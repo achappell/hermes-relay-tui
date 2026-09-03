@@ -48,6 +48,57 @@ def test_a_detection_produces_exactly_one_capture_and_one_turn():
     assert coordinator.state == handsfree.IDLE
 
 
+def test_a_wake_turn_accepts_one_follow_up_without_another_wake():
+    session = FakeSession()
+    captures = []
+
+    def capture():
+        captures.append("wake")
+        return "what is the weather"
+
+    def capture_follow_up():
+        captures.append("follow-up")
+        return "and tomorrow"
+
+    coordinator = handsfree.HandsFreeCoordinator(
+        session,
+        capture=capture,
+        send=lambda text: session.send_turn(text),
+        follow_up_capture=capture_follow_up,
+    )
+
+    assert coordinator.on_wake() is True
+
+    assert captures == ["wake", "follow-up"]
+    assert session.turns == [
+        ("what is the weather", "local"),
+        ("and tomorrow", "local"),
+    ]
+    assert coordinator.state == handsfree.IDLE
+
+
+def test_silence_in_the_follow_up_window_returns_to_wake_listening():
+    session = FakeSession()
+    follow_up_captures = []
+
+    def capture_follow_up():
+        follow_up_captures.append(True)
+        return ""
+
+    coordinator = handsfree.HandsFreeCoordinator(
+        session,
+        capture=lambda: "what is the weather",
+        send=lambda text: session.send_turn(text),
+        follow_up_capture=capture_follow_up,
+    )
+
+    assert coordinator.on_wake() is True
+
+    assert follow_up_captures == [True]
+    assert session.turns == [("what is the weather", "local")]
+    assert coordinator.state == handsfree.IDLE
+
+
 def test_detections_during_a_capture_do_not_stack_turns():
     """Repeated detections during an active capture must be dropped, not
     queued: queuing them is how a single utterance becomes three turns."""
