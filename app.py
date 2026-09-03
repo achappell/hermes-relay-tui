@@ -321,10 +321,14 @@ VOICE_BUFFERING = "buffering…"
 VOICE_INTERRUPTED = "interrupted"
 VOICE_ERROR = "error"
 
-# The standing condition, not a phase of a turn. `listening…` means a capture
-# is running right now; this means the input device is held open and will stay
-# held until /wake off. Worded as the fact rather than the subsystem: what
-# matters at a glance is that the microphone is on, not which feature has it.
+# A fact about the device, not about a feature. It appears whenever the input
+# stream is open — a Ctrl+R capture, a wake capture, or wake mode holding it
+# between turns — so one physical condition always looks the same. The state
+# word beside it describes the phase; this describes the microphone.
+#
+# Gating this on wake mode alone was the first cut, and it was wrong: a name
+# promising device state cannot be driven by feature state, or the same open
+# microphone renders two different ways depending on which path opened it.
 MIC_OPEN_LABEL = "mic open"
 PROMPT_NOT_SENT = "not-sent"
 PROMPT_AMBIGUOUS = "ambiguous"
@@ -483,6 +487,17 @@ class HermesStreamingApp(App):
         self.voice_state = state
         self._refresh_voice_status()
 
+    @property
+    def microphone_is_open(self) -> bool:
+        """Whether the input device is open right now, for any reason.
+
+        Two ways it can be: a capture is running (Ctrl+R, or the wake path's
+        own capture), or wake mode is armed and holding the stream between
+        turns. The user does not care which; they care that the microphone is
+        on.
+        """
+        return bool(self.wake_armed or self._voice_capture_task is not None)
+
     def _refresh_voice_status(self) -> None:
         """Repaint the status line: the turn's phase, and whether the
         microphone is held.
@@ -493,7 +508,7 @@ class HermesStreamingApp(App):
         microphone — which is the failure this indicator exists to prevent.
         """
         line = f"● {self.voice_state}"
-        if self.wake_armed:
+        if self.microphone_is_open:
             line += f"   [$warning]◉ {MIC_OPEN_LABEL}[/]"
         try:
             self.query_one("#voice-status", Static).update(line)
@@ -1425,10 +1440,13 @@ class HermesStreamingApp(App):
         if self._turn_in_flight:
             self._append_block("[a turn is already in flight]")
             return
-        self._set_voice_state(VOICE_LISTENING)
         self._voice_capture_cancelled = False
         capture_task = asyncio.create_task(asyncio.to_thread(self.session.capture_voice))
+        # Assigned before the repaint below: `_set_voice_state` reads
+        # `microphone_is_open`, and the one state that most obviously means
+        # "the microphone is on" would otherwise render without the marker.
         self._voice_capture_task = capture_task
+        self._set_voice_state(VOICE_LISTENING)
         try:
             transcript_text = await capture_task
         except asyncio.CancelledError:
@@ -1443,6 +1461,7 @@ class HermesStreamingApp(App):
             if self._voice_capture_task is capture_task:
                 self._voice_capture_task = None
             self._voice_capture_cancelled = False
+            self._refresh_voice_status()
         if self.voice_state == VOICE_INTERRUPTED:
             return
         if not transcript_text:

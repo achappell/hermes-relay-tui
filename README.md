@@ -489,11 +489,12 @@ inside the session and stays on until you turn it off:
 | `/wake off` | Stops the listener **and closes the stream**, so the system microphone indicator clears and other applications get the device back. |
 | `/wake` or `/wake status` | Whether it is armed, and the model and threshold in use. |
 
-While wake mode is armed the status line above the composer carries a standing
-`◉ mic open` marker, in a colour of its own, and keeps it through the whole
-turn — `listening…` means a capture is running right now, `◉ mic open` means
-the device is held until you release it. You should never have to remember
-whether your microphone is on.
+Whenever the microphone is open the status line above the composer carries a
+`◉ mic open` marker in a colour of its own — during a `Ctrl+R` capture, during
+a wake capture, and continuously while wake mode is armed. The state word
+beside it says what the client is doing; the marker says whether the device is
+live. One physical condition, one appearance, whichever path opened it. You
+should never have to remember whether your microphone is on.
 
 Quitting the client releases the microphone whether or not wake mode was on.
 
