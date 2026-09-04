@@ -354,7 +354,7 @@ def build_arg_parser(argv: Optional[list[str]] = None) -> argparse.ArgumentParse
         ),
         help=(
             "seconds of sustained microphone audio required before barge-in "
-            "interrupts the active response"
+            "candidate audio is sent to local speech recognition"
         ),
     )
     parser.add_argument(

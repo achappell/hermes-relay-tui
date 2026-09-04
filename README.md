@@ -380,7 +380,7 @@ it. A turn that may already have reached Hermes is never replayed automatically.
 | `--mic-max-seconds SECONDS` | Maximum microphone capture duration |
 | `--mic-silence-duration SECONDS` | Silence duration that ends capture |
 | `--mic-silence-threshold VALUE` | Capture silence threshold |
-| `--wake-barge-in-min-speech-duration SECONDS` | Sustained audio required before barge-in interrupts; default `0.45` |
+| `--wake-barge-in-min-speech-duration SECONDS` | Sustained audio required before candidate audio is sent to local STT; default `0.45` |
 | `--mic-input-device DEVICE` | Microphone name or index; `default` uses the system default |
 | `--audio-output-device DEVICE` | Speaker name or index; `default` uses the system default |
 | `--stt-model NAME` | Select the local Faster-Whisper model |
@@ -505,12 +505,13 @@ ordinary voice turn. Set the window with `--wake-followup-seconds` or
 seconds, so it no longer waits three seconds after the user stops talking.
 
 With `--wake-barge-in`, the armed TUI also taps the same microphone stream while
-Hermes is generating, buffering, or speaking. Speech closes local playback and
-causes one explicit remote interrupt. The audio is transcribed locally; raw
-microphone PCM never crosses the WebSocket. Saying exactly `stop` ends the
-answer without submitting a new turn. Any other transcript becomes one new
-turn, without a second wake phrase. This remains opt-in because a normal laptop
-speaker route can feed Hermes' voice back into the microphone.
+Hermes is generating, buffering, or speaking. Sustained audio becomes a local
+STT candidate first; only a non-empty transcript closes local playback and
+causes one explicit remote interrupt. Raw microphone PCM never crosses the
+WebSocket. Saying exactly `stop` ends the answer without submitting a new turn.
+Any other transcript becomes one new turn, without a second wake phrase. This
+remains opt-in because a normal laptop speaker route can still feed Hermes'
+voice back into the microphone, and local STT may recognize that echo as words.
 
 The first `/wake on` can take a few seconds while the local wake model warms up
 and CoreAudio opens the input stream. That setup runs away from the Textual event
@@ -641,7 +642,7 @@ hermes-relay
 | `VOICE_SESSION_MIC_SILENCE_DURATION` | `1.5` |
 | `VOICE_SESSION_MIC_SILENCE_THRESHOLD` | `200` |
 | `VOICE_SESSION_WAKE_FOLLOWUP_SECONDS` | `8.0` seconds of silence after a wake-triggered reply |
-| `VOICE_SESSION_WAKE_BARGE_IN_MIN_SPEECH_DURATION` | `0.45` seconds of sustained audio before barge-in interrupts |
+| `VOICE_SESSION_WAKE_BARGE_IN_MIN_SPEECH_DURATION` | `0.45` seconds of sustained audio before candidate audio is sent to local STT |
 | `VOICE_SESSION_MIC_INPUT_DEVICE` | Microphone name or index; unset uses the system default |
 | `VOICE_SESSION_AUDIO_OUTPUT_DEVICE` | Speaker name or index; unset uses the system default |
 | `VOICE_SESSION_STT_MODEL` | unset; use the Hermes/local-STT default |

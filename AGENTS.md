@@ -237,9 +237,10 @@ The complete source of truth is `config.build_arg_parser()`. The main runtime op
 - `--no-earcons` — silence the home unit's wake and end-of-capture tones; the
   wake word keeps working.
 - `--wake-barge-in` — opt in to local speech detection during an active
-  response. Speech stops playback and sends one remote interrupt; exact
-  `stop` sends no replacement turn. Keep it off unless the audio route has
-  echo cancellation or equivalent isolation.
+  response. Sustained audio is transcribed locally first; only a non-empty
+  transcript stops playback and sends one remote interrupt. Exact `stop` sends
+  no replacement turn. Keep it off unless the audio route has echo cancellation
+  or equivalent isolation.
 - `--hide-thinking` — hide thinking and tool detail in the transcript.
 - `--debug` — write a content-safe protocol trace to a temporary log file.
 - `--log-file PATH` — choose the debug trace path; supplying it implies `--debug`.
@@ -247,12 +248,12 @@ The complete source of truth is `config.build_arg_parser()`. The main runtime op
   private `~/.hermes-relay-tui/crash.log`; `/logs` reports its status without
   exposing contents.
 - `--mic-max-seconds`, `--mic-silence-duration`, `--mic-silence-threshold` — microphone tuning; TUI silence endpointing defaults to 1.5 seconds.
-- `--wake-barge-in-min-speech-duration` — sustained microphone audio required before barge-in interrupts; default `0.45` seconds.
+- `--wake-barge-in-min-speech-duration` — sustained microphone audio required before candidate audio is sent to local STT; default `0.45` seconds.
 - `--wake-followup-seconds` — silence window after a wake-triggered response before returning to wake-word detection.
 - `--mic-input-device`, `--audio-output-device` — optional local input/output device name or index; `default` restores the system default.
 - `--stt-model` — optional local Faster-Whisper model selection.
 
-Relevant environment variables include `HERMES_VOICE_SESSION_URL`, `VOICE_SESSION_TOKEN`, `VOICE_SESSION_CLIENT_ID`, `VOICE_SESSION_DEVICE_ID`, `VOICE_SESSION_ID`, `VOICE_SESSION_MIC_MAX_SECONDS`, `VOICE_SESSION_MIC_SILENCE_DURATION`, `VOICE_SESSION_MIC_SILENCE_THRESHOLD`, `VOICE_SESSION_MIC_INPUT_DEVICE`, `VOICE_SESSION_AUDIO_OUTPUT_DEVICE`, `VOICE_SESSION_STT_MODEL`, `VOICE_SESSION_WAKE_FOLLOWUP_SECONDS`, `VOICE_SESSION_TURN_TIMEOUT`, `VOICE_SESSION_CONNECT_RETRIES`, `VOICE_SESSION_CONNECT_RETRY_DELAY`, `VOICE_SESSION_BUSY_MODE`, and `HERMES_RELAY_TUI_ALLOW_SHELL`.
+Relevant environment variables include `HERMES_VOICE_SESSION_URL`, `VOICE_SESSION_TOKEN`, `VOICE_SESSION_CLIENT_ID`, `VOICE_SESSION_DEVICE_ID`, `VOICE_SESSION_ID`, `VOICE_SESSION_MIC_MAX_SECONDS`, `VOICE_SESSION_MIC_SILENCE_DURATION`, `VOICE_SESSION_MIC_SILENCE_THRESHOLD`, `VOICE_SESSION_MIC_INPUT_DEVICE`, `VOICE_SESSION_AUDIO_OUTPUT_DEVICE`, `VOICE_SESSION_STT_MODEL`, `VOICE_SESSION_WAKE_FOLLOWUP_SECONDS`, `VOICE_SESSION_WAKE_BARGE_IN_MIN_SPEECH_DURATION`, `VOICE_SESSION_TURN_TIMEOUT`, `VOICE_SESSION_CONNECT_RETRIES`, `VOICE_SESSION_CONNECT_RETRY_DELAY`, `VOICE_SESSION_BUSY_MODE`, and `HERMES_RELAY_TUI_ALLOW_SHELL`.
 
 `HERMES_RELAY_TUI_DEBUG` and `HERMES_RELAY_TUI_LOG_FILE` configure the
 optional debug trace without command-line flags. The trace records event

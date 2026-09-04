@@ -1105,17 +1105,10 @@ class HermesStreamingApp(App):
             listener.deactivate()
 
     def _on_barge_speech_start(self) -> None:
-        """Signal the event loop immediately, before local STT finishes."""
+        """Remember a loud candidate until local STT confirms speech."""
         if not self._turn_in_flight or self._barge_capture_active:
             return
         self._barge_capture_active = True
-        loop = self._wake_loop
-        if loop is None:
-            return
-        try:
-            loop.call_soon_threadsafe(self._begin_barge_interrupt)
-        except RuntimeError:
-            return
 
     def _begin_barge_interrupt(self) -> None:
         if not self._barge_capture_active or not self._turn_in_flight:
@@ -1132,9 +1125,26 @@ class HermesStreamingApp(App):
         if loop is None:
             return
         try:
-            loop.call_soon_threadsafe(self._queue_barge_transcript, transcript)
+            loop.call_soon_threadsafe(self._handle_barge_transcript, transcript)
         except RuntimeError:
             return
+
+    def _handle_barge_transcript(self, transcript: str) -> None:
+        """Interrupt only after local STT returns an actual phrase."""
+        if not self._barge_capture_active:
+            return
+        if not self._turn_in_flight:
+            self._set_barge_listening(active=False)
+            self._barge_capture_active = False
+            self._set_wake_listening(busy=self._turn_in_flight)
+            return
+        if not (transcript or "").strip():
+            self._set_barge_listening(active=False)
+            self._barge_capture_active = False
+            self._set_wake_listening(busy=self._turn_in_flight)
+            return
+        self._begin_barge_interrupt()
+        self._queue_barge_transcript(transcript)
 
     def _queue_barge_transcript(self, transcript: str) -> None:
         if not self._barge_capture_active:

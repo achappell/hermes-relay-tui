@@ -11,7 +11,7 @@ def _frame(level: int, samples: int = 20):
     return np.full((samples, 1), level, dtype="int16")
 
 
-def test_speech_activity_interrupts_promptly_then_returns_local_stt_text(tmp_path):
+def test_speech_activity_notifies_promptly_then_returns_local_stt_text(tmp_path):
     started = threading.Event()
     completed = threading.Event()
     seen = []
@@ -43,6 +43,7 @@ def test_speech_activity_interrupts_promptly_then_returns_local_stt_text(tmp_pat
         listener.submit(_frame(0))
         assert completed.wait(1.0)
 
+        assert started.is_set()
         assert seen[-1] == "what about Dawn soap?"
         assert seen[0][1] == "tiny"
     finally:
