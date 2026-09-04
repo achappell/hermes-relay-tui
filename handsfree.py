@@ -182,6 +182,10 @@ class HandsFreeCoordinator:
             self._finish()
             return False
 
+        if _is_local_stop_command(transcript or ""):
+            self._finish()
+            return True
+
         delivered = self._deliver(transcript)
         if delivered and self._follow_up_capture is not None:
             with self._lock:

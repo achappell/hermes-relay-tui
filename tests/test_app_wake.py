@@ -315,6 +315,26 @@ async def test_wake_follow_up_stop_is_silent_and_resumes_wake_listening():
         assert "stop" not in transcript_text(app).lower()
 
 
+async def test_wake_initial_stop_is_silent_and_resumes_wake_listening():
+    app, fakes, session = make_app()
+    session.capture_result = " Stop "
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await app._handle_wake_command("on")
+
+        completed = await asyncio.wait_for(
+            asyncio.to_thread(fakes.coordinator.on_wake), 1.0
+        )
+        assert completed is True
+        await pilot.pause()
+        await pilot.pause()
+
+        assert session.sent_turns == []
+        assert fakes.listener.paused[-1] is False
+        assert app.wake_armed is True
+        assert "stop" not in transcript_text(app).lower()
+
+
 async def test_ctrl_r_stop_remains_an_ordinary_voice_turn():
     app, _, session = make_app()
     session.capture_result = " STOP "

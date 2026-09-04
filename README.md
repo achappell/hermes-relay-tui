@@ -498,8 +498,8 @@ text starts one normal turn, then returns to wake-word listening. Say exactly
 `stop` to close this follow-up window silently; matching ignores case and
 surrounding whitespace, plus normal terminal punctuation from transcription,
 while longer phrases such as `stop the timer` remain ordinary turns. The
-initial wake capture and `Ctrl+R` also treat `stop` as ordinary content. Set
-the window with `--wake-followup-seconds` or
+initial wake capture also treats `stop` as a local cancel; `Ctrl+R` remains an
+ordinary voice turn. Set the window with `--wake-followup-seconds` or
 `VOICE_SESSION_WAKE_FOLLOWUP_SECONDS`. The normal TUI silence endpoint is 1.5
 seconds, so it no longer waits three seconds after the user stops talking.
 

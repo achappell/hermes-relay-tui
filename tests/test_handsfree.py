@@ -149,7 +149,7 @@ def test_a_longer_stop_phrase_in_the_follow_up_window_is_sent():
     ]
 
 
-def test_stop_remains_ordinary_content_for_the_initial_wake_turn():
+def test_stop_is_silent_for_the_initial_wake_turn():
     session = FakeSession()
     coordinator = handsfree.HandsFreeCoordinator(
         session,
@@ -159,7 +159,8 @@ def test_stop_remains_ordinary_content_for_the_initial_wake_turn():
 
     coordinator.on_wake()
 
-    assert session.turns == [("STOP", "local")]
+    assert session.turns == []
+    assert coordinator.state == handsfree.IDLE
 
 
 def test_detections_during_a_capture_do_not_stack_turns():
