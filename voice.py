@@ -11,6 +11,7 @@ transcription.
 
 from __future__ import annotations
 
+import difflib
 import logging
 import os
 import queue
@@ -22,7 +23,7 @@ import wave
 from collections import deque
 from typing import Any, Dict, List, Optional
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("hermes_relay_tui.voice")
 
 SAMPLE_RATE = 16000  # Whisper native rate
 CHANNELS = 1
@@ -485,6 +486,47 @@ def is_whisper_hallucination(transcript: str) -> bool:
     return False
 
 
+DEFAULT_TTS_ECHO_SIMILARITY_THRESHOLD = 0.6
+MIN_FRAGMENT_LENGTH_FOR_ECHO = 10
+
+
+def _normalize_for_echo_compare(text: str) -> str:
+    return re.sub(r"\s+", " ", text).strip().lower()
+
+
+def is_tts_echo(
+    transcript: str,
+    spoken_text: str,
+    threshold: float = DEFAULT_TTS_ECHO_SIMILARITY_THRESHOLD,
+) -> bool:
+    """Return whether a playback transcript resembles the response text.
+
+    A barge-in is cut before STT completes, so a speaker bleed capture is
+    usually a short fragment of a much longer response. Compare both the
+    whole response and same-length windows inside it. Short transcripts skip
+    window matching because a one-word interjection can occur in any answer.
+    """
+    if not transcript or not spoken_text:
+        return False
+    candidate = _normalize_for_echo_compare(transcript)
+    response = _normalize_for_echo_compare(spoken_text)
+    if not candidate or not response:
+        return False
+    if difflib.SequenceMatcher(None, candidate, response).ratio() >= threshold:
+        return True
+    if len(candidate) < MIN_FRAGMENT_LENGTH_FOR_ECHO or len(candidate) >= len(response):
+        return False
+    return any(
+        difflib.SequenceMatcher(
+            None,
+            candidate,
+            response[start : start + len(candidate)],
+        ).ratio()
+        >= threshold
+        for start in range(0, len(response) - len(candidate) + 1)
+    )
+
+
 _local_model: Any = None
 _local_model_name: Optional[str] = None
 _local_model_lock = threading.Lock()
@@ -638,11 +680,25 @@ class BargeInListener:
     stream. It never sends frames to Hermes: the only outward value is the
     locally-transcribed string. ``submit`` remains deliberately cheap because
     it only queues work for the listener and never waits for inference.
+
+    Detection follows the full-duplex voice path in Hermes: the room is
+    calibrated before playback, that floor is held while the speaker is live,
+    and a majority of a short energy window trips the callback. The callback
+    is intentionally earlier than transcription; callers can stop playback
+    immediately and use the transcript only to decide whether to submit a
+    follow-up turn.
     """
 
     _QUEUE_SIZE = 32
     _PRE_ROLL_SECONDS = 0.25
-    _DEFAULT_MIN_SPEECH_SECONDS = 0.45
+    _DEFAULT_MIN_SPEECH_SECONDS = 0.30
+    _DEFAULT_CALIBRATION_SECONDS = 0.45
+    _DEFAULT_PLAYBACK_GRACE_SECONDS = 0.50
+    _DEFAULT_TRIGGER_MULTIPLIER = 3.0
+    _PLAYBACK_MIN_TRIGGER = 1500
+    _TRIGGER_CEILING = 4000
+    _MAJORITY_FRACTION = 0.80
+    _PLAYBACK_REARM_SECONDS = 1.0
 
     def __init__(
         self,
@@ -654,6 +710,10 @@ class BargeInListener:
         max_seconds: float = 15.0,
         min_speech_duration: float = _DEFAULT_MIN_SPEECH_SECONDS,
         sample_rate: int = SAMPLE_RATE,
+        is_playing: Any = None,
+        calibration_duration: float = _DEFAULT_CALIBRATION_SECONDS,
+        playback_grace_duration: float = _DEFAULT_PLAYBACK_GRACE_SECONDS,
+        trigger_multiplier: float = _DEFAULT_TRIGGER_MULTIPLIER,
         model: Optional[str] = None,
         transcribe_fn: Any = None,
         hallucination_fn: Any = None,
@@ -669,6 +729,12 @@ class BargeInListener:
             raise ValueError("barge-in minimum speech duration must be greater than zero")
         if sample_rate <= 0:
             raise ValueError("barge-in sample rate must be greater than zero")
+        if calibration_duration < 0:
+            raise ValueError("barge-in calibration duration cannot be negative")
+        if playback_grace_duration < 0:
+            raise ValueError("barge-in playback grace duration cannot be negative")
+        if trigger_multiplier <= 0:
+            raise ValueError("barge-in trigger multiplier must be greater than zero")
 
         self._on_speech_start = on_speech_start
         self._on_transcript = on_transcript
@@ -678,6 +744,14 @@ class BargeInListener:
         self._min_speech_samples = max(1, int(float(min_speech_duration) * sample_rate))
         self._pre_roll_samples_limit = max(1, int(self._PRE_ROLL_SECONDS * sample_rate))
         self._sample_rate = int(sample_rate)
+        self._is_playing = is_playing
+        self._calibration_samples_limit = int(
+            float(calibration_duration) * sample_rate
+        )
+        self._playback_grace_samples = int(
+            float(playback_grace_duration) * sample_rate
+        )
+        self._trigger_multiplier = float(trigger_multiplier)
         self._model = model or None
         self._transcribe_fn = transcribe_fn or transcribe
         self._hallucination_fn = hallucination_fn or is_whisper_hallucination
@@ -691,12 +765,21 @@ class BargeInListener:
         self._thread: threading.Thread | None = None
         self._pre_roll: deque[Any] = deque()
         self._pre_roll_samples = 0
-        self._candidate_samples = 0
         self._capturing = False
         self._processing = False
         self._frames: list[Any] = []
         self._captured_samples = 0
         self._silence_samples = 0
+        self._ambient_rms: deque[float] = deque(maxlen=100)
+        self._calibration_samples = 0
+        self._floor_locked = False
+        self._quiet_floor = float(self._silence_threshold)
+        self._playing_prev = False
+        self._playback_seen = False
+        self._samples_since_playback = int(self._sample_rate * self._PLAYBACK_REARM_SECONDS)
+        self._grace_samples = 0
+        self._recent_above: deque[tuple[bool, int]] = deque()
+        self._recent_samples = 0
         self.dropped_frames = 0
 
     @property
@@ -729,6 +812,7 @@ class BargeInListener:
             self._generation += 1
             self._active = True
             self._reset_capture_locked()
+            self._reset_detection_locked()
             self._drain_locked()
 
     def deactivate(self) -> None:
@@ -737,6 +821,7 @@ class BargeInListener:
             self._generation += 1
             self._active = False
             self._reset_capture_locked()
+            self._reset_detection_locked()
             self._drain_locked()
 
     def cancel_capture(self) -> None:
@@ -744,6 +829,7 @@ class BargeInListener:
         with self._lock:
             self._generation += 1
             self._reset_capture_locked()
+            self._reset_detection_locked()
             self._drain_locked()
 
     def stop(self) -> None:
@@ -752,6 +838,7 @@ class BargeInListener:
             self._generation += 1
             self._active = False
             self._reset_capture_locked()
+            self._reset_detection_locked()
             self._drain_locked()
             self._stopping.set()
             thread = self._thread
@@ -813,6 +900,58 @@ class BargeInListener:
             return 0
         return int(np.sqrt(np.mean(values.astype(np.float64) ** 2)))
 
+    def _playback_active(self) -> bool:
+        if self._is_playing is None:
+            return False
+        try:
+            return bool(self._is_playing())
+        except Exception:
+            logger.debug("barge-in playback state check failed", exc_info=True)
+            return False
+
+    def _lock_quiet_floor_locked(self) -> None:
+        self._quiet_floor = self._ambient_floor_locked()
+        self._floor_locked = True
+        logger.debug(
+            "barge-in calibrated quiet floor=%0.0f from %d frames",
+            self._quiet_floor,
+            len(self._ambient_rms),
+        )
+
+    def _ambient_floor_locked(self) -> float:
+        if self._ambient_rms:
+            import numpy as np
+
+            percentile = float(np.percentile(list(self._ambient_rms), 90))
+        else:
+            percentile = float(self._silence_threshold)
+        return max(percentile, float(self._silence_threshold))
+
+    def _trigger_level_locked(self, playing: bool) -> float:
+        trigger = max(
+            self._quiet_floor * self._trigger_multiplier,
+            float(self._silence_threshold) * 2,
+        )
+        if playing:
+            trigger = max(trigger, float(self._PLAYBACK_MIN_TRIGGER))
+        return min(trigger, float(self._TRIGGER_CEILING))
+
+    def _remember_detection_locked(self, above: bool, samples: int) -> bool:
+        self._recent_above.append((above, samples))
+        self._recent_samples += samples
+        while len(self._recent_above) > 1:
+            _old_above, old_samples = self._recent_above[0]
+            if self._recent_samples - old_samples < self._min_speech_samples:
+                break
+            self._recent_above.popleft()
+            self._recent_samples -= old_samples
+        if self._recent_samples < self._min_speech_samples:
+            return False
+        above_samples = sum(
+            frame_samples for frame_above, frame_samples in self._recent_above if frame_above
+        )
+        return above_samples / self._recent_samples >= self._MAJORITY_FRACTION
+
     def _process(self, frame: Any) -> None:
         samples = self._samples(frame)
         if samples <= 0:
@@ -823,22 +962,66 @@ class BargeInListener:
             generation = self._generation
             capturing = self._capturing
 
-        loud = self._rms(frame) > self._silence_threshold
+        rms = self._rms(frame)
         if not capturing:
             self._remember_pre_roll(frame, samples)
             with self._lock:
                 if not self._active or generation != self._generation:
                     return
-                if loud:
-                    self._candidate_samples += samples
+                playing = self._playback_active()
+                if not self._floor_locked:
+                    if not playing:
+                        self._ambient_rms.append(float(rms))
+                        self._calibration_samples += samples
+                    if (
+                        self._calibration_samples_limit <= 0
+                        or playing
+                        or self._calibration_samples >= self._calibration_samples_limit
+                    ):
+                        self._lock_quiet_floor_locked()
+                    else:
+                        return
+
+                if playing and not self._playing_prev:
+                    if (
+                        not self._playback_seen
+                        or self._samples_since_playback
+                        >= int(self._PLAYBACK_REARM_SECONDS * self._sample_rate)
+                    ):
+                        self._grace_samples = self._playback_grace_samples
+                    self._playback_seen = True
+                self._playing_prev = playing
+                if playing:
+                    self._samples_since_playback = 0
                 else:
-                    self._candidate_samples = 0
-                if self._candidate_samples < self._min_speech_samples:
+                    self._samples_since_playback += samples
+
+                trigger = self._trigger_level_locked(playing)
+                if not playing and rms < trigger:
+                    self._ambient_rms.append(float(rms))
+                    self._quiet_floor = self._ambient_floor_locked()
+                    trigger = self._trigger_level_locked(playing)
+
+                above = rms >= trigger
+                if above and self._grace_samples > 0:
+                    above = False
+                if self._grace_samples > 0:
+                    self._grace_samples = max(0, self._grace_samples - samples)
+
+                if not self._remember_detection_locked(above, samples):
                     return
                 self._capturing = True
                 self._frames = list(self._pre_roll)
                 self._captured_samples = self._pre_roll_samples
                 self._silence_samples = 0
+                logger.debug(
+                    "barge-in triggered phase=%s rms=%d trigger=%0.0f "
+                    "window_samples=%d",
+                    "playback" if playing else "generation",
+                    rms,
+                    trigger,
+                    self._recent_samples,
+                )
             self._notify_speech_start()
             return
 
@@ -847,7 +1030,7 @@ class BargeInListener:
                 return
             self._frames.append(frame)
             self._captured_samples += samples
-            if loud:
+            if rms > self._silence_threshold:
                 self._silence_samples = 0
             else:
                 self._silence_samples += samples
@@ -931,11 +1114,24 @@ class BargeInListener:
     def _reset_capture_locked(self) -> None:
         self._pre_roll.clear()
         self._pre_roll_samples = 0
-        self._candidate_samples = 0
         self._capturing = False
         self._frames = []
         self._captured_samples = 0
         self._silence_samples = 0
+
+    def _reset_detection_locked(self) -> None:
+        self._ambient_rms.clear()
+        self._calibration_samples = 0
+        # Callers that do not provide playback state retain the old fixed-floor
+        # behavior; the live TUI supplies PCMPlayer.active and gets calibration.
+        self._floor_locked = self._is_playing is None
+        self._quiet_floor = float(self._silence_threshold)
+        self._playing_prev = False
+        self._playback_seen = False
+        self._samples_since_playback = int(self._sample_rate * self._PLAYBACK_REARM_SECONDS)
+        self._grace_samples = 0
+        self._recent_above.clear()
+        self._recent_samples = 0
 
     def _drain_locked(self) -> None:
         while True:

@@ -530,8 +530,10 @@ class HermesStreamingApp(App):
         self._barge_listener: Any = None
         self._barge_recorder_observer: Any = None
         self._barge_capture_active = False
+        self._barge_was_playing = False
         self._barge_interrupt_task: Optional[asyncio.Task[bool]] = None
         self._barge_result_task: Optional[asyncio.Task[None]] = None
+        self._last_tts_text = ""
         self._wake_loop: Optional[asyncio.AbstractEventLoop] = None
         self._wake_starting = False
         self._wake_start_cancelled = False
@@ -1034,6 +1036,7 @@ class HermesStreamingApp(App):
         self._wake_recorder = None
         self._barge_listener = None
         self._barge_capture_active = False
+        self._barge_was_playing = False
         self._wake_loop = None
         was_armed = self.wake_armed
         self.wake_armed = False
@@ -1085,13 +1088,14 @@ class HermesStreamingApp(App):
             silence_threshold=getattr(self.args, "mic_silence_threshold", 200),
             max_seconds=getattr(self.args, "mic_max_seconds", 15.0),
             min_speech_duration=getattr(
-                self.args, "wake_barge_in_min_speech_duration", 0.45
+                self.args, "wake_barge_in_min_speech_duration", 0.30
             ),
             sample_rate=getattr(
                 recorder,
                 "sample_rate",
                 getattr(recorder, "_sample_rate", 16000),
             ),
+            is_playing=lambda: self.player.active,
             model=getattr(self.args, "stt_model", None),
         )
 
@@ -1105,10 +1109,12 @@ class HermesStreamingApp(App):
             listener.deactivate()
 
     def _on_barge_speech_start(self) -> None:
-        """Remember a loud candidate until local STT confirms speech."""
+        """Interrupt promptly; local STT only decides whether to follow up."""
         if not self._turn_in_flight or self._barge_capture_active:
             return
         self._barge_capture_active = True
+        self._barge_was_playing = bool(self.player.active)
+        self._begin_barge_interrupt()
 
     def _begin_barge_interrupt(self) -> None:
         if not self._barge_capture_active or not self._turn_in_flight:
@@ -1130,17 +1136,22 @@ class HermesStreamingApp(App):
             return
 
     def _handle_barge_transcript(self, transcript: str) -> None:
-        """Interrupt only after local STT returns an actual phrase."""
+        """Use local STT to decide whether an interruption becomes a new turn."""
         if not self._barge_capture_active:
             return
-        if not self._turn_in_flight:
+        # The remote confirmation can finish the active turn before Whisper's
+        # worker posts its transcript. Keep that one already-triggered
+        # interruption alive long enough to decide whether a follow-up exists.
+        if not self._turn_in_flight and self._barge_interrupt_task is None:
             self._set_barge_listening(active=False)
             self._barge_capture_active = False
+            self._barge_was_playing = False
             self._set_wake_listening(busy=self._turn_in_flight)
             return
         if not (transcript or "").strip():
             self._set_barge_listening(active=False)
             self._barge_capture_active = False
+            self._barge_was_playing = False
             self._set_wake_listening(busy=self._turn_in_flight)
             return
         self._begin_barge_interrupt()
@@ -1171,6 +1182,12 @@ class HermesStreamingApp(App):
             self._set_barge_listening(active=False)
             self._barge_capture_active = False
             self._set_wake_listening(busy=self._turn_in_flight)
+            if self._barge_was_playing:
+                from voice import is_tts_echo
+
+                if is_tts_echo(transcript, self._last_tts_text):
+                    diagnostic_logger.debug("app.barge.echo_suppressed")
+                    transcript = ""
             if handsfree.is_local_stop_command(transcript or ""):
                 if not self._turn_in_flight:
                     self._set_voice_state(VOICE_READY)
@@ -1187,6 +1204,7 @@ class HermesStreamingApp(App):
                 self._barge_result_task = None
             if self._barge_interrupt_task is not None and self._barge_interrupt_task.done():
                 self._barge_interrupt_task = None
+            self._barge_was_playing = False
 
     async def _cancel_active_barge_capture(self) -> bool:
         if not self._barge_capture_active:
@@ -1197,6 +1215,7 @@ class HermesStreamingApp(App):
             if callable(cancel):
                 cancel()
         self._barge_capture_active = False
+        self._barge_was_playing = False
         result_task = self._barge_result_task
         if result_task is not None and not result_task.done():
             result_task.cancel()
@@ -2296,6 +2315,7 @@ class HermesStreamingApp(App):
     async def _run_single_turn(self, text: str, *, stt_source: str) -> bool:
         self._last_prompt = text
         self._last_prompt_status = PROMPT_NOT_SENT
+        self._last_tts_text = ""
         diagnostic_logger.debug(
             "app.turn.start index=%s stt_source=%s %s",
             getattr(self.session, "turn_index", "?"),
@@ -2393,6 +2413,7 @@ class HermesStreamingApp(App):
         thinking_preview_truncated = False
         thinking_activity_active = False
         thinking_summary_added = False
+        assistant_text = ""
 
         def update_thinking(text: Optional[str] = None) -> None:
             nonlocal thinking_started_at, thinking_preview
@@ -2447,10 +2468,15 @@ class HermesStreamingApp(App):
                     self.transcript.start_stream("assistant")
                     assistant_started = True
                 if kind == "text_replace":
-                    self.transcript.replace_stream(event["text"])
+                    assistant_text = str(event.get("text") or "")
+                    self.transcript.replace_stream(assistant_text)
                     self._refresh_transcript()
                 else:
-                    self._append(event["text"])
+                    text_delta = str(event.get("text") or "")
+                    assistant_text += text_delta
+                    self._append(text_delta)
+                if self.player.active:
+                    self._last_tts_text = assistant_text
             elif kind == "thinking_delta":
                 self._set_voice_state(VOICE_THINKING)
                 if not assistant_started:
@@ -2504,6 +2530,7 @@ class HermesStreamingApp(App):
                     f"[unhandled server event: {event_type}]", role="error"
                 )
             elif kind == "audio_start":
+                self._last_tts_text = assistant_text
                 audio_format = (event["sample_rate"], event["channels"], event["sample_width"])
                 self.player.start(audio_format)
                 playback_failed = playback_failed or bool(self.player.failure)
@@ -2531,6 +2558,7 @@ class HermesStreamingApp(App):
                 await self._close_player()
                 self._set_voice_state(VOICE_INTERRUPTED)
             elif kind == "audio_file_start":
+                self._last_tts_text = assistant_text
                 audio_file.clear()
                 metadata = tuple(
                     event.get(field)

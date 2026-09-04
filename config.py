@@ -350,11 +350,11 @@ def build_arg_parser(argv: Optional[list[str]] = None) -> argparse.ArgumentParse
         type=float,
         default=_env_float(
             "VOICE_SESSION_WAKE_BARGE_IN_MIN_SPEECH_DURATION",
-            cfg.get("wake_barge_in_min_speech_duration", 0.45),
+            cfg.get("wake_barge_in_min_speech_duration", 0.30),
         ),
         help=(
-            "seconds of sustained microphone audio required before barge-in "
-            "candidate audio is sent to local speech recognition"
+            "seconds of windowed microphone audio required before barge-in "
+            "interrupts; local speech recognition decides whether to follow up"
         ),
     )
     parser.add_argument(

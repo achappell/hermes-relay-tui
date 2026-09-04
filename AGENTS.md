@@ -236,10 +236,12 @@ The complete source of truth is `config.build_arg_parser()`. The main runtime op
 - `--allow-shell` — opt in to bounded local `!command` execution and `{!command}` interpolation; disabled by default.
 - `--no-earcons` — silence the home unit's wake and end-of-capture tones; the
   wake word keeps working.
-- `--wake-barge-in` — opt in to local speech detection during an active
-  response. Sustained audio is transcribed locally first; only a non-empty
-  transcript stops playback and sends one remote interrupt. Exact `stop` sends
-  no replacement turn. Keep it off unless the audio route has echo cancellation
+- `--wake-barge-in` — opt in to calibrated, windowed local speech detection
+  during an active response. The energy trigger stops playback and sends one
+  remote interrupt before local STT finishes; only a non-empty transcript
+  becomes a replacement turn, and playback transcripts matching the current
+  assistant text are discarded as likely echo. Exact `stop` sends no
+  replacement turn. Keep it off unless the audio route has echo cancellation
   or equivalent isolation.
 - `--hide-thinking` — hide thinking and tool detail in the transcript.
 - `--debug` — write a content-safe protocol trace to a temporary log file.
@@ -248,7 +250,9 @@ The complete source of truth is `config.build_arg_parser()`. The main runtime op
   private `~/.hermes-relay-tui/crash.log`; `/logs` reports its status without
   exposing contents.
 - `--mic-max-seconds`, `--mic-silence-duration`, `--mic-silence-threshold` — microphone tuning; TUI silence endpointing defaults to 1.5 seconds.
-- `--wake-barge-in-min-speech-duration` — sustained microphone audio required before candidate audio is sent to local STT; default `0.45` seconds.
+- `--wake-barge-in-min-speech-duration` — windowed microphone energy required
+  before immediate interruption; local STT decides whether to follow up;
+  default `0.30` seconds.
 - `--wake-followup-seconds` — silence window after a wake-triggered response before returning to wake-word detection.
 - `--mic-input-device`, `--audio-output-device` — optional local input/output device name or index; `default` restores the system default.
 - `--stt-model` — optional local Faster-Whisper model selection.
@@ -279,6 +283,11 @@ local variable values; it appends until manually removed.
 - `app.py` owns presentation and turn state. It should not grow protocol parsing logic that belongs in `client.py`.
 - Thinking/status/tool activity is rendered as a replaceable transcript line; the assistant response gets its own line once text begins, so repeated activity cannot pollute the final answer.
 - `voice.py` owns `LocalMicrophone`, its sounddevice-based recorder, and faster-whisper transcription; `mic.py`'s adapter supplies session-local input selection and cancellation on top of it. The project's voice dependencies (`sounddevice`, `numpy`, `faster-whisper`) must be installed for `Ctrl+R` to work.
+- `BargeInListener` follows Hermes' full-duplex shape: it calibrates the quiet
+  room before playback, holds that floor while the speaker is active, applies
+  playback grace/headroom, and uses a majority energy window. Its speech
+  callback interrupts immediately; local STT decides whether the captured
+  phrase becomes a follow-up turn.
 - `wake.WakeListener.pause()` and `resume()` both drain the frame queue.
   `on_wake` blocks the listener's worker for the whole turn, so frames
   captured just before the pause pile up with nothing consuming them, and

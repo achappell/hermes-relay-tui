@@ -4,11 +4,20 @@ import threading
 
 import numpy as np
 
-from voice import BargeInListener
+from voice import BargeInListener, is_tts_echo
 
 
 def _frame(level: int, samples: int = 20):
     return np.full((samples, 1), level, dtype="int16")
+
+
+def test_tts_echo_guard_matches_long_fragments_but_not_short_interjections():
+    assert is_tts_echo(
+        "the dishes are ready",
+        "I checked the kitchen and the dishes are ready for dinner tonight.",
+    )
+    assert not is_tts_echo("yes", "I checked the kitchen and the dishes are ready")
+    assert not is_tts_echo("what about Dawn soap", "The answer is unrelated.")
 
 
 def test_speech_activity_notifies_promptly_then_returns_local_stt_text(tmp_path):
@@ -78,6 +87,7 @@ def test_short_room_noise_does_not_start_a_barge_capture():
         on_speech_start=started.set,
         on_transcript=lambda text: None,
         sample_rate=100,
+        min_speech_duration=0.45,
         silence_duration=0.2,
     )
     listener.start()
@@ -89,6 +99,71 @@ def test_short_room_noise_does_not_start_a_barge_capture():
         assert not started.wait(0.1)
 
         listener.submit(_frame(1200, samples=10))
+        assert started.wait(1.0)
+    finally:
+        listener.stop()
+
+
+def test_windowed_speech_detection_tolerates_a_dip_inside_a_word(tmp_path):
+    started = threading.Event()
+    listener = BargeInListener(
+        on_speech_start=started.set,
+        on_transcript=lambda text: None,
+        is_playing=lambda: False,
+        sample_rate=100,
+        silence_threshold=50,
+        calibration_duration=0.4,
+        min_speech_duration=0.5,
+        silence_duration=0.2,
+        temp_dir=tmp_path,
+    )
+    listener.start()
+    listener.activate()
+
+    try:
+        for _ in range(4):
+            listener.submit(_frame(20, samples=10))
+        for level in (180, 180, 0, 180, 180):
+            listener.submit(_frame(level, samples=10))
+
+        assert started.wait(1.0)
+    finally:
+        listener.stop()
+
+
+def test_playback_grace_and_floor_ignore_speaker_bleed_until_speech(tmp_path):
+    started = threading.Event()
+    playing = False
+
+    def is_playing():
+        return playing
+
+    listener = BargeInListener(
+        on_speech_start=started.set,
+        on_transcript=lambda text: None,
+        is_playing=is_playing,
+        sample_rate=100,
+        silence_threshold=50,
+        calibration_duration=0.4,
+        playback_grace_duration=0.5,
+        min_speech_duration=0.3,
+        silence_duration=0.2,
+        temp_dir=tmp_path,
+    )
+    listener.start()
+    listener.activate()
+
+    try:
+        for _ in range(4):
+            listener.submit(_frame(20, samples=10))
+
+        playing = True
+        for _ in range(8):
+            listener.submit(_frame(1300, samples=10))
+        assert not started.wait(0.1)
+
+        for _ in range(3):
+            listener.submit(_frame(1800, samples=10))
         assert started.wait(1.0)
     finally:
         listener.stop()

@@ -636,10 +636,11 @@ async def test_ctrl_r_keeps_the_wake_detector_paused_until_its_turn_finishes():
 
 
 class BargeInterruptSession(FakeSession):
-    def __init__(self):
+    def __init__(self, *, spoken_text="partial answer"):
         super().__init__()
         self.release = asyncio.Event()
         self.interrupt_calls = 0
+        self.spoken_text = spoken_text
 
     def send_turn(self, text, *, stt_source="local"):
         self.sent_turns.append((text, stt_source))
@@ -648,7 +649,7 @@ class BargeInterruptSession(FakeSession):
             return self._stream(DEFAULT_EVENTS)
 
         async def stream():
-            yield {"type": "text_delta", "text": "partial answer"}
+            yield {"type": "text_delta", "text": self.spoken_text}
             yield {
                 "type": "audio_start",
                 "sample_rate": 24000,
@@ -714,6 +715,7 @@ async def test_barge_in_uses_its_configured_minimum_speech_duration():
         await app._handle_wake_command("on")
 
         assert fakes.barge_listener.kwargs["min_speech_duration"] == 0.8
+        assert callable(fakes.barge_listener.kwargs["is_playing"])
 
 
 async def test_spoken_follow_up_interrupts_then_starts_exactly_one_new_turn():
@@ -745,7 +747,7 @@ async def test_spoken_follow_up_interrupts_then_starts_exactly_one_new_turn():
         ]
 
 
-async def test_spoken_barge_in_waits_for_transcription_before_closing_live_playback():
+async def test_spoken_barge_in_interrupts_live_playback_before_transcription():
     class RecordingPlayer:
         failure = None
 
@@ -785,15 +787,15 @@ async def test_spoken_barge_in_waits_for_transcription_before_closing_live_playb
         fakes.barge_listener.speak()
         await pilot.pause()
 
-        assert app.player.close_calls == 0
-        assert app.player.active is True
-        assert session.interrupt_calls == 0
+        assert app.player.close_calls >= 1
+        assert app.player.active is False
+        assert session.interrupt_calls == 1
         fakes.barge_listener.transcribe("STOP")
         await asyncio.wait_for(first, 1.0)
         assert app.player.close_calls >= 1
 
 
-async def test_unrecognized_barge_candidate_does_not_interrupt_active_response():
+async def test_unrecognized_barge_candidate_does_not_start_a_follow_up_turn():
     fakes = WakeFakes()
     session = BargeInterruptSession()
     app, _, _ = make_app(fakes=fakes, session=session, wake_barge_in=True)
@@ -808,15 +810,61 @@ async def test_unrecognized_barge_candidate_does_not_interrupt_active_response()
 
         fakes.barge_listener.speak()
         await pilot.pause()
-        assert session.interrupt_calls == 0
+        assert session.interrupt_calls == 1
 
         fakes.barge_listener.transcribe("")
         await pilot.pause()
-        assert session.interrupt_calls == 0
+        assert session.interrupt_calls == 1
         assert session.sent_turns == [("first", "local")]
 
         session.release.set()
         await asyncio.wait_for(first, 1.0)
+
+
+async def test_playback_echo_is_discarded_after_immediate_barge_interrupt():
+    class RecordingPlayer:
+        failure = None
+
+        def __init__(self):
+            self.active = False
+
+        def start(self, audio_format):
+            self.active = True
+
+        def write(self, chunk):
+            pass
+
+        def close(self):
+            self.active = False
+
+    fakes = WakeFakes()
+    session = BargeInterruptSession(
+        spoken_text="I checked the kitchen and the dishes are ready for dinner."
+    )
+    app, _, _ = make_app(
+        fakes=fakes,
+        session=session,
+        wake_barge_in=True,
+        no_play=False,
+    )
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.player = RecordingPlayer()
+        await app._handle_wake_command("on")
+        first = asyncio.create_task(app._run_turn("first"))
+        for _ in range(20):
+            await pilot.pause()
+            if "dishes are ready" in transcript_text(app):
+                break
+
+        fakes.barge_listener.speak()
+        await pilot.pause()
+        fakes.barge_listener.transcribe("the dishes are ready")
+        await asyncio.wait_for(first, 1.0)
+        await pilot.pause()
+
+        assert session.interrupt_calls == 1
+        assert session.sent_turns == [("first", "local")]
 
 
 async def test_ctrl_c_cancels_spoken_barge_in_and_cannot_submit_a_late_transcript():

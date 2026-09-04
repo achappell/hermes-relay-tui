@@ -120,6 +120,7 @@ def test_the_debug_trace_captures_the_wake_and_hands_free_modules(tmp_path):
     import earcons
     import handsfree
     import wake
+    import voice
 
     path = tmp_path / "trace.log"
     diagnostics.configure_logging(debug=True, log_file=path)
@@ -127,6 +128,7 @@ def test_the_debug_trace_captures_the_wake_and_hands_free_modules(tmp_path):
         wake.logger.debug("wake-probe")
         handsfree.logger.debug("handsfree-probe")
         earcons.logger.debug("earcons-probe")
+        voice.logger.debug("voice-probe")
         for handler in diagnostics.logger.handlers:
             handler.flush()
         written = path.read_text(encoding="utf-8")
@@ -136,6 +138,7 @@ def test_the_debug_trace_captures_the_wake_and_hands_free_modules(tmp_path):
     assert "wake-probe" in written
     assert "handsfree-probe" in written
     assert "earcons-probe" in written
+    assert "voice-probe" in written
 
 
 def test_every_traced_module_logs_inside_the_configured_namespace():
@@ -144,9 +147,10 @@ def test_every_traced_module_logs_inside_the_configured_namespace():
     import earcons
     import handsfree
     import wake
+    import voice
     from home_display import appliance
 
-    for module in (wake, handsfree, earcons, client, appliance):
+    for module in (wake, handsfree, earcons, client, appliance, voice):
         name = module.logger.name
         assert name == diagnostics.LOGGER_NAME or name.startswith(
             diagnostics.LOGGER_NAME + "."
