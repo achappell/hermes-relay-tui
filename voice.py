@@ -13,11 +13,13 @@ from __future__ import annotations
 
 import logging
 import os
+import queue
 import re
 import tempfile
 import threading
 import time
 import wave
+from collections import deque
 from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
@@ -73,17 +75,35 @@ class AudioRecorder:
         self._max_recording_seconds = 0.0
         self._peak_rms = 0
         self._current_rms = 0
-        self._frame_observer: Any = None
+        self._frame_observers: list[Any] = []
 
     def set_frame_observer(self, observer) -> None:
-        """Receive frames the recorder would otherwise discard.
+        """Replace the frame taps that receive otherwise-discarded audio.
 
         The wake-word listener subscribes here instead of opening its own
         InputStream: two input streams on one device is unreliable across
         platforms, and this stream is deliberately kept open for the process
-        lifetime because reopening it can hang on macOS CoreAudio.
+        lifetime because reopening it can hang on macOS CoreAudio. Use
+        ``add_frame_observer`` when another local consumer needs to share the
+        already-open stream.
         """
-        self._frame_observer = observer
+        with self._lock:
+            self._frame_observers = [] if observer is None else [observer]
+
+    def add_frame_observer(self, observer) -> None:
+        """Add a local frame tap without opening another input stream."""
+        if observer is None:
+            return
+        with self._lock:
+            if observer not in self._frame_observers:
+                self._frame_observers.append(observer)
+
+    def remove_frame_observer(self, observer) -> None:
+        """Remove one local frame tap, leaving other consumers intact."""
+        with self._lock:
+            self._frame_observers = [
+                current for current in self._frame_observers if current != observer
+            ]
 
     def open_for_listening(self) -> None:
         """Open the capture stream without starting a recording.
@@ -98,20 +118,23 @@ class AudioRecorder:
         """Hand an idle frame to the observer. Called from the audio thread."""
         if self._recording:
             return
-        observer = self._frame_observer
-        if observer is None:
+        with self._lock:
+            observers = tuple(self._frame_observers)
+        if not observers:
             return
-        try:
-            # sounddevice recycles indata between callbacks. The listener
-            # queues frames and scores them on another thread, so handing over
-            # the live buffer means scoring whatever PortAudio has since
-            # written into it: audio that measures loud and matches nothing.
-            # The recording path above copies for the same reason.
-            observer(indata.copy() if hasattr(indata, "copy") else indata)
-        except Exception:
-            # The audio callback must survive a broken consumer: raising here
-            # would stop the stream and take recording down with it.
-            logger.debug("wake frame observer failed", exc_info=True)
+        # sounddevice recycles indata between callbacks. The listeners queue
+        # frames and score them on another thread, so handing over the live
+        # buffer means scoring whatever PortAudio has since written into it:
+        # audio that measures loud and matches nothing. The recording path
+        # above copies for the same reason.
+        frame = indata.copy() if hasattr(indata, "copy") else indata
+        for observer in observers:
+            try:
+                observer(frame.copy() if hasattr(frame, "copy") else frame)
+            except Exception:
+                # The audio callback must survive a broken consumer: raising
+                # here would stop the stream and take recording down with it.
+                logger.debug("audio frame observer failed", exc_info=True)
 
     def _max_duration_reached(self, elapsed: float) -> bool:
         cap = self._max_recording_seconds
@@ -126,6 +149,10 @@ class AudioRecorder:
     @property
     def is_recording(self) -> bool:
         return self._recording
+
+    @property
+    def sample_rate(self) -> int:
+        return self._sample_rate
 
     @property
     def has_detected_speech(self) -> bool:
@@ -524,3 +551,317 @@ class LocalMicrophone:
                 self._recorder.shutdown()
             finally:
                 self._recorder = None
+
+
+class BargeInListener:
+    """Detect and transcribe one spoken interruption from local audio.
+
+    This is deliberately a consumer of an already-open ``AudioRecorder``
+    stream. It never sends frames to Hermes: the only outward value is the
+    locally-transcribed string. ``submit`` is safe for the sounddevice
+    callback because it does no inference and never waits for the worker.
+    """
+
+    _QUEUE_SIZE = 32
+    _PRE_ROLL_SECONDS = 0.25
+    _DEFAULT_MIN_SPEECH_SECONDS = 0.2
+
+    def __init__(
+        self,
+        *,
+        on_speech_start,
+        on_transcript,
+        silence_duration: float = SILENCE_DURATION_SECONDS,
+        silence_threshold: int = SILENCE_RMS_THRESHOLD,
+        max_seconds: float = 15.0,
+        min_speech_duration: float = _DEFAULT_MIN_SPEECH_SECONDS,
+        sample_rate: int = SAMPLE_RATE,
+        model: Optional[str] = None,
+        transcribe_fn: Any = None,
+        hallucination_fn: Any = None,
+        temp_dir: str | os.PathLike[str] | None = None,
+    ) -> None:
+        if silence_duration <= 0:
+            raise ValueError("barge-in silence duration must be greater than zero")
+        if silence_threshold < 0:
+            raise ValueError("barge-in silence threshold cannot be negative")
+        if max_seconds <= 0:
+            raise ValueError("barge-in max seconds must be greater than zero")
+        if min_speech_duration <= 0:
+            raise ValueError("barge-in minimum speech duration must be greater than zero")
+        if sample_rate <= 0:
+            raise ValueError("barge-in sample rate must be greater than zero")
+
+        self._on_speech_start = on_speech_start
+        self._on_transcript = on_transcript
+        self._silence_duration = float(silence_duration)
+        self._silence_threshold = int(silence_threshold)
+        self._max_samples = int(float(max_seconds) * sample_rate)
+        self._min_speech_samples = max(1, int(float(min_speech_duration) * sample_rate))
+        self._pre_roll_samples_limit = max(1, int(self._PRE_ROLL_SECONDS * sample_rate))
+        self._sample_rate = int(sample_rate)
+        self._model = model or None
+        self._transcribe_fn = transcribe_fn or transcribe
+        self._hallucination_fn = hallucination_fn or is_whisper_hallucination
+        self._temp_dir = os.fspath(temp_dir or _TEMP_DIR)
+
+        self._queue: queue.Queue[Any] = queue.Queue(maxsize=self._QUEUE_SIZE)
+        self._lock = threading.Lock()
+        self._active = False
+        self._generation = 0
+        self._stopping = threading.Event()
+        self._thread: threading.Thread | None = None
+        self._pre_roll: deque[Any] = deque()
+        self._pre_roll_samples = 0
+        self._candidate_samples = 0
+        self._capturing = False
+        self._processing = False
+        self._frames: list[Any] = []
+        self._captured_samples = 0
+        self._silence_samples = 0
+        self.dropped_frames = 0
+
+    @property
+    def active(self) -> bool:
+        with self._lock:
+            return self._active
+
+    @property
+    def capturing(self) -> bool:
+        with self._lock:
+            return self._capturing or self._processing
+
+    def start(self) -> None:
+        """Start the worker; it remains dormant until ``activate``."""
+        with self._lock:
+            if self._thread is not None and self._thread.is_alive():
+                return
+            self._stopping.clear()
+            self._thread = threading.Thread(
+                target=self._run,
+                name="hermes-barge-in",
+                daemon=True,
+            )
+            thread = self._thread
+            thread.start()
+
+    def activate(self) -> None:
+        """Begin accepting one interruption for the current remote turn."""
+        with self._lock:
+            self._generation += 1
+            self._active = True
+            self._reset_capture_locked()
+            self._drain_locked()
+
+    def deactivate(self) -> None:
+        """Stop accepting interruption audio and discard queued frames."""
+        with self._lock:
+            self._generation += 1
+            self._active = False
+            self._reset_capture_locked()
+            self._drain_locked()
+
+    def cancel_capture(self) -> None:
+        """Cancel the current local utterance without invoking its callback."""
+        with self._lock:
+            self._generation += 1
+            self._reset_capture_locked()
+            self._drain_locked()
+
+    def stop(self) -> None:
+        """Stop the worker and discard any pending local audio."""
+        with self._lock:
+            self._generation += 1
+            self._active = False
+            self._reset_capture_locked()
+            self._drain_locked()
+            self._stopping.set()
+            thread = self._thread
+            if thread is not None:
+                try:
+                    self._queue.put_nowait(None)
+                except queue.Full:
+                    pass
+        if thread is not None and thread is not threading.current_thread():
+            thread.join(timeout=1.0)
+        with self._lock:
+            if self._thread is thread and thread is not None and not thread.is_alive():
+                self._thread = None
+
+    def submit(self, frame: Any) -> None:
+        """Queue one input frame without blocking the real-time audio thread."""
+        with self._lock:
+            if not self._active or self._processing:
+                return
+        try:
+            self._queue.put_nowait(frame)
+        except queue.Full:
+            try:
+                self._queue.get_nowait()
+                self.dropped_frames += 1
+            except queue.Empty:
+                pass
+            try:
+                self._queue.put_nowait(frame)
+            except queue.Full:
+                self.dropped_frames += 1
+
+    def _run(self) -> None:
+        while not self._stopping.is_set():
+            try:
+                frame = self._queue.get(timeout=0.1)
+            except queue.Empty:
+                continue
+            if frame is None:
+                return
+            try:
+                self._process(frame)
+            except Exception:
+                logger.debug("barge-in frame processing failed", exc_info=True)
+
+    @staticmethod
+    def _samples(frame: Any) -> int:
+        try:
+            return len(frame)
+        except TypeError:
+            return 0
+
+    @staticmethod
+    def _rms(frame: Any) -> int:
+        import numpy as np
+
+        values = np.asarray(frame)
+        if values.size == 0:
+            return 0
+        return int(np.sqrt(np.mean(values.astype(np.float64) ** 2)))
+
+    def _process(self, frame: Any) -> None:
+        samples = self._samples(frame)
+        if samples <= 0:
+            return
+        with self._lock:
+            if not self._active or self._processing:
+                return
+            generation = self._generation
+            capturing = self._capturing
+
+        loud = self._rms(frame) > self._silence_threshold
+        if not capturing:
+            self._remember_pre_roll(frame, samples)
+            with self._lock:
+                if not self._active or generation != self._generation:
+                    return
+                if loud:
+                    self._candidate_samples += samples
+                else:
+                    self._candidate_samples = 0
+                if self._candidate_samples < self._min_speech_samples:
+                    return
+                self._capturing = True
+                self._frames = list(self._pre_roll)
+                self._captured_samples = self._pre_roll_samples
+                self._silence_samples = 0
+            self._notify_speech_start()
+            return
+
+        with self._lock:
+            if not self._active or generation != self._generation or not self._capturing:
+                return
+            self._frames.append(frame)
+            self._captured_samples += samples
+            if loud:
+                self._silence_samples = 0
+            else:
+                self._silence_samples += samples
+            should_finish = (
+                self._silence_samples >= int(self._silence_duration * self._sample_rate)
+                or self._captured_samples >= self._max_samples
+            )
+            if not should_finish:
+                return
+            frames = list(self._frames)
+            self._capturing = False
+            self._processing = True
+
+        self._transcribe_frames(frames, generation)
+
+    def _remember_pre_roll(self, frame: Any, samples: int) -> None:
+        with self._lock:
+            if not self._active:
+                return
+            self._pre_roll.append(frame)
+            self._pre_roll_samples += samples
+            while (
+                len(self._pre_roll) > 1
+                and self._pre_roll_samples > self._pre_roll_samples_limit
+            ):
+                old = self._pre_roll.popleft()
+                self._pre_roll_samples -= self._samples(old)
+
+    def _notify_speech_start(self) -> None:
+        try:
+            self._on_speech_start()
+        except Exception:
+            logger.debug("barge-in speech callback failed", exc_info=True)
+
+    def _transcribe_frames(self, frames: list[Any], generation: int) -> None:
+        wav_path: str | None = None
+        try:
+            wav_path = self._write_frames(frames)
+            result = self._transcribe_fn(wav_path, model=self._model)
+            if not result.get("success"):
+                transcript = ""
+            else:
+                transcript = str(result.get("transcript") or "").strip()
+                if self._hallucination_fn and self._hallucination_fn(transcript):
+                    transcript = ""
+        except Exception:
+            logger.debug("barge-in transcription failed", exc_info=True)
+            transcript = ""
+        finally:
+            if wav_path is not None:
+                try:
+                    os.unlink(wav_path)
+                except OSError:
+                    pass
+
+        with self._lock:
+            current = self._active and generation == self._generation
+            self._processing = False
+            self._reset_capture_locked()
+        if current:
+            try:
+                self._on_transcript(transcript)
+            except Exception:
+                logger.debug("barge-in transcript callback failed", exc_info=True)
+
+    def _write_frames(self, frames: list[Any]) -> str:
+        os.makedirs(self._temp_dir, exist_ok=True)
+        descriptor, path = tempfile.mkstemp(
+            prefix="barge_in_",
+            suffix=".wav",
+            dir=self._temp_dir,
+        )
+        os.close(descriptor)
+        with wave.open(path, "wb") as output:
+            output.setnchannels(CHANNELS)
+            output.setsampwidth(SAMPLE_WIDTH)
+            output.setframerate(self._sample_rate)
+            output.writeframes(b"".join(frame.tobytes() for frame in frames))
+        return path
+
+    def _reset_capture_locked(self) -> None:
+        self._pre_roll.clear()
+        self._pre_roll_samples = 0
+        self._candidate_samples = 0
+        self._capturing = False
+        self._frames = []
+        self._captured_samples = 0
+        self._silence_samples = 0
+
+    def _drain_locked(self) -> None:
+        while True:
+            try:
+                self._queue.get_nowait()
+            except queue.Empty:
+                return

@@ -32,6 +32,7 @@ __all__ = [
     "HandsFreeCoordinator",
     "build_hands_free",
     "DEFAULT_LISTEN_TIMEOUT",
+    "is_local_stop_command",
 ]
 
 IDLE = "idle"
@@ -51,8 +52,11 @@ SPEAKING = "speaking"
 DEFAULT_LISTEN_TIMEOUT = 8.0
 
 
-def _is_local_stop_command(transcript: str) -> bool:
+def is_local_stop_command(transcript: str) -> bool:
     return transcript.strip().casefold().rstrip(".,!?").strip() == "stop"
+
+
+_is_local_stop_command = is_local_stop_command
 
 
 class HandsFreeCoordinator:

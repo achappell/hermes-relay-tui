@@ -341,8 +341,8 @@ def build_arg_parser(argv: Optional[list[str]] = None) -> argparse.ArgumentParse
         action="store_true",
         default=_cfg_bool(cfg, "wake_barge_in"),
         help=(
-            "allow the wake phrase to interrupt playback; needs echo "
-            "cancellation or the unit retriggers on its own voice"
+            "allow local speech to interrupt an active response; needs echo "
+            "cancellation or the unit hears its own voice"
         ),
     )
     parser.add_argument(

@@ -492,6 +492,7 @@ class HermesStreamingApp(App):
         argv: Optional[list[str]] = None,
         build_hands_free: Optional[Callable[..., Any]] = None,
         recorder_factory: Optional[Callable[[], Any]] = None,
+        barge_listener_factory: Optional[Callable[..., Any]] = None,
     ) -> None:
         super().__init__()
         self.args = args
@@ -522,9 +523,15 @@ class HermesStreamingApp(App):
         self.wake_armed = False
         self._build_hands_free = build_hands_free or handsfree.build_hands_free
         self._recorder_factory = recorder_factory
+        self._barge_listener_factory = barge_listener_factory
         self._wake_listener: Any = None
         self._wake_coordinator: Any = None
         self._wake_recorder: Any = None
+        self._barge_listener: Any = None
+        self._barge_recorder_observer: Any = None
+        self._barge_capture_active = False
+        self._barge_interrupt_task: Optional[asyncio.Task[bool]] = None
+        self._barge_result_task: Optional[asyncio.Task[None]] = None
         self._wake_loop: Optional[asyncio.AbstractEventLoop] = None
         self._wake_starting = False
         self._wake_start_cancelled = False
@@ -936,12 +943,34 @@ class HermesStreamingApp(App):
 
             self.session.use_shared_recorder(recorder)
 
+            barge_listener = None
+            if getattr(args, "wake_barge_in", False):
+                barge_listener = self._make_barge_listener(recorder)
+                self._barge_listener = barge_listener
+
             # Start the worker before opening the stream. Reversed, frames
             # pile into a bounded queue with nothing draining it and the
             # entire warm-up is dropped audio — measured at 96 frames on the
             # appliance.
             listener.start()
+            if barge_listener is not None:
+                barge_listener.start()
             recorder.set_frame_observer(listener.submit)
+            if barge_listener is not None:
+                add_observer = getattr(recorder, "add_frame_observer", None)
+                if callable(add_observer):
+                    add_observer(barge_listener.submit)
+                    self._barge_recorder_observer = barge_listener.submit
+                else:
+                    # Keep compatibility with an injected recorder that only
+                    # predates shared taps. The real AudioRecorder supports
+                    # add/remove, so this fallback is test and plugin glue.
+                    def dispatch_frame(frame):
+                        listener.submit(frame)
+                        barge_listener.submit(frame)
+
+                    recorder.set_frame_observer(dispatch_frame)
+                    self._barge_recorder_observer = dispatch_frame
             self._append_block("wake mode starting — opening microphone…")
             stage_started = time.perf_counter()
             diagnostic_logger.debug("wake.start stage=microphone begin")
@@ -989,9 +1018,22 @@ class HermesStreamingApp(App):
         if was_starting:
             self._wake_start_cancelled = True
         listener, recorder = self._wake_listener, self._wake_recorder
+        barge_listener = self._barge_listener
+        try:
+            current_task = asyncio.current_task()
+        except RuntimeError:
+            current_task = None
+        for task in (self._barge_interrupt_task, self._barge_result_task):
+            if task is not None and task is not current_task and not task.done():
+                task.cancel()
+        self._barge_interrupt_task = None
+        if self._barge_result_task is not current_task:
+            self._barge_result_task = None
         self._wake_listener = None
         self._wake_coordinator = None
         self._wake_recorder = None
+        self._barge_listener = None
+        self._barge_capture_active = False
         self._wake_loop = None
         was_armed = self.wake_armed
         self.wake_armed = False
@@ -1003,6 +1045,21 @@ class HermesStreamingApp(App):
                 listener.stop()
             except Exception:
                 diagnostic_logger.debug("stopping the wake listener failed", exc_info=True)
+        if barge_listener is not None and recorder is not None:
+            remove_observer = getattr(recorder, "remove_frame_observer", None)
+            if callable(remove_observer) and self._barge_recorder_observer is not None:
+                try:
+                    remove_observer(self._barge_recorder_observer)
+                except Exception:
+                    diagnostic_logger.debug(
+                        "removing the barge-in observer failed", exc_info=True
+                    )
+        self._barge_recorder_observer = None
+        if barge_listener is not None:
+            try:
+                barge_listener.stop()
+            except Exception:
+                diagnostic_logger.debug("stopping the barge-in listener failed", exc_info=True)
         if recorder is not None:
             try:
                 # shutdown() closes the input stream on a guarded timeout, so
@@ -1014,6 +1071,138 @@ class HermesStreamingApp(App):
         if message and was_armed:
             self._append_block(message)
 
+    def _make_barge_listener(self, recorder: Any) -> Any:
+        """Build the local speech tap used during an active remote turn."""
+        factory = self._barge_listener_factory
+        if factory is None:
+            from voice import BargeInListener
+
+            factory = BargeInListener
+        return factory(
+            on_speech_start=self._on_barge_speech_start,
+            on_transcript=self._on_barge_transcript,
+            silence_duration=getattr(self.args, "mic_silence_duration", 1.5),
+            silence_threshold=getattr(self.args, "mic_silence_threshold", 200),
+            max_seconds=getattr(self.args, "mic_max_seconds", 15.0),
+            sample_rate=getattr(
+                recorder,
+                "sample_rate",
+                getattr(recorder, "_sample_rate", 16000),
+            ),
+            model=getattr(self.args, "stt_model", None),
+        )
+
+    def _set_barge_listening(self, *, active: bool) -> None:
+        listener = self._barge_listener
+        if listener is None:
+            return
+        if active:
+            listener.activate()
+        else:
+            listener.deactivate()
+
+    def _on_barge_speech_start(self) -> None:
+        """Signal the event loop immediately, before local STT finishes."""
+        if not self._turn_in_flight or self._barge_capture_active:
+            return
+        self._barge_capture_active = True
+        loop = self._wake_loop
+        if loop is None:
+            return
+        try:
+            loop.call_soon_threadsafe(self._begin_barge_interrupt)
+        except RuntimeError:
+            return
+
+    def _begin_barge_interrupt(self) -> None:
+        if not self._barge_capture_active or not self._turn_in_flight:
+            return
+        if self._barge_interrupt_task is not None and not self._barge_interrupt_task.done():
+            return
+        self._barge_interrupt_task = asyncio.create_task(
+            self._interrupt_active_turn(),
+            name="spoken barge-in interrupt",
+        )
+
+    def _on_barge_transcript(self, transcript: str) -> None:
+        loop = self._wake_loop
+        if loop is None:
+            return
+        try:
+            loop.call_soon_threadsafe(self._queue_barge_transcript, transcript)
+        except RuntimeError:
+            return
+
+    def _queue_barge_transcript(self, transcript: str) -> None:
+        if not self._barge_capture_active:
+            return
+        if self._barge_result_task is not None and not self._barge_result_task.done():
+            return
+        self._barge_result_task = asyncio.create_task(
+            self._complete_barge_in(transcript),
+            name="spoken barge-in transcript",
+        )
+
+    async def _complete_barge_in(self, transcript: str) -> None:
+        try:
+            interrupt_task = self._barge_interrupt_task
+            if interrupt_task is None and self._turn_in_flight:
+                self._begin_barge_interrupt()
+                interrupt_task = self._barge_interrupt_task
+            if interrupt_task is not None:
+                try:
+                    await interrupt_task
+                except asyncio.CancelledError:
+                    return
+
+            self._set_barge_listening(active=False)
+            self._barge_capture_active = False
+            self._set_wake_listening(busy=self._turn_in_flight)
+            if handsfree.is_local_stop_command(transcript or ""):
+                if not self._turn_in_flight:
+                    self._set_voice_state(VOICE_READY)
+                return
+            text = (transcript or "").strip()
+            if not text:
+                if not self._turn_in_flight:
+                    self._set_voice_state(VOICE_READY)
+                return
+            self._set_voice_state(VOICE_TRANSCRIBING)
+            await self._run_turn(text, stt_source="local-faster-whisper")
+        finally:
+            if self._barge_result_task is asyncio.current_task():
+                self._barge_result_task = None
+            if self._barge_interrupt_task is not None and self._barge_interrupt_task.done():
+                self._barge_interrupt_task = None
+
+    async def _cancel_active_barge_capture(self) -> bool:
+        if not self._barge_capture_active:
+            return False
+        listener = self._barge_listener
+        if listener is not None:
+            cancel = getattr(listener, "cancel_capture", None)
+            if callable(cancel):
+                cancel()
+        self._barge_capture_active = False
+        result_task = self._barge_result_task
+        if result_task is not None and not result_task.done():
+            result_task.cancel()
+            try:
+                await result_task
+            except asyncio.CancelledError:
+                pass
+        interrupt_task = self._barge_interrupt_task
+        if interrupt_task is not None and not interrupt_task.done():
+            try:
+                await interrupt_task
+            except asyncio.CancelledError:
+                pass
+        elif self._turn_in_flight:
+            await self._interrupt_active_turn()
+        self._set_barge_listening(active=False)
+        self._set_wake_listening(busy=self._turn_in_flight)
+        return True
+
     def _set_wake_listening(self, *, busy: bool) -> None:
         """Listen only when nothing else holds the microphone.
 
@@ -1024,7 +1213,7 @@ class HermesStreamingApp(App):
         listener = self._wake_listener
         if listener is None:
             return
-        if busy:
+        if busy or self._barge_capture_active:
             listener.pause()
         else:
             listener.resume()
@@ -1823,6 +2012,8 @@ class HermesStreamingApp(App):
                 self._set_wake_listening(busy=False)
 
     async def action_interrupt(self) -> None:
+        if await self._cancel_active_barge_capture():
+            return
         if await self._cancel_active_voice_capture():
             return
         if await self._interrupt_active_turn():
@@ -2059,6 +2250,7 @@ class HermesStreamingApp(App):
         current_task = asyncio.current_task()
         self._active_turn_task = current_task
         self._turn_in_flight = True
+        self._set_barge_listening(active=True)
         self._set_wake_listening(busy=True)
         if self._busy_transition_owner is current_task:
             self._busy_transition_owner = None
@@ -2084,7 +2276,9 @@ class HermesStreamingApp(App):
             self._turn_in_flight = False
             if self._active_turn_task is current_task:
                 self._active_turn_task = None
-            self._set_wake_listening(busy=False)
+            if not self._barge_capture_active:
+                self._set_barge_listening(active=False)
+            self._set_wake_listening(busy=self._barge_capture_active)
 
     async def _run_single_turn(self, text: str, *, stt_source: str) -> bool:
         self._last_prompt = text

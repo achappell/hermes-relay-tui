@@ -462,7 +462,7 @@ works on a clean machine and on a network that is not up yet when it boots.
 | `--wake-refractory-seconds` | `2.0` | Minimum gap between two fires. |
 | `--wake-listen-timeout` | `8.0` | How long to wait for speech to begin after the phrase. |
 | `--wake-followup-seconds` | `8.0` | How long to wait for a follow-up after the reply, without another wake phrase. |
-| `--wake-barge-in` | off | Let the phrase interrupt playback. See the warning below. |
+| `--wake-barge-in` | off | Let local speech interrupt the active response; no second wake phrase is needed. See the warning below. |
 | `--no-earcons` | tones on | Silence the acknowledgement tones. Does not disable the wake word. |
 
 **Confirmation frames are the setting that matters.** The detector scores about
@@ -502,6 +502,14 @@ initial wake capture also treats `stop` as a local cancel; `Ctrl+R` remains an
 ordinary voice turn. Set the window with `--wake-followup-seconds` or
 `VOICE_SESSION_WAKE_FOLLOWUP_SECONDS`. The normal TUI silence endpoint is 1.5
 seconds, so it no longer waits three seconds after the user stops talking.
+
+With `--wake-barge-in`, the armed TUI also taps the same microphone stream while
+Hermes is generating, buffering, or speaking. Speech closes local playback and
+causes one explicit remote interrupt. The audio is transcribed locally; raw
+microphone PCM never crosses the WebSocket. Saying exactly `stop` ends the
+answer without submitting a new turn. Any other transcript becomes one new
+turn, without a second wake phrase. This remains opt-in because a normal laptop
+speaker route can feed Hermes' voice back into the microphone.
 
 The first `/wake on` can take a few seconds while the local wake model warms up
 and CoreAudio opens the input stream. That setup runs away from the Textual event
@@ -595,8 +603,8 @@ hardware.
 
 **Do not enable `--wake-barge-in` without echo cancellation.** With a shared
 microphone and speaker the unit hears its own voice, retriggers on itself, and
-interrupts its own sentence. The feature is implemented and tested, and stays
-off until the audio hardware can cancel its own output.
+interrupts its own sentence. Keep it off on ordinary laptop speakers unless
+the route provides echo cancellation, headphones, or equivalent isolation.
 
 ## Config file
 

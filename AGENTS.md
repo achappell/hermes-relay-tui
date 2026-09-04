@@ -236,6 +236,10 @@ The complete source of truth is `config.build_arg_parser()`. The main runtime op
 - `--allow-shell` — opt in to bounded local `!command` execution and `{!command}` interpolation; disabled by default.
 - `--no-earcons` — silence the home unit's wake and end-of-capture tones; the
   wake word keeps working.
+- `--wake-barge-in` — opt in to local speech detection during an active
+  response. Speech stops playback and sends one remote interrupt; exact
+  `stop` sends no replacement turn. Keep it off unless the audio route has
+  echo cancellation or equivalent isolation.
 - `--hide-thinking` — hide thinking and tool detail in the transcript.
 - `--debug` — write a content-safe protocol trace to a temporary log file.
 - `--log-file PATH` — choose the debug trace path; supplying it implies `--debug`.
