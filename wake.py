@@ -64,11 +64,9 @@ DEFAULT_COOLDOWN_SECONDS = 2.0
 DEFAULT_SILENCE_PEAK = 10
 DEFAULT_SILENCE_ALERT_SECONDS = 10.0
 
-# The frame cap is a backstop only. PortAudio picks the block size and it can
-# be very small - measured at ~15 samples on a MacBook Air, over a thousand
-# callbacks a second - so a queue bounded by frame count alone holds
-# milliseconds of audio rather than seconds. The real bound is the sample
-# budget below.
+# The frame cap is a backstop only. The microphone reader can deliver small
+# blocks, so a queue bounded by frame count alone may hold milliseconds of
+# audio rather than seconds. The real bound is the sample budget below.
 DEFAULT_QUEUE_SIZE = 2048
 
 # Roughly two seconds at 16kHz. Enough to ride out a stall without letting an
@@ -76,9 +74,10 @@ DEFAULT_QUEUE_SIZE = 2048
 DEFAULT_MAX_BUFFERED_SAMPLES = 32000
 
 # openWakeWord scores exactly 1280 samples (80ms at 16kHz) per predict() call.
-# AudioRecorder opens its InputStream without a blocksize, so PortAudio picks
-# the frame size and it need not match - frames must be re-chunked or the model
-# is fed the wrong shape and scores meaningless numbers.
+# AudioRecorder uses a blocking reader with a small fixed read size, but the
+# wake model still requires exactly 1280 samples per predict() call. Frames
+# must be re-chunked or the model is fed the wrong shape and scores meaningless
+# numbers.
 OPENWAKEWORD_CHUNK_SAMPLES = 1280
 
 _INSTALL_HINT = (
@@ -246,8 +245,8 @@ class FrameChunker:
 class WakeListener:
     """Owns the frame queue and the detection worker.
 
-    Frames arrive from the audio callback thread via `submit`, which must never
-    block. Scoring happens on the worker thread, never on the audio thread.
+    Frames arrive from the microphone reader via `submit`, which must never
+    block. Scoring happens on the worker thread, never on the capture path.
     """
 
     def __init__(
@@ -292,7 +291,7 @@ class WakeListener:
         self.dropped_frames += 1
 
     def submit(self, frame: Any) -> None:
-        """Enqueue a frame. Called on the audio thread; never blocks."""
+        """Enqueue a frame from the capture path; never block."""
         if self._paused:
             return
 

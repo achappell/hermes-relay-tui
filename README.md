@@ -514,6 +514,9 @@ speaker route can feed Hermes' voice back into the microphone.
 The first `/wake on` can take a few seconds while the local wake model warms up
 and CoreAudio opens the input stream. That setup runs away from the Textual event
 loop, so the status remains repaintable and `/wake off` can cancel startup.
+The local microphone uses a blocking reader worker rather than running wake or
+barge-in Python inside PortAudio's CoreAudio callback; this keeps the input
+device lifecycle stable while the stream remains open.
 
 Whenever the microphone is open the status line above the composer carries a
 `◉ mic open` marker in a colour of its own — during a `Ctrl+R` capture, during

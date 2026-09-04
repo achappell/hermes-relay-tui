@@ -31,6 +31,8 @@ SAMPLE_WIDTH = 2
 SILENCE_RMS_THRESHOLD = 200
 SILENCE_DURATION_SECONDS = 1.5
 DEFAULT_STT_MODEL = "base"
+_BLOCKING_READ_FRAMES = 256
+_READER_POLL_SECONDS = 0.01
 
 _TEMP_DIR = os.path.join(tempfile.gettempdir(), "hermes_relay_tui_voice")
 
@@ -47,15 +49,19 @@ class AudioRecorder:
 
     A persistent ``sounddevice.InputStream`` is opened on first use and kept
     alive across recordings, since closing/reopening it can hang on macOS
-    CoreAudio. Between recordings the stream's callback simply discards
-    audio.
+    CoreAudio. The stream uses sounddevice's blocking read mode: a normal
+    Python worker owns ``read()`` and dispatches frames, so PortAudio never
+    calls application Python through a real-time CFFI callback.
     """
 
     supports_silence_autostop = True
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
+        self._stream_lock = threading.Lock()
         self._stream: Any = None
+        self._reader_thread: threading.Thread | None = None
+        self._reader_stop: threading.Event | None = None
         self._frames: List[Any] = []
         self._recording = False
         self._start_time = 0.0
@@ -115,25 +121,23 @@ class AudioRecorder:
         self._ensure_stream()
 
     def _dispatch_frame(self, indata) -> None:
-        """Hand an idle frame to the observer. Called from the audio thread."""
+        """Hand an idle frame to observers from the reader worker."""
         if self._recording:
             return
         with self._lock:
             observers = tuple(self._frame_observers)
         if not observers:
             return
-        # sounddevice recycles indata between callbacks. The listeners queue
-        # frames and score them on another thread, so handing over the live
-        # buffer means scoring whatever PortAudio has since written into it:
-        # audio that measures loud and matches nothing. The recording path
-        # above copies for the same reason.
+        # Keep ownership separate from the recorder and from every observer.
+        # The blocking reader currently receives a fresh array from
+        # sounddevice, but listeners queue frames and may retain or mutate
+        # them after this method returns.
         frame = indata.copy() if hasattr(indata, "copy") else indata
         for observer in observers:
             try:
                 observer(frame.copy() if hasattr(frame, "copy") else frame)
             except Exception:
-                # The audio callback must survive a broken consumer: raising
-                # here would stop the stream and take recording down with it.
+                # A broken consumer must not stop the shared input stream.
                 logger.debug("audio frame observer failed", exc_info=True)
 
     def _max_duration_reached(self, elapsed: float) -> bool:
@@ -165,103 +169,153 @@ class AudioRecorder:
         return self._recording and self._has_spoken
 
     def _ensure_stream(self) -> None:
-        if self._stream is not None:
+        with self._stream_lock:
+            if self._stream is not None:
+                return
+
+            sd, np = _import_audio()
+            stream = None
+            try:
+                # No callback argument is intentional. A callback makes
+                # sounddevice create a CFFI closure that invokes Python from
+                # CoreAudio's real-time thread. Blocking reads keep all
+                # application work on the reader worker instead.
+                stream = sd.InputStream(
+                    samplerate=self._sample_rate,
+                    channels=CHANNELS,
+                    dtype=DTYPE,
+                )
+                stream.start()
+                reader_stop = threading.Event()
+                reader = threading.Thread(
+                    target=self._read_stream,
+                    args=(stream, reader_stop, np),
+                    name="hermes-microphone-reader",
+                    daemon=True,
+                )
+                self._stream = stream
+                self._reader_stop = reader_stop
+                self._reader_thread = reader
+                reader.start()
+            except Exception as exc:
+                if stream is not None:
+                    try:
+                        stream.close()
+                    except Exception:
+                        pass
+                raise RuntimeError(
+                    f"Failed to open audio input stream: {exc}. "
+                    "Check that a microphone is connected and accessible."
+                ) from exc
+
+    def _read_stream(self, stream: Any, stop: threading.Event, np: Any) -> None:
+        """Read frames outside PortAudio's real-time thread."""
+        while not stop.is_set():
+            try:
+                available = int(stream.read_available)
+            except Exception:
+                if not stop.is_set():
+                    logger.debug("microphone availability check failed", exc_info=True)
+                return
+
+            if available <= 0:
+                stop.wait(_READER_POLL_SECONDS)
+                continue
+
+            try:
+                indata, overflowed = stream.read(
+                    min(available, _BLOCKING_READ_FRAMES)
+                )
+            except Exception:
+                if not stop.is_set():
+                    logger.debug("microphone read failed", exc_info=True)
+                return
+
+            if stop.is_set():
+                return
+            if overflowed:
+                logger.debug("sounddevice input overflowed")
+            self._consume_frame(indata, np)
+
+    def _consume_frame(self, indata: Any, np: Any) -> None:
+        """Route one blocking-read frame to observers or an active capture."""
+        with self._lock:
+            if not self._recording:
+                recording = False
+                callback = None
+            else:
+                recording = True
+                self._frames.append(indata.copy())
+
+                rms = int(np.sqrt(np.mean(indata.astype(np.float64) ** 2)))
+                self._current_rms = rms
+                self._peak_rms = max(self._peak_rms, rms)
+                callback = None
+
+                if self._on_silence_stop is not None:
+                    now = time.monotonic()
+                    elapsed = now - self._start_time
+
+                    if rms > self._silence_threshold:
+                        self._dip_start = 0.0
+                        if self._speech_start == 0.0:
+                            self._speech_start = now
+                        elif (
+                            not self._has_spoken
+                            and now - self._speech_start >= self._min_speech_duration
+                        ):
+                            self._has_spoken = True
+                        if not self._has_spoken:
+                            self._silence_start = 0.0
+                        else:
+                            self._resume_dip_start = 0.0
+                            if self._resume_start == 0.0:
+                                self._resume_start = now
+                            elif now - self._resume_start >= self._min_speech_duration:
+                                self._silence_start = 0.0
+                                self._resume_start = 0.0
+                    elif self._has_spoken:
+                        if self._resume_start > 0:
+                            if self._resume_dip_start == 0.0:
+                                self._resume_dip_start = now
+                            elif now - self._resume_dip_start >= self._max_dip_tolerance:
+                                self._resume_start = 0.0
+                                self._resume_dip_start = 0.0
+                    elif self._speech_start > 0:
+                        if self._dip_start == 0.0:
+                            self._dip_start = now
+                        elif now - self._dip_start >= self._max_dip_tolerance:
+                            self._speech_start = 0.0
+                            self._dip_start = 0.0
+
+                    should_fire = False
+                    if self._has_spoken and rms <= self._silence_threshold:
+                        if self._silence_start == 0.0:
+                            self._silence_start = now
+                        elif now - self._silence_start >= self._silence_duration:
+                            should_fire = True
+                    elif not self._has_spoken and elapsed >= self._max_wait:
+                        should_fire = True
+
+                    if not should_fire and self._max_duration_reached(elapsed):
+                        should_fire = True
+
+                    if should_fire:
+                        callback = self._on_silence_stop
+                        self._on_silence_stop = None
+
+        if not recording:
+            self._dispatch_frame(indata)
             return
 
-        sd, np = _import_audio()
-
-        def _callback(indata, frames, time_info, status):  # noqa: ARG001
-            if status:
-                logger.debug("sounddevice status: %s", status)
-            if not self._recording:
-                self._dispatch_frame(indata)
-                return
-            self._frames.append(indata.copy())
-
-            rms = int(np.sqrt(np.mean(indata.astype(np.float64) ** 2)))
-            self._current_rms = rms
-            self._peak_rms = max(self._peak_rms, rms)
-
-            if self._on_silence_stop is None:
-                return
-
-            now = time.monotonic()
-            elapsed = now - self._start_time
-
-            if rms > self._silence_threshold:
-                self._dip_start = 0.0
-                if self._speech_start == 0.0:
-                    self._speech_start = now
-                elif not self._has_spoken and now - self._speech_start >= self._min_speech_duration:
-                    self._has_spoken = True
-                if not self._has_spoken:
-                    self._silence_start = 0.0
-                else:
-                    self._resume_dip_start = 0.0
-                    if self._resume_start == 0.0:
-                        self._resume_start = now
-                    elif now - self._resume_start >= self._min_speech_duration:
-                        self._silence_start = 0.0
-                        self._resume_start = 0.0
-            elif self._has_spoken:
-                if self._resume_start > 0:
-                    if self._resume_dip_start == 0.0:
-                        self._resume_dip_start = now
-                    elif now - self._resume_dip_start >= self._max_dip_tolerance:
-                        self._resume_start = 0.0
-                        self._resume_dip_start = 0.0
-            elif self._speech_start > 0:
-                if self._dip_start == 0.0:
-                    self._dip_start = now
-                elif now - self._dip_start >= self._max_dip_tolerance:
-                    self._speech_start = 0.0
-                    self._dip_start = 0.0
-
-            should_fire = False
-            if self._has_spoken and rms <= self._silence_threshold:
-                if self._silence_start == 0.0:
-                    self._silence_start = now
-                elif now - self._silence_start >= self._silence_duration:
-                    should_fire = True
-            elif not self._has_spoken and elapsed >= self._max_wait:
-                should_fire = True
-
-            if not should_fire and self._max_duration_reached(elapsed):
-                should_fire = True
-
-            if should_fire:
-                with self._lock:
-                    cb = self._on_silence_stop
-                    self._on_silence_stop = None
-                if cb:
-                    def _safe_cb():
-                        try:
-                            cb()
-                        except Exception:
-                            logger.exception("Silence callback failed")
-
-                    threading.Thread(target=_safe_cb, daemon=True).start()
-
-        stream = None
-        try:
-            stream = sd.InputStream(
-                samplerate=self._sample_rate,
-                channels=CHANNELS,
-                dtype=DTYPE,
-                callback=_callback,
-            )
-            stream.start()
-        except Exception as exc:
-            if stream is not None:
+        if callback:
+            def _safe_cb():
                 try:
-                    stream.close()
+                    callback()
                 except Exception:
-                    pass
-            raise RuntimeError(
-                f"Failed to open audio input stream: {exc}. "
-                "Check that a microphone is connected and accessible."
-            ) from exc
-        self._stream = stream
+                    logger.exception("Silence callback failed")
+
+            threading.Thread(target=_safe_cb, daemon=True).start()
 
     def start(self, on_silence_stop=None) -> None:
         try:
@@ -299,23 +353,47 @@ class AudioRecorder:
             self._recording = True
 
     def _close_stream_with_timeout(self, timeout: float = 3.0) -> None:
-        if self._stream is None:
-            return
-        stream = self._stream
-        self._stream = None
+        with self._stream_lock:
+            stream = self._stream
+            reader = self._reader_thread
+            reader_stop = self._reader_stop
+            if stream is None:
+                return
+            if reader_stop is not None:
+                reader_stop.set()
 
-        def _do_close():
+        if reader is not None and reader is not threading.current_thread():
+            reader.join(timeout=timeout)
+
+        if reader is not None and reader.is_alive():
+            # This is an abnormal device/backend hang. There is no Python
+            # PortAudio callback left to race with abort, so use it only as a
+            # last-resort wake-up before giving the reader another short
+            # chance to exit.
             try:
-                stream.stop()
-                stream.close()
+                stream.abort()
             except Exception:
-                pass
+                logger.debug("aborting the microphone stream failed", exc_info=True)
+            reader.join(timeout=0.5)
 
-        t = threading.Thread(target=_do_close, daemon=True)
-        t.start()
-        deadline = time.monotonic() + timeout
-        while t.is_alive() and time.monotonic() < deadline:
-            t.join(timeout=0.1)
+        if reader is not None and reader.is_alive():
+            logger.warning("microphone reader did not stop; leaving stream open")
+            return
+
+        try:
+            stream.stop()
+        except Exception:
+            logger.debug("stopping the microphone stream failed", exc_info=True)
+        try:
+            stream.close()
+        except Exception:
+            logger.debug("closing the microphone stream failed", exc_info=True)
+        finally:
+            with self._stream_lock:
+                if self._stream is stream:
+                    self._stream = None
+                    self._reader_thread = None
+                    self._reader_stop = None
 
     def stop(self) -> Optional[str]:
         with self._lock:
@@ -558,8 +636,8 @@ class BargeInListener:
 
     This is deliberately a consumer of an already-open ``AudioRecorder``
     stream. It never sends frames to Hermes: the only outward value is the
-    locally-transcribed string. ``submit`` is safe for the sounddevice
-    callback because it does no inference and never waits for the worker.
+    locally-transcribed string. ``submit`` remains deliberately cheap because
+    it only queues work for the listener and never waits for inference.
     """
 
     _QUEUE_SIZE = 32
