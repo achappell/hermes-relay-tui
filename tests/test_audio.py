@@ -1,5 +1,6 @@
 # tests/test_audio.py
 import sys
+import threading
 import types
 import wave
 from io import BytesIO
@@ -241,3 +242,51 @@ def test_starting_again_closes_a_stream_that_is_still_playing(monkeypatch):
 
     assert log.count(("stop",)) == 1, log
     assert log.count(("close",)) == 1, log
+
+
+def test_closing_waits_for_an_inflight_write(monkeypatch):
+    """Interrupt teardown must not close PortAudio under a worker write."""
+    write_started = threading.Event()
+    release_write = threading.Event()
+    close_returned = threading.Event()
+    lifecycle_overlap = []
+
+    class FakeStream:
+        def start(self):
+            pass
+
+        def write(self, chunk):  # noqa: ARG002 - mirrors sounddevice
+            write_started.set()
+            assert release_write.wait(1)
+
+        def stop(self):
+            lifecycle_overlap.append("stop")
+
+        def close(self):
+            lifecycle_overlap.append("close")
+            close_returned.set()
+
+    monkeypatch.setitem(
+        sys.modules,
+        "sounddevice",
+        types.SimpleNamespace(RawOutputStream=lambda **kwargs: FakeStream()),
+    )
+
+    player = PCMPlayer(enabled=True, prebuffer_seconds=0)
+    player.start((24000, 1, 2))
+    writer = threading.Thread(target=player.write, args=(b"\x00\x01",), daemon=True)
+    writer.start()
+    assert write_started.wait(1)
+
+    closer = threading.Thread(target=player.close, daemon=True)
+    closer.start()
+    try:
+        assert not close_returned.wait(0.05)
+    finally:
+        release_write.set()
+        writer.join(1)
+        closer.join(1)
+
+    assert not writer.is_alive()
+    assert not closer.is_alive()
+    assert lifecycle_overlap == ["stop", "close"]

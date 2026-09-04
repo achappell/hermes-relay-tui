@@ -5,6 +5,7 @@ Ported from hermes-hybrid-tui.py's PCMPlayer, unchanged in behavior.
 
 from __future__ import annotations
 
+import threading
 import wave
 from io import BytesIO
 from pathlib import Path
@@ -84,6 +85,9 @@ class PCMPlayer:
         self.enabled = enabled
         self.output_device = output_device
         self.prebuffer_seconds = max(0.0, float(prebuffer_seconds))
+        # Writes and interrupt teardown both run in the asyncio executor.
+        # Never let PortAudio observe a write concurrent with stop/close.
+        self._lock = threading.RLock()
         self.stream: Any = None
         self.failure: Optional[str] = None
         self.playing = False
@@ -92,80 +96,84 @@ class PCMPlayer:
 
     @property
     def active(self) -> bool:
-        return self.stream is not None
+        with self._lock:
+            return self.stream is not None
 
     def start(self, audio_format: tuple[int, int, int]) -> None:
-        # A stream can still be open and draining: not every gateway sends
-        # `audio_end`. Replacing it silently orphans it and cuts off whatever
-        # was left to play.
-        if self.stream is not None:
-            self.close()
-        self.failure = None
-        self.playing = False
-        self._pending.clear()
-        if not self.enabled:
-            return
-        sample_rate, channels, sample_width = audio_format
-        if sample_width != 2:
-            self.failure = f"unsupported {sample_width * 8}-bit PCM"
-            return
-        self._prebuffer_bytes = int(
-            sample_rate * channels * sample_width * self.prebuffer_seconds
-        )
-        try:
-            import sounddevice as sd
-
-            stream_kwargs = {
-                "samplerate": sample_rate,
-                "channels": channels,
-                "dtype": "int16",
-                # Deliberately not "low": that asks PortAudio for the smallest
-                # possible buffer, which is the wrong request for audio
-                # arriving off a network in irregular chunks.
-                "latency": "high",
-            }
-            if self.output_device is not None:
-                stream_kwargs["device"] = self.output_device
-            self.stream = sd.RawOutputStream(
-                **stream_kwargs,
+        with self._lock:
+            # A stream can still be open and draining: not every gateway sends
+            # `audio_end`. Replacing it silently orphans it and cuts off whatever
+            # was left to play.
+            if self.stream is not None:
+                self.close()
+            self.failure = None
+            self.playing = False
+            self._pending.clear()
+            if not self.enabled:
+                return
+            sample_rate, channels, sample_width = audio_format
+            if sample_width != 2:
+                self.failure = f"unsupported {sample_width * 8}-bit PCM"
+                return
+            self._prebuffer_bytes = int(
+                sample_rate * channels * sample_width * self.prebuffer_seconds
             )
-            self.stream.start()
-        except Exception as exc:
-            self.stream = None
-            self.failure = str(exc)
+            try:
+                import sounddevice as sd
+
+                stream_kwargs = {
+                    "samplerate": sample_rate,
+                    "channels": channels,
+                    "dtype": "int16",
+                    # Deliberately not "low": that asks PortAudio for the smallest
+                    # possible buffer, which is the wrong request for audio
+                    # arriving off a network in irregular chunks.
+                    "latency": "high",
+                }
+                if self.output_device is not None:
+                    stream_kwargs["device"] = self.output_device
+                self.stream = sd.RawOutputStream(
+                    **stream_kwargs,
+                )
+                self.stream.start()
+            except Exception as exc:
+                self.stream = None
+                self.failure = str(exc)
 
     def write(self, chunk: bytes) -> None:
-        if self.stream is None:
-            return
-        if not self.playing:
-            self._pending.extend(chunk)
-            if len(self._pending) < self._prebuffer_bytes:
+        with self._lock:
+            if self.stream is None:
                 return
-            chunk = bytes(self._pending)
-            self._pending.clear()
-            self.playing = True
-        try:
-            self.stream.write(chunk)
-        except Exception as exc:
-            self.failure = str(exc)
-            self.close()
-
-    def close(self) -> None:
-        if self.stream is None:
-            return
-        # A reply shorter than the cushion is still a reply. Flush it rather
-        # than swallowing the whole answer in the buffer.
-        if self._pending:
-            tail = bytes(self._pending)
-            self._pending.clear()
-            self.playing = True
+            if not self.playing:
+                self._pending.extend(chunk)
+                if len(self._pending) < self._prebuffer_bytes:
+                    return
+                chunk = bytes(self._pending)
+                self._pending.clear()
+                self.playing = True
             try:
-                self.stream.write(tail)
+                self.stream.write(chunk)
             except Exception as exc:
                 self.failure = str(exc)
-        try:
-            self.stream.stop()
-        finally:
-            self.stream.close()
-            self.stream = None
-            self.playing = False
+                self.close()
+
+    def close(self) -> None:
+        with self._lock:
+            if self.stream is None:
+                return
+            # A reply shorter than the cushion is still a reply. Flush it rather
+            # than swallowing the whole answer in the buffer.
+            if self._pending:
+                tail = bytes(self._pending)
+                self._pending.clear()
+                self.playing = True
+                try:
+                    self.stream.write(tail)
+                except Exception as exc:
+                    self.failure = str(exc)
+            try:
+                self.stream.stop()
+            finally:
+                self.stream.close()
+                self.stream = None
+                self.playing = False
