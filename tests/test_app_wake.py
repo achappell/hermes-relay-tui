@@ -295,6 +295,56 @@ async def test_wake_turn_can_send_a_follow_up_without_a_second_wake():
         assert session.capture_wait_timeouts == [8.0, 8.0]
 
 
+async def test_wake_follow_up_stop_is_silent_and_resumes_wake_listening():
+    app, fakes, session = make_app()
+    session.capture_results = iter(["what is the weather", "  STOP  "])
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await app._handle_wake_command("on")
+
+        completed = await asyncio.wait_for(
+            asyncio.to_thread(fakes.coordinator.on_wake), 1.0
+        )
+        assert completed is True
+        await pilot.pause()
+        await pilot.pause()
+
+        assert session.sent_turns == [("what is the weather", "local")]
+        assert fakes.listener.paused[-1] is False
+        assert app.wake_armed is True
+        assert "stop" not in transcript_text(app).lower()
+
+
+async def test_wake_initial_stop_is_silent_and_resumes_wake_listening():
+    app, fakes, session = make_app()
+    session.capture_result = " Stop "
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await app._handle_wake_command("on")
+
+        completed = await asyncio.wait_for(
+            asyncio.to_thread(fakes.coordinator.on_wake), 1.0
+        )
+        assert completed is True
+        await pilot.pause()
+        await pilot.pause()
+
+        assert session.sent_turns == []
+        assert fakes.listener.paused[-1] is False
+        assert app.wake_armed is True
+        assert "stop" not in transcript_text(app).lower()
+
+
+async def test_ctrl_r_stop_remains_an_ordinary_voice_turn():
+    app, _, session = make_app()
+    session.capture_result = " STOP "
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await app._capture_voice_turn()
+
+        assert session.sent_turns == [(" STOP ", "local-faster-whisper")]
+
+
 async def test_coordinator_states_pause_the_detector_during_capture():
     app, fakes, _ = make_app()
     async with app.run_test() as pilot:

@@ -494,8 +494,12 @@ inside the session and stays on until you turn it off:
 
 During the follow-up window, the wake detector is paused while the same local
 capture path waits for speech. Silence returns to wake-word listening; spoken
-text starts one normal turn, then returns to wake-word listening. Set the
-window with `--wake-followup-seconds` or
+text starts one normal turn, then returns to wake-word listening. Say exactly
+`stop` to close this follow-up window silently; matching ignores case and
+surrounding whitespace, plus normal terminal punctuation from transcription,
+while longer phrases such as `stop the timer` remain ordinary turns. The
+initial wake capture also treats `stop` as a local cancel; `Ctrl+R` remains an
+ordinary voice turn. Set the window with `--wake-followup-seconds` or
 `VOICE_SESSION_WAKE_FOLLOWUP_SECONDS`. The normal TUI silence endpoint is 1.5
 seconds, so it no longer waits three seconds after the user stops talking.
 

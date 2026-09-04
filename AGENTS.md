@@ -200,6 +200,10 @@ Do not put a real token in this file or in the README.
   to arm it again; reconnect never reopens the microphone silently. After a
   wake-triggered response, the TUI listens for a bounded follow-up window
   (`--wake-followup-seconds`, default 8 seconds) without another wake phrase.
+  Saying exactly `stop` during hands-free capture closes it locally and
+  silently, both for the initial wake capture and that follow-up window;
+  normal terminal punctuation from transcription is ignored, while longer
+  phrases and `Ctrl+R` remain ordinary turns.
   A malformed reload leaves an already-armed listener unchanged.
 - Use `/audio [list|status|input <device>|output <device>]` to inspect and select local audio devices for the current session.
 - Use `/image <path>`, `/image list`, or `/image clear` to stage and inspect local image attachments. `@path` references support local path completion; the current relay reports attachments as unsupported rather than sending them.
