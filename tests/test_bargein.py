@@ -71,6 +71,28 @@ def test_silence_never_starts_a_barge_capture():
         listener.stop()
 
 
+def test_short_room_noise_does_not_start_a_barge_capture():
+    started = threading.Event()
+    listener = BargeInListener(
+        on_speech_start=started.set,
+        on_transcript=lambda text: None,
+        sample_rate=100,
+        silence_duration=0.2,
+    )
+    listener.start()
+    listener.activate()
+
+    try:
+        for _ in range(4):
+            listener.submit(_frame(1200, samples=10))
+        assert not started.wait(0.1)
+
+        listener.submit(_frame(1200, samples=10))
+        assert started.wait(1.0)
+    finally:
+        listener.stop()
+
+
 def test_cancelling_an_utterance_drops_its_local_transcript():
     started = threading.Event()
     completed = []

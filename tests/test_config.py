@@ -330,6 +330,16 @@ def test_wake_word_defaults_are_off_and_conservative():
     assert args.wake_model is None
 
 
+def test_barge_in_minimum_speech_duration_is_conservative_and_overridable():
+    args = build_arg_parser().parse_args([])
+    assert args.wake_barge_in_min_speech_duration == 0.45
+
+    args = build_arg_parser().parse_args(
+        ["--wake-barge-in-min-speech-duration", "0.8"]
+    )
+    assert args.wake_barge_in_min_speech_duration == 0.8
+
+
 def test_wake_word_settings_are_overridable():
     args = build_arg_parser().parse_args(
         [

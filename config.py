@@ -346,6 +346,18 @@ def build_arg_parser(argv: Optional[list[str]] = None) -> argparse.ArgumentParse
         ),
     )
     parser.add_argument(
+        "--wake-barge-in-min-speech-duration",
+        type=float,
+        default=_env_float(
+            "VOICE_SESSION_WAKE_BARGE_IN_MIN_SPEECH_DURATION",
+            cfg.get("wake_barge_in_min_speech_duration", 0.45),
+        ),
+        help=(
+            "seconds of sustained microphone audio required before barge-in "
+            "interrupts the active response"
+        ),
+    )
+    parser.add_argument(
         "--no-earcons",
         dest="earcons",
         action="store_false",

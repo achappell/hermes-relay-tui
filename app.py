@@ -1084,6 +1084,9 @@ class HermesStreamingApp(App):
             silence_duration=getattr(self.args, "mic_silence_duration", 1.5),
             silence_threshold=getattr(self.args, "mic_silence_threshold", 200),
             max_seconds=getattr(self.args, "mic_max_seconds", 15.0),
+            min_speech_duration=getattr(
+                self.args, "wake_barge_in_min_speech_duration", 0.45
+            ),
             sample_rate=getattr(
                 recorder,
                 "sample_rate",

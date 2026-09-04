@@ -247,6 +247,7 @@ The complete source of truth is `config.build_arg_parser()`. The main runtime op
   private `~/.hermes-relay-tui/crash.log`; `/logs` reports its status without
   exposing contents.
 - `--mic-max-seconds`, `--mic-silence-duration`, `--mic-silence-threshold` — microphone tuning; TUI silence endpointing defaults to 1.5 seconds.
+- `--wake-barge-in-min-speech-duration` — sustained microphone audio required before barge-in interrupts; default `0.45` seconds.
 - `--wake-followup-seconds` — silence window after a wake-triggered response before returning to wake-word detection.
 - `--mic-input-device`, `--audio-output-device` — optional local input/output device name or index; `default` restores the system default.
 - `--stt-model` — optional local Faster-Whisper model selection.

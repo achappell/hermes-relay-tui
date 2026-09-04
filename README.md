@@ -380,6 +380,7 @@ it. A turn that may already have reached Hermes is never replayed automatically.
 | `--mic-max-seconds SECONDS` | Maximum microphone capture duration |
 | `--mic-silence-duration SECONDS` | Silence duration that ends capture |
 | `--mic-silence-threshold VALUE` | Capture silence threshold |
+| `--wake-barge-in-min-speech-duration SECONDS` | Sustained audio required before barge-in interrupts; default `0.45` |
 | `--mic-input-device DEVICE` | Microphone name or index; `default` uses the system default |
 | `--audio-output-device DEVICE` | Speaker name or index; `default` uses the system default |
 | `--stt-model NAME` | Select the local Faster-Whisper model |
@@ -640,6 +641,7 @@ hermes-relay
 | `VOICE_SESSION_MIC_SILENCE_DURATION` | `1.5` |
 | `VOICE_SESSION_MIC_SILENCE_THRESHOLD` | `200` |
 | `VOICE_SESSION_WAKE_FOLLOWUP_SECONDS` | `8.0` seconds of silence after a wake-triggered reply |
+| `VOICE_SESSION_WAKE_BARGE_IN_MIN_SPEECH_DURATION` | `0.45` seconds of sustained audio before barge-in interrupts |
 | `VOICE_SESSION_MIC_INPUT_DEVICE` | Microphone name or index; unset uses the system default |
 | `VOICE_SESSION_AUDIO_OUTPUT_DEVICE` | Speaker name or index; unset uses the system default |
 | `VOICE_SESSION_STT_MODEL` | unset; use the Hermes/local-STT default |

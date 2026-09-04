@@ -642,7 +642,7 @@ class BargeInListener:
 
     _QUEUE_SIZE = 32
     _PRE_ROLL_SECONDS = 0.25
-    _DEFAULT_MIN_SPEECH_SECONDS = 0.2
+    _DEFAULT_MIN_SPEECH_SECONDS = 0.45
 
     def __init__(
         self,

@@ -136,6 +136,7 @@ class FakeBargeListener:
     def __init__(self, *, on_speech_start, on_transcript, **kwargs) -> None:
         self.on_speech_start = on_speech_start
         self.on_transcript = on_transcript
+        self.kwargs = kwargs
         self.started = False
         self.active = False
         self.stopped = False
@@ -699,6 +700,20 @@ async def test_spoken_stop_interrupts_active_response_without_a_new_turn():
         assert session.sent_turns == [("first", "local")]
         assert "stop" not in transcript_text(app).lower()
         assert fakes.barge_listener.active is False
+
+
+async def test_barge_in_uses_its_configured_minimum_speech_duration():
+    fakes = WakeFakes()
+    app, _, _ = make_app(
+        fakes=fakes,
+        wake_barge_in=True,
+        wake_barge_in_min_speech_duration=0.8,
+    )
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await app._handle_wake_command("on")
+
+        assert fakes.barge_listener.kwargs["min_speech_duration"] == 0.8
 
 
 async def test_spoken_follow_up_interrupts_then_starts_exactly_one_new_turn():
