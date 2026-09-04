@@ -204,6 +204,10 @@ Do not put a real token in this file or in the README.
   silently, both for the initial wake capture and that follow-up window;
   normal terminal punctuation from transcription is ignored, while longer
   phrases and `Ctrl+R` remain ordinary turns.
+  `/wake on` reports model-loading and microphone-opening stages without
+  blocking the Textual event loop; a slow or failed startup must leave the
+  microphone disarmed, and `/wake off`, reload, connection loss, and quit must
+  cancel in-flight startup.
   A malformed reload leaves an already-armed listener unchanged.
 - Use `/audio [list|status|input <device>|output <device>]` to inspect and select local audio devices for the current session.
 - Use `/image <path>`, `/image list`, or `/image clear` to stage and inspect local image attachments. `@path` references support local path completion; the current relay reports attachments as unsupported rather than sending them.

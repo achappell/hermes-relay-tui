@@ -488,7 +488,7 @@ inside the session and stays on until you turn it off:
 
 | Command | What happens |
 |---|---|
-| `/wake on` | Opens the input stream and starts listening. Saying the phrase runs a turn, then leaves an 8-second follow-up window after the reply so one next question needs no wake phrase. |
+| `/wake on` | Starts wake mode without freezing the TUI. The status line and transcript show wake-model loading and microphone opening; once ready, saying the phrase runs a turn and leaves an 8-second follow-up window after the reply so one next question needs no wake phrase. |
 | `/wake off` | Stops the listener **and closes the stream**, so the system microphone indicator clears and other applications get the device back. |
 | `/wake` or `/wake status` | Whether it is armed, and the model and threshold in use. |
 
@@ -502,6 +502,10 @@ initial wake capture also treats `stop` as a local cancel; `Ctrl+R` remains an
 ordinary voice turn. Set the window with `--wake-followup-seconds` or
 `VOICE_SESSION_WAKE_FOLLOWUP_SECONDS`. The normal TUI silence endpoint is 1.5
 seconds, so it no longer waits three seconds after the user stops talking.
+
+The first `/wake on` can take a few seconds while the local wake model warms up
+and CoreAudio opens the input stream. That setup runs away from the Textual event
+loop, so the status remains repaintable and `/wake off` can cancel startup.
 
 Whenever the microphone is open the status line above the composer carries a
 `◉ mic open` marker in a colour of its own — during a `Ctrl+R` capture, during

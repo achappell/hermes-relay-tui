@@ -6,6 +6,7 @@ audio device, no relay.
 """
 
 import asyncio
+import logging
 import threading
 import types
 
@@ -113,6 +114,56 @@ class WakeFakes:
         return recorder
 
 
+class SlowWakeFakes(WakeFakes):
+    """Hold model construction long enough to observe the startup surface."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.build_started = threading.Event()
+        self.build_release = threading.Event()
+
+    def build(self, session, args, **kwargs):
+        self.build_started.set()
+        self.build_release.wait(1.0)
+        return super().build(session, args, **kwargs)
+
+
+class SlowOpenRecorder(FakeRecorder):
+    def __init__(self) -> None:
+        super().__init__()
+        self.open_started = threading.Event()
+        self.open_release = threading.Event()
+
+    def open_for_listening(self) -> None:
+        self.open_started.set()
+        self.open_release.wait(1.0)
+        super().open_for_listening()
+
+
+class SlowOpenWakeFakes(WakeFakes):
+    def __init__(self) -> None:
+        super().__init__()
+        self.recorder_created = threading.Event()
+
+    def recorder_factory(self) -> SlowOpenRecorder:
+        recorder = SlowOpenRecorder()
+        self.recorders.append(recorder)
+        self.recorder_created.set()
+        return recorder
+
+
+class FailingOpenRecorder(FakeRecorder):
+    def open_for_listening(self) -> None:
+        raise RuntimeError("input device unavailable")
+
+
+class FailingOpenWakeFakes(WakeFakes):
+    def recorder_factory(self) -> FailingOpenRecorder:
+        recorder = FailingOpenRecorder()
+        self.recorders.append(recorder)
+        return recorder
+
+
 def make_app(*, fakes=None, session=None, argv=None, **arg_overrides):
     fakes = fakes if fakes is not None else WakeFakes()
     session = session if session is not None else FakeSession()
@@ -166,6 +217,138 @@ async def test_wake_on_opens_the_stream_and_starts_the_listener():
         assert fakes.listener.started is True
         assert fakes.recorders[-1].listening is True
         assert fakes.recorders[-1].observer == fakes.listener.submit
+
+
+async def test_wake_on_repaints_startup_while_model_load_is_running():
+    fakes = SlowWakeFakes()
+    app, _, _ = make_app(fakes=fakes)
+    release = threading.Timer(0.2, fakes.build_release.set)
+    release.daemon = True
+    release.start()
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        startup = asyncio.create_task(app._handle_wake_command("on"))
+        await asyncio.sleep(0.05)
+
+        assert fakes.build_started.is_set()
+        assert app.voice_state == app_module.VOICE_STARTING
+        assert "wake mode starting — loading wake model" in transcript_text(app)
+
+        await asyncio.wait_for(startup, 1.0)
+        assert app.wake_armed is True
+
+
+async def test_wake_off_cancels_startup_before_the_microphone_opens():
+    fakes = SlowWakeFakes()
+    app, _, _ = make_app(fakes=fakes)
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        startup = asyncio.create_task(app._handle_wake_command("on"))
+        await asyncio.sleep(0.05)
+
+        await app._handle_wake_command("off")
+        fakes.build_release.set()
+        await asyncio.wait_for(startup, 1.0)
+
+        assert app.wake_armed is False
+        assert fakes.recorders == []
+        assert "startup cancelled" in transcript_text(app)
+
+
+async def test_wake_on_repaints_startup_while_microphone_opens():
+    fakes = SlowOpenWakeFakes()
+    app, _, _ = make_app(fakes=fakes)
+
+    def release_opening_stream() -> None:
+        fakes.recorder_created.wait(1.0)
+        if fakes.recorders:
+            fakes.recorders[0].open_started.wait(1.0)
+            threading.Event().wait(0.2)
+            fakes.recorders[0].open_release.set()
+
+    threading.Thread(target=release_opening_stream, daemon=True).start()
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        startup = asyncio.create_task(app._handle_wake_command("on"))
+        await asyncio.sleep(0.05)
+
+        assert fakes.recorders
+        recorder = fakes.recorders[0]
+        assert recorder.open_started.is_set()
+        assert app.voice_state == app_module.VOICE_STARTING
+        assert "wake mode starting — opening microphone" in transcript_text(app)
+
+        await asyncio.wait_for(startup, 1.0)
+        assert app.wake_armed is True
+
+
+async def test_wake_startup_logs_timed_model_and_microphone_stages(caplog):
+    caplog.set_level(logging.DEBUG, logger="hermes_relay_tui")
+    app, _, _ = make_app()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await app._handle_wake_command("on")
+
+    messages = [record.message for record in caplog.records]
+    assert any("wake.start stage=model complete elapsed=" in message for message in messages)
+    assert any(
+        "wake.start stage=microphone complete elapsed=" in message
+        for message in messages
+    )
+
+
+async def test_failed_microphone_startup_releases_partial_resources():
+    fakes = FailingOpenWakeFakes()
+    app, _, _ = make_app(fakes=fakes)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await app._handle_wake_command("on")
+
+        assert app.wake_armed is False
+        assert app.microphone_is_open is False
+        assert fakes.listener.stopped is True
+        assert fakes.recorders[0].shutdowns == 1
+        assert app.voice_state == app_module.VOICE_ERROR
+
+
+async def test_reload_cancels_wake_startup():
+    fakes = SlowWakeFakes()
+    app, _, _ = make_app(fakes=fakes, argv=[])
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        startup = asyncio.create_task(app._handle_wake_command("on"))
+        await asyncio.sleep(0.05)
+
+        app._handle_reload_command()
+        fakes.build_release.set()
+        await asyncio.wait_for(startup, 1.0)
+
+        assert app.wake_armed is False
+        assert fakes.recorders == []
+
+
+async def test_connection_loss_cancels_wake_startup():
+    fakes = SlowWakeFakes()
+    session = FakeSession()
+    app, _, _ = make_app(fakes=fakes, session=session)
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        startup = asyncio.create_task(app._handle_wake_command("on"))
+        await asyncio.sleep(0.05)
+
+        await app._mark_connection_lost()
+        fakes.build_release.set()
+        await asyncio.wait_for(startup, 1.0)
+
+        assert app.wake_armed is False
+        assert fakes.recorders == []
+        assert session.closed is True
+        assert app.connection_state == app_module.CONNECTION_DISCONNECTED
 
 
 async def test_wake_off_releases_the_microphone():
@@ -450,6 +633,21 @@ async def test_a_missing_wake_extra_names_the_install_command():
         text = transcript_text(app)
         assert "hermes-relay-tui[wake]" in text
         assert app.wake_armed is False
+
+
+async def test_wake_can_retry_after_startup_failure():
+    fakes = WakeFakes(available=False)
+    app, _, _ = make_app(fakes=fakes)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await app._handle_wake_command("on")
+
+        assert app._wake_starting is False
+        fakes.available = True
+        await app._handle_wake_command("on")
+
+        assert app.wake_armed is True
+        assert fakes.builds == 2
 
 
 async def test_an_unknown_argument_shows_usage():
