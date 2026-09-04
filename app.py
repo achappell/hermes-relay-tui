@@ -311,6 +311,7 @@ MAX_CONNECT_RETRY_DELAY = 8.0
 REMOTE_INTERRUPT_TIMEOUT = 2.0
 RETRY_HINT = "The app remains open; retry when the endpoint recovers."
 VOICE_READY = "ready"
+VOICE_STARTING = "starting…"
 VOICE_CONNECTING = "connecting…"
 VOICE_RECONNECTING = "reconnecting…"
 VOICE_DISCONNECTED = "disconnected"
@@ -404,6 +405,7 @@ class HermesStreamingApp(App):
         color: $success;
     }
 
+    #voice-status.-starting,
     #voice-status.-connecting,
     #voice-status.-reconnecting,
     #voice-status.-listening,
@@ -524,6 +526,8 @@ class HermesStreamingApp(App):
         self._wake_coordinator: Any = None
         self._wake_recorder: Any = None
         self._wake_loop: Optional[asyncio.AbstractEventLoop] = None
+        self._wake_starting = False
+        self._wake_start_cancelled = False
         self._earcons = earcons_module.EarconPlayer(
             enabled=getattr(args, "earcons", True) and not (args and args.no_play),
             output_device=getattr(args, "audio_output_device", None),
@@ -689,6 +693,7 @@ class HermesStreamingApp(App):
             widget.update(line)
             for state in (
                 VOICE_READY,
+                VOICE_STARTING,
                 VOICE_CONNECTING,
                 VOICE_RECONNECTING,
                 VOICE_DISCONNECTED,
@@ -835,8 +840,15 @@ class HermesStreamingApp(App):
         if choice in ("", "status"):
             self._report_wake_status()
         elif choice == "on":
-            self._arm_wake()
+            await self._arm_wake()
         elif choice == "off":
+            if self._wake_starting:
+                self._wake_start_cancelled = True
+                self._disarm_wake()
+                self._append_block(
+                    "wake mode off — startup cancelled; microphone released"
+                )
+                return
             if not self.wake_armed:
                 self._append_block("wake mode is already off")
                 return
@@ -857,10 +869,18 @@ class HermesStreamingApp(App):
             f"wake mode: on — listening · model: {model} · threshold: {threshold}"
         )
 
-    def _arm_wake(self) -> None:
+    async def _arm_wake(self) -> None:
         if self.wake_armed:
             self._append_block("wake mode is already on")
             return
+        if self._wake_starting:
+            self._append_block("wake mode startup is already in progress")
+            return
+
+        self._wake_starting = True
+        self._wake_start_cancelled = False
+        self._set_voice_state(VOICE_STARTING)
+        self._append_block("wake mode starting — loading wake model…")
 
         # The builder reads --wake-* settings off args, but wake_enabled is
         # refused at launch for this front end, so arm it here instead of
@@ -869,7 +889,10 @@ class HermesStreamingApp(App):
         args.wake_enabled = True
 
         try:
-            built = self._build_hands_free(
+            stage_started = time.perf_counter()
+            diagnostic_logger.debug("wake.start stage=model begin")
+            built = await asyncio.to_thread(
+                self._build_hands_free,
                 self.session,
                 args,
                 capture=self._capture_wake_voice,
@@ -881,41 +904,73 @@ class HermesStreamingApp(App):
                 capture_finished=self._acknowledge_capture,
                 on_state_change=self._wake_state_changed,
             )
+            diagnostic_logger.debug(
+                "wake.start stage=model complete elapsed=%.3f",
+                time.perf_counter() - stage_started,
+            )
+            if self._wake_start_cancelled:
+                return
+            if built is None:
+                self._set_voice_state(VOICE_ERROR)
+                self._append_block("[error] wake mode could not be started")
+                return
+
+            listener, coordinator = built
+            self._wake_loop = asyncio.get_running_loop()
+            self._wake_listener = listener
+            self._wake_coordinator = coordinator
+            if self._wake_start_cancelled:
+                self._disarm_wake()
+                return
+
+            factory = self._recorder_factory
+            if factory is None:
+                from voice import create_audio_recorder
+
+                factory = create_audio_recorder
+            recorder = await asyncio.to_thread(factory)
+            self._wake_recorder = recorder
+            if self._wake_start_cancelled:
+                self._disarm_wake()
+                return
+
+            self.session.use_shared_recorder(recorder)
+
+            # Start the worker before opening the stream. Reversed, frames
+            # pile into a bounded queue with nothing draining it and the
+            # entire warm-up is dropped audio — measured at 96 frames on the
+            # appliance.
+            listener.start()
+            recorder.set_frame_observer(listener.submit)
+            self._append_block("wake mode starting — opening microphone…")
+            stage_started = time.perf_counter()
+            diagnostic_logger.debug("wake.start stage=microphone begin")
+            await asyncio.to_thread(recorder.open_for_listening)
+            diagnostic_logger.debug(
+                "wake.start stage=microphone complete elapsed=%.3f",
+                time.perf_counter() - stage_started,
+            )
+            if self._wake_start_cancelled:
+                return
+
+            self.wake_armed = True
+            self._set_voice_state(VOICE_READY)
+            self._refresh_voice_status()
+            self._set_wake_listening(busy=self._turn_in_flight)
+            self._append_block(
+                "wake mode on — say the phrase. The microphone stays open until "
+                "/wake off."
+            )
+        except asyncio.CancelledError:
+            self._disarm_wake()
+            raise
         except Exception as error:
+            self._disarm_wake()
+            self._set_voice_state(VOICE_ERROR)
             self._append_block(f"[error] wake mode: {self._wake_failure_text(error)}")
-            return
-        if built is None:
-            self._append_block("[error] wake mode could not be started")
-            return
-
-        listener, coordinator = built
-        factory = self._recorder_factory
-        if factory is None:
-            from voice import create_audio_recorder
-
-            factory = create_audio_recorder
-        recorder = factory()
-
-        self._wake_loop = asyncio.get_running_loop()
-        self._wake_listener = listener
-        self._wake_coordinator = coordinator
-        self._wake_recorder = recorder
-        self.session.use_shared_recorder(recorder)
-
-        # Start the worker before opening the stream. Reversed, frames pile
-        # into a bounded queue with nothing draining it and the entire warm-up
-        # is dropped audio — measured at 96 frames on the appliance.
-        listener.start()
-        recorder.set_frame_observer(listener.submit)
-        recorder.open_for_listening()
-
-        self.wake_armed = True
-        self._refresh_voice_status()
-        self._set_wake_listening(busy=self._turn_in_flight)
-        self._append_block(
-            "wake mode on — say the phrase. The microphone stays open until "
-            "/wake off."
-        )
+        finally:
+            self._wake_starting = False
+            self._wake_start_cancelled = False
 
     def _wake_failure_text(self, error: Exception) -> str:
         """Turn an arming failure into the one sentence that fixes it."""
@@ -930,6 +985,9 @@ class HermesStreamingApp(App):
 
     def _disarm_wake(self, message: Optional[str] = None) -> None:
         """Stop listening and give the device back. Safe to call when off."""
+        was_starting = self._wake_starting
+        if was_starting:
+            self._wake_start_cancelled = True
         listener, recorder = self._wake_listener, self._wake_recorder
         self._wake_listener = None
         self._wake_coordinator = None
@@ -938,6 +996,8 @@ class HermesStreamingApp(App):
         was_armed = self.wake_armed
         self.wake_armed = False
         self._refresh_voice_status()
+        if was_starting and not self._turn_in_flight:
+            self._set_voice_state(VOICE_READY)
         if listener is not None:
             try:
                 listener.stop()
@@ -1558,7 +1618,7 @@ class HermesStreamingApp(App):
             self._append_block(f"[error] /reload: {exc}")
             return
 
-        if self.wake_armed:
+        if self.wake_armed or self._wake_starting:
             self._disarm_wake(
                 "wake mode off — config reloaded; microphone released. "
                 "Run /wake on to arm again."
