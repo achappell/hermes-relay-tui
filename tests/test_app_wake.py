@@ -277,19 +277,16 @@ async def test_wake_on_opens_the_stream_and_starts_the_listener():
 async def test_wake_on_repaints_startup_while_model_load_is_running():
     fakes = SlowWakeFakes()
     app, _, _ = make_app(fakes=fakes)
-    release = threading.Timer(0.2, fakes.build_release.set)
-    release.daemon = True
-    release.start()
 
     async with app.run_test() as pilot:
         await pilot.pause()
         startup = asyncio.create_task(app._handle_wake_command("on"))
-        await asyncio.sleep(0.05)
 
-        assert fakes.build_started.is_set()
+        assert await asyncio.to_thread(fakes.build_started.wait, 1.0)
         assert app.voice_state == app_module.VOICE_STARTING
         assert "wake mode starting — loading wake model" in transcript_text(app)
 
+        fakes.build_release.set()
         await asyncio.wait_for(startup, 1.0)
         assert app.wake_armed is True
 
