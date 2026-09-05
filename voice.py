@@ -206,6 +206,8 @@ class AudioRecorder:
         return self._recording and self._has_spoken
 
     def _ensure_stream(self) -> None:
+        cleanup_stream = None
+        open_error = None
         with self._stream_lock:
             if self._stream_poisoned:
                 raise RuntimeError(
@@ -239,15 +241,40 @@ class AudioRecorder:
                 self._reader_thread = reader
                 reader.start()
             except Exception as exc:
-                if stream is not None:
-                    try:
-                        stream.close()
-                    except Exception:
-                        pass
-                raise RuntimeError(
-                    f"Failed to open audio input stream: {exc}. "
-                    "Check that a microphone is connected and accessible."
-                ) from exc
+                cleanup_stream = stream
+                open_error = exc
+        if cleanup_stream is not None:
+            try:
+                abort = getattr(cleanup_stream, "abort", None)
+                if callable(abort):
+                    abort()
+                else:
+                    cleanup_stream.stop()
+            except Exception:
+                logger.debug(
+                    "aborting the failed microphone stream failed",
+                    exc_info=True,
+                )
+            completed, close_error = _call_with_timeout(
+                cleanup_stream.close,
+                STREAM_CLOSE_TIMEOUT,
+            )
+            if close_error is not None:
+                logger.debug(
+                    "closing the failed microphone stream failed: %s",
+                    close_error,
+                )
+                with self._stream_lock:
+                    self._stream_poisoned = True
+            elif not completed:
+                logger.warning("failed microphone stream close timed out")
+                with self._stream_lock:
+                    self._stream_poisoned = True
+        if open_error is not None:
+            raise RuntimeError(
+                f"Failed to open audio input stream: {open_error}. "
+                "Check that a microphone is connected and accessible."
+            ) from open_error
 
     def _read_stream(self, stream: Any, stop: threading.Event, np: Any) -> None:
         """Read frames outside PortAudio's real-time thread."""

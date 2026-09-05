@@ -188,7 +188,12 @@ class PCMPlayer:
     def write(self, chunk: bytes) -> None:
         with self._lock:
             stream = self.stream
-            if stream is None or self._abort_requested.is_set():
+            if (
+                stream is None
+                or self._abort_requested.is_set()
+                or self._poisoned
+                or self._close_in_progress is stream
+            ):
                 return
             if not self.playing:
                 self._pending.extend(chunk)

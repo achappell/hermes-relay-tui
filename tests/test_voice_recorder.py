@@ -197,3 +197,35 @@ def test_microphone_does_not_close_while_reader_is_stuck(monkeypatch):
     assert stream.closed is False
     release_read.set()
     _wait_for(lambda: stream.closed, timeout=1.0)
+
+
+def test_failed_microphone_open_uses_bounded_cleanup(monkeypatch):
+    close_started = threading.Event()
+    release_close = threading.Event()
+
+    class BrokenInputStream:
+        def start(self):
+            raise RuntimeError("device disappeared")
+
+        def abort(self):
+            pass
+
+        def close(self):
+            close_started.set()
+            release_close.wait(1)
+
+    fake_sounddevice = types.SimpleNamespace(
+        InputStream=lambda **kwargs: BrokenInputStream(),
+        default=types.SimpleNamespace(samplerate=16000),
+    )
+    monkeypatch.setattr(voice, "_import_audio", lambda: (fake_sounddevice, np))
+    monkeypatch.setattr(voice, "STREAM_CLOSE_TIMEOUT", 0.01)
+
+    recorder = voice.AudioRecorder()
+    started = time.monotonic()
+    with pytest.raises(RuntimeError, match="device disappeared"):
+        recorder.open_for_listening()
+
+    assert close_started.is_set()
+    assert time.monotonic() - started < 0.5
+    release_close.set()

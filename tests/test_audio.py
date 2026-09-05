@@ -401,13 +401,14 @@ def test_timed_out_close_poisoned_stream_cannot_be_reopened(monkeypatch):
     close_started = threading.Event()
     release_close = threading.Event()
     streams = []
+    write_calls = []
 
     class BlockingCloseStream:
         def start(self):
             pass
 
         def write(self, chunk):  # noqa: ARG002 - mirrors sounddevice
-            pass
+            write_calls.append(chunk)
 
         def abort(self):
             pass
@@ -436,6 +437,8 @@ def test_timed_out_close_poisoned_stream_cannot_be_reopened(monkeypatch):
     assert player.active
     player.start((24000, 1, 2))
     assert len(streams) == 1
+    player.write(b"\x00\x01")
+    assert write_calls == []
 
     release_close.set()
     for _ in range(100):
