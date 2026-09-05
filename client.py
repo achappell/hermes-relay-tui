@@ -461,6 +461,12 @@ async def send_turn(
             if data is not None:
                 event["data"] = data
             yield event
+        elif kind == "speech_timing":
+            # Timing metadata accompanies streamed audio for clients that
+            # synchronize a transcript to playback. The TUI has no timing
+            # surface, so consume this known frame without presenting it as
+            # an unhandled server error.
+            logger.debug("speech_timing consumed turn_id=%s", turn_id)
         elif kind == "error":
             yield {
                 "type": "error",
