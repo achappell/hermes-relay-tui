@@ -10,13 +10,15 @@ The trial machine needs a working Homebrew installation:
 ```bash
 brew tap achappell/hermes-relay
 brew install achappell/hermes-relay/hermes-relay-tui
+hermes-relay install voice
 hermes-relay --help
 ```
 
-The formula installs Python 3.14, PortAudio, the Python dependencies, and the
-`hermes-relay` command into an isolated Homebrew-managed environment.
-It is pinned to the current source release tag; the Faster-Whisper model may download on
-the first microphone turn.
+The formula installs Python 3.14, PortAudio, and the typed client into an
+isolated Homebrew-managed environment. `hermes-relay install voice` then adds
+the microphone and speech-to-text dependencies with visible pip progress. The
+Faster-Whisper model is a separate setup step and may download when
+`hermes-relay setup` prepares it.
 
 No local Hermes gateway installation or Hermes virtualenv is required for this
 trial. The installed TUI is only a client; it connects to the configured
@@ -50,10 +52,9 @@ temporarily offline.
 
 ## Optional microphone voice-turn smoke test
 
-Only the local microphone path needs a Hermes source checkout. The TUI loads
-`LocalMicrophone` from `scripts/voice-session-client.py`; it does not need the
-Hermes gateway or the checkout's virtualenv installed or running. Microphone
-permission still belongs to the app that launches the terminal:
+The local microphone path is owned by the installed client. It does not need a
+Hermes source checkout or the gateway's virtualenv. Microphone permission still
+belongs to the app that launches the terminal:
 
 ```bash
 hermes-relay setup
@@ -68,7 +69,9 @@ Privacy & Security → Microphone**, then restart that app.
 
 ## Trial checklist
 
-- [ ] `brew install` completes on a clean Mac.
+- [ ] `brew install` completes on a clean Mac without installing the optional
+      voice or wake stack.
+- [ ] `hermes-relay install voice` completes with visible pip progress.
 - [ ] `hermes-relay --help` opens without a Python traceback.
 - [ ] A typed turn reaches Hermes and streams inline text.
 - [ ] *(Optional)* A Hermes checkout is saved by `hermes-relay setup`, and

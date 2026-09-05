@@ -17,10 +17,10 @@ venv/bin/python -m home_display.appliance --wake-enabled
 ```
 
 The `venv/bin/hermes-relay-home` console script only exists once the package
-itself is installed (`venv/bin/pip install -e '.[home]'`). A venv built from
-`requirements-dev.txt`, or one holding an older release, will not have it.
-
-Either way the wake-word engine must be present — the `home` extra brings it.
+itself is installed. For an installed package, `hermes-relay install` adds the
+voice and wake dependencies with visible progress. A venv built from
+`requirements-dev.txt` already has the voice stack, but still needs the wake
+extra if it is not using the checkout's package metadata.
 Without it the appliance reports the missing dependency and exits rather than
 starting deaf. Run `npm --prefix home_display/web run build` only if the
 browser shell has changed.
@@ -45,7 +45,7 @@ It prints a loopback URL. Open it in a browser — that is the kitchen display.
 1. **Wake to spoken answer.** Say the phrase, then ask a question. Confirm a
    spoken reply through the speaker, with no keyboard touched at any point.
 2. **The display matches the hardware.** Watch it move `idle` → `listening` →
-   `thinking` → `speaking` → `idle`. `speaking` must appear only while audio is
+   `thinking` → `speaking` → `listening` → `idle` (after follow-up silence). `speaking` must appear only while audio is
    actually coming out; if playback cannot open, the screen must say
    `buffering` instead.
 3. **A misfire is silent.** Trigger a detection (a phrase-alike, or the radio)
@@ -165,3 +165,28 @@ That is a relay bug, not a client one.
 Barge-in stays off (`--wake-barge-in`) until HOME-05 delivers echo
 cancellation: with the speaker feeding the microphone, the unit hears itself.
 Idle photos are HOME-04, and appliance boot and recovery are HOME-06.
+
+
+## HOME-11 follow-up smoke
+
+Run on the appliance with the HOME-05 isolated audio route available. These
+checks are pending for HOME-11; earlier HOME-09 evidence does not cover them.
+
+1. Launch with `--wake-followup-seconds 12`. Wake once and ask a question.
+   After playback finishes, confirm Listening appears with no second wake
+   acknowledgement. Ask a follow-up: exactly one additional answer, then idle
+   with no third capture. Repeat with the default eight-second window.
+2. Stay silent after the initial answer. Confirm the prior answer stays visible
+   and the display returns to idle after the configured window, with no turn
+   sent or error sound. Say the wake phrase again to confirm normal detection.
+3. Say exactly `stop` during initial capture, then during a follow-up in a
+   separate run. Neither sends that text or plays a capture-complete tone.
+4. Run against `scripts/fake_relay.py --fail`, then `--drop`. Neither a relay
+   error nor connection loss should open follow-up. After recovery, wake again.
+5. Stop the appliance with Ctrl+C during follow-up capture and during response
+   playback. Confirm prompt shell return, no later capture or turn, and release
+   of the microphone and output device.
+
+Automated coverage uses fake session, recorder, player, listener, earcons, and
+display components for success, silence, stop, error, interruption, disconnect,
+independent listening deadlines, capture failure, and shutdown during follow-up.

@@ -38,7 +38,8 @@ def prepare_stt_model(model_name: str) -> str:
         from faster_whisper import download_model
     except ImportError as exc:
         raise RuntimeError(
-            "local voice dependencies are unavailable; install requirements-dev.txt"
+            "local voice dependencies are unavailable; install them with: "
+            "hermes-relay install voice"
         ) from exc
     return str(download_model(model))
 

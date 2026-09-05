@@ -559,3 +559,36 @@ def test_the_coordinator_works_with_no_acknowledgement_wiring():
 
     assert coordinator.on_wake() is True
     assert session.turns == [("what is the weather", "local")]
+
+
+def test_follow_up_uses_its_own_listening_deadline():
+    clock = [0.0]
+    states = []
+
+    def capture_follow_up():
+        clock[0] = 9.0
+        coordinator.tick()
+        assert coordinator.state == handsfree.CAPTURING
+        clock[0] = 12.0
+        coordinator.tick()
+        assert coordinator.state == handsfree.IDLE
+        return ""
+
+    coordinator = handsfree.HandsFreeCoordinator(
+        object(), capture=lambda: "hello", send=lambda text: None,
+        follow_up_capture=capture_follow_up, listen_timeout=8.0,
+        follow_up_listen_timeout=12.0, now=lambda: clock[0],
+        on_state_change=states.append,
+    )
+    coordinator.on_wake()
+    assert states[-1] == handsfree.IDLE
+
+
+def test_explicit_unsuccessful_send_does_not_invite_follow_up():
+    captures = []
+    coordinator = handsfree.HandsFreeCoordinator(
+        object(), capture=lambda: "hello", send=lambda text: False,
+        follow_up_capture=lambda: captures.append(True) or "again",
+    )
+    coordinator.on_wake()
+    assert captures == []

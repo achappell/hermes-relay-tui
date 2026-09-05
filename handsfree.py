@@ -70,6 +70,7 @@ class HandsFreeCoordinator:
         send: Callable[[str], Any],
         follow_up_capture: Callable[[], str] | None = None,
         listen_timeout: float = DEFAULT_LISTEN_TIMEOUT,
+        follow_up_listen_timeout: float | None = None,
         speech_detected: Callable[[], bool] | None = None,
         stop_playback: Callable[[], Any] | None = None,
         acknowledge: Callable[[], Any] | None = None,
@@ -84,6 +85,8 @@ class HandsFreeCoordinator:
         self._send = send
         self._follow_up_capture = follow_up_capture
         self._listen_timeout = listen_timeout
+        self._follow_up_listen_timeout = follow_up_listen_timeout
+        self._active_listen_timeout = listen_timeout
         self._speech_detected = speech_detected
         self._stop_playback = stop_playback
         self._acknowledge = acknowledge
@@ -193,7 +196,7 @@ class HandsFreeCoordinator:
         delivered = self._deliver(transcript)
         if delivered and self._follow_up_capture is not None:
             with self._lock:
-                self._begin_capture()
+                self._begin_capture(follow_up=True)
             try:
                 follow_up = self._follow_up_capture()
             except Exception:
@@ -208,7 +211,12 @@ class HandsFreeCoordinator:
                 self._deliver(follow_up)
         return True
 
-    def _begin_capture(self) -> None:
+    def _begin_capture(self, *, follow_up: bool = False) -> None:
+        self._active_listen_timeout = (
+            self._follow_up_listen_timeout
+            if follow_up and self._follow_up_listen_timeout is not None
+            else self._listen_timeout
+        )
         self._capture_started = self._now()
         self._set_state(CAPTURING)
 
@@ -236,7 +244,7 @@ class HandsFreeCoordinator:
         self._set_state(SENDING)
         delivered = True
         try:
-            self._send(text)
+            delivered = self._send(text) is not False
         except Exception:
             logger.debug("hands-free send failed", exc_info=True)
             delivered = False
@@ -258,7 +266,7 @@ class HandsFreeCoordinator:
                         return
                 except Exception:
                     logger.debug("speech check failed", exc_info=True)
-            if self._now() - self._capture_started < self._listen_timeout:
+            if self._now() - self._capture_started < self._active_listen_timeout:
                 return
             self._set_state(IDLE)
 
@@ -315,6 +323,7 @@ def build_hands_free(
         # blocks until it is finished.
         send=send or session.send_turn,
         follow_up_capture=follow_up_capture,
+        follow_up_listen_timeout=getattr(args, "wake_followup_seconds", 8.0),
         speech_detected=speech_detected,
         listen_timeout=getattr(args, "wake_listen_timeout", DEFAULT_LISTEN_TIMEOUT),
         barge_in=getattr(args, "wake_barge_in", False),

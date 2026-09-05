@@ -17,7 +17,7 @@ Budget about 35 minutes. Parts B and C need a kitchen; part A does not.
 ## Prerequisites
 
 ```bash
-venv/bin/pip install -e '.[home]'      # brings the wake-word engine
+hermes-relay install                   # installs voice and wake support
 npm --prefix home_display/web run build  # only if the browser shell changed
 ```
 
@@ -96,7 +96,7 @@ With wake mode armed:
 
 In a venv without the `wake` extra:
 
-- [ ] `/wake on` prints a message naming `pip install 'hermes-relay-tui[wake]'`.
+- [ ] `/wake on` prints a message naming `hermes-relay install`.
 - [ ] No traceback, and the client keeps running.
 
 ---

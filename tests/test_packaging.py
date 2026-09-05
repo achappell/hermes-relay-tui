@@ -103,20 +103,17 @@ def test_homebrew_formula_links_the_kiosk_entry_point_only_when_present():
     assert 'if (venv / "bin/hermes-relay-home").exist?' in formula
 
 
-def test_homebrew_formula_resigns_relinked_bundled_dylibs():
-    """DIST-02: Homebrew rewrites Mach-O install names across the keg, which
-    invalidates the signatures PyAV ships on its bundled FFmpeg dylibs. macOS
-    then SIGKILLs any process importing av or faster_whisper, killing local
-    speech-to-text with no traceback."""
+def test_homebrew_formula_defers_optional_voice_dependencies():
+    """The base keg must not install PyAV or Faster-Whisper.
+
+    Those native dependencies are installed visibly by ``hermes-relay install``
+    after Homebrew has finished its own relocation pass.
+    """
     formula = rendered_formula()
 
-    assert "def post_install" in formula
-    assert '"codesign", "--force", "--sign", "-"' in formula
-    # The affected dylibs sit in hidden ".dylibs" directories, which the
-    # default ** glob skips.
-    assert "File::FNM_DOTMATCH" in formula
-    # The formula's own test block must exercise the imports that break.
-    assert "import av, faster_whisper" in formula
+    assert "def post_install" not in formula
+    assert "hermes-relay install" in formula
+    assert "import av, faster_whisper" not in formula
 
 
 def test_release_automation_tracks_the_python_package():
@@ -205,10 +202,24 @@ def test_wake_dependencies_live_in_an_optional_extra():
     assert "onnxruntime" not in base
 
 
+def test_voice_dependencies_live_in_an_optional_extra():
+    metadata = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    extras = metadata["project"]["optional-dependencies"]
+    base = " ".join(metadata["project"]["dependencies"])
+
+    voice_extra = " ".join(extras["voice"])
+    assert "sounddevice" in voice_extra
+    assert "numpy" in voice_extra
+    assert "faster-whisper" in voice_extra
+    assert "sounddevice" not in base
+    assert "numpy" not in base
+    assert "faster-whisper" not in base
+
+
 def test_the_home_extra_pulls_what_the_appliance_needs():
     """A plain install gives the home entry point without a wake-word engine,
     so the appliance needs an install line that names its own dependencies."""
     metadata = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     extras = metadata["project"]["optional-dependencies"]
 
-    assert "hermes-relay-tui[wake]" in extras["home"]
+    assert "hermes-relay-tui[voice,wake]" in extras["home"]
