@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.7.0 (2026-09-05)
+
+<!-- Release notes generated using configuration in .github/release.yml at main -->
+
+## What's Changed
+### Other Changes
+* VOICE-11: show a standing marker while the microphone is held open by @achappell in https://github.com/achappell/hermes-relay-tui/pull/53
+* VOICE-12: disarm wake mode across reload and reconnect by @achappell in https://github.com/achappell/hermes-relay-tui/pull/55
+* UX-01: polish TUI state and layout surfaces by @achappell in https://github.com/achappell/hermes-relay-tui/pull/56
+* feat: use voice-session interrupt events by @achappell in https://github.com/achappell/hermes-relay-tui/pull/57
+* feat: stop wake follow-up locally by @achappell in https://github.com/achappell/hermes-relay-tui/pull/58
+* VOICE-15: make wake startup non-blocking by @achappell in https://github.com/achappell/hermes-relay-tui/pull/59
+* feat: add spoken barge-in to wake mode by @achappell in https://github.com/achappell/hermes-relay-tui/pull/60
+* fix: make audio shutdown deterministic by @achappell in https://github.com/achappell/hermes-relay-tui/pull/70
+
+
+**Full Changelog**: https://github.com/achappell/hermes-relay-tui/compare/v0.6.2...v0.7.0
+
 ## 0.6.2 (2026-09-02)
 
 <!-- Release notes generated using configuration in .github/release.yml at main -->
