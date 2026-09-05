@@ -82,7 +82,7 @@ OPENWAKEWORD_CHUNK_SAMPLES = 1280
 
 _INSTALL_HINT = (
     "Wake-word support needs the optional 'wake' extra. "
-    "Install it with: pip install 'hermes-relay-tui[wake]'"
+    "Install it with: hermes-relay install"
 )
 
 

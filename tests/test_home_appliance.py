@@ -32,6 +32,8 @@ class FakeSession:
         self.connect_errors = connect_errors
         self.transcript = "what is the weather"
         self.turn_index = 0
+        self.capture_timeouts = []
+        self.follow_up = ""
 
     async def connect(self):
         self.connects += 1
@@ -55,8 +57,9 @@ class FakeSession:
 
         return _events()
 
-    def capture_voice(self) -> str:
-        return self.transcript
+    def capture_voice(self, *, wait_timeout=None) -> str:
+        self.capture_timeouts.append(wait_timeout)
+        return self.follow_up if wait_timeout is not None else self.transcript
 
     def cancel_voice(self) -> None:
         self.cancels += 1
@@ -91,6 +94,9 @@ class FakePlayer:
     def write(self, chunk: bytes) -> None:
         self.written.extend(chunk)
         self.playing = True
+
+    def abort(self) -> None:
+        self.close()
 
     def close(self) -> None:
         self.stream = None
@@ -149,6 +155,9 @@ class FakeEarcons:
         self.failure = None
         self._log = log
 
+    def abort(self) -> None:
+        pass
+
     def play(self, name: str) -> None:
         if not self.enabled:
             return
@@ -191,6 +200,7 @@ def _build(appliance_state: dict):
         *,
         on_state_change=None,
         send=None,
+        follow_up_capture=None,
         speech_detected=None,
         stop_playback=None,
         acknowledge=None,
@@ -201,6 +211,8 @@ def _build(appliance_state: dict):
             session,
             capture=session.capture_voice,
             send=send,
+            follow_up_capture=follow_up_capture,
+            follow_up_listen_timeout=getattr(args, "wake_followup_seconds", 8.0),
             speech_detected=speech_detected,
             acknowledge=acknowledge,
             capture_finished=capture_finished,
@@ -859,4 +871,85 @@ async def test_a_dead_speaker_costs_the_chirp_and_nothing_else():
 
     await _run_until_idle(appliance, state)
 
+    assert state["session"].turns == ["what is the weather"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("follow_up, expected", [("and tomorrow?", ["what is the weather", "and tomorrow?"]), ("", ["what is the weather"]), (" Stop! ", ["what is the weather"])])
+async def test_home_opens_one_bounded_follow_up_without_another_wake(follow_up, expected):
+    session = FakeSession()
+    session.follow_up = follow_up
+    publisher = RecordingPublisher()
+    appliance, state = make_appliance(session=session, args=_args(wake_followup_seconds=12.0), publisher=publisher)
+    await _run_until_idle(appliance, state)
+    assert session.turns == expected
+    assert session.capture_timeouts == [None, 12.0]
+    assert state["earcons"].played.count("wake") == 1
+    assert state["earcons"].played.count("capture_done") == len(expected)
+    assert publisher.sequence.count("listening") == 2
+    assert publisher.sequence[-1] == "idle"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("script", [
+    [{"type": "error", "error": "failed"}, {"type": "turn_end"}],
+    [{"type": "turn_interrupted"}, {"type": "turn_end"}],
+    [{"type": "audio_abort"}, {"type": "turn_end"}],
+    [ConnectionError("lost")],
+    [],
+])
+async def test_unsuccessful_home_turn_never_opens_follow_up(script):
+    session = FakeSession(script)
+    session.follow_up = "must not send"
+    appliance, state = make_appliance(session=session)
+    await _run_until_idle(appliance, state)
+    assert session.capture_timeouts == [None]
+    assert session.turns == ["what is the weather"]
+
+
+@pytest.mark.asyncio
+async def test_shutdown_cancels_follow_up_before_joining_listener():
+    entered = threading.Event()
+    cancelled = threading.Event()
+
+    class WaitingSession(FakeSession):
+        def capture_voice(self, *, wait_timeout=None):
+            if wait_timeout is None:
+                return self.transcript
+            entered.set()
+            assert cancelled.wait(2), "shutdown did not cancel capture"
+            return "late transcript"
+
+        def cancel_voice(self):
+            super().cancel_voice()
+            cancelled.set()
+
+    session = WaitingSession()
+    appliance, state = make_appliance(session=session)
+    task = asyncio.create_task(appliance.run())
+    assert await _wait_for(lambda: session.connects)
+    worker = asyncio.create_task(asyncio.to_thread(state["coordinator"].on_wake))
+    assert await _wait_for(entered.is_set)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    await asyncio.wait_for(worker, 2)
+    assert cancelled.is_set()
+    assert state["earcons"].played == ["wake", "capture_done"]
+    assert session.turns == ["what is the weather"]
+    assert state["listener"].paused[-1] is True
+    assert appliance._recorder.shutdowns == 1
+
+
+@pytest.mark.asyncio
+async def test_follow_up_capture_failure_returns_to_wake_mode():
+    class BrokenFollowUp(FakeSession):
+        def capture_voice(self, *, wait_timeout=None):
+            if wait_timeout is not None:
+                raise RuntimeError("capture failed")
+            return self.transcript
+
+    appliance, state = make_appliance(session=BrokenFollowUp())
+    await _run_until_idle(appliance, state)
+    assert state["coordinator"].state == handsfree.IDLE
     assert state["session"].turns == ["what is the weather"]

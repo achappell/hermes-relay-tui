@@ -27,7 +27,7 @@ This is a client for the existing Hermes voice-session channel. It does not run 
 - A bearer token for that endpoint
 - A working audio input/output device for voice and playback
 
-The project virtualenv installs its own local voice stack (`PyYAML`, `sounddevice`, `numpy`, and `faster-whisper`) — relay-tui owns microphone capture and local transcription directly, with no dependency on a Hermes checkout.
+The base install includes the typed client and configuration support. Local microphone capture and speech-to-text are optional extras, so a package or Homebrew install stays quick; `hermes-relay install` adds them with visible pip progress when you want voice.
 
 ## Install
 
@@ -36,9 +36,17 @@ python3.14 -m venv venv
 venv/bin/pip install -r requirements-dev.txt
 ```
 
-That installs the local STT dependencies as well. `hermes-relay setup` also
-downloads the selected Faster-Whisper model so the first microphone turn does
-not perform setup inside the TUI.
+The development requirements include the voice stack for a checkout. For an
+installed package, use the same explicit, visible step instead:
+
+```bash
+hermes-relay install voice
+```
+
+`hermes-relay install` installs all optional voice and household-appliance
+dependencies. It does not download a speech model; `hermes-relay setup`
+prepares the selected Faster-Whisper model separately so the first microphone
+turn does not perform setup inside the TUI.
 
 ### Homebrew install
 
@@ -47,8 +55,14 @@ The public Homebrew tap is ready:
 ```bash
 brew tap achappell/hermes-relay
 brew install achappell/hermes-relay/hermes-relay-tui
+hermes-relay install voice
 hermes-relay --help
 ```
+
+Homebrew installs the small typed client first. `hermes-relay install voice`
+then installs microphone capture and local speech-to-text while pip's progress
+remains visible. Use `hermes-relay install` when this machine is also a
+household appliance and needs the wake-word stack.
 
 On a new computer, use the guided setup before launching the client:
 
@@ -119,6 +133,10 @@ Two upgrades are worth knowing about:
 - Releases before `home_display` shipped have no `hermes-relay-home` command.
   Homebrew links it automatically once you upgrade to a release that provides
   it — no reinstall needed.
+- The base Homebrew keg is intentionally separate from optional voice support.
+  After a Homebrew upgrade, rerun `hermes-relay install voice` (or
+  `hermes-relay install` for the appliance) if the new keg needs its optional
+  packages rebuilt.
 - If `stt_model` is absent from `config.yaml` (installs predating guided model
   setup), the first `Ctrl+R` after upgrading downloads the model. Run
   `hermes-relay setup` once to move that download out of the TUI.
@@ -415,8 +433,9 @@ terminal install should not pull an ONNX runtime onto a laptop that will never
 hear a wake word:
 
 ```bash
-# On the household appliance — installs everything the home unit needs.
-pip install 'hermes-relay-tui[home]'
+# On the household appliance — installs everything the home unit needs, with
+# progress visible in the terminal.
+hermes-relay install
 
 # Then run the appliance: wake phrase in, spoken answer out, display in step.
 hermes-relay-home --wake-enabled
@@ -424,8 +443,9 @@ hermes-relay-home --wake-enabled
 # From a checkout, with no install, the same thing:
 venv/bin/python -m home_display.appliance --wake-enabled
 
-# On a laptop, to experiment with detection without running the appliance.
-pip install 'hermes-relay-tui[wake]'
+# On a laptop, install all optional support if you really want to experiment
+# with wake detection.
+hermes-relay install
 python scripts/wake_check.py
 
 # In the terminal client, hands-free is armed in-session, never at launch.
@@ -444,11 +464,11 @@ is how the real loop gets validated — including
 tested with no Hermes at all.
 
 **A plain install does not include this.** `pip install hermes-relay-tui` and
-`brew install hermes-relay-tui` give you the `hermes-relay-home` command
-and the bundled models, but no wake-word engine, so the listener cannot start.
-That is deliberate: the engine brings an ONNX runtime that a laptop running the
-terminal client would never use. The appliance names its own dependencies with
-the `home` extra.
+`brew install hermes-relay-tui` give you the typed client and the
+`hermes-relay-home` entry point, but no microphone, speech-to-text, or wake-word
+runtime. That is deliberate: those packages are large and the ONNX runtime is
+irrelevant to a laptop running text mode. Run `hermes-relay install voice` for
+local voice, or `hermes-relay install` for the full household appliance.
 
 Detection is entirely on-device. No audio leaves the machine to decide whether
 the phrase was spoken.
@@ -515,6 +535,14 @@ initial wake capture also treats `stop` as a local cancel; `Ctrl+R` remains an
 ordinary voice turn. Set the window with `--wake-followup-seconds` or
 `VOICE_SESSION_WAKE_FOLLOWUP_SECONDS`. The normal TUI silence endpoint is 1.5
 seconds, so it no longer waits three seconds after the user stops talking.
+
+The Home appliance also opens exactly one follow-up window after a successful
+wake-triggered answer, using the same `--wake-followup-seconds` setting. It
+shows Listening without another wake tone and retains the answer while waiting.
+Silence or exact spoken `stop` returns to wake detection; a follow-up answer
+does not open another window. Failed or interrupted turns do not invite a
+follow-up. The shared microphone remains open for wake detection while the
+appliance runs; shutdown cancels capture before releasing the recorder.
 
 With `--wake-barge-in`, the armed TUI also taps the same microphone stream while
 Hermes is generating, buffering, or speaking. A calibrated, windowed energy
@@ -596,7 +624,7 @@ and prints a live score. Nothing is sent to Hermes and no turn is captured — i
 only answers "does it hear me, and does it hear things that are not me".
 
 ```bash
-pip install 'hermes-relay-tui[wake]'
+hermes-relay install
 
 # Watch the meter and say the phrase.
 python scripts/wake_check.py
@@ -698,7 +726,10 @@ Run `hermes-relay setup`, set `VOICE_SESSION_TOKEN`, pass `--token`, or point
 
 ### Microphone capture cannot start
 
-Check that the project virtualenv was refreshed with `venv/bin/pip install -r requirements-dev.txt` — `voice.py` needs `sounddevice`, `numpy`, and `faster-whisper` installed directly in the TUI's own Python environment.
+For a Homebrew or package install, run `hermes-relay install voice` and wait
+for pip to finish. From a checkout, refresh the development environment with
+`venv/bin/pip install -r requirements-dev.txt`. `voice.py` needs `sounddevice`,
+`numpy`, and `faster-whisper` in the TUI's own Python environment.
 
 On macOS, also grant microphone access to the app that launches the TUI (Terminal, iTerm, VS Code, or your IDE) under **System Settings → Privacy & Security → Microphone**, then fully restart that app. `Error querying device -1` means PortAudio cannot see an accessible default input device; check the selected input in **System Settings → Sound → Input** as well.
 

@@ -150,6 +150,21 @@ def test_app_main_dispatches_setup_subcommand(monkeypatch):
     assert called == [["--no-check"]]
 
 
+def test_app_main_dispatches_install_subcommand(monkeypatch):
+    called = []
+
+    def fake_install(argv):
+        called.append(argv)
+        return 9
+
+    monkeypatch.setattr(app, "install_crash_logging", lambda: None)
+    monkeypatch.setattr("installer.run_install", fake_install)
+    monkeypatch.setattr(sys, "argv", ["hermes-relay", "install", "voice"])
+
+    assert app.main() == 9
+    assert called == [["voice"]]
+
+
 def test_app_main_installs_crash_logging_before_dispatch(monkeypatch):
     installed = []
 

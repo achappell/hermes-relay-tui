@@ -135,7 +135,7 @@ def test_missing_dependency_names_the_extra():
     with pytest.raises(wake.MissingWakeDependency) as excinfo:
         wake.load_openwakeword_engine(_import_module=_raise_import_error)
 
-    assert "hermes-relay-tui[wake]" in str(excinfo.value)
+    assert "hermes-relay install" in str(excinfo.value)
 
 
 class ListChunker:

@@ -1160,7 +1160,7 @@ class HermesStreamingApp(App):
         if isinstance(error, wake.MissingWakeDependency):
             return (
                 "the wake-word engine is not installed. "
-                "Install it with: pip install 'hermes-relay-tui[wake]'"
+                "Install it with: hermes-relay install"
             )
         return str(error)
 
@@ -2830,6 +2830,10 @@ def main() -> int:
         from setup_wizard import run_setup
 
         return run_setup(sys.argv[2:])
+    if len(sys.argv) > 1 and sys.argv[1] == "install":
+        from installer import run_install
+
+        return run_install(sys.argv[2:])
     parser = config.build_arg_parser()
     args = parser.parse_args()
     config.ensure_default_config_file(args.config)

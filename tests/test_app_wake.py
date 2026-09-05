@@ -1053,7 +1053,7 @@ async def test_a_missing_wake_extra_names_the_install_command():
         await app._handle_wake_command("on")
 
         text = transcript_text(app)
-        assert "hermes-relay-tui[wake]" in text
+        assert "hermes-relay install" in text
         assert app.wake_armed is False
 
 

@@ -145,6 +145,8 @@ class Appliance:
         self._connected = False
         self._is_listening: bool | None = None
         self._stopping = threading.Event()
+        self._turn_future = None
+        self._follow_up_capturing = False
         self.info: Any = None
 
     # ---- display -------------------------------------------------------
@@ -193,7 +195,11 @@ class Appliance:
         """
         if self._listener is None:
             return
-        listening = self._connected and self._coordinator.state == handsfree.IDLE
+        listening = (
+            self._connected and not self._stopping.is_set()
+            and not self._follow_up_capturing
+            and self._coordinator.state == handsfree.IDLE
+        )
         if listening == self._is_listening:
             return
         self._is_listening = listening
@@ -205,6 +211,11 @@ class Appliance:
     def _on_coordinator_state(self, state: str) -> None:
         """Called on the listener thread as the capture half of a turn moves."""
         self._set_listening()
+        if self._stopping.is_set():
+            return
+        if not self._connected:
+            self._publish("disconnected")
+            return
         if state == handsfree.ACKNOWLEDGING:
             # A new question replaces the last answer: leaving the previous
             # response on screen while listening claims a conversation that
@@ -213,7 +224,7 @@ class Appliance:
             self._publish("heard", response_text="")
             return
         if state == handsfree.CAPTURING:
-            self._publish("listening", response_text="")
+            self._publish("listening")
             return
         display = DISPLAY_FOR_COORDINATOR.get(state)
         if display is not None:
@@ -245,7 +256,22 @@ class Appliance:
 
     # ---- turn ----------------------------------------------------------
 
-    def _send(self, text: str) -> None:
+    def _capture_follow_up(self) -> str:
+        if self._stopping.is_set() or not self._connected:
+            return ""
+        self._follow_up_capturing = True
+        try:
+            transcript = self._session.capture_voice(
+                wait_timeout=float(getattr(self.args, "wake_followup_seconds", 8.0))
+            )
+            if self._stopping.is_set() or not self._connected:
+                return ""
+            return transcript
+        finally:
+            self._follow_up_capturing = False
+            self._set_listening()
+
+    def _send(self, text: str) -> bool:
         """Run one turn on the event loop, blocking the listener thread.
 
         Blocking is the point. The coordinator is single-flight: while this
@@ -255,15 +281,23 @@ class Appliance:
         loop = self._loop
         if loop is None:
             raise RuntimeError("the appliance loop is not running")
+        if self._stopping.is_set() or not self._connected:
+            return False
         future = asyncio.run_coroutine_threadsafe(self._run_turn(text), loop)
-        future.result()
+        self._turn_future = future
+        try:
+            return future.result() and not self._stopping.is_set() and self._connected
+        finally:
+            self._turn_future = None
 
-    async def _run_turn(self, text: str) -> None:
+    async def _run_turn(self, text: str) -> bool:
         response = ""
         file_audio = bytearray()
         file_format: tuple[int, int, int] | None = None
         speaking = False
         spoke = False
+        completed = False
+        failed = False
 
         def open_playback(fmt: tuple[int, int, int]) -> bool:
             """Open the output device. Not the same as making a sound."""
@@ -293,6 +327,8 @@ class Appliance:
         try:
             async for event in self._session.send_turn(text, stt_source="local"):
                 kind = event.get("type")
+                if failed and kind != "turn_end":
+                    continue
                 if kind == "text_delta":
                     response += str(event.get("text") or "")
                     self._publish_response(response, speaking, spoke)
@@ -359,11 +395,17 @@ class Appliance:
                             enter_speaking()
                         await self._finish_playback()
                         speaking = False
+                elif kind in ("audio_abort", "turn_interrupted"):
+                    failed = True
+                    await asyncio.to_thread(self._player.abort)
+                    speaking = False
                 elif kind == "error":
+                    failed = True
                     self._publish(
                         "error", status_text=str(event.get("error") or "Hermes error")
                     )
                 elif kind == "turn_end":
+                    completed = True
                     break
         except asyncio.CancelledError:
             raise
@@ -379,10 +421,13 @@ class Appliance:
                 response_text="",
                 status_text=STATUS_TEXT["disconnected"],
             )
+            self._connected = False
+            self._set_listening()
             self._request_reconnect()
             raise RuntimeError("the turn ended without a reply") from error
         finally:
             await self._finish_playback()
+        return completed and not failed
 
     def _speech_detected(self) -> bool:
         """Has anyone actually started talking since the wake phrase?
@@ -496,6 +541,7 @@ class Appliance:
             self.args,
             on_state_change=self._on_coordinator_state,
             send=self._send,
+            follow_up_capture=self._capture_follow_up,
             speech_detected=self._speech_detected,
             stop_playback=self._player.close,
             acknowledge=self._acknowledge_wake,
@@ -548,8 +594,16 @@ class Appliance:
 
     async def aclose(self) -> None:
         self._stopping.set()
+        self._connected = False
+        self._set_listening()
+        if self._session is not None:
+            self._session.cancel_voice()
+        if self._turn_future is not None:
+            self._turn_future.cancel()
+        if self._earcons is not None:
+            await asyncio.to_thread(self._earcons.abort)
         if self._listener is not None:
-            self._listener.stop()
+            await asyncio.to_thread(self._listener.stop)
         if self._recorder is not None:
             with contextlib.suppress(Exception):
                 await asyncio.to_thread(self._recorder.shutdown)

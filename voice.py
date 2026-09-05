@@ -5,7 +5,7 @@ imported its recorder/transcription helpers straight out of the Hermes
 checkout's `tools/` package. That reached into an upstream fork's internal
 tooling with no stability contract, so relay-tui now owns a minimal capture
 + transcribe stack instead: sounddevice for recording with silence-based
-endpointing, faster-whisper (already a relay-tui dependency) for local
+endpointing, faster-whisper (installed by the optional voice extra) for local
 transcription.
 """
 
@@ -395,7 +395,8 @@ class AudioRecorder:
             ) from exc
         except ImportError as exc:
             raise RuntimeError(
-                "Voice mode requires sounddevice and numpy."
+                "Voice mode requires optional audio support. "
+                "Install it with: hermes-relay install voice"
             ) from exc
 
         with self._lock:
@@ -668,7 +669,13 @@ def _load_local_model(model_name: str):
 
     with _local_model_lock:
         if _local_model is None or _local_model_name != model_name:
-            from faster_whisper import WhisperModel
+            try:
+                from faster_whisper import WhisperModel
+            except ImportError as exc:
+                raise RuntimeError(
+                    "Voice mode requires optional speech-to-text support. "
+                    "Install it with: hermes-relay install voice"
+                ) from exc
 
             logger.info("Loading faster-whisper model '%s'...", model_name)
             _local_model = WhisperModel(model_name, device="cpu", compute_type="int8")

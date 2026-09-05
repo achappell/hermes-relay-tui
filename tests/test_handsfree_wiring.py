@@ -47,13 +47,13 @@ def test_a_missing_extra_raises_a_message_naming_the_extra():
     def _no_engine(_path):
         raise wake.MissingWakeDependency(
             "Wake-word support needs the optional 'wake' extra. "
-            "Install it with: pip install 'hermes-relay-tui[wake]'"
+            "Install it with: hermes-relay install"
         )
 
     with pytest.raises(wake.MissingWakeDependency) as excinfo:
         handsfree.build_hands_free(FakeSession(), _args(), _load_engine=_no_engine)
 
-    assert "hermes-relay-tui[wake]" in str(excinfo.value)
+    assert "hermes-relay install" in str(excinfo.value)
 
 
 def _frames(count):

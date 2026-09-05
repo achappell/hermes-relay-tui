@@ -45,7 +45,9 @@ the generated formula commit.
 ## Why there are no native binaries
 
 OpenUsage can ship standalone binaries because it is a Go application. Hermes
-Streaming TUI is a Python client whose voice path needs Python 3.14, PortAudio,
-Faster-Whisper, and a local Hermes checkout. A wheel/source distribution plus
-Homebrew's isolated Python environment is the honest package boundary; native
-binary bundling is a separate project if that runtime boundary changes.
+Streaming TUI is a Python client whose optional voice path needs Python 3.14,
+PortAudio, and Faster-Whisper. A wheel/source distribution plus Homebrew's
+isolated Python environment is the honest package boundary; native binary
+bundling is a separate project if that runtime boundary changes. The base
+Homebrew install stays small, and `hermes-relay install` owns the longer
+optional dependency step with visible progress.

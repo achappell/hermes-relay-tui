@@ -12,14 +12,20 @@ authors = [{ name = "Amanda Chappell" }]
 dependencies = [
   "textual>=8.2",
   "websockets>=12.0",
-  "sounddevice>=0.4.6",
   "python-dotenv>=1.0.1",
   "PyYAML>=6.0",
+]
+
+[project.optional-dependencies]
+# Local microphone capture and speech-to-text. Kept out of the base install so
+# Homebrew can install the typed client quickly; `hermes-relay install voice`
+# performs this visible, on-demand step.
+voice = [
+  "sounddevice>=0.4.6",
   "numpy>=2.0",
   "faster-whisper>=1.2.1",
 ]
 
-[project.optional-dependencies]
 # Appliance-only. AGENTS.md keeps front-end-specific dependencies out of the
 # base list so a terminal install does not pull an ONNX runtime.
 wake = [
@@ -31,7 +37,7 @@ wake = [
 # different deployment from the terminal client and gets its own install line;
 # a laptop running the TUI should never carry an ONNX runtime it will not use.
 home = [
-  "hermes-relay-tui[wake]",
+  "hermes-relay-tui[voice,wake]",
 ]
 
 [project.scripts]
@@ -40,7 +46,7 @@ hermes-relay-home = "home_display.appliance:main"
 hermes-relay-home-demo = "home_display.demo:main"
 
 [tool.setuptools]
-py-modules = ["app", "attachments", "audio", "clipboard", "client", "commands", "config", "diagnostics", "earcons", "history", "mic", "session", "setup_wizard", "shell", "transcript", "voice", "wake", "handsfree"]
+py-modules = ["app", "attachments", "audio", "clipboard", "client", "commands", "config", "diagnostics", "earcons", "history", "installer", "mic", "session", "setup_wizard", "shell", "transcript", "voice", "wake", "handsfree"]
 include-package-data = false
 
 [tool.setuptools.packages.find]
