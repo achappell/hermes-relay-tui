@@ -10,6 +10,7 @@ import time
 import types
 
 import numpy as np
+import pytest
 
 import voice
 
@@ -135,3 +136,64 @@ def test_microphone_shutdown_does_not_wait_forever_for_native_close(monkeypatch)
     assert close_started.is_set()
     assert elapsed < 0.5
     release_close.set()
+
+
+def test_timed_out_microphone_close_poisoned_stream_cannot_reopen(monkeypatch):
+    streams = _fake_audio(monkeypatch)
+    recorder = voice.AudioRecorder()
+    recorder.open_for_listening()
+    stream = streams[0]
+    close_started = threading.Event()
+    release_close = threading.Event()
+
+    def blocking_close():
+        close_started.set()
+        release_close.wait(1)
+
+    stream.close = blocking_close
+    monkeypatch.setattr(voice, "STREAM_CLOSE_TIMEOUT", 0.01)
+
+    recorder.shutdown()
+
+    assert close_started.is_set()
+    with pytest.raises(RuntimeError, match="failed shutdown"):
+        recorder.open_for_listening()
+    release_close.set()
+
+
+def test_microphone_does_not_close_while_reader_is_stuck(monkeypatch):
+    streams = []
+    release_read = threading.Event()
+
+    class StuckInputStream(_FakeInputStream):
+        def read(self, frames):  # noqa: ARG002 - mirrors sounddevice.InputStream
+            self.reading.set()
+            release_read.wait(1)
+            self.reading.clear()
+            return np.zeros((4, 1), dtype="int16"), False
+
+        def abort(self):
+            self.abort_calls += 1
+
+    def input_stream(**kwargs):
+        stream = StuckInputStream(**kwargs)
+        streams.append(stream)
+        return stream
+
+    fake_sounddevice = types.SimpleNamespace(
+        InputStream=input_stream,
+        default=types.SimpleNamespace(samplerate=16000),
+    )
+    monkeypatch.setattr(voice, "_import_audio", lambda: (fake_sounddevice, np))
+    recorder = voice.AudioRecorder()
+    recorder.open_for_listening()
+    stream = streams[0]
+    stream.push(np.zeros((4, 1), dtype="int16"))
+    _wait_for(stream.reading.is_set)
+
+    recorder._close_stream_with_timeout(timeout=0.01)
+
+    assert stream.abort_calls == 1
+    assert stream.closed is False
+    release_read.set()
+    _wait_for(lambda: stream.closed, timeout=1.0)

@@ -397,6 +397,54 @@ def test_start_failure_closes_the_constructed_stream(monkeypatch):
     assert player.failure == "device disappeared"
 
 
+def test_timed_out_close_poisoned_stream_cannot_be_reopened(monkeypatch):
+    close_started = threading.Event()
+    release_close = threading.Event()
+    streams = []
+
+    class BlockingCloseStream:
+        def start(self):
+            pass
+
+        def write(self, chunk):  # noqa: ARG002 - mirrors sounddevice
+            pass
+
+        def abort(self):
+            pass
+
+        def close(self):
+            close_started.set()
+            assert release_close.wait(1)
+
+    def open_stream(**kwargs):
+        stream = BlockingCloseStream()
+        streams.append(stream)
+        return stream
+
+    monkeypatch.setattr("audio.AUDIO_TEARDOWN_TIMEOUT", 0.01)
+    monkeypatch.setitem(
+        sys.modules,
+        "sounddevice",
+        types.SimpleNamespace(RawOutputStream=open_stream),
+    )
+
+    player = PCMPlayer(enabled=True, prebuffer_seconds=0)
+    player.start((24000, 1, 2))
+    player.abort()
+
+    assert close_started.is_set()
+    assert player.active
+    player.start((24000, 1, 2))
+    assert len(streams) == 1
+
+    release_close.set()
+    for _ in range(100):
+        if not player.active:
+            break
+        threading.Event().wait(0.005)
+    assert not player.active
+
+
 def test_close_records_backend_failure_and_releases_the_stream(monkeypatch):
     class BrokenCloseStream:
         def start(self):

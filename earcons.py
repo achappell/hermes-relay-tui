@@ -107,17 +107,26 @@ def _open_output_stream(**kwargs: Any) -> Any:
     return stream
 
 
-def _call_with_timeout(operation, timeout: float) -> tuple[bool, Exception | None]:
+def _call_with_timeout(
+    operation,
+    timeout: float,
+    *,
+    on_complete=None,
+) -> tuple[bool, Exception | None]:
     """Run a native audio operation without making the wake worker unkillable."""
     finished = threading.Event()
     errors: list[Exception] = []
 
     def run() -> None:
+        error = None
         try:
             operation()
         except Exception as exc:  # pragma: no cover - backend-specific
+            error = exc
             errors.append(exc)
         finally:
+            if on_complete is not None:
+                on_complete(error)
             finished.set()
 
     threading.Thread(
@@ -153,6 +162,8 @@ class EarconPlayer:
         self._stream: Any = None
         self._abort_requested = threading.Event()
         self._generation = 0
+        self._close_in_progress: Any = None
+        self._poisoned = False
 
     def play(self, name: str) -> None:
         """Play a tone to completion. Never raises.
@@ -164,6 +175,9 @@ class EarconPlayer:
         """
         if not self.enabled:
             return
+        with self._stream_lock:
+            if self._poisoned:
+                return
         try:
             pcm = render(name)
         except KeyError:
@@ -220,9 +234,6 @@ class EarconPlayer:
                 owns_stream = self._stream is stream
             if owns_stream:
                 self._close_native(stream)
-                with self._stream_lock:
-                    if self._stream is stream:
-                        self._stream = None
 
     def abort(self) -> None:
         """Stop an active tone without making the playback thread lose ownership."""
@@ -245,11 +256,34 @@ class EarconPlayer:
             logger.debug("aborting the earcon stream failed", exc_info=True)
 
     def _close_native(self, stream: Any) -> None:
-        completed, error = _call_with_timeout(stream.close, EARCON_CLOSE_TIMEOUT)
+        with self._stream_lock:
+            if self._close_in_progress is stream:
+                return
+            self._close_in_progress = stream
+
+        def finished(error: Exception | None) -> None:
+            if error is not None:
+                self.failure = str(error)
+            with self._stream_lock:
+                if self._close_in_progress is stream:
+                    self._close_in_progress = None
+                if self._stream is stream and error is None:
+                    self._stream = None
+
+        completed, error = _call_with_timeout(
+            stream.close,
+            EARCON_CLOSE_TIMEOUT,
+            on_complete=finished,
+        )
         if error is not None:
             self.failure = str(error)
+            with self._stream_lock:
+                self._poisoned = True
         elif not completed:
             logger.warning("earcon stream close timed out")
+            with self._stream_lock:
+                if self._close_in_progress is stream:
+                    self._poisoned = True
 
     def _abort_and_close(self, stream: Any) -> None:
         self._abort_native(stream)

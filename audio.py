@@ -74,17 +74,26 @@ DEFAULT_PREBUFFER_SECONDS = 0.6
 AUDIO_TEARDOWN_TIMEOUT = 3.0
 
 
-def _call_with_timeout(operation, timeout: float) -> tuple[bool, Exception | None]:
+def _call_with_timeout(
+    operation,
+    timeout: float,
+    *,
+    on_complete=None,
+) -> tuple[bool, Exception | None]:
     """Run a native audio operation without making its caller unkillable."""
     finished = threading.Event()
     errors: list[Exception] = []
 
     def run() -> None:
+        error = None
         try:
             operation()
         except Exception as exc:  # pragma: no cover - backend-specific
+            error = exc
             errors.append(exc)
         finally:
+            if on_complete is not None:
+                on_complete(error)
             finished.set()
 
     threading.Thread(
@@ -115,6 +124,8 @@ class PCMPlayer:
         self._write_lock = threading.Lock()
         self._abort_requested = threading.Event()
         self.stream: Any = None
+        self._close_in_progress: Any = None
+        self._poisoned = False
         self.failure: Optional[str] = None
         self.playing = False
         self._pending = bytearray()
@@ -126,8 +137,12 @@ class PCMPlayer:
             return self.stream is not None
 
     def start(self, audio_format: tuple[int, int, int]) -> None:
+        with self._lock:
+            if self._poisoned:
+                return
         if self.active:
             self.close()
+        cleanup_stream = None
         with self._lock:
             self.failure = None
             self.playing = False
@@ -166,7 +181,9 @@ class PCMPlayer:
                     self.stream = None
                 self._abort_requested.set()
                 if stream is not None:
-                    self._abort_and_close(stream)
+                    cleanup_stream = stream
+        if cleanup_stream is not None:
+            self._abort_and_close(cleanup_stream)
 
     def write(self, chunk: bytes) -> None:
         with self._lock:
@@ -224,8 +241,6 @@ class PCMPlayer:
                     self.failure = str(exc)
             self._close_native(stream)
             with self._lock:
-                if self.stream is stream:
-                    self.stream = None
                 self.playing = False
 
     def abort(self) -> None:
@@ -240,6 +255,9 @@ class PCMPlayer:
 
         # This deliberately happens before taking _write_lock: PortAudio's
         # abort is what must wake a writer blocked inside stream.write().
+        with self._lock:
+            if self._close_in_progress is stream:
+                return
         self._abort_native(stream)
         if not self._write_lock.acquire(timeout=AUDIO_TEARDOWN_TIMEOUT):
             self.failure = "audio write did not stop during abort"
@@ -250,8 +268,6 @@ class PCMPlayer:
                     return
             self._close_native(stream)
             with self._lock:
-                if self.stream is stream:
-                    self.stream = None
                 self.playing = False
         finally:
             self._write_lock.release()
@@ -269,11 +285,34 @@ class PCMPlayer:
             self.failure = str(exc)
 
     def _close_native(self, stream: Any) -> None:
-        completed, error = _call_with_timeout(stream.close, AUDIO_TEARDOWN_TIMEOUT)
+        with self._lock:
+            if self._close_in_progress is stream:
+                return
+            self._close_in_progress = stream
+
+        def finished(error: Exception | None) -> None:
+            with self._lock:
+                if error is not None:
+                    self.failure = str(error)
+                if self._close_in_progress is stream:
+                    self._close_in_progress = None
+                if self.stream is stream:
+                    self.stream = None
+
+        completed, error = _call_with_timeout(
+            stream.close,
+            AUDIO_TEARDOWN_TIMEOUT,
+            on_complete=finished,
+        )
         if error is not None:
             self.failure = str(error)
+            with self._lock:
+                self._poisoned = True
         elif not completed:
-            self.failure = "audio stream close timed out"
+            with self._lock:
+                if self._close_in_progress is stream:
+                    self._poisoned = True
+                    self.failure = "audio stream close timed out"
 
     def _abort_and_close(self, stream: Any) -> None:
         self._abort_native(stream)

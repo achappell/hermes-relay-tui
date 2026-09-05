@@ -519,6 +519,7 @@ class HermesStreamingApp(App):
         self._voice_capture_task: Optional[asyncio.Task[str]] = None
         self._voice_capture_cancelled = False
         self._shutting_down = False
+        self._cleanup_tasks: set[asyncio.Task[Any]] = set()
         # Wake mode is off at every launch and only ever armed by /wake on.
         # An always-open microphone is not something a configuration file or a
         # command-line flag gets to decide on the user's behalf.
@@ -540,6 +541,7 @@ class HermesStreamingApp(App):
         self._wake_starting = False
         self._wake_start_cancelled = False
         self._wake_opening = False
+        self._wake_start_task: Optional[asyncio.Task[Any]] = None
         self._earcons = earcons_module.EarconPlayer(
             enabled=getattr(args, "earcons", True) and not (args and args.no_play),
             output_device=getattr(args, "audio_output_device", None),
@@ -846,13 +848,47 @@ class HermesStreamingApp(App):
         await self._cancel_shutdown_tasks()
         await self._abort_earcon()
         self._disarm_wake()
+        await self._wait_for_cleanup_tasks()
         await self._close_player(abort=True)
         if self.session is not None:
             await self._close_session_for_shutdown()
 
+    def _track_cleanup_task(self, task: asyncio.Task[Any]) -> None:
+        """Retain cleanup work that outlives the command that started it."""
+        self._cleanup_tasks.add(task)
+
+        def finished(done: asyncio.Task[Any]) -> None:
+            self._cleanup_tasks.discard(done)
+            try:
+                done.result()
+            except asyncio.CancelledError:
+                pass
+            except Exception:
+                diagnostic_logger.debug(
+                    "app.shutdown.cleanup_failed", exc_info=True
+                )
+
+        task.add_done_callback(finished)
+
+    async def _wait_for_cleanup_tasks(self) -> None:
+        tasks = [task for task in self._cleanup_tasks if not task.done()]
+        if not tasks:
+            return
+        gathered = asyncio.gather(*tasks, return_exceptions=True)
+        try:
+            await asyncio.wait_for(
+                asyncio.shield(gathered),
+                SHUTDOWN_TASK_TIMEOUT,
+            )
+        except asyncio.TimeoutError:
+            diagnostic_logger.warning(
+                "app.shutdown.cleanup_timeout count=%d", len(tasks)
+            )
+
     async def _close_session_for_shutdown(self) -> None:
         """Give session cleanup a budget so quit cannot wait on a dead socket."""
         close_task = asyncio.create_task(self.session.close())
+        self._track_cleanup_task(close_task)
         try:
             await asyncio.wait_for(
                 asyncio.shield(close_task),
@@ -873,6 +909,7 @@ class HermesStreamingApp(App):
             "_active_turn_task",
             "_barge_interrupt_task",
             "_barge_result_task",
+            "_wake_start_task",
         )
         tasks = []
         for attribute in task_attributes:
@@ -951,6 +988,8 @@ class HermesStreamingApp(App):
             self._append_block("wake mode startup is already in progress")
             return
 
+        start_task = asyncio.current_task()
+        self._wake_start_task = start_task
         self._wake_starting = True
         self._wake_start_cancelled = False
         self._set_voice_state(VOICE_STARTING)
@@ -1093,6 +1132,8 @@ class HermesStreamingApp(App):
         finally:
             self._wake_starting = False
             self._wake_start_cancelled = False
+            if self._wake_start_task is start_task:
+                self._wake_start_task = None
 
     def _finish_cancelled_wake_open(self, recorder: Any, opening: Any) -> None:
         """Close a recorder whose native open outlived a cancelled task."""
@@ -1110,7 +1151,7 @@ class HermesStreamingApp(App):
             finally:
                 self._wake_opening = False
 
-        asyncio.create_task(finish())
+        self._track_cleanup_task(asyncio.create_task(finish()))
 
     def _wake_failure_text(self, error: Exception) -> str:
         """Turn an arming failure into the one sentence that fixes it."""

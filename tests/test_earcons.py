@@ -277,3 +277,32 @@ def test_abort_interrupts_a_blocked_close():
     assert not worker.is_alive()
     assert opener.streams[0].abort_calls == 1
     assert opener.streams[0].closed
+
+
+def test_timed_out_earcon_close_cannot_start_another_tone(monkeypatch):
+    close_started = threading.Event()
+    release_close = threading.Event()
+    opener = Opener()
+
+    class BlockingCloseStream(FakeStream):
+        def close(self):
+            close_started.set()
+            assert release_close.wait(1)
+            self.closed = True
+
+    opener = Opener(BlockingCloseStream)
+    player = earcons.EarconPlayer(enabled=True, open_stream=opener)
+    monkeypatch.setattr(earcons, "EARCON_CLOSE_TIMEOUT", 0.01)
+
+    player.play(earcons.WAKE)
+
+    assert close_started.is_set()
+    player.play(earcons.WAKE)
+    assert len(opener.streams) == 1
+
+    release_close.set()
+    for _ in range(100):
+        if player._stream is None:
+            break
+        threading.Event().wait(0.005)
+    assert player._stream is None

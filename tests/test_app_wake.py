@@ -256,6 +256,30 @@ async def test_wake_open_cancellation_closes_a_late_opened_recorder():
         assert recorder.listening is False
 
 
+async def test_cancelling_wake_start_retains_late_open_cleanup():
+    fakes = SlowOpenWakeFakes()
+    app, _, _ = make_app(fakes=fakes)
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        opening = asyncio.create_task(app._handle_wake_command("on"))
+        await asyncio.to_thread(fakes.recorder_created.wait, 1.0)
+        recorder = fakes.recorders[0]
+        await asyncio.to_thread(recorder.open_started.wait, 1.0)
+
+        opening.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await opening
+
+        recorder.open_release.set()
+        for _ in range(100):
+            if recorder.shutdowns:
+                break
+            await asyncio.sleep(0.01)
+        assert recorder.shutdowns == 1
+        assert recorder.listening is False
+
+
 # ---- the microphone is closed until told otherwise --------------------
 
 
