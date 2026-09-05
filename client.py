@@ -14,7 +14,8 @@ import logging
 import uuid
 from typing import Any, AsyncIterator, Optional
 
-from diagnostics import summarize_payload, summarize_text
+from diagnostics import summarize_payload, summarize_text, trace_monotonic_ms
+from timing import normalize_speech_timing
 
 
 logger = logging.getLogger("hermes_relay_tui.client")
@@ -462,11 +463,39 @@ async def send_turn(
                 event["data"] = data
             yield event
         elif kind == "speech_timing":
-            # Timing metadata accompanies streamed audio for clients that
-            # synchronize a transcript to playback. The TUI has no timing
-            # surface, so consume this known frame without presenting it as
-            # an unhandled server error.
-            logger.debug("speech_timing consumed turn_id=%s", turn_id)
+            raw_words = event_payload.get("words")
+            word_count = len(raw_words) if isinstance(raw_words, list) else -1
+            logger.debug(
+                "speech_timing.recv mono_ms=%d turn_id=%s segment_id=%s "
+                "segment_index=%s audio_offset_ms=%s duration_ms=%s source=%s "
+                "words=%d fallback=%s",
+                trace_monotonic_ms(),
+                turn_id,
+                summarize_text(event_payload.get("segment_id")),
+                event_payload.get("segment_index", "missing"),
+                event_payload.get("audio_offset_ms", "missing"),
+                event_payload.get("duration_ms", "missing"),
+                event_payload.get("timing_source", "missing"),
+                word_count,
+                event_payload.get("fallback_reason", "missing"),
+            )
+            timing = normalize_speech_timing(event_payload)
+            if timing is not None:
+                logger.debug(
+                    "speech_timing.normalized mono_ms=%d turn_id=%s segment_id=%s "
+                    "offset_ms=%d duration_ms=%d source=%s words=%d fallback=%s",
+                    trace_monotonic_ms(),
+                    turn_id,
+                    summarize_text(timing.segment_id),
+                    round(timing.audio_offset * 1000),
+                    round(timing.duration * 1000),
+                    timing.timing_source,
+                    len(timing.words),
+                    timing.fallback_reason or "none",
+                )
+                yield timing.as_event()
+            else:
+                logger.debug("speech_timing ignored without safe geometry turn_id=%s", turn_id)
         elif kind == "error":
             yield {
                 "type": "error",

@@ -96,6 +96,130 @@ def test_start_success_makes_player_active(monkeypatch):
     assert not player.active
 
 
+def test_playback_position_uses_the_output_stream_clock(monkeypatch):
+    class ClockedStream:
+        def __init__(self):
+            self.time = 10.0
+
+        def start(self):
+            pass
+
+        def write(self, chunk):  # noqa: ARG002 - mirrors sounddevice
+            self.time = 10.5
+
+        def stop(self):
+            pass
+
+        def close(self):
+            pass
+
+    monkeypatch.setitem(
+        sys.modules,
+        "sounddevice",
+        types.SimpleNamespace(RawOutputStream=lambda **kwargs: ClockedStream()),
+    )
+
+    player = PCMPlayer(enabled=True, prebuffer_seconds=0)
+    player.start((24000, 1, 2))
+    player.write(b"\x00" * 48000)  # one second of mono PCM
+
+    assert player.playback_position == pytest.approx(0.5)
+
+
+def test_playback_position_pauses_at_the_end_of_scheduled_audio(monkeypatch):
+    class QueueClockStream:
+        def __init__(self):
+            self.time = 0.0
+
+        def start(self):
+            pass
+
+        def write(self, chunk):  # noqa: ARG002 - mirrors sounddevice
+            pass
+
+        def stop(self):
+            pass
+
+        def close(self):
+            pass
+
+    streams = []
+
+    def raw_output_stream(**kwargs):  # noqa: ARG001 - mirrors sounddevice
+        stream = QueueClockStream()
+        streams.append(stream)
+        return stream
+
+    monkeypatch.setitem(
+        sys.modules,
+        "sounddevice",
+        types.SimpleNamespace(RawOutputStream=raw_output_stream),
+    )
+
+    # 10 Hz mono 16-bit: each write below represents one second of PCM.
+    player = PCMPlayer(enabled=True, prebuffer_seconds=0)
+    player.start((10, 1, 2))
+    stream = streams[0]
+
+    player.write(b"\x00" * 20)
+    stream.time = 2.0
+    assert player.playback_position == pytest.approx(1.0)
+
+    # The next second arrives after a one-second starvation gap. A renderer
+    # playhead remains at the first second until that new PCM is consumed.
+    player.write(b"\x01" * 20)
+    assert player.playback_position == pytest.approx(1.0)
+
+    stream.time = 2.25
+    assert player.playback_position == pytest.approx(1.25)
+
+
+def test_playback_snapshot_reports_rendered_and_queued_audio(monkeypatch):
+    class QueueClockStream:
+        def __init__(self):
+            self.time = 0.0
+
+        def start(self):
+            pass
+
+        def write(self, chunk):  # noqa: ARG002 - mirrors sounddevice
+            pass
+
+        def stop(self):
+            pass
+
+        def close(self):
+            pass
+
+    streams = []
+
+    def raw_output_stream(**kwargs):  # noqa: ARG001 - mirrors sounddevice
+        stream = QueueClockStream()
+        streams.append(stream)
+        return stream
+
+    monkeypatch.setitem(
+        sys.modules,
+        "sounddevice",
+        types.SimpleNamespace(RawOutputStream=raw_output_stream),
+    )
+
+    player = PCMPlayer(enabled=True, prebuffer_seconds=0)
+    player.start((10, 1, 2))
+    stream = streams[0]
+    player.write(b"\x00" * 20)
+
+    initial = player.playback_snapshot()
+    assert initial["playback_position"] == pytest.approx(0.0)
+    assert initial["scheduled_audio"] == pytest.approx(1.0)
+    assert initial["queued_audio"] == pytest.approx(1.0)
+
+    stream.time = 0.25
+    rendered = player.playback_snapshot()
+    assert rendered["playback_position"] == pytest.approx(0.25)
+    assert rendered["queued_audio"] == pytest.approx(0.75)
+
+
 def test_start_passes_selected_output_device_to_sounddevice(monkeypatch):
     received = {}
 
@@ -366,6 +490,48 @@ def test_abort_interrupts_an_inflight_write(monkeypatch):
     assert not aborter.is_alive()
     assert not writer.is_alive()
     assert not player.active
+
+
+def test_abort_returns_when_the_native_abort_stalls(monkeypatch):
+    abort_started = threading.Event()
+    release_abort = threading.Event()
+
+    class BlockingAbortStream:
+        def start(self):
+            pass
+
+        def write(self, chunk):  # noqa: ARG002 - mirrors sounddevice
+            pass
+
+        def abort(self):
+            abort_started.set()
+            release_abort.wait(1)
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr("audio.AUDIO_TEARDOWN_TIMEOUT", 0.01)
+    monkeypatch.setitem(
+        sys.modules,
+        "sounddevice",
+        types.SimpleNamespace(
+            RawOutputStream=lambda **kwargs: BlockingAbortStream()
+        ),
+    )
+
+    player = PCMPlayer(enabled=True, prebuffer_seconds=0)
+    player.start((24000, 1, 2))
+    player.write(b"\x00\x01")
+    aborter = threading.Thread(target=player.abort, daemon=True)
+    aborter.start()
+
+    try:
+        assert abort_started.wait(1)
+        aborter.join(0.2)
+        assert not aborter.is_alive()
+    finally:
+        release_abort.set()
+        aborter.join(1)
 
 
 def test_start_failure_closes_the_constructed_stream(monkeypatch):

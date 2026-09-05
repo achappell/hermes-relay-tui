@@ -17,6 +17,7 @@ from __future__ import annotations
 import asyncio
 import copy
 import inspect
+import math
 import sys
 import time
 from datetime import datetime
@@ -63,6 +64,7 @@ from diagnostics import (
     install_crash_logging,
     summarize_payload,
     summarize_text,
+    trace_monotonic_ms,
 )
 from history import PromptHistory, history_path_for_url
 from session import HermesSession, SessionProtocol
@@ -75,6 +77,13 @@ from shell import (
     standalone_command,
 )
 from transcript import TranscriptBuffer
+from timing import (
+    SpeechTiming,
+    duration_visible_text,
+    fallback_visible_text,
+    longest_valid_prefix,
+    visible_text,
+)
 
 
 class SelectableRichVisual(RichVisual):
@@ -516,6 +525,7 @@ class HermesStreamingApp(App):
         self._queued_prompts: list[str] = []
         self._staged_attachments: list[Attachment] = []
         self._active_turn_task: Optional[asyncio.Task[None]] = None
+        self._caption_task: Optional[asyncio.Task[Any]] = None
         self._voice_capture_task: Optional[asyncio.Task[str]] = None
         self._voice_capture_cancelled = False
         self._shutting_down = False
@@ -907,6 +917,7 @@ class HermesStreamingApp(App):
         task_attributes = (
             "_voice_capture_task",
             "_active_turn_task",
+            "_caption_task",
             "_barge_interrupt_task",
             "_barge_result_task",
             "_wake_start_task",
@@ -2531,6 +2542,7 @@ class HermesStreamingApp(App):
                 abort=self.voice_state
                 in {VOICE_INTERRUPTED, VOICE_ERROR, VOICE_DISCONNECTED}
             )
+            await self._stop_caption_clock()
             diagnostic_logger.debug(
                 "app.turn.finish index=%s transcript_chars=%d connection=%s",
                 index,
@@ -2560,6 +2572,11 @@ class HermesStreamingApp(App):
         wait must not prevent transcript refreshes, especially the reasoning
         preview that is meant to remain visible while a reply is spoken.
         """
+        if (
+            not (abort or self._shutting_down)
+            and not getattr(self.player, "active", False)
+        ):
+            return
         if abort or self._shutting_down:
             close = getattr(self.player, "abort", None)
             if not callable(close):
@@ -2567,6 +2584,17 @@ class HermesStreamingApp(App):
         else:
             close = self.player.close
         await asyncio.to_thread(close)
+
+    async def _stop_caption_clock(self) -> None:
+        task = self._caption_task
+        self._caption_task = None
+        if task is None or task is asyncio.current_task() or task.done():
+            return
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
 
     def _abort_player(self) -> None:
         """Stop local response audio immediately from a synchronous callback."""
@@ -2591,6 +2619,15 @@ class HermesStreamingApp(App):
         thinking_activity_active = False
         thinking_summary_added = False
         assistant_text = ""
+        visible_assistant_text = ""
+        speech_timings: dict[str, SpeechTiming] = {}
+        audio_started = False
+        audio_duration_final = False
+        fallback_playback_origin: Optional[float] = None
+        audio_segment_index = -1
+        audio_chunk_index = 0
+        audio_bytes_received = 0
+        last_playback_trace_ms = -250
 
         def update_thinking(text: Optional[str] = None) -> None:
             nonlocal thinking_started_at, thinking_preview
@@ -2631,6 +2668,164 @@ class HermesStreamingApp(App):
             self.transcript.set_activity(rendered, role=role)
             self._refresh_transcript()
 
+        def ensure_assistant_stream() -> None:
+            nonlocal assistant_started
+            if assistant_started:
+                return
+            complete_thinking()
+            self._set_voice_state(VOICE_THINKING)
+            self.transcript.start_stream("assistant")
+            assistant_started = True
+
+        def audio_duration() -> Optional[float]:
+            if audio_format is None:
+                return None
+            sample_rate, channels, sample_width = audio_format
+            bytes_per_second = sample_rate * channels * sample_width
+            if bytes_per_second <= 0:
+                return None
+            return len(audio) / bytes_per_second
+
+        def playback_position() -> Optional[float]:
+            position = getattr(self.player, "playback_position", None)
+            if callable(position):
+                position = position()
+            try:
+                position = float(position)
+            except (TypeError, ValueError):
+                return None
+            return position if math.isfinite(position) and position >= 0 else None
+
+        def playback_snapshot() -> dict[str, Any]:
+            snapshot = getattr(self.player, "playback_snapshot", None)
+            if callable(snapshot):
+                try:
+                    value = snapshot()
+                except Exception:  # pragma: no cover - defensive diagnostics path
+                    value = {}
+                if isinstance(value, dict):
+                    return value
+            position = playback_position()
+            return {
+                "active": bool(getattr(self.player, "active", False)),
+                "playing": bool(getattr(self.player, "active", False)),
+                "playback_position": position if position is not None else -1.0,
+                "scheduled_audio": 0.0,
+                "pending_audio": 0.0,
+                "queued_audio": 0.0,
+            }
+
+        def snapshot_ms(snapshot: dict[str, Any], key: str) -> int:
+            try:
+                value = float(snapshot.get(key, 0.0))
+            except (TypeError, ValueError):
+                return -1
+            return round(value * 1000) if math.isfinite(value) and value >= 0 else -1
+
+        def log_playback_sample(*, force: bool = False) -> None:
+            nonlocal last_playback_trace_ms
+            if not audio_started:
+                return
+            now_ms = trace_monotonic_ms()
+            if not force and now_ms - last_playback_trace_ms < 250:
+                return
+            last_playback_trace_ms = now_ms
+            snapshot = playback_snapshot()
+            diagnostic_logger.debug(
+                "audio.playback mono_ms=%d turn_index=%s segment_index=%d "
+                "received_audio_ms=%d playback_position_ms=%d "
+                "scheduled_audio_ms=%d pending_audio_ms=%d queued_audio_ms=%d "
+                "active=%s playing=%s",
+                now_ms,
+                index,
+                audio_segment_index,
+                round((audio_duration() or 0.0) * 1000),
+                snapshot_ms(snapshot, "playback_position"),
+                snapshot_ms(snapshot, "scheduled_audio"),
+                snapshot_ms(snapshot, "pending_audio"),
+                snapshot_ms(snapshot, "queued_audio"),
+                bool(snapshot.get("active", False)),
+                bool(snapshot.get("playing", False)),
+            )
+
+        def first_word_prefix(text: str) -> str:
+            index = 0
+            while index < len(text) and not text[index].isspace():
+                index += 1
+            while index < len(text) and text[index].isspace():
+                index += 1
+            return text[:index]
+
+        def render_assistant(*, complete: bool = False) -> None:
+            nonlocal fallback_playback_origin, visible_assistant_text
+            if not assistant_text:
+                return
+            ensure_assistant_stream()
+            if not assistant_text.startswith(visible_assistant_text):
+                visible_assistant_text = ""
+
+            candidate: Optional[str]
+            if complete or not audio_started or not self.player.active:
+                candidate = assistant_text
+            else:
+                position = playback_position()
+                candidate = None
+                if position is not None:
+                    if fallback_playback_origin is None:
+                        fallback_playback_origin = position
+                    timed_candidate = visible_text(
+                        assistant_text,
+                        speech_timings.values(),
+                        position,
+                    )
+                    if speech_timings:
+                        # Match the iOS rail: an aligned record uses its word
+                        # spans, while a duration fallback still supplies the
+                        # real segment clock. The late record is safe here
+                        # because longest_valid_prefix prevents retraction.
+                        candidate = timed_candidate
+                    elif audio_duration_final:
+                        candidate = duration_visible_text(
+                            assistant_text,
+                            position,
+                            audio_duration() or 0,
+                        )
+                    else:
+                        # Before the relay's late duration record arrives,
+                        # keep a smooth conservative bridge from the playback
+                        # clock rather than waiting for the timing event.
+                        candidate = fallback_visible_text(
+                            assistant_text,
+                            position - fallback_playback_origin,
+                        )
+                candidate = longest_valid_prefix(
+                    assistant_text,
+                    [visible_assistant_text, candidate],
+                )
+                if not candidate:
+                    candidate = first_word_prefix(assistant_text)
+
+            safe_candidate = longest_valid_prefix(
+                assistant_text,
+                [visible_assistant_text, candidate],
+            ) or visible_assistant_text
+            if safe_candidate == visible_assistant_text:
+                return
+            visible_assistant_text = safe_candidate
+            self.transcript.replace_stream(visible_assistant_text)
+            self._refresh_transcript()
+
+        async def caption_clock() -> None:
+            while self.player.active:
+                await asyncio.sleep(0.05)
+                if self.player.active:
+                    log_playback_sample()
+                    render_assistant()
+
+        def start_caption_clock() -> None:
+            if self._caption_task is None or self._caption_task.done():
+                self._caption_task = asyncio.create_task(caption_clock())
+
         async for event in events:
             kind = event["type"]
             diagnostic_logger.debug(
@@ -2639,19 +2834,13 @@ class HermesStreamingApp(App):
                 summarize_payload(event),
             )
             if kind in {"text_delta", "text_replace"}:
-                if not assistant_started:
-                    complete_thinking()
-                    self._set_voice_state(VOICE_THINKING)
-                    self.transcript.start_stream("assistant")
-                    assistant_started = True
+                ensure_assistant_stream()
                 if kind == "text_replace":
                     assistant_text = str(event.get("text") or "")
-                    self.transcript.replace_stream(assistant_text)
-                    self._refresh_transcript()
                 else:
                     text_delta = str(event.get("text") or "")
                     assistant_text += text_delta
-                    self._append(text_delta)
+                render_assistant()
                 if self.player.active:
                     self._last_tts_text = assistant_text
             elif kind == "thinking_delta":
@@ -2707,9 +2896,47 @@ class HermesStreamingApp(App):
                     f"[unhandled server event: {event_type}]", role="error"
                 )
             elif kind == "audio_start":
+                audio_segment_index += 1
+                audio_chunk_index = 0
+                was_active = bool(self.player.active)
+                before = playback_snapshot()
+                audio_started = True
+                audio_duration_final = False
                 self._last_tts_text = assistant_text
                 audio_format = (event["sample_rate"], event["channels"], event["sample_width"])
-                self.player.start(audio_format)
+                # Hermes may split one answer into several PCM segments. Keep
+                # one output stream, and therefore one continuous playback
+                # clock, across those boundaries.
+                if not self.player.active:
+                    self.player.start(audio_format)
+                after = playback_snapshot()
+                diagnostic_logger.debug(
+                    "audio.segment.start mono_ms=%d turn_index=%s segment_index=%d "
+                    "playback_position_ms=%d sample_rate=%d channels=%d sample_width=%d "
+                    "active_before=%s active_after=%s",
+                    trace_monotonic_ms(),
+                    index,
+                    audio_segment_index,
+                    snapshot_ms(before, "playback_position"),
+                    audio_format[0],
+                    audio_format[1],
+                    audio_format[2],
+                    was_active,
+                    bool(after.get("active", False)),
+                )
+                if not was_active:
+                    diagnostic_logger.debug(
+                        "audio.stream.started mono_ms=%d turn_index=%s "
+                        "sample_rate=%d channels=%d sample_width=%d active=%s",
+                        trace_monotonic_ms(),
+                        index,
+                        audio_format[0],
+                        audio_format[1],
+                        audio_format[2],
+                        bool(after.get("active", False)),
+                    )
+                if self.player.active:
+                    start_caption_clock()
                 playback_failed = playback_failed or bool(self.player.failure)
                 played_live = played_live or self.player.active
                 if self.player.active:
@@ -2719,15 +2946,69 @@ class HermesStreamingApp(App):
                 else:
                     self._set_voice_state(VOICE_BUFFERING)
             elif kind == "audio_chunk":
-                audio.extend(event["data"])
+                chunk = event["data"]
+                audio_chunk_index += 1
+                audio_bytes_received += len(chunk)
+                before = playback_snapshot()
+                diagnostic_logger.debug(
+                    "audio.chunk.received mono_ms=%d turn_index=%s segment_index=%d "
+                    "chunk_index=%d bytes=%d received_bytes=%d received_audio_ms=%d "
+                    "playback_position_ms=%d queued_audio_ms=%d active=%s",
+                    trace_monotonic_ms(),
+                    index,
+                    audio_segment_index,
+                    audio_chunk_index,
+                    len(chunk),
+                    audio_bytes_received,
+                    round((audio_duration() or 0.0) * 1000),
+                    snapshot_ms(before, "playback_position"),
+                    snapshot_ms(before, "queued_audio"),
+                    bool(before.get("active", False)),
+                )
+                audio.extend(chunk)
                 if self.player.active:
-                    await asyncio.to_thread(self.player.write, event["data"])
+                    await asyncio.to_thread(self.player.write, chunk)
+                    render_assistant()
+                after = playback_snapshot()
+                diagnostic_logger.debug(
+                    "audio.chunk.scheduled mono_ms=%d turn_index=%s segment_index=%d "
+                    "chunk_index=%d bytes=%d received_bytes=%d received_audio_ms=%d "
+                    "playback_position_ms=%d scheduled_audio_ms=%d pending_audio_ms=%d "
+                    "queued_audio_ms=%d active=%s playing=%s",
+                    trace_monotonic_ms(),
+                    index,
+                    audio_segment_index,
+                    audio_chunk_index,
+                    len(chunk),
+                    audio_bytes_received,
+                    round((audio_duration() or 0.0) * 1000),
+                    snapshot_ms(after, "playback_position"),
+                    snapshot_ms(after, "scheduled_audio"),
+                    snapshot_ms(after, "pending_audio"),
+                    snapshot_ms(after, "queued_audio"),
+                    bool(after.get("active", False)),
+                    bool(after.get("playing", False)),
+                )
                 playback_failed = playback_failed or bool(self.player.failure)
             elif kind == "audio_end":
-                # Each prior chunk has completed its worker-thread write when
-                # this event arrives, so closing here drains the final tail
-                # before turn_end is processed.
-                await self._close_player()
+                # This closes one PCM segment, not necessarily the response.
+                # Keep playback and the caption clock alive until turn_end so
+                # the next segment does not appear as a sentence-sized jump.
+                render_assistant()
+                snapshot = playback_snapshot()
+                diagnostic_logger.debug(
+                    "audio.segment.end mono_ms=%d turn_index=%s segment_index=%d "
+                    "received_bytes=%d received_audio_ms=%d playback_position_ms=%d "
+                    "queued_audio_ms=%d active=%s",
+                    trace_monotonic_ms(),
+                    index,
+                    audio_segment_index,
+                    audio_bytes_received,
+                    round((audio_duration() or 0.0) * 1000),
+                    snapshot_ms(snapshot, "playback_position"),
+                    snapshot_ms(snapshot, "queued_audio"),
+                    bool(snapshot.get("active", False)),
+                )
             elif kind == "audio_abort":
                 # An abort is an intentional end to the remote audio stream,
                 # not a failed voice turn. The following turn_interrupted
@@ -2735,6 +3016,8 @@ class HermesStreamingApp(App):
                 await self._close_player(abort=True)
                 self._set_voice_state(VOICE_INTERRUPTED)
             elif kind == "audio_file_start":
+                audio_started = True
+                audio_duration_final = False
                 self._last_tts_text = assistant_text
                 audio_file.clear()
                 metadata = tuple(
@@ -2767,6 +3050,7 @@ class HermesStreamingApp(App):
                     file_audio, file_format = bytes(audio_file), audio_file_format
                 audio.extend(file_audio)
                 audio_format = file_format
+                audio_duration_final = True
                 self.player.start(file_format)
                 playback_failed = playback_failed or bool(self.player.failure)
                 played_live = played_live or self.player.active
@@ -2777,6 +3061,32 @@ class HermesStreamingApp(App):
                     await self._close_player()
                 elif self.player.failure:
                     self._set_voice_state(VOICE_BUFFERING)
+                render_assistant(complete=not self.player.active)
+            elif kind == "speech_timing":
+                try:
+                    timing = SpeechTiming.from_event(event)
+                except (TypeError, ValueError):
+                    timing = None
+                if timing is not None and timing.segment_id:
+                    speech_timings[timing.segment_id] = timing
+                    snapshot = playback_snapshot()
+                    diagnostic_logger.debug(
+                        "audio.speech_timing mono_ms=%d turn_index=%s segment_id=%s "
+                        "offset_ms=%d duration_ms=%d source=%s words=%d fallback=%s "
+                        "received_audio_ms=%d playback_position_ms=%d queued_audio_ms=%d",
+                        trace_monotonic_ms(),
+                        index,
+                        summarize_text(timing.segment_id),
+                        round(timing.audio_offset * 1000),
+                        round(timing.duration * 1000),
+                        timing.timing_source,
+                        len(timing.words),
+                        timing.fallback_reason or "none",
+                        round((audio_duration() or 0.0) * 1000),
+                        snapshot_ms(snapshot, "playback_position"),
+                        snapshot_ms(snapshot, "queued_audio"),
+                    )
+                    render_assistant()
             elif kind == "error":
                 self._set_voice_state(VOICE_ERROR)
                 thinking_activity_active = False
@@ -2790,6 +3100,13 @@ class HermesStreamingApp(App):
                 return
             elif kind == "turn_end":
                 complete_thinking()
+                log_playback_sample(force=True)
+                # turn_end can arrive while the final PCM is still queued in
+                # the output device. Drain it before committing the complete
+                # caption, otherwise the last duration-fallback clause jumps
+                # onto the screen at the remote turn boundary.
+                await self._close_player()
+                render_assistant(complete=True)
                 self.transcript.finish_stream()
                 self._save_turn_audio(
                     bytes(audio),

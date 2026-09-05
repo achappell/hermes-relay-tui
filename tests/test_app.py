@@ -1,4 +1,5 @@
 import asyncio
+import logging
 import sys
 import threading
 import types
@@ -1459,6 +1460,511 @@ async def test_audio_abort_stops_playback_without_rendering_an_error_event():
         assert voice_status_of(app) == "● interrupted"
 
 
+async def test_speech_timing_paces_the_visible_assistant_prefix_from_playback_clock():
+    gate = asyncio.Event()
+
+    class ClockedPlayer:
+        active = False
+        failure = None
+        playback_position = 0.5
+
+        def start(self, audio_format):  # noqa: ARG002 - mirrors PCMPlayer
+            self.active = True
+
+        def write(self, chunk):  # noqa: ARG002 - mirrors PCMPlayer
+            pass
+
+        def close(self):
+            self.active = False
+
+    session = FakeSession(
+        gate=gate,
+        events=[
+            {"type": "audio_start", "sample_rate": 24000, "channels": 1, "sample_width": 2},
+            {
+                "type": "speech_timing",
+                "segment_id": "segment-1",
+                "text": "Hermes keeps moving.",
+                "timing_source": "alignment",
+                "audio_offset": 0.0,
+                "duration": 1.3,
+                "fallback_reason": None,
+                "words": [
+                    {"text": "Hermes", "start": 0.0, "end": 0.28},
+                    {"text": "keeps", "start": 0.28, "end": 0.51},
+                    {"text": "moving.", "start": 0.51, "end": 1.3},
+                ],
+            },
+            {"type": "text_delta", "text": "Hermes keeps moving."},
+            {"type": "turn_end", "turn_id": "clocked"},
+        ],
+    )
+    app = HermesStreamingApp(args=make_args(no_play=False), session_factory=lambda: session)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.player = ClockedPlayer()
+        turn = asyncio.create_task(app._run_turn("hi"))
+        await pilot.pause()
+        await pilot.pause()
+
+        assert "hermes: Hermes keeps " in transcript_of(app)
+        assert "hermes: Hermes keeps moving." not in transcript_of(app)
+        assert "unhandled server event: speech_timing" not in transcript_of(app)
+
+        gate.set()
+        await turn
+        assert "hermes: Hermes keeps moving." in transcript_of(app)
+
+
+async def test_audio_trace_records_event_boundaries_and_queue_state(caplog):
+    caplog.set_level(logging.DEBUG, logger="hermes_relay_tui")
+    gate = asyncio.Event()
+
+    class TracedPlayer:
+        active = False
+        failure = None
+        playback_position = 0.25
+
+        def start(self, audio_format):  # noqa: ARG002 - mirrors PCMPlayer
+            self.active = True
+
+        def write(self, chunk):  # noqa: ARG002 - mirrors PCMPlayer
+            pass
+
+        def playback_snapshot(self):
+            return {
+                "active": self.active,
+                "playing": self.active,
+                "playback_position": self.playback_position,
+                "scheduled_audio": 0.5,
+                "pending_audio": 0.0,
+                "queued_audio": 0.25,
+            }
+
+        def close(self):
+            self.active = False
+
+    session = FakeSession(
+        gate=gate,
+        events=[
+            {"type": "audio_start", "sample_rate": 24000, "channels": 1, "sample_width": 2},
+            {"type": "text_delta", "text": "private response text"},
+            {"type": "audio_chunk", "data": b"\x00\x01"},
+            {
+                "type": "speech_timing",
+                "segment_id": "segment-1",
+                "text": "private response text",
+                "timing_source": "duration_fallback",
+                "audio_offset": 0.0,
+                "duration": 1.0,
+                "fallback_reason": "disabled",
+                "words": [],
+            },
+            {"type": "turn_end", "turn_id": "trace"},
+        ],
+    )
+    app = HermesStreamingApp(args=make_args(no_play=False), session_factory=lambda: session)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.player = TracedPlayer()
+        turn = asyncio.create_task(app._run_turn("private prompt"))
+        await pilot.pause()
+        await pilot.pause()
+        gate.set()
+        await turn
+
+    messages = "\n".join(record.message for record in caplog.records)
+    assert "audio.segment.start" in messages
+    assert "audio.chunk.received" in messages
+    assert "audio.chunk.scheduled" in messages
+    assert "audio.speech_timing" in messages
+    assert "queued_audio_ms=250" in messages
+    assert "private response text" not in messages
+    assert "private prompt" not in messages
+
+
+async def test_caption_clock_advances_without_another_audio_chunk():
+    gate = asyncio.Event()
+
+    class AdvancingPlayer:
+        active = False
+        failure = None
+        playback_position = 0.0
+
+        def start(self, audio_format):  # noqa: ARG002 - mirrors PCMPlayer
+            self.active = True
+
+        def write(self, chunk):  # noqa: ARG002 - mirrors PCMPlayer
+            pass
+
+        def close(self):
+            self.active = False
+
+    session = FakeSession(
+        gate=gate,
+        events=[
+            {"type": "audio_start", "sample_rate": 24000, "channels": 1, "sample_width": 2},
+            {
+                "type": "speech_timing",
+                "segment_id": "segment-1",
+                "text": "Hermes keeps moving.",
+                "timing_source": "alignment",
+                "audio_offset": 0.0,
+                "duration": 1.3,
+                "fallback_reason": None,
+                "words": [
+                    {"text": "Hermes", "start": 0.0, "end": 0.28},
+                    {"text": "keeps", "start": 0.28, "end": 0.51},
+                    {"text": "moving.", "start": 0.51, "end": 1.3},
+                ],
+            },
+            {"type": "text_delta", "text": "Hermes keeps moving."},
+            {"type": "turn_end", "turn_id": "clock-ticker"},
+        ],
+    )
+    app = HermesStreamingApp(args=make_args(no_play=False), session_factory=lambda: session)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        player = AdvancingPlayer()
+        app.player = player
+        turn = asyncio.create_task(app._run_turn("hi"))
+        await pilot.pause()
+        await pilot.pause()
+
+        assert "hermes: Hermes " in transcript_of(app)
+        player.playback_position = 0.6
+        await asyncio.sleep(0.08)
+        await pilot.pause()
+        assert "hermes: Hermes keeps " in transcript_of(app)
+
+        gate.set()
+        await turn
+
+
+async def test_duration_fallback_uses_the_segment_clock_when_timing_arrives_late():
+    gate = asyncio.Event()
+
+    class ClockedPlayer:
+        active = False
+        failure = None
+        playback_position = 0.0
+
+        def start(self, audio_format):  # noqa: ARG002 - mirrors PCMPlayer
+            self.active = True
+
+        def write(self, chunk):  # noqa: ARG002 - mirrors PCMPlayer
+            pass
+
+        def close(self):
+            self.active = False
+
+    session = FakeSession(
+        gate=gate,
+        events=[
+            {"type": "audio_start", "sample_rate": 24000, "channels": 1, "sample_width": 2},
+            {"type": "text_delta", "text": "one two three four five six"},
+            # The real relay publishes duration_fallback after each clause's
+            # PCM. Once it arrives, its segment duration is the authoritative
+            # clock even though the total audio duration is still growing.
+            {
+                "type": "speech_timing",
+                "segment_id": "segment-1",
+                "text": "one two three",
+                "timing_source": "duration_fallback",
+                "audio_offset": 0.0,
+                "duration": 1.0,
+                "fallback_reason": "unsupported",
+                "words": [],
+            },
+            {"type": "turn_end", "turn_id": "duration-fallback"},
+        ],
+    )
+    app = HermesStreamingApp(args=make_args(no_play=False), session_factory=lambda: session)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        player = ClockedPlayer()
+        app.player = player
+        turn = asyncio.create_task(app._run_turn("hi"))
+        await pilot.pause()
+        await pilot.pause()
+
+        assert "hermes: one " in transcript_of(app)
+        player.playback_position = 1.1
+        await asyncio.sleep(0.08)
+        await pilot.pause()
+
+        assert "hermes: one two three " in transcript_of(app)
+        assert "hermes: one two three four" not in transcript_of(app)
+
+        gate.set()
+        await turn
+
+
+async def test_no_play_audio_keeps_streamed_text_complete_without_a_playback_clock():
+    gate = asyncio.Event()
+    session = FakeSession(
+        gate=gate,
+        events=[
+            {"type": "audio_start", "sample_rate": 24000, "channels": 1, "sample_width": 2},
+            {"type": "text_delta", "text": "Hermes keeps moving."},
+            {"type": "turn_end", "turn_id": "no-play"},
+        ],
+    )
+    app = HermesStreamingApp(args=make_args(no_play=True), session_factory=lambda: session)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        turn = asyncio.create_task(app._run_turn("hi"))
+        await pilot.pause()
+        await pilot.pause()
+
+        assert "hermes: Hermes keeps moving." in transcript_of(app)
+
+        gate.set()
+        await turn
+
+
+async def test_interrupted_timing_turn_does_not_leave_timing_as_an_unhandled_event():
+    class RecordingPlayer:
+        failure = None
+
+        def __init__(self):
+            self.active = False
+            self.abort_calls = 0
+
+        @property
+        def playback_position(self):
+            return 0.4
+
+        def start(self, audio_format):  # noqa: ARG002 - mirrors PCMPlayer
+            self.active = True
+
+        def write(self, chunk):  # noqa: ARG002 - mirrors PCMPlayer
+            pass
+
+        def close(self):
+            self.active = False
+
+        def abort(self):
+            self.abort_calls += 1
+            self.active = False
+
+    session = FakeSession(
+        events=[
+            {"type": "audio_start", "sample_rate": 24000, "channels": 1, "sample_width": 2},
+            {
+                "type": "speech_timing",
+                "segment_id": "segment-1",
+                "text": "Hermes keeps moving.",
+                "timing_source": "alignment",
+                "audio_offset": 0.0,
+                "duration": 1.3,
+                "fallback_reason": None,
+                "words": [
+                    {"text": "Hermes", "start": 0.0, "end": 0.28},
+                    {"text": "keeps", "start": 0.28, "end": 0.51},
+                    {"text": "moving.", "start": 0.51, "end": 1.3},
+                ],
+            },
+            {"type": "text_delta", "text": "Hermes keeps moving."},
+            {"type": "audio_abort"},
+            {"type": "turn_interrupted"},
+        ],
+    )
+    app = HermesStreamingApp(args=make_args(no_play=False), session_factory=lambda: session)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        player = RecordingPlayer()
+        app.player = player
+        await app._run_turn("hi")
+
+        assert player.abort_calls >= 1
+        assert "[interrupted]" in transcript_of(app)
+        assert "unhandled server event: speech_timing" not in transcript_of(app)
+
+
+async def test_caption_clock_is_cancelled_when_player_close_does_not_release_it():
+    class StubbornPlayer:
+        active = False
+        failure = None
+        playback_position = 0.2
+
+        def start(self, audio_format):  # noqa: ARG002 - mirrors PCMPlayer
+            self.active = True
+
+        def write(self, chunk):  # noqa: ARG002 - mirrors PCMPlayer
+            pass
+
+        def close(self):
+            # Simulates a backend that remains active after a bounded close.
+            pass
+
+    session = FakeSession(
+        events=[
+            {"type": "audio_start", "sample_rate": 24000, "channels": 1, "sample_width": 2},
+            {"type": "text_delta", "text": "Hermes."},
+            {"type": "turn_end", "turn_id": "stubborn"},
+        ]
+    )
+    app = HermesStreamingApp(args=make_args(no_play=False), session_factory=lambda: session)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.player = StubbornPlayer()
+        await app._run_turn("hi")
+
+        assert app._caption_task is None
+
+
+async def test_audio_segment_end_defers_playback_drain_until_turn_end():
+    close_started = threading.Event()
+    release_close = threading.Event()
+    release_turn_end = asyncio.Event()
+
+    class SingleSegmentSession(FakeSession):
+        async def _stream(self, events):
+            for position, event in enumerate(events):
+                if position == len(events) - 1:
+                    await release_turn_end.wait()
+                await asyncio.sleep(0)
+                yield event
+
+    class BlockingPlayer:
+        active = False
+        failure = None
+        playback_position = 0.5
+
+        def start(self, audio_format):  # noqa: ARG002 - mirrors PCMPlayer
+            self.active = True
+
+        def write(self, chunk):  # noqa: ARG002 - mirrors PCMPlayer
+            pass
+
+        def close(self):
+            close_started.set()
+            release_close.wait(timeout=1)
+            self.active = False
+
+    session = SingleSegmentSession(
+        events=[
+            {"type": "audio_start", "sample_rate": 4, "channels": 1, "sample_width": 2},
+            {"type": "audio_chunk", "data": b"\x00" * 8},
+            {"type": "text_delta", "text": "one two three four"},
+            {"type": "audio_end"},
+            {"type": "turn_end", "turn_id": "duration"},
+        ]
+    )
+    app = HermesStreamingApp(args=make_args(no_play=False), session_factory=lambda: session)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.player = BlockingPlayer()
+        turn = asyncio.create_task(app._run_turn("hi"))
+        await pilot.pause()
+        assert not close_started.is_set()
+        assert "hermes: one " in transcript_of(app)
+        assert "hermes: one two three four" not in transcript_of(app)
+
+        release_turn_end.set()
+        assert await asyncio.to_thread(close_started.wait, 1.0)
+        await pilot.pause()
+
+        assert "hermes: one two three four" not in transcript_of(app)
+
+        release_close.set()
+        await turn
+        assert "hermes: one two three four" in transcript_of(app)
+
+
+async def test_audio_segment_boundary_does_not_complete_caption_before_turn_end():
+    first_segment_ended = asyncio.Event()
+    release_second_segment = asyncio.Event()
+
+    class SegmentedSession(FakeSession):
+        async def _stream(self, events):
+            for position, event in enumerate(events):
+                await asyncio.sleep(0)
+                yield event
+                if position == 4:
+                    first_segment_ended.set()
+                    await release_second_segment.wait()
+
+    class ContinuousPlayer:
+        active = False
+        failure = None
+        playback_position = 0.1
+
+        def __init__(self):
+            self.start_calls = 0
+            self.close_calls = 0
+
+        def start(self, audio_format):  # noqa: ARG002 - mirrors PCMPlayer
+            self.start_calls += 1
+            self.active = True
+
+        def write(self, chunk):  # noqa: ARG002 - mirrors PCMPlayer
+            pass
+
+        def close(self):
+            self.close_calls += 1
+            self.active = False
+
+    session = SegmentedSession(
+        events=[
+            {"type": "audio_start", "sample_rate": 24000, "channels": 1, "sample_width": 2},
+            {
+                "type": "speech_timing",
+                "segment_id": "segment-1",
+                "text": "First sentence.",
+                "timing_source": "alignment",
+                "audio_offset": 0.0,
+                "duration": 1.0,
+                "fallback_reason": None,
+                "words": [
+                    {"text": "First", "start": 0.0, "end": 0.25},
+                    {"text": "sentence.", "start": 0.25, "end": 1.0},
+                ],
+            },
+            {"type": "text_delta", "text": "First sentence. "},
+            {"type": "audio_chunk", "data": b"\x00\x00"},
+            {"type": "audio_end"},
+            {"type": "audio_start", "sample_rate": 24000, "channels": 1, "sample_width": 2},
+            {
+                "type": "speech_timing",
+                "segment_id": "segment-2",
+                "text": "Second sentence.",
+                "timing_source": "alignment",
+                "audio_offset": 1.0,
+                "duration": 1.0,
+                "fallback_reason": None,
+                "words": [
+                    {"text": "Second", "start": 1.0, "end": 1.25},
+                    {"text": "sentence.", "start": 1.25, "end": 2.0},
+                ],
+            },
+            {"type": "text_delta", "text": "Second sentence."},
+            {"type": "audio_chunk", "data": b"\x00\x00"},
+            {"type": "audio_end"},
+            {"type": "turn_end", "turn_id": "segmented-caption"},
+        ]
+    )
+    app = HermesStreamingApp(args=make_args(no_play=False), session_factory=lambda: session)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        player = ContinuousPlayer()
+        app.player = player
+        turn = asyncio.create_task(app._run_turn("hi"))
+
+        await first_segment_ended.wait()
+        await pilot.pause()
+        assert "hermes: First " in transcript_of(app)
+        assert "hermes: First sentence." not in transcript_of(app)
+        assert player.start_calls == 1
+
+        player.playback_position = 1.35
+        release_second_segment.set()
+        await turn
+
+        assert "hermes: First sentence. Second sentence." in transcript_of(app)
+
+
 async def test_steer_slash_command_is_no_longer_handled_locally():
     session = FakeSession()
     app = HermesStreamingApp(args=make_args(), session_factory=lambda: session)
@@ -1884,7 +2390,7 @@ async def test_audio_write_failure_preserves_a_recovery_wav(tmp_path, monkeypatc
         assert handle.readframes(2) == b"\x00\x01\x02\x03"
 
 
-async def test_audio_end_closes_playback_before_turn_end():
+async def test_audio_playback_closes_once_after_turn_end():
     class RecordingPlayer:
         active = False
         failure = None
@@ -1917,7 +2423,7 @@ async def test_audio_end_closes_playback_before_turn_end():
         app.player = player
         await app._run_turn("hi")
 
-        assert player.close_states == [True, False]
+        assert player.close_states == [True]
 
 
 async def test_audio_close_runs_off_the_textual_event_loop():
@@ -1963,7 +2469,7 @@ async def test_audio_close_runs_off_the_textual_event_loop():
         assert await asyncio.to_thread(close_started.wait, 1.0)
         await pilot.pause()
         assert not turn.done()
-        assert "[thinking: planning]" in transcript_of(app).splitlines()
+        assert "hermes: Done." in transcript_of(app)
 
         release_close.set()
         await turn

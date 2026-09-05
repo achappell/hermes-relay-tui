@@ -217,6 +217,32 @@ def test_abort_interrupts_an_active_tone_and_leaves_close_to_playback(monkeypatc
     assert opener.streams[0].closed
 
 
+def test_abort_returns_when_the_native_abort_stalls(monkeypatch):
+    abort_started = threading.Event()
+    release_abort = threading.Event()
+
+    class BlockingAbortStream(FakeStream):
+        def abort(self):
+            abort_started.set()
+            release_abort.wait(1)
+
+    stream = BlockingAbortStream()
+    player = earcons.EarconPlayer(enabled=True, open_stream=lambda **kwargs: stream)
+    player._stream = stream
+    monkeypatch.setattr(earcons, "EARCON_CLOSE_TIMEOUT", 0.01)
+
+    aborter = threading.Thread(target=player.abort, daemon=True)
+    aborter.start()
+
+    try:
+        assert abort_started.wait(1)
+        aborter.join(0.2)
+        assert not aborter.is_alive()
+    finally:
+        release_abort.set()
+        aborter.join(1)
+
+
 def test_abort_during_open_closes_the_late_stream():
     open_started = threading.Event()
     release_open = threading.Event()

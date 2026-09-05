@@ -155,6 +155,36 @@ async def test_send_turn_logs_protocol_shapes_without_text_content(caplog):
     assert "The answer" not in messages
 
 
+async def test_speech_timing_trace_records_geometry_without_response_text(caplog):
+    caplog.set_level(logging.DEBUG, logger="hermes_relay_tui")
+    events = await collect(
+        [
+            json.dumps(
+                {
+                    "type": "speech_timing",
+                    "payload": {
+                        "segment_id": "segment-1",
+                        "text": "private response text",
+                        "timing_source": "durationFallback",
+                        "audio_offset_ms": 4907,
+                        "duration_ms": 4587,
+                        "words": [],
+                        "fallback_reason": "disabled",
+                    },
+                }
+            ),
+            json.dumps({"type": "turn_end"}),
+        ]
+    )
+
+    messages = "\n".join(record.message for record in caplog.records)
+    assert "speech_timing.recv" in messages
+    assert "audio_offset_ms=4907" in messages
+    assert "duration_ms=4587" in messages
+    assert "words=0" in messages
+    assert "private response text" not in messages
+
+
 async def test_send_turn_yields_audio_chunks_between_start_and_end():
     frames = [
         json.dumps({"type": "audio_start", "sample_rate": 24000, "channels": 1, "sample_width": 2}),
@@ -470,6 +500,104 @@ async def test_send_turn_consumes_speech_timing_metadata_without_ui_error():
     )
 
     assert [event["type"] for event in events] == ["text_delta", "turn_end"]
+
+
+async def test_send_turn_normalizes_aligned_speech_timing_metadata():
+    events = await collect(
+        [
+            json.dumps(
+                {
+                    "type": "speech_timing",
+                    "payload": {
+                        "segment_id": "segment-1",
+                        "text": "Hermes keeps moving.",
+                        "timing_source": "alignment",
+                        "audio_offset_ms": 0,
+                        "duration_ms": 1300,
+                        "words": [
+                            {"text": "Hermes", "start_ms": 0, "end_ms": 280},
+                            {"text": "keeps", "start_ms": 280, "end_ms": 510},
+                            {"text": "moving.", "start_ms": 510, "end_ms": 1300},
+                        ],
+                    },
+                }
+            ),
+            json.dumps({"type": "text_delta", "text": "Hermes keeps moving."}),
+            json.dumps({"type": "turn_end"}),
+        ]
+    )
+
+    assert events[0] == {
+        "type": "speech_timing",
+        "segment_id": "segment-1",
+        "text": "Hermes keeps moving.",
+        "timing_source": "alignment",
+        "audio_offset": 0.0,
+        "duration": 1.3,
+        "fallback_reason": None,
+        "words": [
+            {"text": "Hermes", "start": 0.0, "end": 0.28},
+            {"text": "keeps", "start": 0.28, "end": 0.51},
+            {"text": "moving.", "start": 0.51, "end": 1.3},
+        ],
+    }
+
+
+async def test_send_turn_degrades_invalid_alignment_to_duration_fallback():
+    events = await collect(
+        [
+            json.dumps(
+                {
+                    "type": "speech_timing",
+                    "payload": {
+                        "segment_id": "segment-1",
+                        "text": "Hermes keeps moving.",
+                        "timing_source": "alignment",
+                        "audio_offset_ms": 0,
+                        "duration_ms": 1300,
+                        "words": [
+                            {"text": "Hermes", "start_ms": 0, "end_ms": 280},
+                            {"text": "wrong", "start_ms": 280, "end_ms": 510},
+                            {"text": "moving.", "start_ms": 510, "end_ms": 1300},
+                        ],
+                    },
+                }
+            ),
+            json.dumps({"type": "turn_end"}),
+        ]
+    )
+
+    assert events[0] == {
+        "type": "speech_timing",
+        "segment_id": "segment-1",
+        "text": "Hermes keeps moving.",
+        "timing_source": "duration_fallback",
+        "audio_offset": 0.0,
+        "duration": 1.3,
+        "fallback_reason": "invalid",
+        "words": [],
+    }
+
+
+async def test_send_turn_ignores_timing_without_safe_segment_geometry():
+    events = await collect(
+        [
+            json.dumps(
+                {
+                    "type": "speech_timing",
+                    "payload": {
+                        "segment_id": "segment-1",
+                        "text": "Hermes keeps moving.",
+                        "timing_source": "alignment",
+                        "audio_offset_ms": 0,
+                    },
+                }
+            ),
+            json.dumps({"type": "turn_end"}),
+        ]
+    )
+
+    assert [event["type"] for event in events] == ["turn_end"]
 
 
 async def test_send_turn_normalizes_gateway_activity_events():
