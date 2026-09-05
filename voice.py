@@ -236,10 +236,10 @@ class AudioRecorder:
                     name="hermes-microphone-reader",
                     daemon=True,
                 )
+                reader.start()
                 self._stream = stream
                 self._reader_stop = reader_stop
                 self._reader_thread = reader
-                reader.start()
             except Exception as exc:
                 cleanup_stream = stream
                 open_error = exc

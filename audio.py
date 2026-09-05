@@ -205,7 +205,12 @@ class PCMPlayer:
         write_error: Exception | None = None
         with self._write_lock:
             with self._lock:
-                if self.stream is not stream or self._abort_requested.is_set():
+                if (
+                    self.stream is not stream
+                    or self._abort_requested.is_set()
+                    or self._poisoned
+                    or self._close_in_progress is stream
+                ):
                     return
             try:
                 stream.write(chunk)
@@ -225,7 +230,12 @@ class PCMPlayer:
         # it can still break a blocking write.
         with self._write_lock:
             with self._lock:
-                if self.stream is not stream:
+                if (
+                    self.stream is not stream
+                    or self._poisoned
+                    or self._close_in_progress is stream
+                ):
+                    self.playing = False
                     return
                 aborted = self._abort_requested.is_set()
                 tail = bytes(self._pending) if self._pending and not aborted else None
