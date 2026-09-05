@@ -9,6 +9,7 @@ import os
 import sys
 import tempfile
 import threading
+import time
 import traceback
 from datetime import datetime
 from pathlib import Path
@@ -23,6 +24,12 @@ _active_log_file: Optional[Path] = None
 _crash_log_file: Optional[Path] = None
 _previous_sys_excepthook: Optional[Callable[..., Any]] = None
 _previous_threading_excepthook: Optional[Callable[..., Any]] = None
+_trace_started_at_ns = time.monotonic_ns()
+
+
+def trace_monotonic_ms() -> int:
+    """Return a process-local monotonic timestamp for cross-layer traces."""
+    return (time.monotonic_ns() - _trace_started_at_ns) // 1_000_000
 
 
 def summarize_text(value: Any) -> str:

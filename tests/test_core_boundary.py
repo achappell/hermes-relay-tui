@@ -30,6 +30,7 @@ CORE_MODULES = [
     "mic",
     "session",
     "shell",
+    "timing",
     "wake",
 ]
 

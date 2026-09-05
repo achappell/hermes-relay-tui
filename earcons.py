@@ -245,15 +245,27 @@ class EarconPlayer:
             return
         self._abort_native(stream)
 
-    def _abort_native(self, stream: Any) -> None:
+    def _abort_native(self, stream: Any) -> bool:
         try:
-            abort = getattr(stream, "abort", None)
-            if callable(abort):
-                abort()
-            else:
-                stream.stop()
+            operation = getattr(stream, "abort", None)
+            if not callable(operation):
+                operation = stream.stop
+            completed, error = _call_with_timeout(
+                operation,
+                EARCON_CLOSE_TIMEOUT,
+            )
         except Exception:
             logger.debug("aborting the earcon stream failed", exc_info=True)
+            return False
+        if error is not None:
+            logger.debug("aborting the earcon stream failed", exc_info=True)
+            return False
+        if not completed:
+            logger.warning("earcon stream abort timed out")
+            with self._stream_lock:
+                self._poisoned = True
+            return False
+        return True
 
     def _close_native(self, stream: Any) -> None:
         with self._stream_lock:
@@ -286,5 +298,5 @@ class EarconPlayer:
                     self._poisoned = True
 
     def _abort_and_close(self, stream: Any) -> None:
-        self._abort_native(stream)
-        self._close_native(stream)
+        if self._abort_native(stream):
+            self._close_native(stream)

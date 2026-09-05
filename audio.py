@@ -6,6 +6,7 @@ Ported from hermes-hybrid-tui.py's PCMPlayer, unchanged in behavior.
 from __future__ import annotations
 
 import threading
+import time
 import wave
 from io import BytesIO
 from pathlib import Path
@@ -130,11 +131,91 @@ class PCMPlayer:
         self.playing = False
         self._pending = bytearray()
         self._prebuffer_bytes = 0
+        self._bytes_per_second = 0.0
+        self._playback_clock_origin: float | None = None
+        self._playback_clock_started_at: float | None = None
+        self._playback_clock_last_raw_position = 0.0
+        self._scheduled_audio_seconds = 0.0
+        self._playback_position = 0.0
 
     @property
     def active(self) -> bool:
         with self._lock:
             return self.stream is not None
+
+    @property
+    def playback_position(self) -> float:
+        """Return the rendered position without outrunning queued PCM."""
+        with self._lock:
+            self._advance_playback_clock_locked(self.stream)
+            return self._playback_position
+
+    def playback_snapshot(self) -> dict[str, Any]:
+        """Return content-free state for diagnosing the playback timeline."""
+        with self._lock:
+            self._advance_playback_clock_locked(self.stream)
+            pending_audio = (
+                len(self._pending) / self._bytes_per_second
+                if self._bytes_per_second > 0
+                else 0.0
+            )
+            queued_audio = max(
+                self._scheduled_audio_seconds - self._playback_position,
+                0.0,
+            ) + pending_audio
+            return {
+                "active": self.stream is not None,
+                "playing": self.playing,
+                "playback_position": self._playback_position,
+                "scheduled_audio": self._scheduled_audio_seconds,
+                "pending_audio": pending_audio,
+                "queued_audio": queued_audio,
+            }
+
+    def _begin_playback_clock(self, stream: Any) -> None:
+        self._playback_clock_started_at = time.monotonic()
+        self._playback_clock_last_raw_position = 0.0
+        try:
+            self._playback_clock_origin = float(stream.time)
+        except (AttributeError, TypeError, ValueError):
+            self._playback_clock_origin = None
+
+    def _advance_playback_clock_locked(self, stream: Any) -> None:
+        """Advance only while there is PCM already handed to the device.
+
+        PortAudio's stream clock continues during a network starvation gap,
+        unlike AVAudioPlayerNode's rendered sample time on the iOS client.
+        Treat the stream clock as a rate source, but cap each advance at the
+        duration of audio that has actually been written. Calling this before
+        a new write consumes the old queue first; calling it after the write
+        lets a native stream clock that moved during the write contribute.
+        """
+        if stream is None:
+            return
+
+        raw_position: float | None = None
+        if self._playback_clock_origin is not None:
+            try:
+                raw_position = float(stream.time) - self._playback_clock_origin
+            except (AttributeError, TypeError, ValueError):
+                raw_position = None
+        if raw_position is None and self._playback_clock_started_at is not None:
+            raw_position = time.monotonic() - self._playback_clock_started_at
+        if raw_position is None:
+            return
+
+        raw_position = max(raw_position, self._playback_clock_last_raw_position, 0.0)
+        elapsed = raw_position - self._playback_clock_last_raw_position
+        available = max(self._scheduled_audio_seconds - self._playback_position, 0.0)
+        self._playback_position += min(elapsed, available)
+        self._playback_clock_last_raw_position = raw_position
+
+    def _record_written_audio(self, stream: Any, byte_count: int) -> None:
+        with self._lock:
+            if self.stream is not stream or self._bytes_per_second <= 0:
+                return
+            self._scheduled_audio_seconds += byte_count / self._bytes_per_second
+            self._advance_playback_clock_locked(stream)
 
     def start(self, audio_format: tuple[int, int, int]) -> None:
         with self._lock:
@@ -150,7 +231,13 @@ class PCMPlayer:
             self.failure = None
             self.playing = False
             self._pending.clear()
+            self._bytes_per_second = 0.0
             self._abort_requested.clear()
+            self._playback_clock_origin = None
+            self._playback_clock_started_at = None
+            self._playback_clock_last_raw_position = 0.0
+            self._scheduled_audio_seconds = 0.0
+            self._playback_position = 0.0
             if not self.enabled:
                 return
             sample_rate, channels, sample_width = audio_format
@@ -160,6 +247,7 @@ class PCMPlayer:
             self._prebuffer_bytes = int(
                 sample_rate * channels * sample_width * self.prebuffer_seconds
             )
+            self._bytes_per_second = sample_rate * channels * sample_width
             stream_kwargs = {
                 "samplerate": sample_rate,
                 "channels": channels,
@@ -205,6 +293,7 @@ class PCMPlayer:
                 chunk = bytes(self._pending)
                 self._pending.clear()
                 self.playing = True
+                self._begin_playback_clock(stream)
         write_error: Exception | None = None
         with self._write_lock:
             with self._lock:
@@ -216,7 +305,10 @@ class PCMPlayer:
                 ):
                     return
             try:
+                with self._lock:
+                    self._advance_playback_clock_locked(stream)
                 stream.write(chunk)
+                self._record_written_audio(stream, len(chunk))
             except Exception as exc:
                 write_error = exc
         if write_error is not None:
@@ -245,9 +337,14 @@ class PCMPlayer:
                 self._pending.clear()
                 if tail:
                     self.playing = True
+                    if self._playback_clock_started_at is None:
+                        self._begin_playback_clock(stream)
             if tail:
                 try:
+                    with self._lock:
+                        self._advance_playback_clock_locked(stream)
                     stream.write(tail)
+                    self._record_written_audio(stream, len(tail))
                 except Exception as exc:
                     self.failure = str(exc)
             with self._lock:
@@ -276,7 +373,8 @@ class PCMPlayer:
         with self._lock:
             if self._close_in_progress is stream:
                 return
-        self._abort_native(stream)
+        if not self._abort_native(stream):
+            return
         if not self._write_lock.acquire(timeout=AUDIO_TEARDOWN_TIMEOUT):
             self.failure = "audio write did not stop during abort"
             return
@@ -290,17 +388,27 @@ class PCMPlayer:
         finally:
             self._write_lock.release()
 
-    def _abort_native(self, stream: Any) -> None:
+    def _abort_native(self, stream: Any) -> bool:
         try:
-            abort = getattr(stream, "abort", None)
-            if callable(abort):
-                abort()
-            else:
-                # Keep injected/older stream implementations usable when
-                # they expose only the original stop/close pair.
-                stream.stop()
+            operation = getattr(stream, "abort", None)
+            if not callable(operation):
+                operation = stream.stop
+            completed, error = _call_with_timeout(
+                operation,
+                AUDIO_TEARDOWN_TIMEOUT,
+            )
         except Exception as exc:
             self.failure = str(exc)
+            return False
+        if error is not None:
+            self.failure = str(error)
+            return False
+        if not completed:
+            self.failure = "audio stream abort timed out"
+            with self._lock:
+                self._poisoned = True
+            return False
+        return True
 
     def _close_native(self, stream: Any) -> None:
         with self._lock:
@@ -333,5 +441,5 @@ class PCMPlayer:
                     self.failure = "audio stream close timed out"
 
     def _abort_and_close(self, stream: Any) -> None:
-        self._abort_native(stream)
-        self._close_native(stream)
+        if self._abort_native(stream):
+            self._close_native(stream)
