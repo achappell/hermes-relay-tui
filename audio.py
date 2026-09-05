@@ -142,6 +142,9 @@ class PCMPlayer:
                 return
         if self.active:
             self.close()
+            with self._lock:
+                if self._poisoned:
+                    return
         cleanup_stream = None
         with self._lock:
             self.failure = None
