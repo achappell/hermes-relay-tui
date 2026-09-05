@@ -474,6 +474,13 @@ does not immediately trip the detector. The energy callback interrupts
 playback first; local STT then decides whether the captured audio is a real
 follow-up or should be discarded.
 
+If the initial microphone calibration is already loud (for example, children
+watching a movie in the same room), the detector keeps that measured room floor
+but uses reachable headroom instead of allowing the normal multiplier to hit
+the absolute ceiling. Background audio must still stay below the speaking
+voice; headphones or reducing the nearby speaker volume remain the reliable
+fix when the room is louder than the speaker's voice.
+
 **The listening timeout is not a recording limit.** Silence endpointing already
 decides when you have *stopped* talking. This setting answers a different
 question: did anyone ever *start*? It covers the case where the detector fired

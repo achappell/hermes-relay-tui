@@ -285,7 +285,9 @@ local variable values; it appends until manually removed.
 - `voice.py` owns `LocalMicrophone`, its sounddevice-based recorder, and faster-whisper transcription; `mic.py`'s adapter supplies session-local input selection and cancellation on top of it. The project's voice dependencies (`sounddevice`, `numpy`, `faster-whisper`) must be installed for `Ctrl+R` to work.
 - `BargeInListener` follows Hermes' full-duplex shape: it calibrates the quiet
   room before playback, holds that floor while the speaker is active, applies
-  playback grace/headroom, and uses a majority energy window. Its speech
+  playback grace/headroom, and uses a majority energy window. If that room
+  floor is already loud, it reduces the multiplier so the trigger remains
+  reachable without treating steady background audio as speech. Its speech
   callback interrupts immediately; local STT decides whether the captured
   phrase becomes a follow-up turn.
 - `wake.WakeListener.pause()` and `resume()` both drain the frame queue.

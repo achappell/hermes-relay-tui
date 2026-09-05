@@ -695,6 +695,8 @@ class BargeInListener:
     _DEFAULT_CALIBRATION_SECONDS = 0.45
     _DEFAULT_PLAYBACK_GRACE_SECONDS = 0.50
     _DEFAULT_TRIGGER_MULTIPLIER = 3.0
+    _NOISY_ROOM_FLOOR_RATIO = 4.0
+    _NOISY_ROOM_TRIGGER_MULTIPLIER = 1.5
     _PLAYBACK_MIN_TRIGGER = 1500
     _TRIGGER_CEILING = 4000
     _MAJORITY_FRACTION = 0.80
@@ -913,8 +915,9 @@ class BargeInListener:
         self._quiet_floor = self._ambient_floor_locked()
         self._floor_locked = True
         logger.debug(
-            "barge-in calibrated quiet floor=%0.0f from %d frames",
+            "barge-in calibrated quiet floor=%0.0f trigger=%0.0f from %d frames",
             self._quiet_floor,
+            self._trigger_level_locked(False),
             len(self._ambient_rms),
         )
 
@@ -928,8 +931,19 @@ class BargeInListener:
         return max(percentile, float(self._silence_threshold))
 
     def _trigger_level_locked(self, playing: bool) -> float:
+        multiplier = self._trigger_multiplier
+        # A loud room can make a legitimate calibration floor large enough
+        # that the normal 3x trigger reaches the absolute ceiling. Keep the
+        # measured floor (so steady movie audio does not trip the detector),
+        # but use modest headroom when that floor is already noisy.  1.5x is
+        # approximately the RMS rise of a voice over an independent noise
+        # source; the absolute ceiling still protects against runaway levels.
+        if self._quiet_floor >= (
+            float(self._silence_threshold) * self._NOISY_ROOM_FLOOR_RATIO
+        ):
+            multiplier = min(multiplier, self._NOISY_ROOM_TRIGGER_MULTIPLIER)
         trigger = max(
-            self._quiet_floor * self._trigger_multiplier,
+            self._quiet_floor * multiplier,
             float(self._silence_threshold) * 2,
         )
         if playing:

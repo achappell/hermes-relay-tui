@@ -169,6 +169,51 @@ def test_playback_grace_and_floor_ignore_speaker_bleed_until_speech(tmp_path):
         listener.stop()
 
 
+def test_loud_room_noise_does_not_make_speech_undetectable(tmp_path):
+    started = threading.Event()
+    calibration_processed = threading.Event()
+    playing = False
+    playback_checks = 0
+
+    def is_playing():
+        nonlocal playback_checks
+        playback_checks += 1
+        if playback_checks == 4:
+            calibration_processed.set()
+        return playing
+
+    listener = BargeInListener(
+        on_speech_start=started.set,
+        on_transcript=lambda text: None,
+        is_playing=is_playing,
+        sample_rate=100,
+        silence_threshold=200,
+        calibration_duration=0.4,
+        playback_grace_duration=0.5,
+        min_speech_duration=0.3,
+        silence_duration=0.2,
+        temp_dir=tmp_path,
+    )
+    listener.start()
+    listener.activate()
+
+    try:
+        for _ in range(4):
+            listener.submit(_frame(1800, samples=10))
+        assert calibration_processed.wait(1.0)
+
+        playing = True
+        for _ in range(20):
+            listener.submit(_frame(1800, samples=10))
+        assert not started.wait(0.1)
+        for _ in range(3):
+            listener.submit(_frame(3200, samples=10))
+
+        assert started.wait(1.0)
+    finally:
+        listener.stop()
+
+
 def test_cancelling_an_utterance_drops_its_local_transcript():
     started = threading.Event()
     completed = []
