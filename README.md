@@ -380,6 +380,7 @@ it. A turn that may already have reached Hermes is never replayed automatically.
 | `--mic-max-seconds SECONDS` | Maximum microphone capture duration |
 | `--mic-silence-duration SECONDS` | Silence duration that ends capture |
 | `--mic-silence-threshold VALUE` | Capture silence threshold |
+| `--wake-barge-in-min-speech-duration SECONDS` | Energy-window duration before immediate interruption; local STT decides whether to follow up; default `0.30` |
 | `--mic-input-device DEVICE` | Microphone name or index; `default` uses the system default |
 | `--audio-output-device DEVICE` | Speaker name or index; `default` uses the system default |
 | `--stt-model NAME` | Select the local Faster-Whisper model |
@@ -462,16 +463,23 @@ works on a clean machine and on a network that is not up yet when it boots.
 | `--wake-refractory-seconds` | `2.0` | Minimum gap between two fires. |
 | `--wake-listen-timeout` | `8.0` | How long to wait for speech to begin after the phrase. |
 | `--wake-followup-seconds` | `8.0` | How long to wait for a follow-up after the reply, without another wake phrase. |
-| `--wake-barge-in` | off | Let the phrase interrupt playback. See the warning below. |
+| `--wake-barge-in` | off | Let calibrated local speech energy interrupt the active response; no second wake phrase is needed. See the warning below. |
 | `--no-earcons` | tones on | Silence the acknowledgement tones. Does not disable the wake word. |
 
-**Confirmation frames are the setting that matters.** The detector scores about
-twelve frames a second, and a stray sound can push a single frame over the
-threshold. A real utterance holds the score high across several frames in a
-row, so requiring three consecutive frames rejects background conversation far
-better than raising the threshold — which only makes the phrase harder to say.
-Setting this to `1` restores naive single-frame behaviour and is the fastest
-way to make the unit start answering the radio.
+**Barge-in uses the Hermes full-duplex shape.** It calibrates the quiet room
+before response audio begins, holds that floor while the speaker is active,
+and requires a majority of a short energy window rather than one loud sample.
+Playback gets a brief onset grace period and a higher floor so speaker bleed
+does not immediately trip the detector. The energy callback interrupts
+playback first; local STT then decides whether the captured audio is a real
+follow-up or should be discarded.
+
+If the initial microphone calibration is already loud (for example, children
+watching a movie in the same room), the detector keeps that measured room floor
+but uses reachable headroom instead of allowing the normal multiplier to hit
+the absolute ceiling. Background audio must still stay below the speaking
+voice; headphones or reducing the nearby speaker volume remain the reliable
+fix when the room is louder than the speaker's voice.
 
 **The listening timeout is not a recording limit.** Silence endpointing already
 decides when you have *stopped* talking. This setting answers a different
@@ -503,9 +511,25 @@ ordinary voice turn. Set the window with `--wake-followup-seconds` or
 `VOICE_SESSION_WAKE_FOLLOWUP_SECONDS`. The normal TUI silence endpoint is 1.5
 seconds, so it no longer waits three seconds after the user stops talking.
 
+With `--wake-barge-in`, the armed TUI also taps the same microphone stream while
+Hermes is generating, buffering, or speaking. A calibrated, windowed energy
+trigger closes local playback and sends one explicit remote interrupt before
+local STT finishes. Raw microphone PCM never crosses the WebSocket. Saying
+exactly `stop` ends the answer without submitting a new turn. If local STT
+returns no usable transcript, the interruption is kept but no replacement turn
+is sent.
+Any other transcript becomes one new turn, without a second wake phrase. This
+remains opt-in because a normal laptop speaker route can still feed Hermes'
+voice back into the microphone. Playback-phase transcripts that closely match
+the current assistant text are discarded as likely echo, but echo cancellation
+or headphones are still the reliable fix.
+
 The first `/wake on` can take a few seconds while the local wake model warms up
 and CoreAudio opens the input stream. That setup runs away from the Textual event
 loop, so the status remains repaintable and `/wake off` can cancel startup.
+The local microphone uses a blocking reader worker rather than running wake or
+barge-in Python inside PortAudio's CoreAudio callback; this keeps the input
+device lifecycle stable while the stream remains open.
 
 Whenever the microphone is open the status line above the composer carries a
 `◉ mic open` marker in a colour of its own — during a `Ctrl+R` capture, during
@@ -595,8 +619,8 @@ hardware.
 
 **Do not enable `--wake-barge-in` without echo cancellation.** With a shared
 microphone and speaker the unit hears its own voice, retriggers on itself, and
-interrupts its own sentence. The feature is implemented and tested, and stays
-off until the audio hardware can cancel its own output.
+interrupts its own sentence. Keep it off on ordinary laptop speakers unless
+the route provides echo cancellation, headphones, or equivalent isolation.
 
 ## Config file
 
@@ -629,6 +653,7 @@ hermes-relay
 | `VOICE_SESSION_MIC_SILENCE_DURATION` | `1.5` |
 | `VOICE_SESSION_MIC_SILENCE_THRESHOLD` | `200` |
 | `VOICE_SESSION_WAKE_FOLLOWUP_SECONDS` | `8.0` seconds of silence after a wake-triggered reply |
+| `VOICE_SESSION_WAKE_BARGE_IN_MIN_SPEECH_DURATION` | `0.30` seconds of windowed energy before interruption; local STT decides whether to follow up |
 | `VOICE_SESSION_MIC_INPUT_DEVICE` | Microphone name or index; unset uses the system default |
 | `VOICE_SESSION_AUDIO_OUTPUT_DEVICE` | Speaker name or index; unset uses the system default |
 | `VOICE_SESSION_STT_MODEL` | unset; use the Hermes/local-STT default |

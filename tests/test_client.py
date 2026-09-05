@@ -451,6 +451,27 @@ async def test_send_turn_surfaces_unknown_frame_kinds_for_diagnostics():
     assert events[-1] == {"type": "turn_end", "turn_id": events[-1]["turn_id"]}
 
 
+async def test_send_turn_consumes_speech_timing_metadata_without_ui_error():
+    events = await collect(
+        [
+            json.dumps(
+                {
+                    "type": "speech_timing",
+                    "payload": {
+                        "segment_id": "segment-1",
+                        "audio_offset_ms": 0,
+                        "duration_ms": 1200,
+                    },
+                }
+            ),
+            json.dumps({"type": "text_delta", "text": "answer"}),
+            json.dumps({"type": "turn_end"}),
+        ]
+    )
+
+    assert [event["type"] for event in events] == ["text_delta", "turn_end"]
+
+
 async def test_send_turn_normalizes_gateway_activity_events():
     events = await collect(
         [

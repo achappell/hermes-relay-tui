@@ -47,6 +47,33 @@ def test_observer_can_be_cleared():
     assert seen == []
 
 
+def test_multiple_observers_can_share_the_persistent_input_stream():
+    recorder = _recorder()
+    first = []
+    second = []
+    recorder.set_frame_observer(first.append)
+    recorder.add_frame_observer(second.append)
+
+    recorder._dispatch_frame(_FakeFrame("a"))
+
+    assert [frame.tag for frame in first] == ["a"]
+    assert [frame.tag for frame in second] == ["a"]
+
+
+def test_an_observer_can_be_removed_without_affecting_the_other_tap():
+    recorder = _recorder()
+    first = []
+    second = []
+    recorder.set_frame_observer(first.append)
+    recorder.add_frame_observer(second.append)
+    recorder.remove_frame_observer(second.append)
+
+    recorder._dispatch_frame(_FakeFrame("a"))
+
+    assert [frame.tag for frame in first] == ["a"]
+    assert second == []
+
+
 def test_observer_exception_never_escapes_the_audio_callback():
     """A raising observer must not kill the audio thread and stop recording
     for the whole process."""

@@ -57,12 +57,24 @@ class FakeRecorder:
 
     def __init__(self) -> None:
         self.observer = None
+        self.observers = []
         self.listening = False
         self.shutdowns = 0
         self.has_detected_speech = False
 
     def set_frame_observer(self, observer) -> None:
         self.observer = observer
+        self.observers = [] if observer is None else [observer]
+
+    def add_frame_observer(self, observer) -> None:
+        self.observers.append(observer)
+
+    def remove_frame_observer(self, observer) -> None:
+        self.observers = [current for current in self.observers if current != observer]
+
+    def emit(self, frame) -> None:
+        for observer in list(self.observers):
+            observer(frame)
 
     def open_for_listening(self) -> None:
         self.listening = True
@@ -83,6 +95,7 @@ class WakeFakes:
         self.builds = 0
         self.build_args = []
         self.build_kwargs = []
+        self.barge_listener = None
 
     def build(self, session, args, **kwargs):
         self.builds += 1
@@ -112,6 +125,48 @@ class WakeFakes:
         recorder = FakeRecorder()
         self.recorders.append(recorder)
         return recorder
+
+    def barge_listener_factory(self, **kwargs):
+        listener = FakeBargeListener(**kwargs)
+        self.barge_listener = listener
+        return listener
+
+
+class FakeBargeListener:
+    def __init__(self, *, on_speech_start, on_transcript, **kwargs) -> None:
+        self.on_speech_start = on_speech_start
+        self.on_transcript = on_transcript
+        self.kwargs = kwargs
+        self.started = False
+        self.active = False
+        self.stopped = False
+        self.cancelled = False
+
+    def start(self) -> None:
+        self.started = True
+
+    def activate(self) -> None:
+        self.active = True
+
+    def deactivate(self) -> None:
+        self.active = False
+
+    def cancel_capture(self) -> None:
+        self.cancelled = True
+        self.active = False
+
+    def stop(self) -> None:
+        self.stopped = True
+        self.active = False
+
+    def submit(self, frame) -> None:  # pragma: no cover - callback wiring only
+        pass
+
+    def speak(self) -> None:
+        self.on_speech_start()
+
+    def transcribe(self, text: str) -> None:
+        self.on_transcript(text)
 
 
 class SlowWakeFakes(WakeFakes):
@@ -172,6 +227,7 @@ def make_app(*, fakes=None, session=None, argv=None, **arg_overrides):
         session_factory=lambda: session,
         build_hands_free=fakes.build,
         recorder_factory=fakes.recorder_factory,
+        barge_listener_factory=fakes.barge_listener_factory,
         argv=argv,
     )
     return app, fakes, session
@@ -222,19 +278,16 @@ async def test_wake_on_opens_the_stream_and_starts_the_listener():
 async def test_wake_on_repaints_startup_while_model_load_is_running():
     fakes = SlowWakeFakes()
     app, _, _ = make_app(fakes=fakes)
-    release = threading.Timer(0.2, fakes.build_release.set)
-    release.daemon = True
-    release.start()
 
     async with app.run_test() as pilot:
         await pilot.pause()
         startup = asyncio.create_task(app._handle_wake_command("on"))
-        await asyncio.sleep(0.05)
 
-        assert fakes.build_started.is_set()
+        assert await asyncio.to_thread(fakes.build_started.wait, 1.0)
         assert app.voice_state == app_module.VOICE_STARTING
         assert "wake mode starting — loading wake model" in transcript_text(app)
 
+        fakes.build_release.set()
         await asyncio.wait_for(startup, 1.0)
         assert app.wake_armed is True
 
@@ -580,6 +633,307 @@ async def test_ctrl_r_keeps_the_wake_detector_paused_until_its_turn_finishes():
         session.gate.set()
         await asyncio.wait_for(capture, 1.0)
         assert fakes.listener.paused[-1] is False
+
+
+class BargeInterruptSession(FakeSession):
+    def __init__(self, *, spoken_text="partial answer"):
+        super().__init__()
+        self.release = asyncio.Event()
+        self.interrupt_calls = 0
+        self.spoken_text = spoken_text
+
+    def send_turn(self, text, *, stt_source="local"):
+        self.sent_turns.append((text, stt_source))
+        self.turn_index += 1
+        if len(self.sent_turns) > 1:
+            return self._stream(DEFAULT_EVENTS)
+
+        async def stream():
+            yield {"type": "text_delta", "text": self.spoken_text}
+            yield {
+                "type": "audio_start",
+                "sample_rate": 24000,
+                "channels": 1,
+                "sample_width": 2,
+            }
+            yield {"type": "audio_chunk", "data": b"\x00\x01"}
+            await self.release.wait()
+            yield {
+                "type": "audio_abort",
+                "turn_id": "turn-1",
+                "session_id": "s1",
+                "error": "client interrupt",
+            }
+            yield {
+                "type": "turn_interrupted",
+                "turn_id": "turn-1",
+                "session_id": "s1",
+            }
+
+        return stream()
+
+    async def interrupt_active_turn(self):
+        self.interrupt_calls += 1
+        self.release.set()
+        return True
+
+
+async def test_spoken_stop_interrupts_active_response_without_a_new_turn():
+    fakes = WakeFakes()
+    session = BargeInterruptSession()
+    app, _, _ = make_app(fakes=fakes, session=session, wake_barge_in=True)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await app._handle_wake_command("on")
+        first = asyncio.create_task(app._run_turn("first"))
+        for _ in range(20):
+            await pilot.pause()
+            if "partial answer" in transcript_text(app):
+                break
+
+        fakes.barge_listener.speak()
+        await pilot.pause()
+        fakes.barge_listener.transcribe("  STOP  ")
+        await asyncio.wait_for(first, 1.0)
+        await pilot.pause()
+
+        assert session.interrupt_calls == 1
+        assert session.sent_turns == [("first", "local")]
+        assert "stop" not in transcript_text(app).lower()
+        assert fakes.barge_listener.active is False
+
+
+async def test_barge_in_uses_its_configured_minimum_speech_duration():
+    fakes = WakeFakes()
+    app, _, _ = make_app(
+        fakes=fakes,
+        wake_barge_in=True,
+        wake_barge_in_min_speech_duration=0.8,
+    )
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await app._handle_wake_command("on")
+
+        assert fakes.barge_listener.kwargs["min_speech_duration"] == 0.8
+        assert callable(fakes.barge_listener.kwargs["is_playing"])
+
+
+async def test_spoken_follow_up_interrupts_then_starts_exactly_one_new_turn():
+    fakes = WakeFakes()
+    session = BargeInterruptSession()
+    app, _, _ = make_app(fakes=fakes, session=session, wake_barge_in=True)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await app._handle_wake_command("on")
+        first = asyncio.create_task(app._run_turn("first"))
+        for _ in range(20):
+            await pilot.pause()
+            if "partial answer" in transcript_text(app):
+                break
+
+        fakes.barge_listener.speak()
+        await pilot.pause()
+        fakes.barge_listener.transcribe("what about Dawn soap?")
+        await asyncio.wait_for(first, 1.0)
+        for _ in range(20):
+            await pilot.pause()
+            if len(session.sent_turns) == 2:
+                break
+
+        assert session.interrupt_calls == 1
+        assert session.sent_turns == [
+            ("first", "local"),
+            ("what about Dawn soap?", "local-faster-whisper"),
+        ]
+
+
+async def test_spoken_barge_in_interrupts_live_playback_before_transcription():
+    class RecordingPlayer:
+        failure = None
+
+        def __init__(self):
+            self.active = False
+            self.close_calls = 0
+
+        def start(self, audio_format):
+            self.active = True
+
+        def write(self, chunk):
+            pass
+
+        def close(self):
+            self.close_calls += 1
+            self.active = False
+
+    fakes = WakeFakes()
+    session = BargeInterruptSession()
+    app, _, _ = make_app(
+        fakes=fakes,
+        session=session,
+        wake_barge_in=True,
+        no_play=False,
+    )
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.player = RecordingPlayer()
+        await app._handle_wake_command("on")
+        first = asyncio.create_task(app._run_turn("first"))
+        for _ in range(20):
+            await pilot.pause()
+            if app.player.active:
+                break
+
+        assert app.player.active is True
+        fakes.barge_listener.speak()
+        await pilot.pause()
+
+        assert app.player.close_calls >= 1
+        assert app.player.active is False
+        assert session.interrupt_calls == 1
+        fakes.barge_listener.transcribe("STOP")
+        await asyncio.wait_for(first, 1.0)
+        assert app.player.close_calls >= 1
+
+
+async def test_unrecognized_barge_candidate_does_not_start_a_follow_up_turn():
+    fakes = WakeFakes()
+    session = BargeInterruptSession()
+    app, _, _ = make_app(fakes=fakes, session=session, wake_barge_in=True)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await app._handle_wake_command("on")
+        first = asyncio.create_task(app._run_turn("first"))
+        for _ in range(20):
+            await pilot.pause()
+            if "partial answer" in transcript_text(app):
+                break
+
+        fakes.barge_listener.speak()
+        await pilot.pause()
+        assert session.interrupt_calls == 1
+
+        fakes.barge_listener.transcribe("")
+        await pilot.pause()
+        assert session.interrupt_calls == 1
+        assert session.sent_turns == [("first", "local")]
+
+        session.release.set()
+        await asyncio.wait_for(first, 1.0)
+
+
+async def test_playback_echo_is_discarded_after_immediate_barge_interrupt():
+    class RecordingPlayer:
+        failure = None
+
+        def __init__(self):
+            self.active = False
+
+        def start(self, audio_format):
+            self.active = True
+
+        def write(self, chunk):
+            pass
+
+        def close(self):
+            self.active = False
+
+    fakes = WakeFakes()
+    session = BargeInterruptSession(
+        spoken_text="I checked the kitchen and the dishes are ready for dinner."
+    )
+    app, _, _ = make_app(
+        fakes=fakes,
+        session=session,
+        wake_barge_in=True,
+        no_play=False,
+    )
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.player = RecordingPlayer()
+        await app._handle_wake_command("on")
+        first = asyncio.create_task(app._run_turn("first"))
+        for _ in range(20):
+            await pilot.pause()
+            if "dishes are ready" in transcript_text(app):
+                break
+
+        fakes.barge_listener.speak()
+        await pilot.pause()
+        fakes.barge_listener.transcribe("the dishes are ready")
+        await asyncio.wait_for(first, 1.0)
+        await pilot.pause()
+
+        assert session.interrupt_calls == 1
+        assert session.sent_turns == [("first", "local")]
+
+
+async def test_ctrl_c_cancels_spoken_barge_in_and_cannot_submit_a_late_transcript():
+    fakes = WakeFakes()
+    session = BargeInterruptSession()
+    app, _, _ = make_app(fakes=fakes, session=session, wake_barge_in=True)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await app._handle_wake_command("on")
+        first = asyncio.create_task(app._run_turn("first"))
+        for _ in range(20):
+            await pilot.pause()
+            if "partial answer" in transcript_text(app):
+                break
+
+        fakes.barge_listener.speak()
+        await pilot.pause()
+        await app.action_interrupt()
+        await asyncio.wait_for(first, 1.0)
+        fakes.barge_listener.transcribe("do not send this")
+        await pilot.pause()
+
+        assert fakes.barge_listener.cancelled is True
+        assert session.sent_turns == [("first", "local")]
+
+
+async def test_spoken_barge_in_uses_reconnect_fallback_without_claiming_remote_cancel():
+    class LegacySession(BargeInterruptSession):
+        async def interrupt_active_turn(self):
+            self.interrupt_calls += 1
+            return False
+
+        async def close(self):
+            self.closed = True
+            self.connected = False
+
+        async def connect(self):
+            self.connect_calls += 1
+            self.connected = True
+            return self.hello
+
+    fakes = WakeFakes()
+    session = LegacySession()
+    app, _, _ = make_app(fakes=fakes, session=session, wake_barge_in=True)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await app._handle_wake_command("on")
+        first = asyncio.create_task(app._run_turn("first"))
+        for _ in range(20):
+            await pilot.pause()
+            if "partial answer" in transcript_text(app):
+                break
+
+        fakes.barge_listener.speak()
+        await pilot.pause()
+        fakes.barge_listener.transcribe("what about Dawn soap?")
+        for _ in range(30):
+            await pilot.pause()
+            if len(session.sent_turns) == 2:
+                break
+
+        assert first.done()
+        assert session.interrupt_calls == 1
+        assert session.closed is True
+        assert session.connect_calls == 2  # initial connection plus fallback reconnect
+        assert session.sent_turns == [
+            ("first", "local"),
+            ("what about Dawn soap?", "local-faster-whisper"),
+        ]
 
 
 async def test_ctrl_c_cancels_a_wake_follow_up_capture():

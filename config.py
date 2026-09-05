@@ -341,8 +341,20 @@ def build_arg_parser(argv: Optional[list[str]] = None) -> argparse.ArgumentParse
         action="store_true",
         default=_cfg_bool(cfg, "wake_barge_in"),
         help=(
-            "allow the wake phrase to interrupt playback; needs echo "
-            "cancellation or the unit retriggers on its own voice"
+            "allow local speech to interrupt an active response; needs echo "
+            "cancellation or the unit hears its own voice"
+        ),
+    )
+    parser.add_argument(
+        "--wake-barge-in-min-speech-duration",
+        type=float,
+        default=_env_float(
+            "VOICE_SESSION_WAKE_BARGE_IN_MIN_SPEECH_DURATION",
+            cfg.get("wake_barge_in_min_speech_duration", 0.30),
+        ),
+        help=(
+            "seconds of windowed microphone audio required before barge-in "
+            "interrupts; local speech recognition decides whether to follow up"
         ),
     )
     parser.add_argument(
