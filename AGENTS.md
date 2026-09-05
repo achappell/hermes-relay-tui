@@ -299,6 +299,16 @@ local variable values; it appends until manually removed.
   It must never share `audio.PCMPlayer`: the appliance closes that player for
   barge-in and end-of-turn, so a shared stream lets a courtesy tone cut off a
   sentence. An earcon failure is logged and dropped, never raised.
+- App shutdown cancels the active capture/turn workers before releasing audio.
+  `PCMPlayer.abort()` is used for Ctrl+C, quit, interruption, and
+  `audio_abort`; normal `close()` remains the draining path for successful
+  playback. The wake capture is cancelled before its listener is joined, and
+  an active earcon is aborted before that join. Native stream close calls are
+  guarded by a timeout; a timed-out stream is poisoned and cannot be reopened,
+  while a reader that remains stuck retains deferred close ownership until it
+  exits. A wake open that outlives cancellation closes its recorder after the
+  late open completes, and that cleanup task is retained by the app. Do not
+  add a shutdown path that leaves PortAudio cleanup to its process-exit handler.
 - The wake tone blocks in `HandsFreeCoordinator.on_wake` between
   `ACKNOWLEDGING` and the capture. That ordering is the guarantee that the
   unit cannot record its own acknowledgement; do not make it asynchronous.

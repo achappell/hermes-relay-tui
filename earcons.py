@@ -16,6 +16,7 @@ from __future__ import annotations
 import logging
 import math
 import struct
+import threading
 from typing import Any, Callable
 
 # Inside the `hermes_relay_tui` tree on purpose: diagnostics.configure_logging
@@ -31,6 +32,7 @@ CAPTURE_DONE = "capture_done"
 SAMPLE_RATE = 24_000
 CHANNELS = 1
 SAMPLE_WIDTH = 2
+EARCON_CLOSE_TIMEOUT = 3.0
 
 # Quiet. This plays in a kitchen at head height, not through a PA.
 AMPLITUDE = 0.22
@@ -105,6 +107,38 @@ def _open_output_stream(**kwargs: Any) -> Any:
     return stream
 
 
+def _call_with_timeout(
+    operation,
+    timeout: float,
+    *,
+    on_complete=None,
+) -> tuple[bool, Exception | None]:
+    """Run a native audio operation without making the wake worker unkillable."""
+    finished = threading.Event()
+    errors: list[Exception] = []
+
+    def run() -> None:
+        error = None
+        try:
+            operation()
+        except Exception as exc:  # pragma: no cover - backend-specific
+            error = exc
+            errors.append(exc)
+        finally:
+            if on_complete is not None:
+                on_complete(error)
+            finished.set()
+
+    threading.Thread(
+        target=run,
+        name="hermes-earcon-teardown",
+        daemon=True,
+    ).start()
+    if not finished.wait(timeout):
+        return False, None
+    return True, errors[0] if errors else None
+
+
 class EarconPlayer:
     """Plays one short tone at a time on its own stream.
 
@@ -124,6 +158,12 @@ class EarconPlayer:
         self.output_device = output_device
         self.failure: str | None = None
         self._open_stream = open_stream
+        self._stream_lock = threading.Lock()
+        self._stream: Any = None
+        self._abort_requested = threading.Event()
+        self._generation = 0
+        self._close_in_progress: Any = None
+        self._poisoned = False
 
     def play(self, name: str) -> None:
         """Play a tone to completion. Never raises.
@@ -135,6 +175,9 @@ class EarconPlayer:
         """
         if not self.enabled:
             return
+        with self._stream_lock:
+            if self._poisoned:
+                return
         try:
             pcm = render(name)
         except KeyError:
@@ -150,6 +193,11 @@ class EarconPlayer:
         if self.output_device is not None:
             kwargs["device"] = self.output_device
 
+        with self._stream_lock:
+            self._generation += 1
+            generation = self._generation
+            self._abort_requested.clear()
+
         try:
             stream = self._open_stream(**kwargs)
         except Exception as error:
@@ -157,17 +205,86 @@ class EarconPlayer:
             logger.debug("earcon stream failed to open", exc_info=True)
             return
 
+        with self._stream_lock:
+            stale = (
+                generation != self._generation
+                or self._abort_requested.is_set()
+            )
+            if not stale:
+                self._stream = stream
+        if stale:
+            self._abort_and_close(stream)
+            return
+
+        owns_stream = True
         try:
-            stream.start()
-            stream.write(pcm)
+            if not self._abort_requested.is_set():
+                stream.start()
+            if not self._abort_requested.is_set():
+                stream.write(pcm)
             # stop() drains the device buffer. Without it this returns while
             # the tone is still in flight and the microphone opens over it.
-            stream.stop()
+            if not self._abort_requested.is_set():
+                stream.stop()
         except Exception as error:
             self.failure = str(error)
             logger.debug("earcon playback failed", exc_info=True)
         finally:
-            try:
-                stream.close()
-            except Exception:
-                logger.debug("closing the earcon stream failed", exc_info=True)
+            with self._stream_lock:
+                owns_stream = self._stream is stream
+            if owns_stream:
+                self._close_native(stream)
+
+    def abort(self) -> None:
+        """Stop an active tone without making the playback thread lose ownership."""
+        with self._stream_lock:
+            self._generation += 1
+            self._abort_requested.set()
+            stream = self._stream
+        if stream is None:
+            return
+        self._abort_native(stream)
+
+    def _abort_native(self, stream: Any) -> None:
+        try:
+            abort = getattr(stream, "abort", None)
+            if callable(abort):
+                abort()
+            else:
+                stream.stop()
+        except Exception:
+            logger.debug("aborting the earcon stream failed", exc_info=True)
+
+    def _close_native(self, stream: Any) -> None:
+        with self._stream_lock:
+            if self._close_in_progress is stream:
+                return
+            self._close_in_progress = stream
+
+        def finished(error: Exception | None) -> None:
+            if error is not None:
+                self.failure = str(error)
+            with self._stream_lock:
+                if self._close_in_progress is stream:
+                    self._close_in_progress = None
+                if self._stream is stream and error is None:
+                    self._stream = None
+
+        completed, error = _call_with_timeout(
+            stream.close,
+            EARCON_CLOSE_TIMEOUT,
+            on_complete=finished,
+        )
+        if error is not None:
+            self.failure = str(error)
+            with self._stream_lock:
+                self._poisoned = True
+        elif not completed:
+            logger.warning("earcon stream close timed out")
+            with self._stream_lock:
+                if self._close_in_progress is stream:
+                    self._poisoned = True
+
+    def _abort_and_close(self, stream: Any) -> None:
+        self._abort_native(stream)
+        self._close_native(stream)

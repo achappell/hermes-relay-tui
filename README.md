@@ -283,6 +283,11 @@ whether a crash report exists and its path.
 | `F1` | Show keyboard help |
 | `Ctrl+Q` | Quit |
 
+Shutdown is explicit: `Ctrl+C` during a turn aborts response audio, while
+`Ctrl+Q` cancels active capture/turn workers, aborts any response or earcon,
+and closes the microphone before the process exits. Normal completed playback
+still drains its final buffer so a successful answer is not clipped.
+
 Typed text is sent as-is unless it contains an explicitly staged or referenced
 local file, or an opted-in `{!command}` interpolation. During an active response, ordinary prompts follow
 the configured `--busy-mode`: `queue` preserves them for later, `steer`
@@ -538,7 +543,11 @@ beside it says what the client is doing; the marker says whether the device is
 live. One physical condition, one appearance, whichever path opened it. You
 should never have to remember whether your microphone is on.
 
-Quitting the client releases the microphone whether or not wake mode was on.
+Quitting the client cancels capture and response workers, aborts response audio
+and earcons, and releases the microphone whether or not wake mode was on. The
+native PortAudio close calls are guarded so a backend hang cannot hold the TUI
+inside interpreter shutdown; normal completed response playback still drains
+its final buffer.
 
 Wake mode is deliberately session-local. A successful `/reload` disarms it so
 new wake settings take effect only after an explicit `/wake on`; a connection

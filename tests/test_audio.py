@@ -290,3 +290,224 @@ def test_closing_waits_for_an_inflight_write(monkeypatch):
     assert not writer.is_alive()
     assert not closer.is_alive()
     assert lifecycle_overlap == ["stop", "close"]
+
+
+def test_abort_discards_pending_audio_without_draining_the_device(monkeypatch):
+    lifecycle = []
+
+    class FakeStream:
+        def start(self):
+            lifecycle.append("start")
+
+        def write(self, chunk):  # noqa: ARG002 - pending audio must not be flushed
+            lifecycle.append("write")
+
+        def stop(self):
+            lifecycle.append("stop")
+
+        def abort(self):
+            lifecycle.append("abort")
+
+        def close(self):
+            lifecycle.append("close")
+
+    monkeypatch.setitem(
+        sys.modules,
+        "sounddevice",
+        types.SimpleNamespace(RawOutputStream=lambda **kwargs: FakeStream()),
+    )
+
+    player = PCMPlayer(enabled=True, prebuffer_seconds=1.0)
+    player.start((24000, 1, 2))
+    player.write(b"\x00\x01")
+
+    player.abort()
+    player.abort()
+
+    assert lifecycle == ["start", "abort", "close"]
+    assert not player.active
+
+
+def test_abort_interrupts_an_inflight_write(monkeypatch):
+    write_started = threading.Event()
+    release_write = threading.Event()
+
+    class BlockingStream:
+        def start(self):
+            pass
+
+        def write(self, chunk):  # noqa: ARG002 - mirrors sounddevice
+            write_started.set()
+            assert release_write.wait(1)
+
+        def abort(self):
+            release_write.set()
+
+        def close(self):
+            pass
+
+    monkeypatch.setitem(
+        sys.modules,
+        "sounddevice",
+        types.SimpleNamespace(RawOutputStream=lambda **kwargs: BlockingStream()),
+    )
+
+    player = PCMPlayer(enabled=True, prebuffer_seconds=0)
+    player.start((24000, 1, 2))
+    writer = threading.Thread(target=player.write, args=(b"\x00\x01",), daemon=True)
+    writer.start()
+    assert write_started.wait(1)
+
+    aborter = threading.Thread(target=player.abort, daemon=True)
+    aborter.start()
+    aborter.join(1)
+    writer.join(1)
+
+    assert not aborter.is_alive()
+    assert not writer.is_alive()
+    assert not player.active
+
+
+def test_start_failure_closes_the_constructed_stream(monkeypatch):
+    class BrokenStartStream:
+        def __init__(self):
+            self.closed = False
+
+        def start(self):
+            raise RuntimeError("device disappeared")
+
+        def abort(self):
+            pass
+
+        def close(self):
+            self.closed = True
+
+    stream = BrokenStartStream()
+    monkeypatch.setitem(
+        sys.modules,
+        "sounddevice",
+        types.SimpleNamespace(RawOutputStream=lambda **kwargs: stream),
+    )
+
+    player = PCMPlayer(enabled=True)
+    player.start((24000, 1, 2))
+
+    assert stream.closed
+    assert not player.active
+    assert player.failure == "device disappeared"
+
+
+def test_timed_out_close_poisoned_stream_cannot_be_reopened(monkeypatch):
+    close_started = threading.Event()
+    release_close = threading.Event()
+    streams = []
+    write_calls = []
+
+    class BlockingCloseStream:
+        def start(self):
+            pass
+
+        def write(self, chunk):  # noqa: ARG002 - mirrors sounddevice
+            write_calls.append(chunk)
+
+        def abort(self):
+            pass
+
+        def close(self):
+            close_started.set()
+            assert release_close.wait(1)
+
+    def open_stream(**kwargs):
+        stream = BlockingCloseStream()
+        streams.append(stream)
+        return stream
+
+    monkeypatch.setattr("audio.AUDIO_TEARDOWN_TIMEOUT", 0.01)
+    monkeypatch.setitem(
+        sys.modules,
+        "sounddevice",
+        types.SimpleNamespace(RawOutputStream=open_stream),
+    )
+
+    player = PCMPlayer(enabled=True, prebuffer_seconds=0)
+    player.start((24000, 1, 2))
+    player.abort()
+
+    assert close_started.is_set()
+    assert player.active
+    player.start((24000, 1, 2))
+    assert len(streams) == 1
+    player.write(b"\x00\x01")
+    assert write_calls == []
+
+    release_close.set()
+    for _ in range(100):
+        if not player.active:
+            break
+        threading.Event().wait(0.005)
+    assert not player.active
+
+
+def test_start_does_not_reopen_after_a_close_failure(monkeypatch):
+    streams = []
+
+    class BrokenCloseStream:
+        def start(self):
+            pass
+
+        def write(self, chunk):  # noqa: ARG002 - mirrors sounddevice
+            pass
+
+        def stop(self):
+            pass
+
+        def close(self):
+            raise RuntimeError("device disappeared")
+
+    def open_stream(**kwargs):
+        stream = BrokenCloseStream()
+        streams.append(stream)
+        return stream
+
+    monkeypatch.setitem(
+        sys.modules,
+        "sounddevice",
+        types.SimpleNamespace(RawOutputStream=open_stream),
+    )
+
+    player = PCMPlayer(enabled=True, prebuffer_seconds=0)
+    player.start((24000, 1, 2))
+    player.start((24000, 1, 2))
+
+    assert len(streams) == 1
+    assert player.failure == "device disappeared"
+
+
+def test_close_records_backend_failure_and_releases_the_stream(monkeypatch):
+    class BrokenCloseStream:
+        def start(self):
+            pass
+
+        def write(self, chunk):  # noqa: ARG002 - mirrors sounddevice
+            pass
+
+        def stop(self):
+            pass
+
+        def close(self):
+            raise RuntimeError("device disappeared")
+
+    monkeypatch.setitem(
+        sys.modules,
+        "sounddevice",
+        types.SimpleNamespace(RawOutputStream=lambda **kwargs: BrokenCloseStream()),
+    )
+
+    player = PCMPlayer(enabled=True, prebuffer_seconds=0)
+    player.start((24000, 1, 2))
+    player.write(b"\x00\x01")
+
+    player.close()
+
+    assert not player.active
+    assert player.failure == "device disappeared"

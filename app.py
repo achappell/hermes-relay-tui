@@ -309,6 +309,7 @@ CONNECTION_RETRYING = "retrying"
 CONNECTION_CONNECTED = "connected"
 MAX_CONNECT_RETRY_DELAY = 8.0
 REMOTE_INTERRUPT_TIMEOUT = 2.0
+SHUTDOWN_TASK_TIMEOUT = 3.0
 RETRY_HINT = "The app remains open; retry when the endpoint recovers."
 VOICE_READY = "ready"
 VOICE_STARTING = "starting…"
@@ -517,6 +518,8 @@ class HermesStreamingApp(App):
         self._active_turn_task: Optional[asyncio.Task[None]] = None
         self._voice_capture_task: Optional[asyncio.Task[str]] = None
         self._voice_capture_cancelled = False
+        self._shutting_down = False
+        self._cleanup_tasks: set[asyncio.Task[Any]] = set()
         # Wake mode is off at every launch and only ever armed by /wake on.
         # An always-open microphone is not something a configuration file or a
         # command-line flag gets to decide on the user's behalf.
@@ -537,6 +540,8 @@ class HermesStreamingApp(App):
         self._wake_loop: Optional[asyncio.AbstractEventLoop] = None
         self._wake_starting = False
         self._wake_start_cancelled = False
+        self._wake_opening = False
+        self._wake_start_task: Optional[asyncio.Task[Any]] = None
         self._earcons = earcons_module.EarconPlayer(
             enabled=getattr(args, "earcons", True) and not (args and args.no_play),
             output_device=getattr(args, "audio_output_device", None),
@@ -837,9 +842,106 @@ class HermesStreamingApp(App):
     async def on_unmount(self) -> None:
         # Release the device before anything else. A quit that leaves the
         # microphone open is the worst possible way to end a session.
+        if self._shutting_down:
+            return
+        self._shutting_down = True
+        await self._cancel_shutdown_tasks()
+        await self._abort_earcon()
         self._disarm_wake()
+        await self._wait_for_cleanup_tasks()
+        await self._close_player(abort=True)
         if self.session is not None:
-            await self.session.close()
+            await self._close_session_for_shutdown()
+
+    def _track_cleanup_task(self, task: asyncio.Task[Any]) -> None:
+        """Retain cleanup work that outlives the command that started it."""
+        self._cleanup_tasks.add(task)
+
+        def finished(done: asyncio.Task[Any]) -> None:
+            self._cleanup_tasks.discard(done)
+            try:
+                done.result()
+            except asyncio.CancelledError:
+                pass
+            except Exception:
+                diagnostic_logger.debug(
+                    "app.shutdown.cleanup_failed", exc_info=True
+                )
+
+        task.add_done_callback(finished)
+
+    async def _wait_for_cleanup_tasks(self) -> None:
+        tasks = [task for task in self._cleanup_tasks if not task.done()]
+        if not tasks:
+            return
+        gathered = asyncio.gather(*tasks, return_exceptions=True)
+        try:
+            await asyncio.wait_for(
+                asyncio.shield(gathered),
+                SHUTDOWN_TASK_TIMEOUT,
+            )
+        except asyncio.TimeoutError:
+            diagnostic_logger.warning(
+                "app.shutdown.cleanup_timeout count=%d", len(tasks)
+            )
+
+    async def _close_session_for_shutdown(self) -> None:
+        """Give session cleanup a budget so quit cannot wait on a dead socket."""
+        close_task = asyncio.create_task(self.session.close())
+        self._track_cleanup_task(close_task)
+        try:
+            await asyncio.wait_for(
+                asyncio.shield(close_task),
+                SHUTDOWN_TASK_TIMEOUT,
+            )
+        except asyncio.TimeoutError:
+            diagnostic_logger.warning("app.shutdown.session_timeout")
+        except Exception:
+            diagnostic_logger.debug(
+                "app.shutdown.session_failed", exc_info=True
+            )
+
+    async def _cancel_shutdown_tasks(self) -> None:
+        """Stop app-owned workers before their resources are torn down."""
+        current_task = asyncio.current_task()
+        task_attributes = (
+            "_voice_capture_task",
+            "_active_turn_task",
+            "_barge_interrupt_task",
+            "_barge_result_task",
+            "_wake_start_task",
+        )
+        tasks = []
+        for attribute in task_attributes:
+            task = getattr(self, attribute)
+            if task is None or task is current_task:
+                continue
+            done = getattr(task, "done", None)
+            cancel = getattr(task, "cancel", None)
+            if callable(done) and callable(cancel) and not done():
+                tasks.append(task)
+
+        for task in tasks:
+            task.cancel()
+        if not tasks:
+            return
+
+        gathered = asyncio.gather(*tasks, return_exceptions=True)
+        try:
+            await asyncio.wait_for(
+                asyncio.shield(gathered),
+                SHUTDOWN_TASK_TIMEOUT,
+            )
+        except asyncio.TimeoutError:
+            diagnostic_logger.warning(
+                "app.shutdown.task_timeout count=%d", len(tasks)
+            )
+
+    async def _abort_earcon(self) -> None:
+        """Stop a courtesy tone before waiting for the wake worker to exit."""
+        abort = getattr(self._earcons, "abort", None)
+        if callable(abort):
+            await asyncio.to_thread(abort)
 
     # --- wake mode ------------------------------------------------------
 
@@ -886,6 +988,8 @@ class HermesStreamingApp(App):
             self._append_block("wake mode startup is already in progress")
             return
 
+        start_task = asyncio.current_task()
+        self._wake_start_task = start_task
         self._wake_starting = True
         self._wake_start_cancelled = False
         self._set_voice_state(VOICE_STARTING)
@@ -908,7 +1012,7 @@ class HermesStreamingApp(App):
                 follow_up_capture=self._capture_wake_follow_up,
                 send=self._send_wake_turn,
                 speech_detected=self._wake_speech_detected,
-                stop_playback=self.player.close,
+                stop_playback=self._abort_player,
                 acknowledge=self._acknowledge_wake,
                 capture_finished=self._acknowledge_capture,
                 on_state_change=self._wake_state_changed,
@@ -976,12 +1080,37 @@ class HermesStreamingApp(App):
             self._append_block("wake mode starting — opening microphone…")
             stage_started = time.perf_counter()
             diagnostic_logger.debug("wake.start stage=microphone begin")
-            await asyncio.to_thread(recorder.open_for_listening)
+            self._wake_opening = True
+            opening = asyncio.create_task(
+                asyncio.to_thread(recorder.open_for_listening)
+            )
+            try:
+                await asyncio.shield(opening)
+            except asyncio.CancelledError:
+                if not opening.done():
+                    self._disarm_wake()
+                    self._finish_cancelled_wake_open(recorder, opening)
+                else:
+                    self._wake_opening = False
+                    self._disarm_wake()
+                raise
+            except Exception:
+                self._wake_opening = False
+                raise
+            self._wake_opening = False
             diagnostic_logger.debug(
                 "wake.start stage=microphone complete elapsed=%.3f",
                 time.perf_counter() - stage_started,
             )
             if self._wake_start_cancelled:
+                self._disarm_wake()
+                try:
+                    recorder.shutdown()
+                except Exception:
+                    diagnostic_logger.debug(
+                        "closing the cancelled wake recorder failed",
+                        exc_info=True,
+                    )
                 return
 
             self.wake_armed = True
@@ -996,12 +1125,33 @@ class HermesStreamingApp(App):
             self._disarm_wake()
             raise
         except Exception as error:
+            self._wake_opening = False
             self._disarm_wake()
             self._set_voice_state(VOICE_ERROR)
             self._append_block(f"[error] wake mode: {self._wake_failure_text(error)}")
         finally:
             self._wake_starting = False
             self._wake_start_cancelled = False
+            if self._wake_start_task is start_task:
+                self._wake_start_task = None
+
+    def _finish_cancelled_wake_open(self, recorder: Any, opening: Any) -> None:
+        """Close a recorder whose native open outlived a cancelled task."""
+        async def finish() -> None:
+            try:
+                try:
+                    await opening
+                except BaseException:
+                    pass
+                await asyncio.to_thread(recorder.shutdown)
+            except Exception:
+                diagnostic_logger.debug(
+                    "closing the late wake recorder failed", exc_info=True
+                )
+            finally:
+                self._wake_opening = False
+
+        self._track_cleanup_task(asyncio.create_task(finish()))
 
     def _wake_failure_text(self, error: Exception) -> str:
         """Turn an arming failure into the one sentence that fixes it."""
@@ -1043,6 +1193,15 @@ class HermesStreamingApp(App):
         self._refresh_voice_status()
         if was_starting and not self._turn_in_flight:
             self._set_voice_state(VOICE_READY)
+        if recorder is not None and not self._wake_opening:
+            cancel_voice = getattr(self.session, "cancel_voice", None)
+            if callable(cancel_voice):
+                try:
+                    cancel_voice()
+                except Exception:
+                    diagnostic_logger.debug(
+                        "cancelling the wake capture failed", exc_info=True
+                    )
         if listener is not None:
             try:
                 listener.stop()
@@ -1063,7 +1222,7 @@ class HermesStreamingApp(App):
                 barge_listener.stop()
             except Exception:
                 diagnostic_logger.debug("stopping the barge-in listener failed", exc_info=True)
-        if recorder is not None:
+        if recorder is not None and not self._wake_opening:
             try:
                 # shutdown() closes the input stream on a guarded timeout, so
                 # the microphone indicator clears and other applications get
@@ -2114,7 +2273,7 @@ class HermesStreamingApp(App):
             return False
 
         self._set_voice_state(VOICE_INTERRUPTED)
-        await self._close_player()
+        await self._close_player(abort=True)
         active_task = self._active_turn_task
         current_task = asyncio.current_task()
 
@@ -2366,8 +2525,12 @@ class HermesStreamingApp(App):
             self._append_block(RETRY_HINT)
         finally:
             # Always tear the stream down; leaving it open leaked a
-            # sounddevice stream per failed turn.
-            await self._close_player()
+            # sounddevice stream per failed turn. Interrupted/error turns
+            # discard immediately; a completed turn may drain its tail.
+            await self._close_player(
+                abort=self.voice_state
+                in {VOICE_INTERRUPTED, VOICE_ERROR, VOICE_DISCONNECTED}
+            )
             diagnostic_logger.debug(
                 "app.turn.finish index=%s transcript_chars=%d connection=%s",
                 index,
@@ -2390,14 +2553,28 @@ class HermesStreamingApp(App):
         except Exception as exc:
             self._append_block(f"[error] reconnect cleanup: {exc}")
 
-    async def _close_player(self) -> None:
+    async def _close_player(self, *, abort: bool = False) -> None:
         """Stop playback without blocking Textual's event loop.
 
         sounddevice's ``stop`` may wait for the device buffer to drain. That
         wait must not prevent transcript refreshes, especially the reasoning
         preview that is meant to remain visible while a reply is spoken.
         """
-        await asyncio.to_thread(self.player.close)
+        if abort or self._shutting_down:
+            close = getattr(self.player, "abort", None)
+            if not callable(close):
+                close = self.player.close
+        else:
+            close = self.player.close
+        await asyncio.to_thread(close)
+
+    def _abort_player(self) -> None:
+        """Stop local response audio immediately from a synchronous callback."""
+        abort = getattr(self.player, "abort", None)
+        if callable(abort):
+            abort()
+        else:
+            self.player.close()
 
     async def _consume_turn(self, events: AsyncIterator[dict[str, Any]], index: int) -> None:
         audio = bytearray()
@@ -2555,7 +2732,7 @@ class HermesStreamingApp(App):
                 # An abort is an intentional end to the remote audio stream,
                 # not a failed voice turn. The following turn_interrupted
                 # event owns the transcript boundary.
-                await self._close_player()
+                await self._close_player(abort=True)
                 self._set_voice_state(VOICE_INTERRUPTED)
             elif kind == "audio_file_start":
                 self._last_tts_text = assistant_text
@@ -2605,7 +2782,7 @@ class HermesStreamingApp(App):
                 thinking_activity_active = False
                 self._append_block(f"[error] {event['error']}", role="error")
             elif kind == "turn_interrupted":
-                await self._close_player()
+                await self._close_player(abort=True)
                 complete_thinking()
                 self.transcript.finish_stream()
                 self._append_block("[interrupted]")

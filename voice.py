@@ -34,8 +34,41 @@ SILENCE_DURATION_SECONDS = 1.5
 DEFAULT_STT_MODEL = "base"
 _BLOCKING_READ_FRAMES = 256
 _READER_POLL_SECONDS = 0.01
+STREAM_CLOSE_TIMEOUT = 3.0
 
 _TEMP_DIR = os.path.join(tempfile.gettempdir(), "hermes_relay_tui_voice")
+
+
+def _call_with_timeout(
+    operation,
+    timeout: float,
+    *,
+    on_complete=None,
+) -> tuple[bool, Exception | None]:
+    """Run a native PortAudio operation without hanging the caller forever."""
+    finished = threading.Event()
+    errors: list[Exception] = []
+
+    def run() -> None:
+        error = None
+        try:
+            operation()
+        except Exception as exc:  # pragma: no cover - backend-specific
+            error = exc
+            errors.append(exc)
+        finally:
+            if on_complete is not None:
+                on_complete(error)
+            finished.set()
+
+    threading.Thread(
+        target=run,
+        name="hermes-microphone-teardown",
+        daemon=True,
+    ).start()
+    if not finished.wait(timeout):
+        return False, None
+    return True, errors[0] if errors else None
 
 
 def _import_audio():
@@ -63,6 +96,9 @@ class AudioRecorder:
         self._stream: Any = None
         self._reader_thread: threading.Thread | None = None
         self._reader_stop: threading.Event | None = None
+        self._stream_close_in_progress: Any = None
+        self._stream_poisoned = False
+        self._late_close_thread: threading.Thread | None = None
         self._frames: List[Any] = []
         self._recording = False
         self._start_time = 0.0
@@ -170,7 +206,13 @@ class AudioRecorder:
         return self._recording and self._has_spoken
 
     def _ensure_stream(self) -> None:
+        cleanup_stream = None
+        open_error = None
         with self._stream_lock:
+            if self._stream_poisoned:
+                raise RuntimeError(
+                    "microphone stream is unavailable after a failed shutdown"
+                )
             if self._stream is not None:
                 return
 
@@ -194,20 +236,45 @@ class AudioRecorder:
                     name="hermes-microphone-reader",
                     daemon=True,
                 )
+                reader.start()
                 self._stream = stream
                 self._reader_stop = reader_stop
                 self._reader_thread = reader
-                reader.start()
             except Exception as exc:
-                if stream is not None:
-                    try:
-                        stream.close()
-                    except Exception:
-                        pass
-                raise RuntimeError(
-                    f"Failed to open audio input stream: {exc}. "
-                    "Check that a microphone is connected and accessible."
-                ) from exc
+                cleanup_stream = stream
+                open_error = exc
+        if cleanup_stream is not None:
+            try:
+                abort = getattr(cleanup_stream, "abort", None)
+                if callable(abort):
+                    abort()
+                else:
+                    cleanup_stream.stop()
+            except Exception:
+                logger.debug(
+                    "aborting the failed microphone stream failed",
+                    exc_info=True,
+                )
+            completed, close_error = _call_with_timeout(
+                cleanup_stream.close,
+                STREAM_CLOSE_TIMEOUT,
+            )
+            if close_error is not None:
+                logger.debug(
+                    "closing the failed microphone stream failed: %s",
+                    close_error,
+                )
+                with self._stream_lock:
+                    self._stream_poisoned = True
+            elif not completed:
+                logger.warning("failed microphone stream close timed out")
+                with self._stream_lock:
+                    self._stream_poisoned = True
+        if open_error is not None:
+            raise RuntimeError(
+                f"Failed to open audio input stream: {open_error}. "
+                "Check that a microphone is connected and accessible."
+            ) from open_error
 
     def _read_stream(self, stream: Any, stop: threading.Event, np: Any) -> None:
         """Read frames outside PortAudio's real-time thread."""
@@ -366,35 +433,95 @@ class AudioRecorder:
         if reader is not None and reader is not threading.current_thread():
             reader.join(timeout=timeout)
 
+        stream_aborted = False
         if reader is not None and reader.is_alive():
             # This is an abnormal device/backend hang. There is no Python
             # PortAudio callback left to race with abort, so use it only as a
             # last-resort wake-up before giving the reader another short
             # chance to exit.
             try:
-                stream.abort()
+                abort = getattr(stream, "abort", None)
+                if callable(abort):
+                    abort()
+                else:
+                    stream.stop()
+                stream_aborted = True
             except Exception:
                 logger.debug("aborting the microphone stream failed", exc_info=True)
             reader.join(timeout=0.5)
 
         if reader is not None and reader.is_alive():
-            logger.warning("microphone reader did not stop; leaving stream open")
+            logger.warning(
+                "microphone reader did not stop after abort; deferring close"
+            )
+            with self._stream_lock:
+                self._stream_poisoned = True
+                late_close = self._late_close_thread
+                if late_close is None or not late_close.is_alive():
+                    late_close = threading.Thread(
+                        target=self._finish_late_stream_close,
+                        args=(stream, reader),
+                        name="hermes-microphone-late-close",
+                        daemon=True,
+                    )
+                    self._late_close_thread = late_close
+                    late_close.start()
             return
 
-        try:
-            stream.stop()
-        except Exception:
-            logger.debug("stopping the microphone stream failed", exc_info=True)
-        try:
-            stream.close()
-        except Exception:
-            logger.debug("closing the microphone stream failed", exc_info=True)
-        finally:
+        if not stream_aborted:
+            try:
+                abort = getattr(stream, "abort", None)
+                if callable(abort):
+                    abort()
+                else:
+                    stream.stop()
+            except Exception:
+                logger.debug("aborting the microphone stream failed", exc_info=True)
+
+        self._close_stream_native(stream)
+
+    def _finish_late_stream_close(
+        self,
+        stream: Any,
+        reader: threading.Thread,
+    ) -> None:
+        reader.join()
+        with self._stream_lock:
+            if self._stream is not stream:
+                return
+        self._close_stream_native(stream)
+
+    def _close_stream_native(self, stream: Any) -> None:
+        with self._stream_lock:
+            if self._stream_close_in_progress is stream:
+                return
+            self._stream_close_in_progress = stream
+
+        def finished(error: Exception | None) -> None:
+            if error is not None:
+                logger.debug("closing the microphone stream failed: %s", error)
             with self._stream_lock:
+                if self._stream_close_in_progress is stream:
+                    self._stream_close_in_progress = None
                 if self._stream is stream:
                     self._stream = None
                     self._reader_thread = None
                     self._reader_stop = None
+
+        completed, error = _call_with_timeout(
+            stream.close,
+            STREAM_CLOSE_TIMEOUT,
+            on_complete=finished,
+        )
+        if error is not None:
+            logger.debug("closing the microphone stream failed: %s", error)
+            with self._stream_lock:
+                self._stream_poisoned = True
+        elif not completed:
+            logger.warning("microphone stream close timed out")
+            with self._stream_lock:
+                if self._stream_close_in_progress is stream:
+                    self._stream_poisoned = True
 
     def stop(self) -> Optional[str]:
         with self._lock:

@@ -1412,6 +1412,7 @@ async def test_audio_abort_stops_playback_without_rendering_an_error_event():
         def __init__(self):
             self.active = False
             self.close_calls = 0
+            self.abort_calls = 0
 
         def start(self, audio_format):
             self.active = True
@@ -1421,6 +1422,10 @@ async def test_audio_abort_stops_playback_without_rendering_an_error_event():
 
         def close(self):
             self.close_calls += 1
+            self.active = False
+
+        def abort(self):
+            self.abort_calls += 1
             self.active = False
 
     session = FakeSession(
@@ -1447,7 +1452,8 @@ async def test_audio_abort_stops_playback_without_rendering_an_error_event():
         app.player = player
         await app._run_turn("first")
 
-        assert player.close_calls >= 1
+        assert player.abort_calls >= 1
+        assert player.close_calls == 0
         assert "unhandled server event" not in transcript_of(app)
         assert "[error]" not in transcript_of(app)
         assert voice_status_of(app) == "● interrupted"
@@ -2196,6 +2202,115 @@ async def test_app_unmount_closes_a_protocol_session():
     async with app.run_test() as pilot:
         await pilot.pause()
     assert session.closed
+
+
+async def test_app_unmount_aborts_local_audio_before_leaving():
+    class RecordingPlayer:
+        def __init__(self):
+            self.abort_calls = 0
+
+        def abort(self):
+            self.abort_calls += 1
+
+    session = FakeSession()
+    app = HermesStreamingApp(args=make_args(), session_factory=lambda: session)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        player = RecordingPlayer()
+        earcons = RecordingPlayer()
+        app.player = player
+        app._earcons = earcons
+
+        await app.on_unmount()
+        await app.on_unmount()
+
+        assert player.abort_calls == 1
+        assert earcons.abort_calls == 1
+        assert session.closed
+
+
+async def test_app_unmount_cancels_active_turn_before_leaving():
+    started = asyncio.Event()
+    cancelled = asyncio.Event()
+
+    async def active_turn():
+        started.set()
+        try:
+            await asyncio.sleep(60)
+        except asyncio.CancelledError:
+            cancelled.set()
+            raise
+
+    session = FakeSession()
+    app = HermesStreamingApp(args=make_args(), session_factory=lambda: session)
+    task = asyncio.create_task(active_turn())
+    app._active_turn_task = task
+    await started.wait()
+    try:
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await app.on_unmount()
+
+        assert cancelled.is_set()
+        assert task.cancelled()
+    finally:
+        if not task.done():
+            task.cancel()
+            await task
+
+
+async def test_app_unmount_does_not_wait_past_shutdown_task_budget(monkeypatch):
+    started = asyncio.Event()
+    cancellation_finished = asyncio.Event()
+
+    async def cancellation_resistant_task():
+        started.set()
+        try:
+            await asyncio.sleep(60)
+        except asyncio.CancelledError:
+            await asyncio.sleep(0.1)
+            cancellation_finished.set()
+
+    monkeypatch.setattr(app_module, "SHUTDOWN_TASK_TIMEOUT", 0.01)
+    session = FakeSession()
+    app = HermesStreamingApp(args=make_args(), session_factory=lambda: session)
+    task = asyncio.create_task(cancellation_resistant_task())
+    app._active_turn_task = task
+    await started.wait()
+    try:
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await app.on_unmount()
+            assert not cancellation_finished.is_set()
+            await asyncio.wait_for(cancellation_finished.wait(), 1)
+    finally:
+        if not task.done():
+            task.cancel()
+            await task
+
+
+async def test_app_unmount_does_not_wait_forever_for_session_close(monkeypatch):
+    close_started = asyncio.Event()
+    release_close = asyncio.Event()
+
+    class SlowCloseSession(FakeSession):
+        async def close(self):
+            close_started.set()
+            await release_close.wait()
+            self.closed = True
+
+    monkeypatch.setattr(app_module, "SHUTDOWN_TASK_TIMEOUT", 0.01)
+    session = SlowCloseSession()
+    app = HermesStreamingApp(args=make_args(), session_factory=lambda: session)
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        started = asyncio.create_task(app.on_unmount())
+        await close_started.wait()
+        await started
+
+        assert not session.closed
+        release_close.set()
 
 
 async def test_voice_binding_is_registered():
