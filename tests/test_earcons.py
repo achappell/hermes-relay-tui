@@ -5,6 +5,7 @@ standing between a considered sound and a click in the kitchen.
 """
 
 import struct
+import threading
 
 import pytest
 
@@ -182,3 +183,35 @@ def test_a_stream_that_fails_mid_write_is_still_closed():
 
     assert opener.streams[0].closed, "a leaked stream holds the device open"
     assert player.failure == "device went away"
+
+
+def test_abort_interrupts_an_active_tone_and_leaves_close_to_playback(monkeypatch):
+    write_started = threading.Event()
+    release_write = threading.Event()
+
+    class BlockingStream(FakeStream):
+        def __init__(self, **kwargs):
+            super().__init__(**kwargs)
+            self.abort_calls = 0
+
+        def write(self, chunk):
+            self.written.extend(chunk)
+            write_started.set()
+            release_write.wait(1)
+
+        def abort(self):
+            self.abort_calls += 1
+            release_write.set()
+
+    opener = Opener(BlockingStream)
+    player = earcons.EarconPlayer(enabled=True, open_stream=opener)
+    worker = threading.Thread(target=player.play, args=(earcons.WAKE,))
+    worker.start()
+    assert write_started.wait(1)
+
+    player.abort()
+    worker.join(1)
+
+    assert not worker.is_alive()
+    assert opener.streams[0].abort_calls == 1
+    assert opener.streams[0].closed

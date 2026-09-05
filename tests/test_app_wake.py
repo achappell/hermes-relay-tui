@@ -275,6 +275,31 @@ async def test_wake_on_opens_the_stream_and_starts_the_listener():
         assert fakes.recorders[-1].observer == fakes.listener.submit
 
 
+async def test_wake_wires_an_immediate_playback_abort_hook():
+    class RecordingPlayer:
+        def __init__(self):
+            self.close_calls = 0
+            self.abort_calls = 0
+
+        def close(self):
+            self.close_calls += 1
+
+        def abort(self):
+            self.abort_calls += 1
+
+    app, fakes, _ = make_app()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        player = RecordingPlayer()
+        app.player = player
+        await app._handle_wake_command("on")
+
+        fakes.build_kwargs[0]["stop_playback"]()
+
+        assert player.abort_calls == 1
+        assert player.close_calls == 0
+
+
 async def test_wake_on_repaints_startup_while_model_load_is_running():
     fakes = SlowWakeFakes()
     app, _, _ = make_app(fakes=fakes)
@@ -1024,6 +1049,37 @@ async def test_quitting_releases_the_microphone():
         recorder = fakes.recorders[-1]
 
     assert recorder.shutdowns == 1
+
+
+async def test_quitting_cancels_wake_capture_before_stopping_listener():
+    class BlockingCaptureSession(FakeSession):
+        def __init__(self):
+            super().__init__()
+            self.capture_started = threading.Event()
+            self.capture_release = threading.Event()
+            self.cancel_voice_calls = 0
+
+        def capture_voice(self, *, wait_timeout=None):
+            self.capture_started.set()
+            self.capture_release.wait(1.0)
+            return ""
+
+        def cancel_voice(self):
+            self.cancel_voice_calls += 1
+            self.capture_release.set()
+
+    session = BlockingCaptureSession()
+    app, fakes, _ = make_app(session=session)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await app._handle_wake_command("on")
+        wake = asyncio.create_task(asyncio.to_thread(fakes.coordinator.on_wake))
+        await asyncio.to_thread(session.capture_started.wait, 1.0)
+
+        await app.on_unmount()
+        await asyncio.wait_for(wake, 1.0)
+
+        assert session.cancel_voice_calls == 1
 
 
 # ---- reload and reconnect are explicit microphone boundaries ----------

@@ -283,6 +283,11 @@ whether a crash report exists and its path.
 | `F1` | Show keyboard help |
 | `Ctrl+Q` | Quit |
 
+Shutdown is explicit: `Ctrl+C` during a turn aborts response audio, while
+`Ctrl+Q` cancels active capture/turn workers, aborts any response or earcon,
+and closes the microphone before the process exits. Normal completed playback
+still drains its final buffer so a successful answer is not clipped.
+
 Typed text is sent as-is unless it contains an explicitly staged or referenced
 local file, or an opted-in `{!command}` interpolation. During an active response, ordinary prompts follow
 the configured `--busy-mode`: `queue` preserves them for later, `steer`

@@ -363,6 +363,7 @@ class AudioRecorder:
             if reader_stop is not None:
                 reader_stop.set()
 
+        stream_woken = False
         if reader is not None and reader is not threading.current_thread():
             reader.join(timeout=timeout)
 
@@ -372,7 +373,12 @@ class AudioRecorder:
             # last-resort wake-up before giving the reader another short
             # chance to exit.
             try:
-                stream.abort()
+                abort = getattr(stream, "abort", None)
+                if callable(abort):
+                    abort()
+                else:
+                    stream.stop()
+                stream_woken = True
             except Exception:
                 logger.debug("aborting the microphone stream failed", exc_info=True)
             reader.join(timeout=0.5)
@@ -381,10 +387,15 @@ class AudioRecorder:
             logger.warning("microphone reader did not stop; leaving stream open")
             return
 
-        try:
-            stream.stop()
-        except Exception:
-            logger.debug("stopping the microphone stream failed", exc_info=True)
+        if not stream_woken:
+            try:
+                abort = getattr(stream, "abort", None)
+                if callable(abort):
+                    abort()
+                else:
+                    stream.stop()
+            except Exception:
+                logger.debug("aborting the microphone stream failed", exc_info=True)
         try:
             stream.close()
         except Exception:

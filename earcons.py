@@ -16,6 +16,7 @@ from __future__ import annotations
 import logging
 import math
 import struct
+import threading
 from typing import Any, Callable
 
 # Inside the `hermes_relay_tui` tree on purpose: diagnostics.configure_logging
@@ -124,6 +125,9 @@ class EarconPlayer:
         self.output_device = output_device
         self.failure: str | None = None
         self._open_stream = open_stream
+        self._stream_lock = threading.Lock()
+        self._stream: Any = None
+        self._abort_requested = threading.Event()
 
     def play(self, name: str) -> None:
         """Play a tone to completion. Never raises.
@@ -157,17 +161,44 @@ class EarconPlayer:
             logger.debug("earcon stream failed to open", exc_info=True)
             return
 
+        with self._stream_lock:
+            self._abort_requested.clear()
+            self._stream = stream
         try:
-            stream.start()
-            stream.write(pcm)
+            if not self._abort_requested.is_set():
+                stream.start()
+            if not self._abort_requested.is_set():
+                stream.write(pcm)
             # stop() drains the device buffer. Without it this returns while
             # the tone is still in flight and the microphone opens over it.
-            stream.stop()
+            if not self._abort_requested.is_set():
+                stream.stop()
         except Exception as error:
             self.failure = str(error)
             logger.debug("earcon playback failed", exc_info=True)
         finally:
-            try:
-                stream.close()
-            except Exception:
-                logger.debug("closing the earcon stream failed", exc_info=True)
+            with self._stream_lock:
+                owns_stream = self._stream is stream
+                if owns_stream:
+                    self._stream = None
+            if owns_stream:
+                try:
+                    stream.close()
+                except Exception:
+                    logger.debug("closing the earcon stream failed", exc_info=True)
+
+    def abort(self) -> None:
+        """Stop an active tone without making the playback thread lose ownership."""
+        self._abort_requested.set()
+        with self._stream_lock:
+            stream = self._stream
+        if stream is None:
+            return
+        try:
+            abort = getattr(stream, "abort", None)
+            if callable(abort):
+                abort()
+            else:
+                stream.stop()
+        except Exception:
+            logger.debug("aborting the earcon stream failed", exc_info=True)

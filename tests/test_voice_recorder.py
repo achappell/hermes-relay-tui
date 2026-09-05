@@ -24,6 +24,7 @@ class _FakeInputStream:
         self.closed = False
         self.reading = threading.Event()
         self.stop_calls_while_reading = 0
+        self.abort_calls = 0
 
     def start(self):
         self.started = True
@@ -52,6 +53,11 @@ class _FakeInputStream:
     def stop(self):
         if self.reading.is_set():
             self.stop_calls_while_reading += 1
+        self.stopped = True
+        self._frame_ready.set()
+
+    def abort(self):
+        self.abort_calls += 1
         self.stopped = True
         self._frame_ready.set()
 
@@ -101,5 +107,6 @@ def test_microphone_uses_a_blocking_reader_instead_of_a_portaudio_callback(monke
 
     assert stream.started is True
     assert stream.stop_calls_while_reading == 0
+    assert stream.abort_calls == 1
     assert stream.closed is True
     assert recorder._reader_thread is None

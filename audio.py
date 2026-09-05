@@ -159,7 +159,8 @@ class PCMPlayer:
 
     def close(self) -> None:
         with self._lock:
-            if self.stream is None:
+            stream = self.stream
+            if stream is None:
                 return
             # A reply shorter than the cushion is still a reply. Flush it rather
             # than swallowing the whole answer in the buffer.
@@ -168,12 +169,46 @@ class PCMPlayer:
                 self._pending.clear()
                 self.playing = True
                 try:
-                    self.stream.write(tail)
+                    stream.write(tail)
                 except Exception as exc:
                     self.failure = str(exc)
             try:
-                self.stream.stop()
+                stream.stop()
+            except Exception as exc:
+                self.failure = str(exc)
+            try:
+                stream.close()
+            except Exception as exc:
+                self.failure = str(exc)
             finally:
-                self.stream.close()
-                self.stream = None
+                if self.stream is stream:
+                    self.stream = None
                 self.playing = False
+
+    def abort(self) -> None:
+        """Discard pending audio and release the device without draining it."""
+        with self._lock:
+            stream = self.stream
+            self._pending.clear()
+            self.playing = False
+            if stream is None:
+                return
+            try:
+                abort = getattr(stream, "abort", None)
+                if callable(abort):
+                    abort()
+                else:
+                    # Keep injected/older stream implementations usable when
+                    # they expose only the original stop/close pair.
+                    stream.stop()
+            except Exception as exc:
+                self.failure = str(exc)
+            finally:
+                try:
+                    stream.close()
+                except Exception as exc:
+                    self.failure = str(exc)
+                finally:
+                    if self.stream is stream:
+                        self.stream = None
+                    self.playing = False

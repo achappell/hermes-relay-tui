@@ -290,3 +290,69 @@ def test_closing_waits_for_an_inflight_write(monkeypatch):
     assert not writer.is_alive()
     assert not closer.is_alive()
     assert lifecycle_overlap == ["stop", "close"]
+
+
+def test_abort_discards_pending_audio_without_draining_the_device(monkeypatch):
+    lifecycle = []
+
+    class FakeStream:
+        def start(self):
+            lifecycle.append("start")
+
+        def write(self, chunk):  # noqa: ARG002 - pending audio must not be flushed
+            lifecycle.append("write")
+
+        def stop(self):
+            lifecycle.append("stop")
+
+        def abort(self):
+            lifecycle.append("abort")
+
+        def close(self):
+            lifecycle.append("close")
+
+    monkeypatch.setitem(
+        sys.modules,
+        "sounddevice",
+        types.SimpleNamespace(RawOutputStream=lambda **kwargs: FakeStream()),
+    )
+
+    player = PCMPlayer(enabled=True, prebuffer_seconds=1.0)
+    player.start((24000, 1, 2))
+    player.write(b"\x00\x01")
+
+    player.abort()
+    player.abort()
+
+    assert lifecycle == ["start", "abort", "close"]
+    assert not player.active
+
+
+def test_close_records_backend_failure_and_releases_the_stream(monkeypatch):
+    class BrokenCloseStream:
+        def start(self):
+            pass
+
+        def write(self, chunk):  # noqa: ARG002 - mirrors sounddevice
+            pass
+
+        def stop(self):
+            pass
+
+        def close(self):
+            raise RuntimeError("device disappeared")
+
+    monkeypatch.setitem(
+        sys.modules,
+        "sounddevice",
+        types.SimpleNamespace(RawOutputStream=lambda **kwargs: BrokenCloseStream()),
+    )
+
+    player = PCMPlayer(enabled=True, prebuffer_seconds=0)
+    player.start((24000, 1, 2))
+    player.write(b"\x00\x01")
+
+    player.close()
+
+    assert not player.active
+    assert player.failure == "device disappeared"
