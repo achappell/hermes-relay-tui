@@ -110,3 +110,28 @@ def test_microphone_uses_a_blocking_reader_instead_of_a_portaudio_callback(monke
     assert stream.abort_calls == 1
     assert stream.closed is True
     assert recorder._reader_thread is None
+
+
+def test_microphone_shutdown_does_not_wait_forever_for_native_close(monkeypatch):
+    streams = _fake_audio(monkeypatch)
+    recorder = voice.AudioRecorder()
+    recorder.open_for_listening()
+    stream = streams[0]
+    close_started = threading.Event()
+    release_close = threading.Event()
+
+    def blocking_close():
+        close_started.set()
+        release_close.wait(1)
+        stream.closed = True
+
+    stream.close = blocking_close
+    monkeypatch.setattr(voice, "STREAM_CLOSE_TIMEOUT", 0.01)
+
+    started = time.monotonic()
+    recorder.shutdown()
+    elapsed = time.monotonic() - started
+
+    assert close_started.is_set()
+    assert elapsed < 0.5
+    release_close.set()

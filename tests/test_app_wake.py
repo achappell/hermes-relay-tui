@@ -237,6 +237,25 @@ def transcript_text(app) -> str:
     return app.transcript_text
 
 
+async def test_wake_open_cancellation_closes_a_late_opened_recorder():
+    fakes = SlowOpenWakeFakes()
+    app, _, _ = make_app(fakes=fakes)
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        opening = asyncio.create_task(app._handle_wake_command("on"))
+        await asyncio.to_thread(fakes.recorder_created.wait, 1.0)
+        recorder = fakes.recorders[0]
+        await asyncio.to_thread(recorder.open_started.wait, 1.0)
+
+        app._disarm_wake()
+        recorder.open_release.set()
+        await opening
+
+        assert recorder.shutdowns == 1
+        assert recorder.listening is False
+
+
 # ---- the microphone is closed until told otherwise --------------------
 
 

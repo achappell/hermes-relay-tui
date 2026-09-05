@@ -34,8 +34,32 @@ SILENCE_DURATION_SECONDS = 1.5
 DEFAULT_STT_MODEL = "base"
 _BLOCKING_READ_FRAMES = 256
 _READER_POLL_SECONDS = 0.01
+STREAM_CLOSE_TIMEOUT = 3.0
 
 _TEMP_DIR = os.path.join(tempfile.gettempdir(), "hermes_relay_tui_voice")
+
+
+def _call_with_timeout(operation, timeout: float) -> tuple[bool, Exception | None]:
+    """Run a native PortAudio operation without hanging the caller forever."""
+    finished = threading.Event()
+    errors: list[Exception] = []
+
+    def run() -> None:
+        try:
+            operation()
+        except Exception as exc:  # pragma: no cover - backend-specific
+            errors.append(exc)
+        finally:
+            finished.set()
+
+    threading.Thread(
+        target=run,
+        name="hermes-microphone-teardown",
+        daemon=True,
+    ).start()
+    if not finished.wait(timeout):
+        return False, None
+    return True, errors[0] if errors else None
 
 
 def _import_audio():
@@ -363,10 +387,10 @@ class AudioRecorder:
             if reader_stop is not None:
                 reader_stop.set()
 
-        stream_woken = False
         if reader is not None and reader is not threading.current_thread():
             reader.join(timeout=timeout)
 
+        stream_aborted = False
         if reader is not None and reader.is_alive():
             # This is an abnormal device/backend hang. There is no Python
             # PortAudio callback left to race with abort, so use it only as a
@@ -378,16 +402,17 @@ class AudioRecorder:
                     abort()
                 else:
                     stream.stop()
-                stream_woken = True
+                stream_aborted = True
             except Exception:
                 logger.debug("aborting the microphone stream failed", exc_info=True)
             reader.join(timeout=0.5)
 
         if reader is not None and reader.is_alive():
-            logger.warning("microphone reader did not stop; leaving stream open")
-            return
+            logger.warning(
+                "microphone reader did not stop after abort; closing concurrently"
+            )
 
-        if not stream_woken:
+        if not stream_aborted:
             try:
                 abort = getattr(stream, "abort", None)
                 if callable(abort):
@@ -396,16 +421,17 @@ class AudioRecorder:
                     stream.stop()
             except Exception:
                 logger.debug("aborting the microphone stream failed", exc_info=True)
-        try:
-            stream.close()
-        except Exception:
-            logger.debug("closing the microphone stream failed", exc_info=True)
-        finally:
-            with self._stream_lock:
-                if self._stream is stream:
-                    self._stream = None
-                    self._reader_thread = None
-                    self._reader_stop = None
+
+        completed, error = _call_with_timeout(stream.close, STREAM_CLOSE_TIMEOUT)
+        if error is not None:
+            logger.debug("closing the microphone stream failed: %s", error)
+        elif not completed:
+            logger.warning("microphone stream close timed out")
+        with self._stream_lock:
+            if self._stream is stream:
+                self._stream = None
+                self._reader_thread = None
+                self._reader_stop = None
 
     def stop(self) -> Optional[str]:
         with self._lock:

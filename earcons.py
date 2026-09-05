@@ -32,6 +32,7 @@ CAPTURE_DONE = "capture_done"
 SAMPLE_RATE = 24_000
 CHANNELS = 1
 SAMPLE_WIDTH = 2
+EARCON_CLOSE_TIMEOUT = 3.0
 
 # Quiet. This plays in a kitchen at head height, not through a PA.
 AMPLITUDE = 0.22
@@ -106,6 +107,29 @@ def _open_output_stream(**kwargs: Any) -> Any:
     return stream
 
 
+def _call_with_timeout(operation, timeout: float) -> tuple[bool, Exception | None]:
+    """Run a native audio operation without making the wake worker unkillable."""
+    finished = threading.Event()
+    errors: list[Exception] = []
+
+    def run() -> None:
+        try:
+            operation()
+        except Exception as exc:  # pragma: no cover - backend-specific
+            errors.append(exc)
+        finally:
+            finished.set()
+
+    threading.Thread(
+        target=run,
+        name="hermes-earcon-teardown",
+        daemon=True,
+    ).start()
+    if not finished.wait(timeout):
+        return False, None
+    return True, errors[0] if errors else None
+
+
 class EarconPlayer:
     """Plays one short tone at a time on its own stream.
 
@@ -128,6 +152,7 @@ class EarconPlayer:
         self._stream_lock = threading.Lock()
         self._stream: Any = None
         self._abort_requested = threading.Event()
+        self._generation = 0
 
     def play(self, name: str) -> None:
         """Play a tone to completion. Never raises.
@@ -154,6 +179,11 @@ class EarconPlayer:
         if self.output_device is not None:
             kwargs["device"] = self.output_device
 
+        with self._stream_lock:
+            self._generation += 1
+            generation = self._generation
+            self._abort_requested.clear()
+
         try:
             stream = self._open_stream(**kwargs)
         except Exception as error:
@@ -162,8 +192,17 @@ class EarconPlayer:
             return
 
         with self._stream_lock:
-            self._abort_requested.clear()
-            self._stream = stream
+            stale = (
+                generation != self._generation
+                or self._abort_requested.is_set()
+            )
+            if not stale:
+                self._stream = stream
+        if stale:
+            self._abort_and_close(stream)
+            return
+
+        owns_stream = True
         try:
             if not self._abort_requested.is_set():
                 stream.start()
@@ -179,21 +218,23 @@ class EarconPlayer:
         finally:
             with self._stream_lock:
                 owns_stream = self._stream is stream
-                if owns_stream:
-                    self._stream = None
             if owns_stream:
-                try:
-                    stream.close()
-                except Exception:
-                    logger.debug("closing the earcon stream failed", exc_info=True)
+                self._close_native(stream)
+                with self._stream_lock:
+                    if self._stream is stream:
+                        self._stream = None
 
     def abort(self) -> None:
         """Stop an active tone without making the playback thread lose ownership."""
-        self._abort_requested.set()
         with self._stream_lock:
+            self._generation += 1
+            self._abort_requested.set()
             stream = self._stream
         if stream is None:
             return
+        self._abort_native(stream)
+
+    def _abort_native(self, stream: Any) -> None:
         try:
             abort = getattr(stream, "abort", None)
             if callable(abort):
@@ -202,3 +243,14 @@ class EarconPlayer:
                 stream.stop()
         except Exception:
             logger.debug("aborting the earcon stream failed", exc_info=True)
+
+    def _close_native(self, stream: Any) -> None:
+        completed, error = _call_with_timeout(stream.close, EARCON_CLOSE_TIMEOUT)
+        if error is not None:
+            self.failure = str(error)
+        elif not completed:
+            logger.warning("earcon stream close timed out")
+
+    def _abort_and_close(self, stream: Any) -> None:
+        self._abort_native(stream)
+        self._close_native(stream)

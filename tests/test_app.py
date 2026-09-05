@@ -2289,6 +2289,30 @@ async def test_app_unmount_does_not_wait_past_shutdown_task_budget(monkeypatch):
             await task
 
 
+async def test_app_unmount_does_not_wait_forever_for_session_close(monkeypatch):
+    close_started = asyncio.Event()
+    release_close = asyncio.Event()
+
+    class SlowCloseSession(FakeSession):
+        async def close(self):
+            close_started.set()
+            await release_close.wait()
+            self.closed = True
+
+    monkeypatch.setattr(app_module, "SHUTDOWN_TASK_TIMEOUT", 0.01)
+    session = SlowCloseSession()
+    app = HermesStreamingApp(args=make_args(), session_factory=lambda: session)
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        started = asyncio.create_task(app.on_unmount())
+        await close_started.wait()
+        await started
+
+        assert not session.closed
+        release_close.set()
+
+
 async def test_voice_binding_is_registered():
     # NOTE: app._bindings is Textual's internal BindingsMap. In the
     # installed version (8.2.8) iterating it yields (key, Binding) tuples,

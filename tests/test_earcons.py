@@ -215,3 +215,65 @@ def test_abort_interrupts_an_active_tone_and_leaves_close_to_playback(monkeypatc
     assert not worker.is_alive()
     assert opener.streams[0].abort_calls == 1
     assert opener.streams[0].closed
+
+
+def test_abort_during_open_closes_the_late_stream():
+    open_started = threading.Event()
+    release_open = threading.Event()
+
+    class LateStream(FakeStream):
+        def __init__(self, **kwargs):
+            super().__init__(**kwargs)
+            self.abort_calls = 0
+
+        def abort(self):
+            self.abort_calls += 1
+
+    def open_stream(**kwargs):
+        open_started.set()
+        assert release_open.wait(1)
+        return LateStream(**kwargs)
+
+    player = earcons.EarconPlayer(enabled=True, open_stream=open_stream)
+    worker = threading.Thread(target=player.play, args=(earcons.WAKE,))
+    worker.start()
+    assert open_started.wait(1)
+
+    player.abort()
+    release_open.set()
+    worker.join(1)
+
+    assert not worker.is_alive()
+    assert player._stream is None
+
+
+def test_abort_interrupts_a_blocked_close():
+    close_started = threading.Event()
+    release_close = threading.Event()
+
+    class ClosingStream(FakeStream):
+        def __init__(self, **kwargs):
+            super().__init__(**kwargs)
+            self.abort_calls = 0
+
+        def abort(self):
+            self.abort_calls += 1
+            release_close.set()
+
+        def close(self):
+            close_started.set()
+            assert release_close.wait(1)
+            self.closed = True
+
+    opener = Opener(ClosingStream)
+    player = earcons.EarconPlayer(enabled=True, open_stream=opener)
+    worker = threading.Thread(target=player.play, args=(earcons.WAKE,))
+    worker.start()
+    assert close_started.wait(1)
+
+    player.abort()
+    worker.join(1)
+
+    assert not worker.is_alive()
+    assert opener.streams[0].abort_calls == 1
+    assert opener.streams[0].closed

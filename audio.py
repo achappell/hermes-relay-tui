@@ -71,6 +71,30 @@ def audio_device_list() -> list[dict[str, Any]]:
 # added to the delay before the first word is heard, so it buys smoothness at
 # a price and should stay small.
 DEFAULT_PREBUFFER_SECONDS = 0.6
+AUDIO_TEARDOWN_TIMEOUT = 3.0
+
+
+def _call_with_timeout(operation, timeout: float) -> tuple[bool, Exception | None]:
+    """Run a native audio operation without making its caller unkillable."""
+    finished = threading.Event()
+    errors: list[Exception] = []
+
+    def run() -> None:
+        try:
+            operation()
+        except Exception as exc:  # pragma: no cover - backend-specific
+            errors.append(exc)
+        finally:
+            finished.set()
+
+    threading.Thread(
+        target=run,
+        name="hermes-audio-teardown",
+        daemon=True,
+    ).start()
+    if not finished.wait(timeout):
+        return False, None
+    return True, errors[0] if errors else None
 
 
 class PCMPlayer:
@@ -88,6 +112,8 @@ class PCMPlayer:
         # Writes and interrupt teardown both run in the asyncio executor.
         # Never let PortAudio observe a write concurrent with stop/close.
         self._lock = threading.RLock()
+        self._write_lock = threading.Lock()
+        self._abort_requested = threading.Event()
         self.stream: Any = None
         self.failure: Optional[str] = None
         self.playing = False
@@ -100,15 +126,13 @@ class PCMPlayer:
             return self.stream is not None
 
     def start(self, audio_format: tuple[int, int, int]) -> None:
+        if self.active:
+            self.close()
         with self._lock:
-            # A stream can still be open and draining: not every gateway sends
-            # `audio_end`. Replacing it silently orphans it and cuts off whatever
-            # was left to play.
-            if self.stream is not None:
-                self.close()
             self.failure = None
             self.playing = False
             self._pending.clear()
+            self._abort_requested.clear()
             if not self.enabled:
                 return
             sample_rate, channels, sample_width = audio_format
@@ -118,31 +142,36 @@ class PCMPlayer:
             self._prebuffer_bytes = int(
                 sample_rate * channels * sample_width * self.prebuffer_seconds
             )
+            stream_kwargs = {
+                "samplerate": sample_rate,
+                "channels": channels,
+                "dtype": "int16",
+                # Deliberately not "low": that asks PortAudio for the smallest
+                # possible buffer, which is the wrong request for audio
+                # arriving off a network in irregular chunks.
+                "latency": "high",
+            }
+            if self.output_device is not None:
+                stream_kwargs["device"] = self.output_device
+            stream = None
             try:
                 import sounddevice as sd
 
-                stream_kwargs = {
-                    "samplerate": sample_rate,
-                    "channels": channels,
-                    "dtype": "int16",
-                    # Deliberately not "low": that asks PortAudio for the smallest
-                    # possible buffer, which is the wrong request for audio
-                    # arriving off a network in irregular chunks.
-                    "latency": "high",
-                }
-                if self.output_device is not None:
-                    stream_kwargs["device"] = self.output_device
-                self.stream = sd.RawOutputStream(
-                    **stream_kwargs,
-                )
-                self.stream.start()
+                stream = sd.RawOutputStream(**stream_kwargs)
+                self.stream = stream
+                stream.start()
             except Exception as exc:
-                self.stream = None
                 self.failure = str(exc)
+                if self.stream is stream:
+                    self.stream = None
+                self._abort_requested.set()
+                if stream is not None:
+                    self._abort_and_close(stream)
 
     def write(self, chunk: bytes) -> None:
         with self._lock:
-            if self.stream is None:
+            stream = self.stream
+            if stream is None or self._abort_requested.is_set():
                 return
             if not self.playing:
                 self._pending.extend(chunk)
@@ -151,36 +180,50 @@ class PCMPlayer:
                 chunk = bytes(self._pending)
                 self._pending.clear()
                 self.playing = True
+        write_error: Exception | None = None
+        with self._write_lock:
+            with self._lock:
+                if self.stream is not stream or self._abort_requested.is_set():
+                    return
             try:
-                self.stream.write(chunk)
+                stream.write(chunk)
             except Exception as exc:
-                self.failure = str(exc)
-                self.close()
+                write_error = exc
+        if write_error is not None:
+            self.failure = str(write_error)
+            self.abort()
 
     def close(self) -> None:
         with self._lock:
             stream = self.stream
             if stream is None:
                 return
-            # A reply shorter than the cushion is still a reply. Flush it rather
-            # than swallowing the whole answer in the buffer.
-            if self._pending:
-                tail = bytes(self._pending)
+        # Wait for a writer before draining and closing. Abort does not take
+        # this lock until it has called the backend's interrupt operation, so
+        # it can still break a blocking write.
+        with self._write_lock:
+            with self._lock:
+                if self.stream is not stream:
+                    return
+                aborted = self._abort_requested.is_set()
+                tail = bytes(self._pending) if self._pending and not aborted else None
                 self._pending.clear()
-                self.playing = True
+                if tail:
+                    self.playing = True
+            if tail:
                 try:
                     stream.write(tail)
                 except Exception as exc:
                     self.failure = str(exc)
-            try:
-                stream.stop()
-            except Exception as exc:
-                self.failure = str(exc)
-            try:
-                stream.close()
-            except Exception as exc:
-                self.failure = str(exc)
-            finally:
+            with self._lock:
+                aborted = self._abort_requested.is_set()
+            if not aborted:
+                try:
+                    stream.stop()
+                except Exception as exc:
+                    self.failure = str(exc)
+            self._close_native(stream)
+            with self._lock:
                 if self.stream is stream:
                     self.stream = None
                 self.playing = False
@@ -191,24 +234,47 @@ class PCMPlayer:
             stream = self.stream
             self._pending.clear()
             self.playing = False
-            if stream is None:
-                return
-            try:
-                abort = getattr(stream, "abort", None)
-                if callable(abort):
-                    abort()
-                else:
-                    # Keep injected/older stream implementations usable when
-                    # they expose only the original stop/close pair.
-                    stream.stop()
-            except Exception as exc:
-                self.failure = str(exc)
-            finally:
-                try:
-                    stream.close()
-                except Exception as exc:
-                    self.failure = str(exc)
-                finally:
-                    if self.stream is stream:
-                        self.stream = None
-                    self.playing = False
+            self._abort_requested.set()
+        if stream is None:
+            return
+
+        # This deliberately happens before taking _write_lock: PortAudio's
+        # abort is what must wake a writer blocked inside stream.write().
+        self._abort_native(stream)
+        if not self._write_lock.acquire(timeout=AUDIO_TEARDOWN_TIMEOUT):
+            self.failure = "audio write did not stop during abort"
+            return
+        try:
+            with self._lock:
+                if self.stream is not stream:
+                    return
+            self._close_native(stream)
+            with self._lock:
+                if self.stream is stream:
+                    self.stream = None
+                self.playing = False
+        finally:
+            self._write_lock.release()
+
+    def _abort_native(self, stream: Any) -> None:
+        try:
+            abort = getattr(stream, "abort", None)
+            if callable(abort):
+                abort()
+            else:
+                # Keep injected/older stream implementations usable when
+                # they expose only the original stop/close pair.
+                stream.stop()
+        except Exception as exc:
+            self.failure = str(exc)
+
+    def _close_native(self, stream: Any) -> None:
+        completed, error = _call_with_timeout(stream.close, AUDIO_TEARDOWN_TIMEOUT)
+        if error is not None:
+            self.failure = str(error)
+        elif not completed:
+            self.failure = "audio stream close timed out"
+
+    def _abort_and_close(self, stream: Any) -> None:
+        self._abort_native(stream)
+        self._close_native(stream)

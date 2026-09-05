@@ -543,7 +543,11 @@ beside it says what the client is doing; the marker says whether the device is
 live. One physical condition, one appearance, whichever path opened it. You
 should never have to remember whether your microphone is on.
 
-Quitting the client releases the microphone whether or not wake mode was on.
+Quitting the client cancels capture and response workers, aborts response audio
+and earcons, and releases the microphone whether or not wake mode was on. The
+native PortAudio close calls are guarded so a backend hang cannot hold the TUI
+inside interpreter shutdown; normal completed response playback still drains
+its final buffer.
 
 Wake mode is deliberately session-local. A successful `/reload` disarms it so
 new wake settings take effect only after an explicit `/wake on`; a connection

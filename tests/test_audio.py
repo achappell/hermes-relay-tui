@@ -328,6 +328,75 @@ def test_abort_discards_pending_audio_without_draining_the_device(monkeypatch):
     assert not player.active
 
 
+def test_abort_interrupts_an_inflight_write(monkeypatch):
+    write_started = threading.Event()
+    release_write = threading.Event()
+
+    class BlockingStream:
+        def start(self):
+            pass
+
+        def write(self, chunk):  # noqa: ARG002 - mirrors sounddevice
+            write_started.set()
+            assert release_write.wait(1)
+
+        def abort(self):
+            release_write.set()
+
+        def close(self):
+            pass
+
+    monkeypatch.setitem(
+        sys.modules,
+        "sounddevice",
+        types.SimpleNamespace(RawOutputStream=lambda **kwargs: BlockingStream()),
+    )
+
+    player = PCMPlayer(enabled=True, prebuffer_seconds=0)
+    player.start((24000, 1, 2))
+    writer = threading.Thread(target=player.write, args=(b"\x00\x01",), daemon=True)
+    writer.start()
+    assert write_started.wait(1)
+
+    aborter = threading.Thread(target=player.abort, daemon=True)
+    aborter.start()
+    aborter.join(1)
+    writer.join(1)
+
+    assert not aborter.is_alive()
+    assert not writer.is_alive()
+    assert not player.active
+
+
+def test_start_failure_closes_the_constructed_stream(monkeypatch):
+    class BrokenStartStream:
+        def __init__(self):
+            self.closed = False
+
+        def start(self):
+            raise RuntimeError("device disappeared")
+
+        def abort(self):
+            pass
+
+        def close(self):
+            self.closed = True
+
+    stream = BrokenStartStream()
+    monkeypatch.setitem(
+        sys.modules,
+        "sounddevice",
+        types.SimpleNamespace(RawOutputStream=lambda **kwargs: stream),
+    )
+
+    player = PCMPlayer(enabled=True)
+    player.start((24000, 1, 2))
+
+    assert stream.closed
+    assert not player.active
+    assert player.failure == "device disappeared"
+
+
 def test_close_records_backend_failure_and_releases_the_stream(monkeypatch):
     class BrokenCloseStream:
         def start(self):
