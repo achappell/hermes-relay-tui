@@ -7,8 +7,8 @@ import mimetypes
 from dataclasses import dataclass
 from http import HTTPStatus
 from pathlib import Path, PurePosixPath
-from typing import TYPE_CHECKING
-from urllib.parse import unquote, urlsplit
+from typing import TYPE_CHECKING, Awaitable, Callable
+from urllib.parse import parse_qs, unquote, urlsplit
 
 from websockets.datastructures import Headers
 from websockets.exceptions import ConnectionClosed
@@ -46,7 +46,15 @@ class DisplayServer:
         *,
         host: str = "127.0.0.1",
         port: int = 0,
+        on_action: Callable[[str, str], Awaitable[None]] | None = None,
     ) -> None:
+        """Create a display server.
+
+        on_action -- optional coroutine called when the display POSTs to
+                     /action.  Receives (action_id, choice) where both are
+                     strings supplied by the Svelte client via query params:
+                       POST /action?action_id=sethome&choice=yes
+        """
         try:
             host_address = ipaddress.ip_address(host)
         except (ValueError, TypeError) as error:
@@ -58,6 +66,7 @@ class DisplayServer:
         self._static_dir = Path(static_dir).resolve()
         self._host = host
         self._port = port
+        self._on_action = on_action
         self._server: WebSocketServer | None = None
         self._info: DisplayServerInfo | None = None
 
@@ -109,6 +118,12 @@ class DisplayServer:
             if not self._origin_is_allowed(headers.get("Origin")):
                 return self._http_response(HTTPStatus.FORBIDDEN, b"Forbidden\n")
             return None
+        if path == "/action":
+            if not self._origin_is_allowed(headers.get("Origin")):
+                return self._http_response(HTTPStatus.FORBIDDEN, b"Forbidden\n")
+            if headers.get("Upgrade", "").lower() == "websocket":
+                return self._http_response(HTTPStatus.BAD_REQUEST, b"Not a websocket endpoint\n")
+            return await self._handle_action_request(request_path)
         if headers.get("Upgrade", "").lower() == "websocket":
             return self._http_response(HTTPStatus.NOT_FOUND, b"Not found\n")
 
@@ -130,6 +145,38 @@ class DisplayServer:
             HTTPStatus.OK,
             static_path.read_bytes(),
             content_type=content_type or "application/octet-stream",
+        )
+
+    async def _handle_action_request(
+        self, request_path: str
+    ) -> tuple[HTTPStatus, list[tuple[str, str]], bytes]:
+        """Handle POST /action — the display's button-tap callback.
+
+        The Svelte client encodes the payload in the query string because
+        websockets' process_request only exposes headers, not the body:
+
+            POST /action?action_id=sethome&choice=yes
+
+        The on_action callback is scheduled as a fire-and-forget task so it
+        does not block the HTTP response pipeline.  A missing or malformed
+        query string returns 400; an absent on_action is silently ignored.
+        """
+        qs = parse_qs(urlsplit(request_path).query)
+        action_ids = qs.get("action_id", [])
+        choices = qs.get("choice", [])
+        if not action_ids or not choices:
+            return self._http_response(
+                HTTPStatus.BAD_REQUEST,
+                b'{"error": "action_id and choice are required"}\n',
+                content_type="application/json",
+            )
+        action_id = action_ids[0]
+        choice = choices[0]
+        if self._on_action is not None:
+            loop = asyncio.get_event_loop()
+            loop.create_task(self._on_action(action_id, choice))
+        return self._http_response(
+            HTTPStatus.OK, b"{}\n", content_type="application/json"
         )
 
     def _origin_is_allowed(self, origin: str | None) -> bool:

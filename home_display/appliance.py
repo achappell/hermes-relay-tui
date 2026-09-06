@@ -48,7 +48,7 @@ from timing import (
 )
 
 from .server import DisplayServer
-from .state import DisplayState, DisplayStatePublisher
+from .state import DisplayPrompt, DisplayState, DisplayStatePublisher, PromptOption
 
 logger = logging.getLogger("hermes_relay_tui.appliance")
 
@@ -99,7 +99,99 @@ STATUS_TEXT: dict[str, str | None] = {
     "speaking": "Speaking",
     "buffering": "Buffering",
     "disconnected": "Reconnecting to Hermes",
+    "prompt": None,
 }
+
+# ---- gateway notice detection ------------------------------------------
+#
+# The Hermes gateway injects operational notices (e.g. "no home channel set")
+# as plain text_final frames — identical on the wire to a real AI response.
+# We detect known notices by text markers and convert them to a structured
+# DisplayPrompt overlay rather than rendering them as response text.
+#
+# When Hermes adds a typed `notice` wire frame, swap this heuristic for a
+# frame-type check; the rest of the overlay stack is unchanged.
+
+_NOTICE_MARKERS = (
+    "No home channel is set",
+    "/sethome",
+    "\U0001f4ec",  # 📬
+)
+
+
+def _classify_gateway_notice(text: str) -> DisplayPrompt | None:
+    """Return a DisplayPrompt if text is a known gateway notice, else None.
+
+    The prompt is a human-friendly paraphrase — the raw gateway text is never
+    shown on the display.
+    """
+    t = text.strip()
+    if not any(marker in t for marker in _NOTICE_MARKERS):
+        return None
+    return DisplayPrompt(
+        kind="notice",
+        title="Setup needed",
+        body="Set this display as the home channel for this profile?",
+        options=(
+            PromptOption(id="yes", label="Set home"),
+            PromptOption(id="no", label="Skip"),
+        ),
+        action_id="sethome",
+        timeout_seconds=30,
+    )
+
+
+def _classify_prompt_request(event: dict) -> DisplayPrompt | None:
+    """Convert a typed gateway prompt_request event to a DisplayPrompt.
+
+    Returns None for unrecognised or malformed events.
+    The action_id is the gateway's prompt_id so the appliance can route the
+    response back via send_prompt_response when that API is available.
+    """
+    kind = str(event.get("kind") or "")
+    prompt_id = str(event.get("prompt_id") or event.get("id") or "prompt")
+    question = str(event.get("question") or event.get("text") or "")
+
+    if kind == "approval":
+        return DisplayPrompt(
+            kind="approval",
+            title="Permission needed",
+            body=question or "Hermes is asking for your approval.",
+            options=(
+                PromptOption(id="yes", label="Approve"),
+                PromptOption(id="no", label="Deny"),
+            ),
+            action_id=prompt_id,
+        )
+    if kind == "confirm":
+        return DisplayPrompt(
+            kind="confirm",
+            title="Confirm",
+            body=question or "Are you sure?",
+            options=(
+                PromptOption(id="yes", label="Yes"),
+                PromptOption(id="no", label="No"),
+            ),
+            action_id=prompt_id,
+        )
+    if kind == "clarify":
+        raw_options = event.get("options") or []
+        options = tuple(
+            PromptOption(id=str(o.get("id", i)), label=str(o.get("label", o.get("id", i))))
+            for i, o in enumerate(raw_options)
+            if isinstance(o, dict)
+        )
+        if not options:
+            options = (PromptOption(id="ok", label="OK"),)
+        return DisplayPrompt(
+            kind="clarify",
+            title="Clarification needed",
+            body=question or "Please choose an option.",
+            options=options,
+            action_id=prompt_id,
+        )
+    return None
+
 
 # How long the unit waits, after you stop talking, before deciding you have
 # finished. The terminal client waits 3s, which is fine when you pressed a key
@@ -209,6 +301,7 @@ class Appliance:
         self._supervisor_task: asyncio.Task[None] | None = None
         self._signals_installed: list[signal.Signals] = []
         self._sigint_count = 0
+        self._pending_prompt_action_id: str | None = None
 
     @property
     def active_profile(self) -> config.HouseholdProfile:
@@ -259,6 +352,61 @@ class Appliance:
             _apply()
         else:
             loop.call_soon_threadsafe(_apply)
+
+    def _publish_prompt(self, prompt: "DisplayPrompt") -> None:
+        """Publish a prompt overlay, clearing any accumulated response text.
+
+        Called from whichever thread detected the notice or prompt_request.
+        The prompt state resets _response_text so a stale answer cannot bleed
+        through if the overlay appears mid-turn (unlikely but possible).
+        """
+        self._response_text = ""
+        self._published = ("prompt", "", None)
+
+        def _apply() -> None:
+            self.publisher.publish(state="prompt", prompt=prompt)
+
+        loop = self._loop
+        if loop is None:
+            _apply()
+            return
+        try:
+            running = asyncio.get_running_loop()
+        except RuntimeError:
+            running = None
+        if running is loop:
+            _apply()
+        else:
+            loop.call_soon_threadsafe(_apply)
+
+    async def _on_action(self, action_id: str, choice: str) -> None:
+        """Dispatch a prompt response from the display's /action endpoint.
+
+        action_id -- the opaque token set in DisplayPrompt.action_id
+        choice    -- the option id the user tapped (e.g. "yes" or "no")
+
+        Dismiss the overlay first, then act. This keeps the display
+        responsive even if the follow-up turn takes a moment to start.
+        """
+        logger.debug("appliance action action_id=%s choice=%s", action_id, choice)
+        self._pending_prompt_action_id = None
+        self._publish("idle", response_text="")
+
+        if action_id == "sethome":
+            if choice == "yes":
+                # Send /sethome as a normal turn so the gateway registers
+                # this session as the home channel.
+                logger.debug("appliance sending /sethome turn")
+                await asyncio.to_thread(self._send, "/sethome")
+            # choice == "no": already dismissed to idle, nothing else to do.
+            return
+
+        # Generic prompt_request response — route to the session if present.
+        # When full prompt_request support lands, call the session's
+        # send_prompt_response() here keyed on action_id.
+        logger.debug(
+            "appliance unhandled action action_id=%s choice=%s", action_id, choice
+        )
 
     def _set_listening(self) -> None:
         """Listen only when idle and connected — never during a turn.
@@ -543,6 +691,22 @@ class Appliance:
                 elif kind == "text_replace":
                     response = str(event.get("text") or "")
                     render_caption()
+                elif kind == "prompt_request":
+                    # A structured gateway prompt (approval/confirm/clarify).
+                    # Convert to a display overlay; do not render as response text.
+                    prompt = _classify_prompt_request(event)
+                    if prompt is not None:
+                        logger.debug(
+                            "appliance prompt_request kind=%s action=%s",
+                            prompt.kind,
+                            prompt.action_id,
+                        )
+                        self._pending_prompt_action_id = prompt.action_id
+                        self._publish_prompt(prompt)
+                    else:
+                        logger.debug(
+                            "appliance unrecognised prompt_request event=%r", event
+                        )
                 elif kind == "audio_start":
                     audio_duration_final = False
                     open_playback(
@@ -641,10 +805,20 @@ class Appliance:
                     await stop_caption_clock()
                     if not failed:
                         await self._finish_playback(notify=False)
-                        render_caption(complete=True)
-                        if speaking:
-                            self._coordinator.playback_finished()
-                            speaking = False
+                        # Check if the complete response is a gateway notice.
+                        # If so, suppress the text and show the prompt overlay.
+                        notice = _classify_gateway_notice(response)
+                        if notice is not None and not audio_started:
+                            logger.debug(
+                                "appliance gateway notice detected, showing prompt overlay"
+                            )
+                            self._pending_prompt_action_id = notice.action_id
+                            self._publish_prompt(notice)
+                        else:
+                            render_caption(complete=True)
+                            if speaking:
+                                self._coordinator.playback_finished()
+                                speaking = False
                     break
         except asyncio.CancelledError:
             raise
@@ -942,6 +1116,7 @@ class Appliance:
                 self.publisher,
                 Path(__file__).with_name("static"),
                 port=getattr(self.args, "display_port", 0),
+                on_action=self._on_action,
             )
         self._session.use_shared_recorder(self._recorder)
 

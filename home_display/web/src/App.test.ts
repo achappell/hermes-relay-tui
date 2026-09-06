@@ -73,10 +73,40 @@ describe("App", () => {
       response_text: "fresh response",
       status_text: null,
       media: null,
+      prompt: null,
     });
     await tick();
     expect(container.querySelector('[data-state="speaking"]')).not.toBeNull();
     expect(container.querySelector("[data-response-text]")).toHaveTextContent("fresh response");
     unmount();
   });
+
+  it("renders PromptOverlay when state is prompt", async () => {
+    const { container, unmount } = render(App);
+    const callbacks = channels.callbacks.at(-1);
+
+    callbacks?.onConnectionState("connected");
+    callbacks?.onSnapshot({
+      type: "snapshot",
+      schema: 1,
+      sequence: 2,
+      state: "prompt",
+      response_text: "",
+      status_text: null,
+      media: null,
+      prompt: {
+        kind: "notice",
+        title: "Setup Needed",
+        body: "Configure home channel?",
+        options: [{ id: "yes", label: "Set home" }, { id: "no", label: "Skip" }],
+        action_id: "sethome",
+        timeout_seconds: null,
+      },
+    });
+    await tick();
+    expect(container.querySelector(".prompt-overlay")).not.toBeNull();
+    expect(container.querySelector(".prompt-title")).toHaveTextContent("Setup Needed");
+    unmount();
+  });
 });
+

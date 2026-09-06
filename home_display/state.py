@@ -16,8 +16,82 @@ DisplayState = Literal[
     "buffering",
     "error",
     "disconnected",
+    "prompt",
 ]
 _STATES = frozenset(DisplayState.__args__)
+
+
+@dataclass(frozen=True, slots=True)
+class PromptOption:
+    """One selectable option in an interactive display prompt."""
+
+    id: str
+    label: str
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.id, str) or not self.id:
+            raise ValueError("PromptOption.id must be a non-empty string")
+        if not isinstance(self.label, str) or not self.label:
+            raise ValueError("PromptOption.label must be a non-empty string")
+
+    def to_dict(self) -> dict[str, object]:
+        return {"id": self.id, "label": self.label}
+
+
+@dataclass(frozen=True, slots=True)
+class DisplayPrompt:
+    """Payload for the 'prompt' display state — an interactive overlay.
+
+    The display renders title + body + one button per option. On tap it
+    POSTs {action_id, choice} to the display server's /action endpoint.
+    The appliance dispatches based on (kind, action_id, choice).
+
+    kind    -- a string token the appliance uses to route the response
+               e.g. "notice", "approval", "confirm", "clarify"
+    title   -- short heading shown at the top of the overlay
+    body    -- one or two sentences explaining what is being asked
+    options -- ordered list of selectable options (at least one)
+    action_id -- opaque token that correlates the POST /action back to the
+                 pending gateway operation or appliance decision
+    timeout_seconds -- if not None, the overlay auto-dismisses after this
+                       many seconds, choosing the first option's id
+    """
+
+    kind: str
+    title: str
+    body: str
+    options: tuple[PromptOption, ...]
+    action_id: str
+    timeout_seconds: int | None = None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.kind, str) or not self.kind:
+            raise ValueError("DisplayPrompt.kind must be a non-empty string")
+        if not isinstance(self.title, str) or not self.title:
+            raise ValueError("DisplayPrompt.title must be a non-empty string")
+        if not isinstance(self.body, str):
+            raise TypeError("DisplayPrompt.body must be a string")
+        if not self.options:
+            raise ValueError("DisplayPrompt.options must have at least one entry")
+        for opt in self.options:
+            if not isinstance(opt, PromptOption):
+                raise TypeError("each option must be a PromptOption")
+        if not isinstance(self.action_id, str) or not self.action_id:
+            raise ValueError("DisplayPrompt.action_id must be a non-empty string")
+        if self.timeout_seconds is not None and (
+            not isinstance(self.timeout_seconds, int) or self.timeout_seconds <= 0
+        ):
+            raise ValueError("DisplayPrompt.timeout_seconds must be a positive int or None")
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "kind": self.kind,
+            "title": self.title,
+            "body": self.body,
+            "options": [o.to_dict() for o in self.options],
+            "action_id": self.action_id,
+            "timeout_seconds": self.timeout_seconds,
+        }
 
 
 @dataclass(frozen=True, slots=True)
@@ -29,6 +103,7 @@ class DisplaySnapshot:
     status_text: str | None = None
     media: dict[str, object] | None = None
     account: str | None = None
+    prompt: DisplayPrompt | None = None
 
     def __post_init__(self) -> None:
         if type(self.schema) is not int or self.schema != 1:
@@ -52,6 +127,12 @@ class DisplaySnapshot:
                 json.dumps(copied_media, allow_nan=False)
             except (TypeError, ValueError, OverflowError) as error:
                 raise ValueError("media must be JSON serializable") from error
+        if self.prompt is not None and not isinstance(self.prompt, DisplayPrompt):
+            raise TypeError("prompt must be a DisplayPrompt or None")
+        if self.state == "prompt" and self.prompt is None:
+            raise ValueError("prompt must be set when state is 'prompt'")
+        if self.state != "prompt" and self.prompt is not None:
+            raise ValueError("prompt must only be set when state is 'prompt'")
 
     def to_dict(self) -> dict[str, object]:
         data: dict[str, object] = {
@@ -62,6 +143,7 @@ class DisplaySnapshot:
             "response_text": self.response_text,
             "status_text": self.status_text,
             "media": self.media,
+            "prompt": self.prompt.to_dict() if self.prompt is not None else None,
         }
         if self.account is not None:
             data["account"] = self.account
@@ -85,6 +167,7 @@ class DisplayStatePublisher:
         status_text: str | None = None,
         media: dict[str, object] | None = None,
         account: str | None = None,
+        prompt: DisplayPrompt | None = None,
     ) -> DisplaySnapshot:
         snapshot = DisplaySnapshot(
             sequence=self._snapshot.sequence + 1,
@@ -93,6 +176,7 @@ class DisplayStatePublisher:
             status_text=status_text,
             media=media,
             account=account,
+            prompt=prompt,
         )
         self._snapshot = snapshot
         for queue in tuple(self._subscribers):
@@ -112,3 +196,5 @@ class DisplayStatePublisher:
 
     def subscribe(self) -> AsyncIterator[DisplaySnapshot]:
         return self._subscribe(asyncio.Queue(maxsize=1))
+
+
