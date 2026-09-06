@@ -270,6 +270,25 @@ In another terminal, use `tail -f /tmp/hermes-relay-tui.log`. The trace
 includes frame order, event names, payload keys, text/byte lengths, hashes, and
 turn state. It does not record bearer tokens, prompts, response text, or audio.
 
+For the speech-alignment rollout gate, run the deterministic fixture suite:
+
+```bash
+venv/bin/python speech_benchmark.py --json
+```
+
+The same runner can inspect one or more content-safe live traces without
+retaining prompts, response text, or audio:
+
+```bash
+venv/bin/python speech_benchmark.py --strict \
+  --log local=/tmp/hermes-relay-local.log \
+  --log media=/tmp/hermes-relay-media.log
+```
+
+Alignment remains disabled until the fixture gate and the local/media smoke
+checks pass. See the [AUDIO-01 benchmark and rollout gate](docs/testing/audio-01-speech-alignment-benchmark.md)
+for the exact procedure and rollback switch.
+
 Uncaught exceptions are logged independently of `--debug` to
 `~/.hermes-relay-tui/crash.log`. Each report includes the timestamp, installed
 client version, exception type, thread, and file/line traceback locations, but
@@ -407,6 +426,9 @@ it. A turn that may already have reached Hermes is never replayed automatically.
 | `--mic-input-device DEVICE` | Microphone name or index; `default` uses the system default |
 | `--audio-output-device DEVICE` | Speaker name or index; `default` uses the system default |
 | `--stt-model NAME` | Select the local Faster-Whisper model |
+
+The installed package also provides `hermes-relay-benchmark`, which accepts
+the same benchmark and trace-analysis options as `speech_benchmark.py`.
 
 Run `venv/bin/python app.py --help` for the full option list.
 

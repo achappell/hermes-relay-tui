@@ -151,7 +151,8 @@ async def send_turn(
 ) -> AsyncIterator[dict[str, Any]]:
     turn_id = turn_id or uuid.uuid4().hex
     logger.debug(
-        "turn.send turn_id=%s session_id=%s stt_source=%s %s",
+        "turn.send mono_ms=%d turn_id=%s session_id=%s stt_source=%s %s",
+        trace_monotonic_ms(),
         turn_id,
         session_id,
         stt_source,

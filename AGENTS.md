@@ -87,6 +87,16 @@ status conflicts with the board, the board wins.
 gh project item-list 3 --owner achappell --format json -L 100
 ```
 
+GitHub CLI credentials are workspace-contextual on this machine. The primary
+TUI workspace injects the admin `GH_TOKEN`; the separate Hermes relay checkout
+may fall back to the keyring token, which does not have the `project` and
+`read:project` scopes. Before any project read or write, run `gh auth status`
+from the chosen working directory and confirm the active credential includes
+those scopes. If it does not, run the `gh project` command from the primary
+workspace (or refresh/export an explicitly scoped token); never assume that a
+repository-admin or keyring credential can edit a user-owned Project, and
+never print token values.
+
 - Before starting work, inspect the project and choose the highest-priority
   unblocked item in `Ready` or `Building`. Do not invent a parallel task list
   in the repository.

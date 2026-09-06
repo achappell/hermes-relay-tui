@@ -44,9 +44,10 @@ home = [
 hermes-relay = "app:main"
 hermes-relay-home = "home_display.appliance:main"
 hermes-relay-home-demo = "home_display.demo:main"
+hermes-relay-benchmark = "speech_benchmark:main"
 
 [tool.setuptools]
-py-modules = ["app", "attachments", "audio", "clipboard", "client", "commands", "config", "diagnostics", "earcons", "history", "installer", "mic", "session", "setup_wizard", "shell", "timing", "transcript", "voice", "wake", "handsfree"]
+py-modules = ["app", "attachments", "audio", "clipboard", "client", "commands", "config", "diagnostics", "earcons", "history", "installer", "mic", "session", "setup_wizard", "shell", "speech_benchmark", "timing", "transcript", "voice", "wake", "handsfree"]
 include-package-data = false
 
 [tool.setuptools.packages.find]

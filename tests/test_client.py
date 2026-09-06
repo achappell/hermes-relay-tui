@@ -150,6 +150,7 @@ async def test_send_turn_logs_protocol_shapes_without_text_content(caplog):
     messages = "\n".join(record.message for record in caplog.records)
     assert "kind=message.delta" in messages
     assert "kind=message.complete" in messages
+    assert "turn.send mono_ms=" in messages
     assert "text_len=10" in messages
     assert "private prompt" not in messages
     assert "The answer" not in messages
