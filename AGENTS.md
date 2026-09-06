@@ -35,7 +35,8 @@ ends that consume it.
 `history.py`, `timing.py`, `wake.py`, `handsfree.py`.
 
 **Front-end-specific:** `app.py` (Textual), `transcript.py` (Rich rendering for
-a terminal transcript), and `home_display/` (the household appliance: its
+a terminal transcript), `prompts.py` (structured-prompt state and rendering
+for the Textual TUI), and `home_display/` (the household appliance: its
 display server, state channel, and `appliance.py` loop).
 
 Rules:

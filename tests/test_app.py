@@ -10,7 +10,7 @@ import pytest
 from textual.events import MouseMove, MouseUp
 from textual.geometry import Offset
 from textual.selection import Selection
-from textual.widgets import Header, Static
+from textual.widgets import Header, Input, Static
 
 import app as app_module
 from app import Composer, HermesSession, HermesStreamingApp
@@ -47,6 +47,24 @@ class FakeSession:
         # When set, the generator waits on this event before its last item,
         # which lets a test hold a turn open and try to start a second one.
         self.gate = gate
+        self.supports_structured_prompts = True
+        self.prompt_responses = []
+
+    async def send_prompt_response(
+        self, *, prompt_id, prompt_kind, option_id=None, value=None, reason=None
+    ):
+        if not self.supports_structured_prompts:
+            return False
+        self.prompt_responses.append(
+            {
+                "prompt_id": prompt_id,
+                "prompt_kind": prompt_kind,
+                "option_id": option_id,
+                "value": value,
+                "reason": reason,
+            }
+        )
+        return True
 
     async def connect(self):
         self.connect_calls += 1
@@ -3409,3 +3427,398 @@ async def test_reasoning_and_fast_commands_report_honest_unavailable_state():
         await pilot.press("enter")
         await pilot.pause()
         assert "/fast needs Hermes gateway command dispatch" in transcript_of(app)
+
+
+# --- structured prompts ------------------------------------------------------
+
+
+class QueuedEventsSession(FakeSession):
+    """A session whose event stream is fed live, one event at a time.
+
+    Structured-prompt tests need to hold a turn open mid-stream — display a
+    prompt, answer it, then push whatever comes next — which the fixed-list
+    FakeSession stream can't do without a fragile sleep-based race.
+    """
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.queue: asyncio.Queue = asyncio.Queue()
+
+    def send_turn(self, text, *, stt_source="local"):
+        self.sent_turns.append((text, stt_source))
+        self.turn_index += 1
+        return self._drain()
+
+    async def _drain(self):
+        while True:
+            event = await self.queue.get()
+            if event is None:
+                return
+            if isinstance(event, BaseException):
+                raise event
+            yield event
+
+    async def push(self, event) -> None:
+        await self.queue.put(event)
+
+
+APPROVAL_REQUEST = {
+    "type": "prompt_request",
+    "prompt_id": "p1",
+    "prompt_kind": "approval",
+    "turn_id": "t1",
+    "session_id": "s1",
+    "text": "Allow running rm -rf build/?",
+    "options": [
+        {"id": "once", "label": "Allow Once"},
+        {"id": "deny", "label": "Deny"},
+    ],
+    "sensitive": False,
+    "timeout_s": 300,
+}
+
+
+async def test_approval_prompt_answers_with_numbered_option_and_stream_reaches_turn_end():
+    session = QueuedEventsSession()
+    app = HermesStreamingApp(args=make_args(), session_factory=lambda: session)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        turn = asyncio.create_task(app._run_turn("clean the build dir"))
+        await asyncio.sleep(0)
+
+        await session.push(dict(APPROVAL_REQUEST))
+        await pilot.pause()
+        panel = app.query_one("#prompt-panel", Static)
+        assert panel.display is True
+        assert "Allow running rm -rf build/?" in str(panel.content)
+        assert "1) Allow Once" in str(panel.content)
+        assert "2) Deny" in str(panel.content)
+
+        await pilot.press("1")
+        await pilot.pause()
+        assert session.prompt_responses == [
+            {
+                "prompt_id": "p1",
+                "prompt_kind": "approval",
+                "option_id": "once",
+                "value": None,
+                "reason": None,
+            }
+        ]
+        # Still visible — prompt_resolved hasn't arrived yet.
+        assert panel.display is True
+        assert app._pending_prompt.awaiting_response is True
+
+        await session.push(
+            {
+                "type": "prompt_resolved",
+                "prompt_id": "p1",
+                "prompt_kind": "approval",
+                "status": "accepted",
+                "session_id": "s1",
+            }
+        )
+        await pilot.pause()
+        assert app._pending_prompt is None
+        assert panel.display is False
+
+        await session.push({"type": "text_delta", "text": "cleaned"})
+        await session.push(
+            {"type": "audio_start", "sample_rate": 16000, "channels": 1, "sample_width": 2}
+        )
+        await session.push({"type": "audio_chunk", "data": b"\x00\x00"})
+        await session.push({"type": "audio_end"})
+        await session.push({"type": "turn_end", "turn_id": "t1"})
+        await session.push(None)
+        await turn
+        await pilot.pause()
+
+        assert "cleaned" in transcript_of(app)
+        assert not app._turn_in_flight
+
+
+async def test_clarify_prompt_supports_a_listed_option_and_free_text_other():
+    session = QueuedEventsSession()
+    app = HermesStreamingApp(args=make_args(), session_factory=lambda: session)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        turn = asyncio.create_task(app._run_turn("book a flight"))
+        await asyncio.sleep(0)
+
+        await session.push(
+            {
+                "type": "prompt_request",
+                "prompt_id": "p2",
+                "prompt_kind": "clarify",
+                "turn_id": "t1",
+                "session_id": "s1",
+                "text": "Which airport?",
+                "options": [{"id": "dfw", "label": "DFW"}, {"id": "dal", "label": "DAL"}],
+                "sensitive": False,
+                "timeout_s": 300,
+            }
+        )
+        await pilot.pause()
+        prompt_input = app.query_one("#prompt-input", Input)
+        assert prompt_input.display is True
+        assert prompt_input.password is False
+
+        prompt_input.value = "Actually, Love Field"
+        await prompt_input.action_submit()
+        await pilot.pause()
+
+        assert session.prompt_responses == [
+            {
+                "prompt_id": "p2",
+                "prompt_kind": "clarify",
+                "option_id": None,
+                "value": "Actually, Love Field",
+                "reason": None,
+            }
+        ]
+        assert prompt_input.value == ""
+
+        await session.push(
+            {
+                "type": "prompt_resolved",
+                "prompt_id": "p2",
+                "prompt_kind": "clarify",
+                "status": "accepted",
+                "session_id": "s1",
+            }
+        )
+        await session.push({"type": "turn_end", "turn_id": "t1"})
+        await session.push(None)
+        await turn
+        await pilot.pause()
+        assert app._pending_prompt is None
+
+
+async def test_secret_prompt_uses_masked_input_never_echoed_anywhere():
+    session = QueuedEventsSession()
+    app = HermesStreamingApp(args=make_args(), session_factory=lambda: session)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        turn = asyncio.create_task(app._run_turn("configure the integration"))
+        await asyncio.sleep(0)
+
+        await session.push(
+            {
+                "type": "prompt_request",
+                "prompt_id": "p3",
+                "prompt_kind": "secret",
+                "turn_id": "t1",
+                "session_id": "s1",
+                "text": "Enter the API key",
+                "options": [],
+                "sensitive": True,
+                "timeout_s": 300,
+            }
+        )
+        await pilot.pause()
+        prompt_input = app.query_one("#prompt-input", Input)
+        assert prompt_input.display is True
+        assert prompt_input.password is True
+        assert app.focused is prompt_input
+
+        secret = "sk-super-secret-value"
+        prompt_input.value = secret
+        await prompt_input.action_submit()
+        await pilot.pause()
+
+        assert session.prompt_responses == [
+            {
+                "prompt_id": "p3",
+                "prompt_kind": "secret",
+                "option_id": None,
+                "value": secret,
+                "reason": None,
+            }
+        ]
+        assert secret not in transcript_of(app)
+        panel = app.query_one("#prompt-panel", Static)
+        assert secret not in str(panel.content)
+        assert prompt_input.value == ""
+
+        await session.push(
+            {
+                "type": "prompt_resolved",
+                "prompt_id": "p3",
+                "prompt_kind": "secret",
+                "status": "accepted",
+                "session_id": "s1",
+            }
+        )
+        await session.push({"type": "turn_end", "turn_id": "t1"})
+        await session.push(None)
+        await turn
+        await pilot.pause()
+        assert secret not in transcript_of(app)
+
+
+async def test_rejected_prompt_response_stays_open_and_can_be_answered_again(caplog):
+    caplog.set_level(logging.DEBUG)
+    session = QueuedEventsSession()
+    app = HermesStreamingApp(args=make_args(), session_factory=lambda: session)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        turn = asyncio.create_task(app._run_turn("do the risky thing"))
+        await asyncio.sleep(0)
+
+        await session.push(dict(APPROVAL_REQUEST))
+        await pilot.pause()
+        await pilot.press("1")
+        await pilot.pause()
+
+        await session.push(
+            {"type": "prompt_response_rejected", "prompt_id": "p1", "reason": "stale_session", "session_id": "s1"}
+        )
+        await pilot.pause()
+
+        panel = app.query_one("#prompt-panel", Static)
+        assert panel.display is True
+        assert "rejected: stale_session" in str(panel.content)
+        assert app._pending_prompt.awaiting_response is False
+
+        await pilot.press("2")
+        await pilot.pause()
+        assert session.prompt_responses[-1] == {
+            "prompt_id": "p1",
+            "prompt_kind": "approval",
+            "option_id": "deny",
+            "value": None,
+            "reason": None,
+        }
+
+        await session.push(
+            {"type": "prompt_resolved", "prompt_id": "p1", "prompt_kind": "approval", "status": "denied", "session_id": "s1"}
+        )
+        await session.push({"type": "turn_end", "turn_id": "t1"})
+        await session.push(None)
+        await turn
+        await pilot.pause()
+        assert app._pending_prompt is None
+
+
+async def test_duplicate_option_presses_do_not_send_a_second_response():
+    session = QueuedEventsSession()
+    app = HermesStreamingApp(args=make_args(), session_factory=lambda: session)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        turn = asyncio.create_task(app._run_turn("clean the build dir"))
+        await asyncio.sleep(0)
+
+        await session.push(dict(APPROVAL_REQUEST))
+        await pilot.pause()
+
+        await pilot.press("1")
+        await pilot.press("2")
+        await pilot.pause()
+
+        assert len(session.prompt_responses) == 1
+        assert session.prompt_responses[0]["option_id"] == "once"
+
+        await session.push(
+            {"type": "prompt_resolved", "prompt_id": "p1", "prompt_kind": "approval", "status": "accepted", "session_id": "s1"}
+        )
+        await session.push({"type": "turn_end", "turn_id": "t1"})
+        await session.push(None)
+        await turn
+        await pilot.pause()
+
+
+async def test_ordinary_message_during_pending_prompt_is_queued_not_a_new_turn():
+    session = QueuedEventsSession()
+    app = HermesStreamingApp(args=make_args(), session_factory=lambda: session)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        turn = asyncio.create_task(app._run_turn("clean the build dir"))
+        await asyncio.sleep(0)
+
+        await session.push(dict(APPROVAL_REQUEST))
+        await pilot.pause()
+
+        composer = app.query_one("#composer", Composer)
+        composer.text = "unrelated question"
+        await pilot.press("enter")
+        await pilot.pause()
+
+        assert session.sent_turns == [("clean the build dir", "local")]
+        assert app._queued_prompts == ["unrelated question"]
+
+        await pilot.press("1")
+        await pilot.pause()
+        await session.push(
+            {"type": "prompt_resolved", "prompt_id": "p1", "prompt_kind": "approval", "status": "accepted", "session_id": "s1"}
+        )
+        await session.push({"type": "turn_end", "turn_id": "t1"})
+        # Ends the first turn's stream, same as the real client returning
+        # right after turn_end — otherwise the second turn's fresh generator
+        # would be racing the first one for items off the same queue.
+        await session.push(None)
+        await pilot.pause()
+
+        # The completed turn immediately dequeues and sends the message that
+        # was held back — drive that second turn to completion too.
+        await session.push({"type": "text_delta", "text": "answered"})
+        await session.push({"type": "turn_end", "turn_id": "t2"})
+        await session.push(None)
+        await turn
+        await pilot.pause()
+        await pilot.pause()
+
+        assert session.sent_turns == [
+            ("clean the build dir", "local"),
+            ("unrelated question", "local"),
+        ]
+        assert app._queued_prompts == []
+
+
+async def test_disconnect_mid_prompt_clears_pending_prompt_state():
+    session = QueuedEventsSession()
+    app = HermesStreamingApp(args=make_args(), session_factory=lambda: session)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        turn = asyncio.create_task(app._run_turn("clean the build dir"))
+        await asyncio.sleep(0)
+
+        await session.push(dict(APPROVAL_REQUEST))
+        await pilot.pause()
+        assert app._pending_prompt is not None
+
+        # A dropped websocket surfaces to `_consume_turn` as the stream
+        # raising instead of yielding prompt_resolved.
+        await session.push(ConnectionResetError("socket went away"))
+
+        await turn
+        await pilot.pause()
+
+        assert app._pending_prompt is None
+        panel = app.query_one("#prompt-panel", Static)
+        assert panel.display is False
+
+
+async def test_turn_timeout_clears_pending_prompt_state():
+    session = QueuedEventsSession()
+    # A generous timeout: this test needs the prompt_request to be observed
+    # well before the clock fires, not just eventually before it. A tight
+    # margin here is exactly the kind of thing that passes locally and flakes
+    # on a loaded CI runner.
+    app = HermesStreamingApp(
+        args=make_args(turn_timeout=1.0), session_factory=lambda: session
+    )
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        turn = asyncio.create_task(app._run_turn("clean the build dir"))
+        await asyncio.sleep(0)
+
+        await session.push(dict(APPROVAL_REQUEST))
+        await pilot.pause()
+        assert app._pending_prompt is not None
+
+        await turn
+        await pilot.pause()
+
+        assert app._pending_prompt is None
+        panel = app.query_one("#prompt-panel", Static)
+        assert panel.display is False

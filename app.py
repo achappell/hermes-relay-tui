@@ -35,7 +35,7 @@ from textual.message import Message
 from textual.selection import Selection
 from textual.strip import Strip
 from textual.visual import RenderOptions, RichVisual, Visual, VisualType, visualize
-from textual.widgets import Footer, Header, Static, TextArea
+from textual.widgets import Footer, Header, Input, Static, TextArea
 
 import config
 import earcons as earcons_module
@@ -67,6 +67,7 @@ from diagnostics import (
     trace_monotonic_ms,
 )
 from history import PromptHistory, history_path_for_url
+from prompts import PendingPrompt
 from session import HermesSession, SessionProtocol
 from shell import (
     ShellExecutionError,
@@ -272,7 +273,24 @@ class Composer(TextArea):
             super().__init__()
             self.composer = composer
 
+    class PromptOptionSelected(Message):
+        """A digit key picked a numbered option on a pending structured prompt."""
+
+        def __init__(self, composer: "Composer", option_id: str) -> None:
+            super().__init__()
+            self.composer = composer
+            self.option_id = option_id
+
     async def _on_key(self, event: events.Key) -> None:
+        if len(event.key) == 1 and event.key.isdigit() and event.key != "0":
+            pending = getattr(self.app, "_pending_prompt", None)
+            if pending is not None and not pending.awaiting_response and pending.options:
+                option = pending.option_at(int(event.key))
+                if option is not None:
+                    event.stop()
+                    event.prevent_default()
+                    self.post_message(self.PromptOptionSelected(self, option.id))
+                    return
         if event.key == "ctrl+c":
             event.stop()
             event.prevent_default()
@@ -468,6 +486,19 @@ class HermesStreamingApp(App):
         color: $accent;
     }
 
+    #prompt-panel {
+        height: auto;
+        max-height: 8;
+        margin: 0 1;
+        padding: 0 1;
+        border: round $warning;
+        color: $text;
+    }
+
+    #prompt-input {
+        margin: 0 1;
+    }
+
     #transcript-scroll.-compact {
         padding: 0;
         border: none;
@@ -523,6 +554,7 @@ class HermesStreamingApp(App):
         self.voice_state = VOICE_READY
         self._turn_in_flight = False
         self._queued_prompts: list[str] = []
+        self._pending_prompt: Optional[PendingPrompt] = None
         self._staged_attachments: list[Attachment] = []
         self._active_turn_task: Optional[asyncio.Task[None]] = None
         self._caption_task: Optional[asyncio.Task[Any]] = None
@@ -588,6 +620,8 @@ class HermesStreamingApp(App):
         yield Static("◌ connecting · session", id="connection-status", markup=False)
         yield Static("● ready", id="voice-status")
         yield Static("", id="queue-shelf", markup=False)
+        yield Static("", id="prompt-panel", markup=False)
+        yield Input(placeholder="", id="prompt-input")
         yield Static("", id="command-suggestions", markup=False)
         yield Composer(placeholder="you>", id="composer")
         yield Static("Enter send · Shift+Enter newline", id="composer-hint", markup=False)
@@ -750,11 +784,40 @@ class HermesStreamingApp(App):
         widget.update(f"Queue ({len(self._queued_prompts)} queued):\n" + "\n".join(entries))
         widget.display = True
 
+    def _refresh_prompt_panel(self) -> None:
+        try:
+            panel = self.query_one("#prompt-panel", Static)
+            prompt_input = self.query_one("#prompt-input", Input)
+        except (NoMatches, ScreenStackError):
+            return
+        prompt = self._pending_prompt
+        if prompt is None:
+            panel.update("")
+            panel.display = False
+            prompt_input.display = False
+            prompt_input.value = ""
+            prompt_input.password = False
+            return
+        panel.display = True
+        panel.update("\n".join(prompt.render_lines()))
+        prompt_input.display = prompt.accepts_free_text
+        prompt_input.password = prompt.masked
+        prompt_input.disabled = prompt.awaiting_response
+        if prompt.accepts_free_text:
+            prompt_input.placeholder = (
+                "masked value — Enter to submit, never shown"
+                if prompt.masked
+                else "type an answer — Enter to submit"
+            )
+            if prompt.masked and not prompt.awaiting_response:
+                prompt_input.focus()
+
     # --- lifecycle ------------------------------------------------------------
 
     async def on_mount(self) -> None:
         self.session = self._session_factory() if self._session_factory else HermesSession(self.args)
         self._refresh_queue_shelf()
+        self._refresh_prompt_panel()
         self.query_one("#command-suggestions", Static).display = False
         self.set_focus(self.query_one("#composer", Composer))
         self._refresh_compact_layout(self.size.height)
@@ -1507,6 +1570,13 @@ class HermesStreamingApp(App):
                 exit_on_error=False,
             )
             return
+        if self._pending_prompt is not None:
+            # A structured prompt is waiting on the composer's own input
+            # widget, not this one. Treat this as an ordinary message that
+            # would otherwise become an accidental second turn.
+            event.composer.load_text("")
+            self._enqueue_prompt(text)
+            return
         self.run_worker(
             self._submit_text(text, composer=event.composer),
             name="chat turn",
@@ -1628,6 +1698,65 @@ class HermesStreamingApp(App):
             group="interaction",
             exit_on_error=False,
         )
+
+    async def on_composer_prompt_option_selected(
+        self, event: Composer.PromptOptionSelected
+    ) -> None:
+        self.run_worker(
+            self._answer_prompt(option_id=event.option_id, value=None),
+            name="prompt response",
+            group="interaction",
+            exit_on_error=False,
+        )
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        if event.input.id != "prompt-input":
+            return
+        prompt = self._pending_prompt
+        if prompt is None or prompt.awaiting_response:
+            return
+        value = event.value
+        event.input.value = ""
+        self.run_worker(
+            self._answer_prompt(option_id=None, value=value),
+            name="prompt response",
+            group="interaction",
+            exit_on_error=False,
+        )
+
+    async def _answer_prompt(self, *, option_id: Optional[str], value: Optional[str]) -> None:
+        """Send exactly one response for the currently pending prompt.
+
+        `value` is never logged or appended to the transcript — sudo/secret
+        answers reuse this path and must never surface anywhere but the
+        websocket write in session.send_prompt_response.
+        """
+        prompt = self._pending_prompt
+        if prompt is None or prompt.awaiting_response:
+            return
+        prompt.awaiting_response = True
+        prompt.rejection_reason = None
+        self._refresh_prompt_panel()
+        try:
+            sent = await self.session.send_prompt_response(
+                prompt_id=prompt.prompt_id,
+                prompt_kind=prompt.prompt_kind,
+                option_id=option_id,
+                value=value,
+            )
+        except Exception as exc:
+            if self._pending_prompt is prompt:
+                prompt.awaiting_response = False
+                self._append_block(f"[error] prompt response: {exc}", role="error")
+                self._refresh_prompt_panel()
+            return
+        if not sent and self._pending_prompt is prompt:
+            prompt.awaiting_response = False
+            self._append_block(
+                "[error] endpoint does not support structured prompts; response not sent",
+                role="error",
+            )
+            self._refresh_prompt_panel()
 
     def _selected_transcript_text(self) -> str | None:
         """Return a selection only when it belongs solely to the transcript."""
@@ -2543,6 +2672,13 @@ class HermesStreamingApp(App):
                 in {VOICE_INTERRUPTED, VOICE_ERROR, VOICE_DISCONNECTED}
             )
             await self._stop_caption_clock()
+            if self._pending_prompt is not None:
+                # Timeout, disconnect, cancellation, or an exception from a
+                # dead socket all end the turn without a prompt_resolved ever
+                # arriving. Whatever the cause, the prompt it belonged to is
+                # gone with it.
+                self._pending_prompt = None
+                self._refresh_prompt_panel()
             diagnostic_logger.debug(
                 "app.turn.finish index=%s transcript_chars=%d connection=%s",
                 index,
@@ -2843,6 +2979,24 @@ class HermesStreamingApp(App):
                 render_assistant()
                 if self.player.active:
                     self._last_tts_text = assistant_text
+            elif kind == "prompt_request":
+                self._pending_prompt = PendingPrompt.from_event(event)
+                self._refresh_prompt_panel()
+            elif kind == "prompt_resolved":
+                if (
+                    self._pending_prompt is not None
+                    and self._pending_prompt.prompt_id == event.get("prompt_id")
+                ):
+                    self._pending_prompt = None
+                    self._refresh_prompt_panel()
+            elif kind == "prompt_response_rejected":
+                if (
+                    self._pending_prompt is not None
+                    and self._pending_prompt.prompt_id == event.get("prompt_id")
+                ):
+                    self._pending_prompt.awaiting_response = False
+                    self._pending_prompt.rejection_reason = str(event.get("reason") or "")
+                    self._refresh_prompt_panel()
             elif kind == "thinking_delta":
                 self._set_voice_state(VOICE_THINKING)
                 if not assistant_started:
@@ -3091,12 +3245,18 @@ class HermesStreamingApp(App):
                 self._set_voice_state(VOICE_ERROR)
                 thinking_activity_active = False
                 self._append_block(f"[error] {event['error']}", role="error")
+                if self._pending_prompt is not None:
+                    self._pending_prompt = None
+                    self._refresh_prompt_panel()
             elif kind == "turn_interrupted":
                 await self._close_player(abort=True)
                 complete_thinking()
                 self.transcript.finish_stream()
                 self._append_block("[interrupted]")
                 self._set_voice_state(VOICE_INTERRUPTED)
+                if self._pending_prompt is not None:
+                    self._pending_prompt = None
+                    self._refresh_prompt_panel()
                 return
             elif kind == "turn_end":
                 complete_thinking()
