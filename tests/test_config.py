@@ -367,6 +367,31 @@ def test_wake_word_settings_are_overridable():
     assert args.wake_barge_in is True
 
 
+def test_sherpa_wake_settings_are_configurable():
+    args = build_arg_parser().parse_args([])
+    assert args.wake_engine == "openwakeword"
+    assert args.wake_phrases is None
+    assert args.wake_keywords_score == 1.0
+    assert args.wake_keywords_threshold == 0.25
+
+    args = build_arg_parser().parse_args(
+        [
+            "--wake-engine",
+            "sherpa",
+            "--wake-phrases",
+            "hey missy, hey skippy, hey spark",
+            "--wake-keywords-score",
+            "1.5",
+            "--wake-keywords-threshold",
+            "0.30",
+        ]
+    )
+    assert args.wake_engine == "sherpa"
+    assert args.wake_phrases == "hey missy, hey skippy, hey spark"
+    assert args.wake_keywords_score == 1.5
+    assert args.wake_keywords_threshold == 0.30
+
+
 # ---- earcons (HOME-10) -----------------------------------------------
 
 

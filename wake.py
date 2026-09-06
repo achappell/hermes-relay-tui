@@ -33,6 +33,9 @@ __all__ = [
     "OPENWAKEWORD_CHUNK_SAMPLES",
     "MissingWakeDependency",
     "load_openwakeword_engine",
+    "load_sherpa_engine",
+    "bundled_model_paths",
+    "bundled_sherpa_model_paths",
     "DEFAULT_THRESHOLD",
     "DEFAULT_CONFIRMATION_FRAMES",
     "DEFAULT_COOLDOWN_SECONDS",
@@ -120,8 +123,20 @@ class WakeDetector:
         self._last_fire = 0.0
         self._has_fired = False
 
-    def feed(self, frame: Any) -> bool:
-        """Score one frame. Returns True exactly on the frame that fires."""
+    def feed(self, frame: Any) -> bool | str:
+        """Score one frame. Returns True or the detected phrase string on fire."""
+        detect_fn = getattr(self._engine, "detect", None)
+        if callable(detect_fn):
+            phrase = detect_fn(frame)
+            if not phrase:
+                return False
+            now = self._now()
+            if self._has_fired and now - self._last_fire < self._cooldown_seconds:
+                return False
+            self._last_fire = now
+            self._has_fired = True
+            return phrase
+
         score = self._engine.score(frame)
         if score < self._threshold:
             self._streak = 0
@@ -342,17 +357,24 @@ class WakeListener:
             # promise one, so ragged frames are re-cut before scoring.
             chunks = self._chunker.push(frame) if self._chunker is not None else [frame]
             for chunk in chunks:
-                if self._detector.feed(chunk):
+                fired = self._detector.feed(chunk)
+                if fired:
                     logger.debug("wake.detected")
-                    self._notify(self._on_wake)
+                    self._notify(self._on_wake, fired)
         except Exception:
             logger.debug("wake scoring failed", exc_info=True)
 
-    def _notify(self, callback: Callable[[], Any] | None) -> None:
+    def _notify(self, callback: Callable[..., Any] | None, *args: Any) -> None:
         if callback is None:
             return
         try:
-            callback()
+            if args:
+                try:
+                    callback(*args)
+                except TypeError:
+                    callback()
+            else:
+                callback()
         except Exception:
             # A broken consumer must not take the listener down with it.
             logger.debug("wake callback failed", exc_info=True)
@@ -516,3 +538,173 @@ class _OpenWakeWordEngine:
         if not predictions:
             return 0.0
         return float(max(predictions.values()))
+
+
+def bundled_sherpa_model_paths() -> dict[str, str]:
+    """Paths to the Sherpa-ONNX model files shipped inside this package.
+
+    Returns an empty dict if the bundle did not survive packaging.
+    """
+    try:
+        import wakewords  # noqa: PLC0415
+    except ImportError:
+        return {}
+
+    if not wakewords.bundled_sherpa_models_present():
+        return {}
+
+    return {
+        "encoder": str(wakewords.SHERPA_ENCODER),
+        "decoder": str(wakewords.SHERPA_DECODER),
+        "joiner": str(wakewords.SHERPA_JOINER),
+        "tokens": str(wakewords.SHERPA_TOKENS),
+        "bpe_model": str(wakewords.SHERPA_BPE),
+    }
+
+
+def load_sherpa_engine(
+    phrases: list[str] | str | None = None,
+    *,
+    encoder_path: str | None = None,
+    decoder_path: str | None = None,
+    joiner_path: str | None = None,
+    tokens_path: str | None = None,
+    bpe_model_path: str | None = None,
+    keywords_score: float = 1.0,
+    keywords_threshold: float = 0.25,
+    num_threads: int = 1,
+    _import_modules: Callable[[], tuple[Any, Any]] | None = None,
+    _bundled: Callable[[], dict[str, str]] | None = None,
+) -> WakeEngine:
+    """Build the Sherpa-ONNX keyword spotting engine, importing it lazily.
+
+    Deferred because sherpa-onnx and sentencepiece live in the optional 'wake'
+    extra: a terminal install must not pull neural-network runtimes.
+    """
+
+    def _default_import() -> tuple[Any, Any]:
+        import sentencepiece as spm  # noqa: PLC0415
+        from sherpa_onnx.keyword_spotter import KeywordSpotter  # noqa: PLC0415
+
+        return KeywordSpotter, spm
+
+    importer = _import_modules or _default_import
+    try:
+        spotter_factory, spm = importer()
+    except ImportError as error:
+        raise MissingWakeDependency(_INSTALL_HINT) from error
+
+    bundled = (_bundled or bundled_sherpa_model_paths)()
+    encoder = encoder_path or bundled.get("encoder")
+    decoder = decoder_path or bundled.get("decoder")
+    joiner = joiner_path or bundled.get("joiner")
+    tokens = tokens_path or bundled.get("tokens")
+    bpe = bpe_model_path or bundled.get("bpe_model")
+
+    if not all((encoder, decoder, joiner, tokens, bpe)):
+        raise MissingWakeDependency(
+            "Bundled Sherpa-ONNX models are missing or incomplete. "
+            + _INSTALL_HINT
+        )
+
+    if isinstance(phrases, str):
+        parsed = [p.strip() for p in phrases.split(",") if p.strip()]
+    elif phrases:
+        parsed = [str(p).strip() for p in phrases if str(p).strip()]
+    else:
+        parsed = ["hey missy", "hey skippy", "hey spark"]
+
+    sp = spm.SentencePieceProcessor()
+    sp.load(str(bpe))
+    lines = []
+    keyword_map: dict[str, str] = {}
+    for p in parsed:
+        pieces = sp.encode_as_pieces(p.upper())
+        if not pieces:
+            continue
+        lines.append(" ".join(pieces))
+        canonical_key = " ".join(p.upper().split())
+        keyword_map[canonical_key] = p
+
+    import os  # noqa: PLC0415
+    import tempfile  # noqa: PLC0415
+
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False) as f:
+        f.write("\n".join(lines) + "\n")
+        kw_file = f.name
+
+    try:
+        spotter = spotter_factory(
+            tokens=str(tokens),
+            encoder=str(encoder),
+            decoder=str(decoder),
+            joiner=str(joiner),
+            keywords_file=kw_file,
+            num_threads=num_threads,
+            keywords_score=keywords_score,
+            keywords_threshold=keywords_threshold,
+        )
+    finally:
+        try:
+            os.unlink(kw_file)
+        except OSError:
+            pass
+
+    return _SherpaOnnxEngine(spotter, keyword_map)
+
+
+class _SherpaOnnxEngine:
+    """Adapts Sherpa-ONNX KeywordSpotter to the WakeEngine interface."""
+
+    def __init__(
+        self,
+        spotter: Any,
+        keyword_map: dict[str, str],
+        sample_rate: float = 16000.0,
+    ) -> None:
+        self._spotter = spotter
+        self._keyword_map = keyword_map
+        self._sample_rate = sample_rate
+        self._stream = self._spotter.create_stream()
+
+    def reset(self) -> None:
+        """Clear the stream state."""
+        self._spotter.reset_stream(self._stream)
+
+    def detect(self, frame: Any) -> str | None:
+        """Feed a frame and return the detected phrase string, if any."""
+        import numpy as np  # noqa: PLC0415
+
+        if not isinstance(frame, np.ndarray):
+            frame = np.asarray(frame)
+        if frame.ndim > 1:
+            frame = frame.reshape(-1)
+        if len(frame) == 0:
+            return None
+
+        if frame.dtype == np.int16:
+            samples = frame.astype(np.float32) / 32768.0
+        elif frame.dtype == np.int32:
+            samples = frame.astype(np.float32) / 2147483648.0
+        elif frame.dtype in (np.float32, np.float64):
+            samples = frame.astype(np.float32)
+            if np.max(np.abs(samples)) > 1.0:
+                samples = samples / 32768.0
+        else:
+            samples = frame.astype(np.float32)
+
+        self._stream.accept_waveform(self._sample_rate, samples)
+
+        while self._spotter.is_ready(self._stream):
+            self._spotter.decode_stream(self._stream)
+            result = self._spotter.get_result(self._stream)
+            if result:
+                self._spotter.reset_stream(self._stream)
+                key = " ".join(result.strip().upper().split())
+                return self._keyword_map.get(key, result.strip().lower())
+
+        return None
+
+    def score(self, frame: Any) -> float:
+        """Compatibility with score-based callers."""
+        return 1.0 if self.detect(frame) else 0.0
