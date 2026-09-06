@@ -14,9 +14,12 @@ questions, and answering them together means answering neither.
     python scripts/fake_relay.py --no-audio        # text only, no speech
     python scripts/fake_relay.py --fail            # every turn returns an error
     python scripts/fake_relay.py --drop            # hang up mid-turn, once
+    python scripts/fake_relay.py --prompt approval # send a structured prompt first
+    python scripts/fake_relay.py --prompt secret --prompt-reject-once
 
-Point the client at it:
+Point a client at it:
 
+    venv/bin/python app.py --url ws://127.0.0.1:8799/voice-session --token stub
     venv/bin/python -m home_display.appliance --wake-enabled \
         --url ws://127.0.0.1:8799/voice-session --token stub
 """
@@ -107,6 +110,7 @@ class FakeRelay:
                                 "protocol_version": 1,
                                 "session_id": payload.get("session_id", "default"),
                                 "chat_id": "stub-chat",
+                                "capabilities": ["structured_prompts"],
                             }
                         )
                     )
@@ -129,6 +133,9 @@ class FakeRelay:
                 json.dumps({"type": "error", "error": "stub relay was told to fail"})
             )
             return
+
+        if self.args.prompt:
+            await self._run_prompt(websocket, turn_id)
 
         await asyncio.sleep(self.args.think)
 
@@ -172,6 +179,88 @@ class FakeRelay:
         await websocket.send(json.dumps({"type": "turn_end", "turn_id": turn_id}))
         print(f"[relay] turn {self.turns} complete")
 
+    async def _run_prompt(self, websocket, turn_id: str) -> None:
+        """Pause the turn on a structured prompt, for testing RELAY-01's TUI.
+
+        Reads directly off the same websocket `handle()` is iterating —
+        safe because `handle()`'s `async for` is suspended on this coroutine
+        for the duration of the call, so there is only ever one reader.
+        """
+        kind = self.args.prompt
+        prompt_id = f"prompt-{self.turns}"
+        if kind in ("approval", "confirm"):
+            options = [{"id": "once", "label": "Allow Once"}, {"id": "deny", "label": "Deny"}]
+            text = (
+                "Allow running the requested command?"
+                if kind == "approval"
+                else "Proceed with this action?"
+            )
+        elif kind == "clarify":
+            options = [{"id": "dfw", "label": "DFW"}, {"id": "dal", "label": "DAL (Love Field)"}]
+            text = "Which airport did you mean?"
+        else:  # sudo / secret
+            options = []
+            text = "Enter the sudo password" if kind == "sudo" else "Enter the API key"
+
+        await websocket.send(
+            json.dumps(
+                {
+                    "type": "prompt_request",
+                    "prompt_id": prompt_id,
+                    "prompt_kind": kind,
+                    "turn_id": turn_id,
+                    "session_id": "default",
+                    "text": text,
+                    "options": options,
+                    "sensitive": kind in ("sudo", "secret"),
+                    "timeout_s": 300,
+                }
+            )
+        )
+        print(f"[relay] prompt_request sent: {kind} — {text!r}")
+
+        rejected_once = False
+        while True:
+            frame = await websocket.recv()
+            if isinstance(frame, bytes):
+                continue
+            response = json.loads(frame)
+            if response.get("type") != "prompt_response":
+                print(f"[relay] ignoring {response.get('type')!r} while awaiting a prompt response")
+                continue
+            print(
+                "[relay] prompt_response received: "
+                f"option_id={response.get('option_id')!r} "
+                f"value={'<redacted>' if 'value' in response else None!r}"
+            )
+            if self.args.prompt_reject_once and not rejected_once:
+                rejected_once = True
+                await websocket.send(
+                    json.dumps(
+                        {
+                            "type": "prompt_response_rejected",
+                            "prompt_id": prompt_id,
+                            "reason": "stub relay rejecting the first attempt",
+                            "session_id": "default",
+                        }
+                    )
+                )
+                print("[relay] rejected the response once, as requested — try again")
+                continue
+            await websocket.send(
+                json.dumps(
+                    {
+                        "type": "prompt_resolved",
+                        "prompt_id": prompt_id,
+                        "prompt_kind": kind,
+                        "status": "accepted",
+                        "session_id": "default",
+                    }
+                )
+            )
+            print("[relay] prompt resolved")
+            return
+
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
@@ -196,6 +285,17 @@ def build_parser() -> argparse.ArgumentParser:
         "--drop",
         action="store_true",
         help="hang up mid-turn on the first turn, to test reconnection",
+    )
+    parser.add_argument(
+        "--prompt",
+        choices=["approval", "confirm", "clarify", "sudo", "secret"],
+        default=None,
+        help="send a structured prompt before replying, to test RELAY-01's TUI",
+    )
+    parser.add_argument(
+        "--prompt-reject-once",
+        action="store_true",
+        help="reject the first prompt_response for each turn, then accept the retry",
     )
     return parser
 
