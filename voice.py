@@ -421,7 +421,7 @@ class AudioRecorder:
         with self._lock:
             self._recording = True
 
-    def _close_stream_with_timeout(self, timeout: float = 3.0) -> None:
+    def _close_stream_with_timeout(self, timeout: float = 0.5) -> None:
         with self._stream_lock:
             stream = self._stream
             reader = self._reader_thread

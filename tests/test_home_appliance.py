@@ -1510,3 +1510,22 @@ async def test_appliance_second_signal_forces_keyboard_interrupt():
         appliance._sigint_count += 1
         if appliance._sigint_count > 1:
             raise KeyboardInterrupt
+
+
+@pytest.mark.asyncio
+async def test_bounded_to_thread_runs_daemon_thread_and_handles_timeout():
+    import threading
+    appliance, state = make_appliance()
+
+    thread_daemon_status: list[bool] = []
+    block_event = threading.Event()
+
+    def slow_func():
+        thread_daemon_status.append(threading.current_thread().daemon)
+        block_event.wait(timeout=1.0)
+
+    # Calling with small timeout should not raise, should log timeout, and use a daemon thread
+    await appliance._bounded_to_thread(slow_func, timeout=0.05)
+    block_event.set()
+    assert thread_daemon_status == [True]
+

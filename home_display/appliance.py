@@ -1029,12 +1029,39 @@ class Appliance:
         *args: Any,
         timeout: float | None = None,
     ) -> None:
+        """Run blocking teardown in a dedicated daemon thread with a hard timeout.
+
+        We intentionally avoid asyncio.to_thread() here because asyncio's
+        default ThreadPoolExecutor uses non-daemon worker threads. If a native
+        audio/PortAudio call hangs or times out, an abandoned ThreadPoolExecutor
+        worker thread will block Python's atexit._python_exit forever, trapping
+        the process at shutdown. A daemon thread ensures interpreter exit is
+        always clean and prompt.
+        """
         if func is None:
             return
         actual_timeout = timeout if timeout is not None else SHUTDOWN_TASK_TIMEOUT
+        loop = asyncio.get_running_loop()
+        future: asyncio.Future[None] = loop.create_future()
+
+        def runner() -> None:
+            try:
+                func(*args)
+            except Exception as exc:
+                if not future.done():
+                    loop.call_soon_threadsafe(future.set_exception, exc)
+                return
+            if not future.done():
+                loop.call_soon_threadsafe(future.set_result, None)
+
+        thread = threading.Thread(
+            target=runner,
+            name=f"appliance-teardown-{getattr(func, '__name__', 'worker')}",
+            daemon=True,
+        )
+        thread.start()
         try:
-            task = asyncio.create_task(asyncio.to_thread(func, *args))
-            await asyncio.wait_for(asyncio.shield(task), actual_timeout)
+            await asyncio.wait_for(future, actual_timeout)
         except asyncio.TimeoutError:
             logger.warning(
                 "appliance.shutdown.timeout operation=%s",
@@ -1046,6 +1073,7 @@ class Appliance:
                 getattr(func, "__name__", str(func)),
                 exc_info=True,
             )
+
 
     async def run(self) -> None:
         self._loop = asyncio.get_running_loop()
