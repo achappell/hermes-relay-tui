@@ -919,7 +919,18 @@ class Appliance:
             kwargs["capture"] = self._capture_voice
             kwargs["route_wake"] = self._route_wake
 
-        built = self._build_hands_free(self._session, self.args, **kwargs)
+        hands_free_args = self.args
+        if getattr(self.args, "wake_phrases", None) is None:
+            all_phrases = []
+            for prof in self._profiles:
+                all_phrases.extend(prof.wake_phrases)
+            if all_phrases:
+                import copy
+
+                hands_free_args = copy.copy(self.args)
+                hands_free_args.wake_phrases = tuple(all_phrases)
+
+        built = self._build_hands_free(self._session, hands_free_args, **kwargs)
         if built is None:
             raise RuntimeError(
                 "The appliance is a hands-free unit: enable the wake word with "
