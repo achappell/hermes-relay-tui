@@ -103,3 +103,66 @@ async def test_session_does_not_claim_interrupt_support_when_capability_is_absen
     assert session.supports_interrupt is False
     assert await session.interrupt_active_turn() is False
     assert len(websocket.sent) == 1
+
+
+async def test_session_exposes_structured_prompt_capability_and_sends_response(
+    monkeypatch,
+):
+    websocket = FakeWebSocket(
+        [
+            json.dumps(
+                {
+                    "type": "hello_ack",
+                    "chat_id": "chat",
+                    "capabilities": ["text_stream", "structured_prompts"],
+                }
+            )
+        ]
+    )
+    monkeypatch.setattr(
+        config,
+        "connect_factory",
+        lambda: lambda *args, **kwargs: FakeContextManager(websocket),
+    )
+    session = HermesSession(make_args())
+
+    await session.connect()
+
+    assert session.supports_structured_prompts is True
+    assert await session.send_prompt_response(
+        prompt_id="prompt-1",
+        prompt_kind="approval",
+        option_id="once",
+        reason="one-time access",
+    ) is True
+    assert json.loads(websocket.sent[-1]) == {
+        "type": "prompt_response",
+        "protocol_version": 1,
+        "prompt_id": "prompt-1",
+        "prompt_kind": "approval",
+        "session_id": "session",
+        "option_id": "once",
+        "reason": "one-time access",
+    }
+
+
+async def test_session_does_not_send_prompt_response_without_capability(monkeypatch):
+    websocket = FakeWebSocket(
+        [json.dumps({"type": "hello_ack", "chat_id": "chat", "capabilities": []})]
+    )
+    monkeypatch.setattr(
+        config,
+        "connect_factory",
+        lambda: lambda *args, **kwargs: FakeContextManager(websocket),
+    )
+    session = HermesSession(make_args())
+
+    await session.connect()
+
+    assert session.supports_structured_prompts is False
+    assert await session.send_prompt_response(
+        prompt_id="prompt-1",
+        prompt_kind="secret",
+        value="should-not-send",
+    ) is False
+    assert len(websocket.sent) == 1

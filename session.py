@@ -14,7 +14,7 @@ import uuid
 from typing import Any, AsyncIterator, Protocol
 
 import config
-from client import send_hello, send_interrupt, send_turn
+from client import send_hello, send_interrupt, send_prompt_response, send_turn
 from diagnostics import logger as diagnostic_logger, summarize_text
 from mic import (
     LocalMicrophone,
@@ -34,7 +34,20 @@ class SessionProtocol(Protocol):
 
     def is_connected(self) -> bool: ...
 
+    @property
+    def supports_structured_prompts(self) -> bool: ...
+
     def send_turn(self, text: str, *, stt_source: str = "local") -> AsyncIterator[dict[str, Any]]: ...
+
+    async def send_prompt_response(
+        self,
+        *,
+        prompt_id: str,
+        prompt_kind: str,
+        option_id: str | None = None,
+        value: str | None = None,
+        reason: str | None = None,
+    ) -> bool: ...
 
     async def interrupt_active_turn(self) -> bool: ...
 
@@ -67,6 +80,11 @@ class HermesSession:
     def supports_interrupt(self) -> bool:
         """Whether the connected endpoint advertised remote interruption."""
         return "interrupt" in self._capabilities
+
+    @property
+    def supports_structured_prompts(self) -> bool:
+        """Whether the endpoint can pause a turn for a typed prompt."""
+        return "structured_prompts" in self._capabilities
 
     def use_shared_recorder(self, recorder: Any) -> None:
         """Capture through a recorder somebody else already opened.
@@ -187,6 +205,33 @@ class HermesSession:
             turn_id=turn_id,
         )
         self._interrupt_sent_for_turn = turn_id
+        return True
+
+    async def send_prompt_response(
+        self,
+        *,
+        prompt_id: str,
+        prompt_kind: str,
+        option_id: str | None = None,
+        value: str | None = None,
+        reason: str | None = None,
+    ) -> bool:
+        """Answer a server prompt through the active turn's reader.
+
+        Prompt events are received by ``send_turn``. This method only writes
+        the response, preserving the single-reader websocket invariant.
+        """
+        if not self.is_connected() or not self.supports_structured_prompts:
+            return False
+        await send_prompt_response(
+            self.ws,
+            session_id=self.args.session_id,
+            prompt_id=prompt_id,
+            prompt_kind=prompt_kind,
+            option_id=option_id,
+            value=value,
+            reason=reason,
+        )
         return True
 
     def capture_voice(self, *, wait_timeout: float | None = None) -> str:
