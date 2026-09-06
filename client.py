@@ -141,6 +141,48 @@ async def send_interrupt(ws: Any, *, session_id: str, turn_id: str) -> None:
     )
 
 
+async def send_prompt_response(
+    ws: Any,
+    *,
+    session_id: str,
+    prompt_id: str,
+    prompt_kind: str,
+    option_id: Optional[str] = None,
+    value: Optional[str] = None,
+    reason: Optional[str] = None,
+) -> None:
+    """Answer one structured prompt without opening a second reader.
+
+    The value is intentionally never included in the diagnostic line. This
+    function is also used for masked sudo and secret responses, whose contents
+    must remain between the websocket and the waiting gateway operation.
+    """
+    payload: dict[str, Any] = {
+        "type": "prompt_response",
+        "protocol_version": 1,
+        "prompt_id": prompt_id,
+        "prompt_kind": prompt_kind,
+        "session_id": session_id,
+    }
+    if option_id is not None:
+        payload["option_id"] = option_id
+    if value is not None:
+        payload["value"] = value
+    if reason is not None:
+        payload["reason"] = reason
+    logger.debug(
+        "prompt_response.send prompt_id=%s prompt_kind=%s option_id=%s "
+        "value=%s reason=%s session_id=%s",
+        prompt_id,
+        prompt_kind,
+        summarize_text(option_id),
+        summarize_text(value),
+        summarize_text(reason),
+        session_id,
+    )
+    await ws.send(json.dumps(payload))
+
+
 async def send_turn(
     ws: Any,
     *,
@@ -225,7 +267,7 @@ async def send_turn(
         frame_turn_id = event_payload.get("turn_id")
         if frame_turn_id is None and event_payload is not payload:
             frame_turn_id = payload.get("turn_id")
-        if frame_turn_id is not None and str(frame_turn_id) != turn_id:
+        if frame_turn_id not in (None, "") and str(frame_turn_id) != turn_id:
             logger.debug(
                 "frame.stale index=%d kind=%s expected_turn_id=%s frame_turn_id=%s",
                 frame_index,
@@ -237,6 +279,58 @@ async def send_turn(
 
         if kind == "turn_accepted":
             continue
+        elif kind == "prompt_request":
+            options = event_payload.get("options")
+            if not isinstance(options, list):
+                options = []
+            normalized_options = [
+                dict(option) for option in options if isinstance(option, dict)
+            ]
+            prompt_turn_id = event_payload.get("turn_id")
+            if prompt_turn_id is None:
+                prompt_turn_id = turn_id
+            try:
+                timeout_s = int(event_payload.get("timeout_s", 300))
+            except (TypeError, ValueError):
+                timeout_s = 300
+            yield {
+                "type": "prompt_request",
+                "prompt_id": str(event_payload.get("prompt_id") or ""),
+                "prompt_kind": str(event_payload.get("prompt_kind") or ""),
+                "turn_id": str(prompt_turn_id),
+                "session_id": str(
+                    event_payload.get("session_id")
+                    or payload.get("session_id")
+                    or session_id
+                ),
+                "text": str(event_payload.get("text") or ""),
+                "options": normalized_options,
+                "sensitive": bool(event_payload.get("sensitive", False)),
+                "timeout_s": timeout_s,
+            }
+        elif kind == "prompt_resolved":
+            yield {
+                "type": "prompt_resolved",
+                "prompt_id": str(event_payload.get("prompt_id") or ""),
+                "prompt_kind": str(event_payload.get("prompt_kind") or ""),
+                "status": str(event_payload.get("status") or ""),
+                "session_id": str(
+                    event_payload.get("session_id")
+                    or payload.get("session_id")
+                    or session_id
+                ),
+            }
+        elif kind == "prompt_response_rejected":
+            yield {
+                "type": "prompt_response_rejected",
+                "prompt_id": str(event_payload.get("prompt_id") or ""),
+                "reason": str(event_payload.get("reason") or ""),
+                "session_id": str(
+                    event_payload.get("session_id")
+                    or payload.get("session_id")
+                    or session_id
+                ),
+            }
         elif kind in {"text_delta", "message.delta"}:
             draft_id = event_payload.get("draft_id")
             if (

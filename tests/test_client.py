@@ -3,7 +3,13 @@ import logging
 
 import pytest
 
-from client import ProtocolError, send_hello, send_interrupt, send_turn
+from client import (
+    ProtocolError,
+    send_hello,
+    send_interrupt,
+    send_prompt_response,
+    send_turn,
+)
 
 
 class FakeWebSocket:
@@ -65,6 +71,50 @@ async def test_send_interrupt_sends_the_active_turn_frame():
     }
 
 
+async def test_send_prompt_response_sends_only_present_response_fields():
+    ws = FakeWebSocket([])
+
+    await send_prompt_response(
+        ws,
+        session_id="s1",
+        prompt_id="prompt-7",
+        prompt_kind="approval",
+        option_id="once",
+        reason="one-time access",
+    )
+
+    assert json.loads(ws.sent[0]) == {
+        "type": "prompt_response",
+        "protocol_version": 1,
+        "prompt_id": "prompt-7",
+        "prompt_kind": "approval",
+        "session_id": "s1",
+        "option_id": "once",
+        "reason": "one-time access",
+    }
+
+
+async def test_send_prompt_response_can_cancel_a_sensitive_prompt():
+    ws = FakeWebSocket([])
+
+    await send_prompt_response(
+        ws,
+        session_id="s1",
+        prompt_id="prompt-secret",
+        prompt_kind="secret",
+        value="",
+    )
+
+    assert json.loads(ws.sent[0]) == {
+        "type": "prompt_response",
+        "protocol_version": 1,
+        "prompt_id": "prompt-secret",
+        "prompt_kind": "secret",
+        "session_id": "s1",
+        "value": "",
+    }
+
+
 async def test_send_turn_yields_text_deltas_and_turn_end():
     frames = [
         json.dumps({"type": "turn_accepted"}),
@@ -80,6 +130,130 @@ async def test_send_turn_yields_text_deltas_and_turn_end():
     assert kinds == ["text_delta", "text_delta", "turn_end"]
     assert events[0]["text"] == "Hel"
     assert events[1]["text"] == "lo"  # only the new suffix is yielded
+
+
+async def test_send_turn_normalizes_structured_prompt_request_and_resolution():
+    frames = [
+        json.dumps(
+            {
+                "type": "prompt_request",
+                "prompt_id": "prompt-1",
+                "prompt_kind": "approval",
+                "turn_id": "turn-1",
+                "session_id": "s1",
+                "text": "Command approval required",
+                "options": [
+                    {"id": "once", "label": "Allow Once", "style": "primary"},
+                    {"id": "deny", "label": "Deny", "style": "danger"},
+                ],
+                "sensitive": False,
+                "timeout_s": 300,
+            }
+        ),
+        json.dumps(
+            {
+                "type": "prompt_resolved",
+                "prompt_id": "prompt-1",
+                "prompt_kind": "approval",
+                "status": "accepted",
+                "session_id": "s1",
+            }
+        ),
+        json.dumps({"type": "turn_end", "turn_id": "turn-1"}),
+    ]
+
+    ws = FakeWebSocket(frames)
+    events = [
+        event
+        async for event in send_turn(
+            ws, session_id="s1", text="hi", stt_source="local", turn_id="turn-1"
+        )
+    ]
+
+    assert events == [
+        {
+            "type": "prompt_request",
+            "prompt_id": "prompt-1",
+            "prompt_kind": "approval",
+            "turn_id": "turn-1",
+            "session_id": "s1",
+            "text": "Command approval required",
+            "options": [
+                {"id": "once", "label": "Allow Once", "style": "primary"},
+                {"id": "deny", "label": "Deny", "style": "danger"},
+            ],
+            "sensitive": False,
+            "timeout_s": 300,
+        },
+        {
+            "type": "prompt_resolved",
+            "prompt_id": "prompt-1",
+            "prompt_kind": "approval",
+            "status": "accepted",
+            "session_id": "s1",
+        },
+        {"type": "turn_end", "turn_id": "turn-1"},
+    ]
+
+
+async def test_send_turn_normalizes_sensitive_prompt_without_echoing_a_value(caplog):
+    caplog.set_level(logging.DEBUG, logger="hermes_relay_tui.client")
+    secret = "super-secret-value"
+    ws = FakeWebSocket([])
+    await send_prompt_response(
+        ws,
+        session_id="s1",
+        prompt_id="secret-1",
+        prompt_kind="secret",
+        value=secret,
+    )
+    assert json.loads(ws.sent[0])["value"] == secret
+    events = await collect(
+        [
+            json.dumps(
+                {
+                    "type": "prompt_request",
+                    "prompt_id": "secret-1",
+                    "prompt_kind": "secret",
+                    "turn_id": "",
+                    "session_id": "s1",
+                    "text": "Enter the API key",
+                    "options": [],
+                    "sensitive": True,
+                    "timeout_s": 300,
+                }
+            ),
+            json.dumps(
+                {
+                    "type": "prompt_response_rejected",
+                    "prompt_id": "secret-1",
+                    "reason": "value_required",
+                    "session_id": "s1",
+                }
+            ),
+            json.dumps({"type": "turn_end"}),
+        ]
+    )
+
+    assert events[0] == {
+        "type": "prompt_request",
+        "prompt_id": "secret-1",
+        "prompt_kind": "secret",
+        "turn_id": "",
+        "session_id": "s1",
+        "text": "Enter the API key",
+        "options": [],
+        "sensitive": True,
+        "timeout_s": 300,
+    }
+    assert events[1] == {
+        "type": "prompt_response_rejected",
+        "prompt_id": "secret-1",
+        "reason": "value_required",
+        "session_id": "s1",
+    }
+    messages = "\n".join(record.message for record in caplog.records)
+    assert secret not in messages
 
 
 async def test_message_delta_without_rendered_preview_is_append_only():
