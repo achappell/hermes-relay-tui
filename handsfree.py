@@ -295,6 +295,7 @@ def build_hands_free(
     acknowledge: Callable[[], Any] | None = None,
     capture_finished: Callable[[], Any] | None = None,
     _load_engine: Callable[[str | None], Any] | None = None,
+    _load_sherpa_engine: Callable[..., Any] | None = None,
 ):
     """Assemble the hands-free loop for a front end, or None when disabled.
 
@@ -315,7 +316,14 @@ def build_hands_free(
     engine_name = getattr(args, "wake_engine", "openwakeword")
     wake_phrases = getattr(args, "wake_phrases", None)
 
-    if _load_engine is not None:
+    if _load_sherpa_engine is not None:
+        phrases = wake_phrases or wake.DEFAULT_SHERPA_PHRASES
+        engine = _load_sherpa_engine(
+            phrases,
+            keywords_score=getattr(args, "wake_keywords_score", 1.0),
+            keywords_threshold=getattr(args, "wake_keywords_threshold", 0.25),
+        )
+    elif _load_engine is not None and not (engine_name == "sherpa" or wake_phrases):
         engine = _load_engine(getattr(args, "wake_model", None))
     elif engine_name == "sherpa" or wake_phrases:
         phrases = wake_phrases or wake.DEFAULT_SHERPA_PHRASES

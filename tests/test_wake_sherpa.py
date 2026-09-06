@@ -1,11 +1,13 @@
 """Tests for Sherpa-ONNX keyword spotting and wake word routing.
 
-Tests both mocked engine logic (fast unit tests) and real bundled model
-keyword detection with offline audio.
+Tests both mocked engine logic (fast unit tests that run without the optional
+'wake' extra in CI) and real bundled model keyword detection when the extra
+is installed.
 """
 
 from __future__ import annotations
 
+import importlib.util
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 import numpy as np
@@ -14,6 +16,11 @@ import pytest
 import handsfree
 import wake
 import wakewords
+
+has_sherpa = (
+    importlib.util.find_spec("sherpa_onnx") is not None
+    and importlib.util.find_spec("sentencepiece") is not None
+)
 
 
 class FakeDetectEngine:
@@ -42,6 +49,27 @@ class FakeClock:
 
     def advance(self, seconds: float):
         self.value += seconds
+
+
+class FakeSpotterFactory:
+    def __init__(self, **kwargs):
+        self.kwargs = kwargs
+        self.resets = 0
+
+    def create_stream(self):
+        return "stream"
+
+    def reset_stream(self, stream):
+        self.resets += 1
+
+
+class FakeSentencePiece:
+    class SentencePieceProcessor:
+        def load(self, model_file):
+            pass
+
+        def encode_as_pieces(self, text):
+            return text.split()
 
 
 def test_wake_detector_returns_detected_phrase():
@@ -127,6 +155,59 @@ def test_load_sherpa_engine_missing_models_raises():
         wake.load_sherpa_engine(_bundled=dict)
 
 
+def test_load_sherpa_engine_with_mock_modules():
+    engine = wake.load_sherpa_engine(
+        ["hey missy", "hey skippy"],
+        _import_modules=lambda: (FakeSpotterFactory, FakeSentencePiece),
+    )
+    assert isinstance(engine, wake._SherpaOnnxEngine)
+    assert set(engine._keyword_map.keys()) == {"HEY MISSY", "HEY SKIPPY"}
+
+
+def test_load_sherpa_engine_defaults_to_hey_hermes():
+    engine = wake.load_sherpa_engine(
+        _import_modules=lambda: (FakeSpotterFactory, FakeSentencePiece),
+    )
+    assert list(engine._keyword_map.values()) == ["hey hermes"]
+
+
+def test_build_hands_free_selects_sherpa_when_configured():
+    session = SimpleNamespace(send_turn=MagicMock(), capture_voice=MagicMock())
+    args = SimpleNamespace(
+        wake_enabled=True,
+        wake_engine="sherpa",
+        wake_phrases="hey missy, hey skippy, hey spark",
+        wake_keywords_score=1.0,
+        wake_keywords_threshold=0.25,
+    )
+
+    listener, coordinator = handsfree.build_hands_free(
+        session,
+        args,
+        _load_sherpa_engine=lambda phrases, **kw: FakeDetectEngine(phrases),
+    )
+    assert listener is not None
+    assert coordinator is not None
+    assert isinstance(listener._detector._engine, FakeDetectEngine)
+
+
+def test_build_hands_free_selects_sherpa_when_phrases_provided():
+    session = SimpleNamespace(send_turn=MagicMock(), capture_voice=MagicMock())
+    args = SimpleNamespace(
+        wake_enabled=True,
+        wake_engine="openwakeword",
+        wake_phrases="hey missy",
+    )
+
+    listener, coordinator = handsfree.build_hands_free(
+        session,
+        args,
+        _load_sherpa_engine=lambda phrases, **kw: FakeDetectEngine(phrases),
+    )
+    assert isinstance(listener._detector._engine, FakeDetectEngine)
+
+
+@pytest.mark.skipif(not has_sherpa, reason="Requires optional 'wake' extra installed")
 def test_load_sherpa_engine_initializes_with_bundled_models():
     """Verify loading the bundled models creates a working engine with custom phrases."""
     engine = wake.load_sherpa_engine(
@@ -144,38 +225,3 @@ def test_load_sherpa_engine_initializes_with_bundled_models():
     assert engine.score(silence) == 0.0
 
     engine.reset()
-
-
-def test_build_hands_free_selects_sherpa_when_configured():
-    session = SimpleNamespace(send_turn=MagicMock(), capture_voice=MagicMock())
-    args = SimpleNamespace(
-        wake_enabled=True,
-        wake_engine="sherpa",
-        wake_phrases="hey missy, hey skippy, hey spark",
-        wake_keywords_score=1.0,
-        wake_keywords_threshold=0.25,
-    )
-
-    listener, coordinator = handsfree.build_hands_free(session, args)
-    assert listener is not None
-    assert coordinator is not None
-    assert isinstance(listener._detector._engine, wake._SherpaOnnxEngine)
-
-
-def test_build_hands_free_selects_sherpa_when_phrases_provided():
-    session = SimpleNamespace(send_turn=MagicMock(), capture_voice=MagicMock())
-    args = SimpleNamespace(
-        wake_enabled=True,
-        wake_engine="openwakeword",
-        wake_phrases="hey missy",
-    )
-
-    listener, coordinator = handsfree.build_hands_free(session, args)
-    assert isinstance(listener._detector._engine, wake._SherpaOnnxEngine)
-
-
-def test_load_sherpa_engine_defaults_to_hey_hermes():
-    engine = wake.load_sherpa_engine()
-    assert "HEY HERMES" in engine._keyword_map
-    assert engine._keyword_map["HEY HERMES"] == "hey hermes"
-
