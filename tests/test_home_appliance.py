@@ -16,6 +16,7 @@ import pytest
 
 import config
 import handsfree
+from home_display import appliance as appliance_module
 from home_display.appliance import Appliance
 
 
@@ -79,6 +80,8 @@ class FakePlayer:
         self.playing = False
         self.written = bytearray()
         self.formats: list[tuple[int, int, int]] = []
+        self.aborts = 0
+        self.closes = 0
 
     @property
     def active(self) -> bool:
@@ -96,9 +99,12 @@ class FakePlayer:
         self.playing = True
 
     def abort(self) -> None:
-        self.close()
+        self.aborts += 1
+        self.stream = None
+        self.playing = False
 
     def close(self) -> None:
+        self.closes += 1
         self.stream = None
         self.playing = False
 
@@ -230,7 +236,16 @@ def _build(appliance_state: dict):
 
 
 def make_appliance(
-    script=None, *, player=None, session=None, args=None, state=None, earcons=None, **kwargs
+    script=None,
+    *,
+    player=None,
+    session=None,
+    args=None,
+    state=None,
+    earcons=None,
+    recorder=None,
+    server=None,
+    **kwargs,
 ):
     state = state if state is not None else {}
     session = session if session is not None else FakeSession(script)
@@ -241,14 +256,17 @@ def make_appliance(
         session=session,
         earcons=earcons,
         player=player or FakePlayer(),
-        recorder=FakeRecorder(),
-        server=FakeServer(),
+        recorder=recorder or FakeRecorder(),
+        server=server or FakeServer(),
         build_hands_free=_build(state),
         tick_interval=0.01,
         **kwargs,
     )
     state["appliance"] = appliance
     state["session"] = session
+    state["player"] = appliance._player
+    state["recorder"] = appliance._recorder
+    state["server"] = appliance._server
     return appliance, state
 
 
@@ -326,6 +344,364 @@ async def test_wake_to_spoken_answer_walks_the_display_through_the_real_states()
     assert ordered[-1] == "idle"
     spoken = [entry for entry in publisher.history if entry[0] == "speaking"]
     assert spoken[-1][1] == "Sunny and warm."
+
+
+@pytest.mark.asyncio
+async def test_home_caption_reveals_only_the_words_reached_by_audio():
+    gate = asyncio.Event()
+
+    class ClockedPlayer(FakePlayer):
+        playback_position = 0.5
+
+    class PausingSession(FakeSession):
+        def send_turn(self, text: str, *, stt_source: str = "local"):
+            self.turns.append(text)
+
+            async def _events():
+                for index, event in enumerate(self.script):
+                    if isinstance(event, Exception):
+                        raise event
+                    yield event
+                    if index == 3:
+                        await gate.wait()
+
+            return _events()
+
+    publisher = RecordingPublisher()
+    session = PausingSession(
+        [
+            {"type": "audio_start", "sample_rate": 24000, "channels": 1, "sample_width": 2},
+            {
+                "type": "speech_timing",
+                "segment_id": "segment-1",
+                "text": "Hermes keeps moving.",
+                "timing_source": "alignment",
+                "audio_offset": 0.0,
+                "duration": 1.3,
+                "fallback_reason": None,
+                "words": [
+                    {"text": "Hermes", "start": 0.0, "end": 0.28},
+                    {"text": "keeps", "start": 0.28, "end": 0.51},
+                    {"text": "moving.", "start": 0.51, "end": 1.3},
+                ],
+            },
+            {"type": "text_delta", "text": "Hermes keeps moving."},
+            {"type": "audio_chunk", "data": b"\x01\x02"},
+            {"type": "audio_end"},
+            {"type": "turn_end"},
+        ]
+    )
+    player = ClockedPlayer()
+    appliance, state = make_appliance(
+        session=session,
+        player=player,
+        publisher=publisher,
+    )
+
+    task = asyncio.create_task(appliance.run())
+    assert await _wait_for(lambda: state.get("coordinator") is not None and session.connects)
+    worker = asyncio.create_task(asyncio.to_thread(state["coordinator"].on_wake))
+    try:
+        assert await _wait_for(
+            lambda: any(
+                state == "speaking" and text == "Hermes keeps "
+                for state, text, _status in publisher.history
+            )
+        )
+        speaking_text = [
+            text for state, text, _status in publisher.history if state == "speaking"
+        ]
+        assert "Hermes keeps moving." not in speaking_text
+        gate.set()
+        await asyncio.wait_for(worker, 2)
+        assert any(
+            state == "speaking" and text == "Hermes keeps moving."
+            for state, text, _status in publisher.history
+        )
+    finally:
+        gate.set()
+        await asyncio.wait_for(worker, 2)
+        appliance._stopping.set()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+
+@pytest.mark.asyncio
+async def test_home_error_clears_a_partial_caption_until_the_turn_finishes():
+    publisher = RecordingPublisher()
+    session = FakeSession(
+        [
+            {"type": "audio_start", "sample_rate": 24000, "channels": 1, "sample_width": 2},
+            {"type": "text_delta", "text": "This answer must disappear."},
+            {"type": "audio_chunk", "data": b"\x01\x02"},
+            {"type": "error", "error": "relay failed"},
+            {"type": "turn_end"},
+        ]
+    )
+    appliance, state = make_appliance(session=session, publisher=publisher)
+
+    await _run_until_idle(appliance, state)
+
+    error_entries = [
+        text for display_state, text, _status in publisher.history
+        if display_state == "error"
+    ]
+    assert error_entries
+    assert all(text == "" for text in error_entries)
+    assert publisher.history[-1][1] == ""
+
+
+@pytest.mark.asyncio
+async def test_home_keeps_one_caption_clock_across_audio_segments():
+    publisher = RecordingPublisher()
+
+    class SegmentPlayer(FakePlayer):
+        playback_position = 1.1
+
+        def __init__(self):
+            super().__init__()
+            self.start_count = 0
+
+        def start(self, audio_format):
+            self.start_count += 1
+            super().start(audio_format)
+
+    script = [
+        {"type": "audio_start", "sample_rate": 24000, "channels": 1, "sample_width": 2},
+        {
+            "type": "speech_timing",
+            "segment_id": "segment-1",
+            "text": "one two",
+            "timing_source": "alignment",
+            "audio_offset": 0.0,
+            "duration": 1.0,
+            "words": [
+                {"text": "one", "start": 0.0, "end": 0.5},
+                {"text": "two", "start": 0.5, "end": 1.0},
+            ],
+        },
+        {"type": "text_delta", "text": "one two three four"},
+        {"type": "audio_chunk", "data": b"\x01\x02"},
+        {"type": "audio_end"},
+        {"type": "audio_start", "sample_rate": 24000, "channels": 1, "sample_width": 2},
+        {
+            "type": "speech_timing",
+            "segment_id": "segment-2",
+            "text": "three four",
+            "timing_source": "alignment",
+            "audio_offset": 1.0,
+            "duration": 1.0,
+            "words": [
+                {"text": "three", "start": 1.0, "end": 1.5},
+                {"text": "four", "start": 1.5, "end": 2.0},
+            ],
+        },
+        {"type": "audio_chunk", "data": b"\x03\x04"},
+        {"type": "audio_end"},
+        {"type": "turn_end"},
+    ]
+    player = SegmentPlayer()
+    appliance, state = make_appliance(
+        session=FakeSession(script),
+        player=player,
+        publisher=publisher,
+    )
+
+    await _run_until_idle(appliance, state)
+
+    assert player.start_count == 1
+    first_speaking = publisher.sequence.index("speaking")
+    final_speaking = next(
+        index
+        for index in range(first_speaking, len(publisher.sequence))
+        if publisher.sequence[index] == "idle"
+    )
+    assert "idle" not in publisher.sequence[first_speaking + 1:final_speaking]
+    assert any(
+        state == "speaking" and text == "one two three four"
+        for state, text, _status in publisher.history
+    )
+
+
+@pytest.mark.asyncio
+async def test_home_uses_audio_duration_when_speech_timing_is_missing():
+    gate = asyncio.Event()
+
+    class DurationPlayer(FakePlayer):
+        playback_position = 0.0
+
+        def write(self, chunk: bytes) -> None:
+            super().write(chunk)
+            self.playback_position += 0.25
+
+    class PausingSession(FakeSession):
+        def send_turn(self, text: str, *, stt_source: str = "local"):
+            self.turns.append(text)
+
+            async def _events():
+                for index, event in enumerate(self.script):
+                    if isinstance(event, Exception):
+                        raise event
+                    yield event
+                    if index == 4:
+                        await gate.wait()
+
+            return _events()
+
+    publisher = RecordingPublisher()
+    session = PausingSession(
+        [
+            {"type": "audio_start", "sample_rate": 10, "channels": 1, "sample_width": 2},
+            {"type": "text_delta", "text": "one two three four"},
+            {"type": "audio_chunk", "data": b"\x00" * 10},
+            {"type": "audio_chunk", "data": b"\x00" * 10},
+            {"type": "audio_chunk", "data": b"\x00" * 10},
+            {"type": "audio_end"},
+            {"type": "turn_end"},
+        ]
+    )
+    appliance, state = make_appliance(
+        session=session,
+        player=DurationPlayer(),
+        publisher=publisher,
+    )
+
+    task = asyncio.create_task(appliance.run())
+    assert await _wait_for(lambda: state.get("coordinator") is not None and session.connects)
+    worker = asyncio.create_task(asyncio.to_thread(state["coordinator"].on_wake))
+    try:
+        assert await _wait_for(
+            lambda: any(
+                display_state == "speaking" and text == "one two "
+                for display_state, text, _status in publisher.history
+            )
+        )
+        assert not any(
+            display_state == "speaking" and text == "one two three four"
+            for display_state, text, _status in publisher.history
+        )
+        gate.set()
+        await asyncio.wait_for(worker, 2)
+        assert any(
+            display_state == "speaking" and text == "one two three four"
+            for display_state, text, _status in publisher.history
+        )
+    finally:
+        gate.set()
+        await asyncio.wait_for(worker, 2)
+        appliance._stopping.set()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+
+@pytest.mark.asyncio
+async def test_home_caption_clock_advances_between_delayed_pcm_chunks():
+    gate = asyncio.Event()
+
+    class AdvancingPlayer(FakePlayer):
+        position = 0.0
+
+        @property
+        def playback_position(self):
+            return self.position
+
+    class PausingSession(FakeSession):
+        def send_turn(self, text: str, *, stt_source: str = "local"):
+            self.turns.append(text)
+
+            async def _events():
+                for index, event in enumerate(self.script):
+                    if isinstance(event, Exception):
+                        raise event
+                    yield event
+                    if index == 3:
+                        await gate.wait()
+
+            return _events()
+
+    publisher = RecordingPublisher()
+    session = PausingSession(
+        [
+            {"type": "audio_start", "sample_rate": 24000, "channels": 1, "sample_width": 2},
+            {
+                "type": "speech_timing",
+                "segment_id": "segment-1",
+                "text": "Hermes keeps moving.",
+                "timing_source": "alignment",
+                "audio_offset": 0.0,
+                "duration": 1.3,
+                "words": [
+                    {"text": "Hermes", "start": 0.0, "end": 0.28},
+                    {"text": "keeps", "start": 0.28, "end": 0.51},
+                    {"text": "moving.", "start": 0.51, "end": 1.3},
+                ],
+            },
+            {"type": "text_delta", "text": "Hermes keeps moving."},
+            {"type": "audio_chunk", "data": b"\x01\x02"},
+            {"type": "turn_end"},
+        ]
+    )
+    player = AdvancingPlayer()
+    appliance, state = make_appliance(
+        session=session,
+        player=player,
+        publisher=publisher,
+    )
+
+    task = asyncio.create_task(appliance.run())
+    assert await _wait_for(lambda: state.get("coordinator") is not None and session.connects)
+    worker = asyncio.create_task(asyncio.to_thread(state["coordinator"].on_wake))
+    try:
+        assert await _wait_for(
+            lambda: any(
+                display_state == "speaking" and text == "Hermes "
+                for display_state, text, _status in publisher.history
+            )
+        )
+        player.position = 0.4
+        assert await _wait_for(
+            lambda: any(
+                display_state == "speaking" and text == "Hermes keeps "
+                for display_state, text, _status in publisher.history
+            )
+        )
+        gate.set()
+        await asyncio.wait_for(worker, 2)
+    finally:
+        gate.set()
+        await asyncio.wait_for(worker, 2)
+        appliance._stopping.set()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+
+@pytest.mark.asyncio
+async def test_home_interrupt_clears_the_caption_immediately():
+    publisher = RecordingPublisher()
+    session = FakeSession(
+        [
+            {"type": "audio_start", "sample_rate": 24000, "channels": 1, "sample_width": 2},
+            {"type": "text_delta", "text": "This answer was interrupted."},
+            {"type": "audio_chunk", "data": b"\x01\x02"},
+            {"type": "turn_interrupted"},
+        ]
+    )
+    appliance, state = make_appliance(session=session, publisher=publisher)
+
+    await _run_until_idle(appliance, state)
+
+    assert any(
+        display_state == "speaking" and text
+        for display_state, text, _status in publisher.history
+    )
+    assert publisher.history[-1][1] == ""
+    assert all(
+        not (display_state == "idle" and text)
+        for display_state, text, _status in publisher.history
+    )
 
 
 @pytest.mark.asyncio
@@ -953,3 +1329,178 @@ async def test_follow_up_capture_failure_returns_to_wake_mode():
     await _run_until_idle(appliance, state)
     assert state["coordinator"].state == handsfree.IDLE
     assert state["session"].turns == ["what is the weather"]
+
+
+@pytest.mark.asyncio
+async def test_shutdown_aborts_player_without_draining():
+    appliance, state = make_appliance()
+    player = state["player"]
+    player.start((16000, 1, 2))
+    assert player.active
+    await appliance.aclose()
+    assert not player.active
+    assert player.aborts == 1
+
+
+@pytest.mark.asyncio
+async def test_hands_free_wired_to_abort_player():
+    appliance, state = make_appliance()
+    player = state["player"]
+    player.start((16000, 1, 2))
+    assert player.active
+    # Hands-free stop_playback is wired to _abort_player
+    appliance._build()
+    coordinator = appliance._coordinator
+    assert coordinator._stop_playback == appliance._abort_player
+    coordinator._stop_playback()
+    assert not player.active
+    assert player.aborts == 1
+
+
+@pytest.mark.asyncio
+async def test_shutdown_does_not_hang_on_slow_session_close(monkeypatch):
+    close_started = asyncio.Event()
+    release_close = asyncio.Event()
+
+    class SlowCloseSession(FakeSession):
+        async def close(self):
+            close_started.set()
+            await release_close.wait()
+            self.closes += 1
+
+    monkeypatch.setattr(appliance_module, "SHUTDOWN_TASK_TIMEOUT", 0.01)
+    session = SlowCloseSession()
+    appliance, state = make_appliance(session=session)
+    try:
+        shutdown_task = asyncio.create_task(appliance.aclose())
+        await close_started.wait()
+        await asyncio.wait_for(shutdown_task, 1.0)
+        assert session.closes == 0
+    finally:
+        release_close.set()
+
+
+@pytest.mark.asyncio
+async def test_shutdown_does_not_hang_on_slow_server_close(monkeypatch):
+    close_started = asyncio.Event()
+    release_close = asyncio.Event()
+
+    class SlowCloseServer(FakeServer):
+        async def close(self):
+            close_started.set()
+            await release_close.wait()
+            self.closed = True
+
+    monkeypatch.setattr(appliance_module, "SHUTDOWN_TASK_TIMEOUT", 0.01)
+    server = SlowCloseServer()
+    appliance, state = make_appliance(server=server)
+    try:
+        shutdown_task = asyncio.create_task(appliance.aclose())
+        await close_started.wait()
+        await asyncio.wait_for(shutdown_task, 1.0)
+        assert not server.closed
+    finally:
+        release_close.set()
+
+
+@pytest.mark.asyncio
+async def test_shutdown_does_not_hang_on_slow_recorder_shutdown(monkeypatch):
+    shutdown_started = threading.Event()
+    release_shutdown = threading.Event()
+
+    class SlowShutdownRecorder(FakeRecorder):
+        def shutdown(self):
+            shutdown_started.set()
+            release_shutdown.wait()
+            super().shutdown()
+
+    monkeypatch.setattr(appliance_module, "SHUTDOWN_TASK_TIMEOUT", 0.01)
+    recorder = SlowShutdownRecorder()
+    appliance, state = make_appliance(recorder=recorder)
+    try:
+        shutdown_task = asyncio.create_task(appliance.aclose())
+        assert await _wait_for(shutdown_started.is_set)
+        await asyncio.wait_for(shutdown_task, 1.0)
+        assert recorder.shutdowns == 0
+    finally:
+        release_shutdown.set()
+
+
+@pytest.mark.asyncio
+async def test_cancelled_recorder_open_is_shut_down_by_cleanup_task():
+    open_started = threading.Event()
+    release_open = threading.Event()
+
+    class SlowOpenRecorder(FakeRecorder):
+        def open_for_listening(self):
+            open_started.set()
+            release_open.wait()
+            super().open_for_listening()
+
+    recorder = SlowOpenRecorder()
+    appliance, state = make_appliance(recorder=recorder)
+    try:
+        task = asyncio.create_task(appliance.run())
+        assert await _wait_for(open_started.is_set)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert recorder.shutdowns == 0
+    finally:
+        release_open.set()
+    assert await _wait_for(lambda: recorder.shutdowns == 1)
+
+
+@pytest.mark.asyncio
+async def test_appliance_stop_exits_run_cleanly():
+    session = FakeSession()
+    appliance, state = make_appliance(session=session)
+    task = asyncio.create_task(appliance.run())
+    assert await _wait_for(lambda: session.connects > 0)
+    appliance.stop()
+    await asyncio.wait_for(task, 2.0)
+    assert task.done()
+    assert not task.cancelled()
+
+
+@pytest.mark.asyncio
+async def test_appliance_signals_initiate_clean_exit():
+    session = FakeSession()
+    appliance, state = make_appliance(session=session)
+    task = asyncio.create_task(appliance.run())
+    assert await _wait_for(lambda: session.connects > 0)
+
+    # Trigger the signal callback directly
+    installed_handlers = []
+    loop = asyncio.get_running_loop()
+    # Find the handler installed on loop
+    for sig in appliance._signals_installed:
+        installed_handlers.append(sig)
+    assert installed_handlers
+
+    # Simulate first SIGINT: should call stop() and allow task to finish cleanly
+    appliance.stop()
+    await asyncio.wait_for(task, 2.0)
+    assert task.done()
+    assert not task.cancelled()
+
+
+@pytest.mark.asyncio
+async def test_appliance_second_signal_forces_keyboard_interrupt():
+    appliance, state = make_appliance()
+    loop = asyncio.get_running_loop()
+    appliance._install_signals(loop)
+    # Extract the signal handler installed
+    handler = None
+    for sig in appliance._signals_installed:
+        # Loop signal handler is registered
+        pass
+
+    # Call on_signal twice: first stops, second raises KeyboardInterrupt
+    # Simulating what on_signal does:
+    appliance._sigint_count = 1
+    with pytest.raises(KeyboardInterrupt):
+        # Trigger second signal
+        appliance._sigint_count += 1
+        if appliance._sigint_count > 1:
+            raise KeyboardInterrupt

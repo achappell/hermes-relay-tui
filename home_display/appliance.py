@@ -25,7 +25,9 @@ import argparse
 import asyncio
 import contextlib
 import logging
+import math
 import os
+import signal
 import sys
 import threading
 from pathlib import Path
@@ -33,9 +35,17 @@ from typing import Any, Callable
 
 import audio as audio_module
 import config
+import diagnostics
 import earcons as earcons_module
 import handsfree
 from session import HermesSession
+from timing import (
+    SpeechTiming,
+    duration_visible_text,
+    fallback_visible_text,
+    longest_valid_prefix,
+    visible_text,
+)
 
 from .server import DisplayServer
 from .state import DisplayState, DisplayStatePublisher
@@ -105,6 +115,10 @@ MAX_RECONNECT_DELAY = 30.0
 # misfire clears while the user is still in the room, coarse enough to be free.
 TICK_INTERVAL = 0.25
 
+# Maximum time to wait for a shutdown task, stream teardown, or connection close
+# before returning control so interpreter shutdown is never stranded.
+SHUTDOWN_TASK_TIMEOUT = 3.0
+
 
 class Appliance:
     """One kitchen unit: wake word, session, audio, and the display channel."""
@@ -148,6 +162,12 @@ class Appliance:
         self._turn_future = None
         self._follow_up_capturing = False
         self.info: Any = None
+        self._shutting_down = False
+        self._cleanup_tasks: set[asyncio.Task[Any]] = set()
+        self._wake_opening = False
+        self._supervisor_task: asyncio.Task[None] | None = None
+        self._signals_installed: list[signal.Signals] = []
+        self._sigint_count = 0
 
     # ---- display -------------------------------------------------------
 
@@ -292,8 +312,16 @@ class Appliance:
 
     async def _run_turn(self, text: str) -> bool:
         response = ""
+        visible_response = ""
+        audio = bytearray()
         file_audio = bytearray()
         file_format: tuple[int, int, int] | None = None
+        audio_format: tuple[int, int, int] | None = None
+        audio_started = False
+        audio_duration_final = False
+        fallback_playback_origin: float | None = None
+        speech_timings: dict[str, SpeechTiming] = {}
+        caption_task: asyncio.Task[None] | None = None
         speaking = False
         spoke = False
         completed = False
@@ -301,13 +329,132 @@ class Appliance:
 
         def open_playback(fmt: tuple[int, int, int]) -> bool:
             """Open the output device. Not the same as making a sound."""
-            self._player.start(fmt)
+            nonlocal audio_format, audio_started
+            audio_format = fmt
+            audio_started = True
+            if not self._player.active:
+                self._player.start(fmt)
             if self._player.active:
+                start_caption_clock()
                 return True
             # Audio is arriving but nothing can play it. Say so rather than
             # showing "speaking" over a silent room.
             self._publish("buffering")
             return False
+
+        def audio_duration() -> float | None:
+            if audio_format is None:
+                return None
+            sample_rate, channels, sample_width = audio_format
+            bytes_per_second = sample_rate * channels * sample_width
+            if bytes_per_second <= 0:
+                return None
+            return len(audio) / bytes_per_second
+
+        def playback_position() -> float | None:
+            position = getattr(self._player, "playback_position", None)
+            if callable(position):
+                position = position()
+            try:
+                position = float(position)
+            except (TypeError, ValueError):
+                return None
+            return position if math.isfinite(position) and position >= 0 else None
+
+        def first_word_prefix(target: str) -> str:
+            end = 0
+            while end < len(target) and not target[end].isspace():
+                end += 1
+            while end < len(target) and target[end].isspace():
+                end += 1
+            return target[:end]
+
+        def render_caption(*, complete: bool = False) -> None:
+            nonlocal fallback_playback_origin, visible_response
+            target = display_text(response)
+            if not target:
+                if visible_response:
+                    visible_response = ""
+                    self._publish(
+                        "speaking" if speaking else "thinking",
+                        response_text="",
+                    )
+                return
+            if not complete and not spoke and audio_started and self._player.active:
+                # The relay can deliver the text and timing before the
+                # prebuffer produces an audible sample. Keep the established
+                # thinking preview, but do not commit it as the speaking
+                # cursor: the first real sample may need to begin earlier.
+                self._publish("thinking", response_text=target)
+                return
+            if not target.startswith(visible_response):
+                visible_response = ""
+
+            if complete or not audio_started or not self._player.active:
+                candidate = target
+            else:
+                position = playback_position()
+                candidate = None
+                if position is not None:
+                    if fallback_playback_origin is None:
+                        fallback_playback_origin = position
+                    if speech_timings:
+                        candidate = visible_text(
+                            target,
+                            speech_timings.values(),
+                            position,
+                        )
+                    elif audio_duration_final:
+                        candidate = duration_visible_text(
+                            target,
+                            position,
+                            audio_duration() or 0.0,
+                        )
+                    else:
+                        candidate = fallback_visible_text(
+                            target,
+                            position - fallback_playback_origin,
+                        )
+                candidate = longest_valid_prefix(
+                    target,
+                    [visible_response, candidate],
+                ) or first_word_prefix(target)
+
+            safe_candidate = longest_valid_prefix(
+                target,
+                [visible_response, candidate],
+            ) or visible_response
+            if safe_candidate == visible_response:
+                return
+            visible_response = safe_candidate
+            if speaking:
+                state: DisplayState = "speaking"
+            elif spoke and self._published:
+                state = self._published[0]
+            else:
+                state = "thinking"
+            self._publish(state, response_text=visible_response)
+
+        async def caption_clock() -> None:
+            while self._player.active and not failed:
+                await asyncio.sleep(0.05)
+                if self._player.active and not failed:
+                    render_caption()
+
+        def start_caption_clock() -> None:
+            nonlocal caption_task
+            if caption_task is None or caption_task.done():
+                caption_task = asyncio.create_task(caption_clock())
+
+        async def stop_caption_clock() -> None:
+            nonlocal caption_task
+            task = caption_task
+            caption_task = None
+            if task is None or task.done() or task is asyncio.current_task():
+                return
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
 
         def enter_speaking() -> None:
             """Announce speech only once a sample is actually going out.
@@ -316,13 +463,14 @@ class Appliance:
             first audible sample arrived 2.2s after it — two seconds of a
             display claiming to talk over a silent room.
             """
-            nonlocal speaking, spoke
+            nonlocal speaking, spoke, visible_response
             if speaking:
                 return
-            self._coordinator.playback_started()
-            self._publish("speaking")
+            visible_response = ""
             speaking = True
             spoke = True
+            render_caption()
+            self._coordinator.playback_started()
 
         try:
             async for event in self._session.send_turn(text, stt_source="local"):
@@ -331,11 +479,12 @@ class Appliance:
                     continue
                 if kind == "text_delta":
                     response += str(event.get("text") or "")
-                    self._publish_response(response, speaking, spoke)
+                    render_caption()
                 elif kind == "text_replace":
                     response = str(event.get("text") or "")
-                    self._publish_response(response, speaking, spoke)
+                    render_caption()
                 elif kind == "audio_start":
+                    audio_duration_final = False
                     open_playback(
                         (
                             event["sample_rate"],
@@ -344,6 +493,7 @@ class Appliance:
                         )
                     )
                 elif kind == "audio_chunk":
+                    audio.extend(event["data"])
                     if self._player.active:
                         await asyncio.to_thread(self._player.write, event["data"])
                         # The player holds a cushion before its first sample,
@@ -351,9 +501,12 @@ class Appliance:
                         # it starts buffering.
                         if getattr(self._player, "playing", True):
                             enter_speaking()
+                        render_caption()
                 elif kind == "audio_end":
-                    await self._finish_playback()
-                    speaking = False
+                    # One audio_end closes a segment. Keep the output stream
+                    # and its response-relative clock alive for later segments.
+                    audio_duration_final = True
+                    render_caption()
                 elif kind == "audio_file_start":
                     file_audio.clear()
                     metadata = tuple(
@@ -389,23 +542,49 @@ class Appliance:
                                 self._publish("buffering")
                             continue
                         decoded, fmt = bytes(file_audio), file_format
-                    if open_playback(fmt):
+                    if not spoke and open_playback(fmt):
+                        audio.extend(decoded)
                         await asyncio.to_thread(self._player.write, decoded)
                         if getattr(self._player, "playing", True):
                             enter_speaking()
-                        await self._finish_playback()
+                        await self._finish_playback(notify=False)
+                        render_caption(complete=True)
+                        if speaking:
+                            self._coordinator.playback_finished()
                         speaking = False
+                elif kind == "speech_timing":
+                    try:
+                        timing = SpeechTiming.from_event(event)
+                    except (TypeError, ValueError):
+                        timing = None
+                    if timing is not None and timing.segment_id:
+                        speech_timings[timing.segment_id] = timing
+                        render_caption()
                 elif kind in ("audio_abort", "turn_interrupted"):
                     failed = True
+                    await stop_caption_clock()
                     await asyncio.to_thread(self._player.abort)
                     speaking = False
+                    visible_response = ""
+                    self._publish("idle", response_text="")
                 elif kind == "error":
                     failed = True
+                    await stop_caption_clock()
+                    visible_response = ""
                     self._publish(
-                        "error", status_text=str(event.get("error") or "Hermes error")
+                        "error",
+                        response_text="",
+                        status_text=str(event.get("error") or "Hermes error"),
                     )
                 elif kind == "turn_end":
                     completed = True
+                    await stop_caption_clock()
+                    if not failed:
+                        await self._finish_playback(notify=False)
+                        render_caption(complete=True)
+                        if speaking:
+                            self._coordinator.playback_finished()
+                            speaking = False
                     break
         except asyncio.CancelledError:
             raise
@@ -426,7 +605,8 @@ class Appliance:
             self._request_reconnect()
             raise RuntimeError("the turn ended without a reply") from error
         finally:
-            await self._finish_playback()
+            await stop_caption_clock()
+            await self._finish_playback(abort=failed or self._stopping.is_set())
         return completed and not failed
 
     def _speech_detected(self) -> bool:
@@ -470,13 +650,32 @@ class Appliance:
             state = "thinking"
         self._publish(state, response_text=display_text(response))
 
-    async def _finish_playback(self) -> None:
+    def _abort_player(self) -> None:
+        """Stop local response audio immediately from a synchronous callback."""
+        if self._player is None:
+            return
+        abort = getattr(self._player, "abort", None)
+        if callable(abort):
+            abort()
+        else:
+            self._player.close()
+
+    async def _finish_playback(
+        self, *, notify: bool = True, abort: bool = False
+    ) -> None:
         if self._player is None or not self._player.active:
             return
         # sounddevice's stop drains the device buffer, which can take as long
         # as the tail of the sentence. Off the loop it goes.
-        await asyncio.to_thread(self._player.close)
-        self._coordinator.playback_finished()
+        if abort or self._stopping.is_set():
+            close = getattr(self._player, "abort", None)
+            if not callable(close):
+                close = self._player.close
+        else:
+            close = self._player.close
+        await asyncio.to_thread(close)
+        if notify and not self._stopping.is_set():
+            self._coordinator.playback_finished()
 
     # ---- connection ----------------------------------------------------
 
@@ -497,7 +696,8 @@ class Appliance:
                 raise
             except Exception:
                 logger.debug("appliance connect failed", exc_info=True)
-                await asyncio.sleep(delay)
+                with contextlib.suppress(asyncio.TimeoutError):
+                    await asyncio.wait_for(self._reconnect.wait(), delay)
                 delay = min(delay * 2, MAX_RECONNECT_DELAY)
                 continue
 
@@ -543,7 +743,7 @@ class Appliance:
             send=self._send,
             follow_up_capture=self._capture_follow_up,
             speech_detected=self._speech_detected,
-            stop_playback=self._player.close,
+            stop_playback=self._abort_player,
             acknowledge=self._acknowledge_wake,
             capture_finished=self._acknowledge_capture,
         )
@@ -561,9 +761,123 @@ class Appliance:
             )
         self._session.use_shared_recorder(self._recorder)
 
+    def stop(self) -> None:
+        """Signal the appliance to stop running."""
+        self._stopping.set()
+        loop, reconnect = self._loop, self._reconnect
+        if loop is not None and reconnect is not None:
+            loop.call_soon_threadsafe(reconnect.set)
+        if (
+            loop is not None
+            and self._supervisor_task is not None
+            and not self._supervisor_task.done()
+        ):
+            loop.call_soon_threadsafe(self._supervisor_task.cancel)
+
+    def _install_signals(self, loop: asyncio.AbstractEventLoop) -> None:
+        def on_signal() -> None:
+            self._sigint_count += 1
+            if self._sigint_count == 1:
+                logger.debug("appliance received shutdown signal")
+                self.stop()
+            else:
+                logger.debug("appliance received second shutdown signal; force exiting")
+                raise KeyboardInterrupt
+
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            try:
+                loop.add_signal_handler(sig, on_signal)
+                self._signals_installed.append(sig)
+            except (NotImplementedError, ValueError, RuntimeError):
+                pass
+
+    def _remove_signals(self, loop: asyncio.AbstractEventLoop | None) -> None:
+        if loop is None:
+            return
+        for sig in self._signals_installed:
+            try:
+                loop.remove_signal_handler(sig)
+            except (NotImplementedError, ValueError, RuntimeError):
+                pass
+        self._signals_installed.clear()
+
+    def _track_cleanup_task(self, task: asyncio.Task[Any]) -> None:
+        """Retain cleanup work that outlives the command that started it."""
+        self._cleanup_tasks.add(task)
+
+        def finished(done: asyncio.Task[Any]) -> None:
+            self._cleanup_tasks.discard(done)
+            try:
+                done.result()
+            except asyncio.CancelledError:
+                pass
+            except Exception:
+                logger.debug("appliance cleanup failed", exc_info=True)
+
+        task.add_done_callback(finished)
+
+    async def _wait_for_cleanup_tasks(self) -> None:
+        tasks = [task for task in self._cleanup_tasks if not task.done()]
+        if not tasks:
+            return
+        gathered = asyncio.gather(*tasks, return_exceptions=True)
+        try:
+            await asyncio.wait_for(
+                asyncio.shield(gathered),
+                SHUTDOWN_TASK_TIMEOUT,
+            )
+        except asyncio.TimeoutError:
+            logger.warning(
+                "appliance.shutdown.cleanup_timeout count=%d", len(tasks)
+            )
+
+    def _finish_cancelled_recorder_open(self, recorder: Any, opening: Any) -> None:
+        """Close a recorder whose native open outlived a cancelled task."""
+        async def finish() -> None:
+            try:
+                try:
+                    await opening
+                except BaseException:
+                    pass
+                if recorder is not None:
+                    await self._bounded_to_thread(recorder.shutdown)
+            except Exception:
+                logger.debug(
+                    "closing the late appliance recorder failed", exc_info=True
+                )
+            finally:
+                self._wake_opening = False
+
+        self._track_cleanup_task(asyncio.create_task(finish()))
+
+    async def _bounded_to_thread(
+        self,
+        func: Callable[..., Any] | None,
+        *args: Any,
+        timeout: float | None = None,
+    ) -> None:
+        if func is None:
+            return
+        actual_timeout = timeout if timeout is not None else SHUTDOWN_TASK_TIMEOUT
+        try:
+            task = asyncio.create_task(asyncio.to_thread(func, *args))
+            await asyncio.wait_for(asyncio.shield(task), actual_timeout)
+        except asyncio.TimeoutError:
+            logger.warning(
+                "appliance.shutdown.timeout operation=%s",
+                getattr(func, "__name__", str(func)),
+            )
+        except Exception:
+            logger.debug(
+                "appliance.shutdown.error operation=%s",
+                getattr(func, "__name__", str(func)),
+                exc_info=True,
+            )
+
     async def run(self) -> None:
         self._loop = asyncio.get_running_loop()
         self._reconnect = asyncio.Event()
+        self._install_signals(self._loop)
         self._build()
         self.info = await self._server.start()
 
@@ -573,17 +887,44 @@ class Appliance:
         self._listener.start()
         self._listener.pause()
         self._recorder.set_frame_observer(self._listener.submit)
-        await asyncio.to_thread(self._open_recorder)
+
+        self._wake_opening = True
+        opening = asyncio.create_task(asyncio.to_thread(self._open_recorder))
+        try:
+            await asyncio.shield(opening)
+        except asyncio.CancelledError:
+            if not opening.done():
+                self._finish_cancelled_recorder_open(self._recorder, opening)
+            else:
+                self._wake_opening = False
+            raise
+        except Exception:
+            self._wake_opening = False
+            raise
+        self._wake_opening = False
+
         if self._on_ready is not None:
             self._on_ready(self.info)
 
         ticker = asyncio.create_task(self._expire_listening_window())
+        self._supervisor_task = asyncio.create_task(self._supervise())
         try:
-            await self._supervise()
+            await self._supervisor_task
+        except asyncio.CancelledError:
+            current = asyncio.current_task()
+            if current is not None and getattr(current, "cancelling", lambda: 0)() > 0:
+                raise
+        except KeyboardInterrupt:
+            pass
         finally:
+            self._remove_signals(self._loop)
             ticker.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await ticker
+            if self._supervisor_task is not None and not self._supervisor_task.done():
+                self._supervisor_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await self._supervisor_task
             await self.aclose()
 
     def _open_recorder(self) -> None:
@@ -593,29 +934,44 @@ class Appliance:
             self._recorder.open_for_listening()
 
     async def aclose(self) -> None:
+        if self._shutting_down:
+            return
+        self._shutting_down = True
         self._stopping.set()
         self._connected = False
         self._set_listening()
         if self._session is not None:
-            self._session.cancel_voice()
+            with contextlib.suppress(Exception):
+                self._session.cancel_voice()
         if self._turn_future is not None:
             self._turn_future.cancel()
         if self._earcons is not None:
-            await asyncio.to_thread(self._earcons.abort)
+            abort = getattr(self._earcons, "abort", None)
+            if callable(abort):
+                await self._bounded_to_thread(abort)
         if self._listener is not None:
-            await asyncio.to_thread(self._listener.stop)
-        if self._recorder is not None:
+            await self._bounded_to_thread(self._listener.stop)
+        await self._wait_for_cleanup_tasks()
+        if self._recorder is not None and not self._wake_opening:
             with contextlib.suppress(Exception):
-                await asyncio.to_thread(self._recorder.shutdown)
+                await self._bounded_to_thread(self._recorder.shutdown)
         if self._player is not None:
             with contextlib.suppress(Exception):
-                await asyncio.to_thread(self._player.close)
+                await self._bounded_to_thread(self._abort_player)
         if self._session is not None:
             with contextlib.suppress(Exception):
-                await self._session.close()
+                close_task = asyncio.create_task(self._session.close())
+                await asyncio.wait_for(
+                    asyncio.shield(close_task),
+                    SHUTDOWN_TASK_TIMEOUT,
+                )
         if self._server is not None:
             with contextlib.suppress(Exception):
-                await self._server.close()
+                close_task = asyncio.create_task(self._server.close())
+                await asyncio.wait_for(
+                    asyncio.shield(close_task),
+                    SHUTDOWN_TASK_TIMEOUT,
+                )
 
 
 def build_arg_parser(argv: list[str] | None = None) -> argparse.ArgumentParser:
@@ -639,6 +995,7 @@ def build_arg_parser(argv: list[str] | None = None) -> argparse.ArgumentParser:
 
 
 def main() -> int:
+    diagnostics.install_crash_logging()
     args = build_arg_parser().parse_args()
     config.ensure_default_config_file(args.config)
     if args.log_file is not None:

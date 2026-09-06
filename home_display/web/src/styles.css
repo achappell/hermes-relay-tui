@@ -81,18 +81,29 @@ body {
   margin-top: 0.75rem;
 }
 
-.response-text {
+.response-viewport {
   display: none;
+  max-height: var(--bottom-sheet-height);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: none;
+}
+
+.response-viewport::-webkit-scrollbar {
+  display: none;
+}
+
+.response-viewport.visible {
+  display: block;
+}
+
+.response-text {
   font-size: clamp(1.5rem, 3.7vw, 4.5rem);
   font-weight: 650;
   line-height: 1.16;
   margin-top: clamp(1.25rem, 3vw, 3rem);
   max-width: 22ch;
   white-space: pre-wrap;
-}
-
-.response-text.visible {
-  display: block;
 }
 
 [data-state="idle"] .state-overlay {

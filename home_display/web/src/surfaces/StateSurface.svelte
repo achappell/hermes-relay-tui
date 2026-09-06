@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { afterUpdate, onDestroy } from "svelte";
   import type { ConnectionState } from "../state/channel";
   import type { DisplaySnapshot, DisplayState } from "../state/protocol";
 
@@ -35,6 +36,84 @@
   // genuinely silent, so it gets a sign of life that is visibly not a claim
   // to be talking.
   $: working = displayState === "thinking" || displayState === "buffering";
+
+  const AUTO_SCROLL_INTERVAL_MS = 50;
+  const AUTO_SCROLL_PIXELS = 1;
+  let responseViewport: HTMLDivElement | undefined;
+  let scrollTimer: ReturnType<typeof setInterval> | null = null;
+  let showingResponse = false;
+  let previousResponse = "";
+
+  function stopAutoScroll(): void {
+    if (scrollTimer !== null) {
+      clearInterval(scrollTimer);
+      scrollTimer = null;
+    }
+  }
+
+  function resetResponseScroll(): void {
+    if (responseViewport) {
+      responseViewport.scrollTop = 0;
+    }
+  }
+
+  function scrollResponse(): void {
+    if (!showResponse || !responseViewport) {
+      stopAutoScroll();
+      return;
+    }
+
+    const maximumScroll = responseViewport.scrollHeight - responseViewport.clientHeight;
+    if (maximumScroll <= responseViewport.scrollTop) {
+      stopAutoScroll();
+      return;
+    }
+
+    responseViewport.scrollTop = Math.min(
+      maximumScroll,
+      responseViewport.scrollTop + AUTO_SCROLL_PIXELS,
+    );
+  }
+
+  function startAutoScroll(): void {
+    if (!showResponse || !responseViewport) return;
+
+    const maximumScroll = responseViewport.scrollHeight - responseViewport.clientHeight;
+    if (maximumScroll <= responseViewport.scrollTop) {
+      stopAutoScroll();
+      return;
+    }
+
+    if (scrollTimer === null) {
+      scrollTimer = setInterval(scrollResponse, AUTO_SCROLL_INTERVAL_MS);
+    }
+  }
+
+  afterUpdate(() => {
+    if (!showResponse) {
+      stopAutoScroll();
+      resetResponseScroll();
+      showingResponse = false;
+      previousResponse = "";
+      return;
+    }
+
+    const newResponse =
+      !showingResponse ||
+      snapshot.response_text.length < previousResponse.length ||
+      !snapshot.response_text.startsWith(previousResponse);
+
+    if (newResponse) {
+      stopAutoScroll();
+      resetResponseScroll();
+    }
+
+    showingResponse = true;
+    previousResponse = snapshot.response_text;
+    startAutoScroll();
+  });
+
+  onDestroy(stopAutoScroll);
 </script>
 
 <main class:has-response={showResponse} class="state-surface" data-state={displayState} aria-live="polite">
@@ -47,6 +126,13 @@
         {status}{#if working}<span class="working-dot" data-working-dot aria-hidden="true"></span>{/if}
       </p>
     {/if}
-    <p class:visible={showResponse} class="response-text" data-response-text>{showResponse ? snapshot.response_text : ""}</p>
+    <div
+      class:visible={showResponse}
+      class="response-viewport"
+      data-response-viewport
+      bind:this={responseViewport}
+    >
+      <p class="response-text" data-response-text>{showResponse ? snapshot.response_text : ""}</p>
+    </div>
   </section>
 </main>
