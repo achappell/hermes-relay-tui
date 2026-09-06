@@ -166,3 +166,128 @@ async def test_session_does_not_send_prompt_response_without_capability(monkeypa
         value="should-not-send",
     ) is False
     assert len(websocket.sent) == 1
+
+
+async def test_session_records_confirmed_model_and_hydrates_history(monkeypatch):
+    history = [
+        {"role": "user", "content": "prior question"},
+        {"role": "assistant", "content": "prior answer"},
+    ]
+    websocket = FakeWebSocket(
+        [
+            json.dumps(
+                {
+                    "type": "hello_ack",
+                    "chat_id": "chat",
+                    "session_id": "custom-sid",
+                    "model": "qwen2.5:7b",
+                    "title": "My Session",
+                    "history": history,
+                    "capabilities": [],
+                }
+            )
+        ]
+    )
+    monkeypatch.setattr(
+        config,
+        "connect_factory",
+        lambda: lambda *args, **kwargs: FakeContextManager(websocket),
+    )
+    session = HermesSession(make_args(session_id="custom-sid"))
+
+    hello = await session.connect()
+
+    assert session.session_id == "custom-sid"
+    assert session.confirmed_model == "qwen2.5:7b"
+    assert session.confirmed_title == "My Session"
+    assert session.initial_history == history
+
+
+async def test_session_list_sessions_delegates_to_client(monkeypatch):
+    websocket = FakeWebSocket(
+        [
+            json.dumps({"type": "hello_ack", "chat_id": "chat"}),
+            json.dumps(
+                {
+                    "type": "session_list_result",
+                    "sessions": [{"session_id": "s1", "title": "S1"}],
+                }
+            ),
+        ]
+    )
+    monkeypatch.setattr(
+        config,
+        "connect_factory",
+        lambda: lambda *args, **kwargs: FakeContextManager(websocket),
+    )
+    session = HermesSession(make_args())
+    await session.connect()
+
+    result = await session.list_sessions()
+
+    assert len(result) == 1
+    assert result[0]["session_id"] == "s1"
+
+
+async def test_session_new_session_updates_session_id_and_resets_turn_index(monkeypatch):
+    websocket = FakeWebSocket(
+        [
+            json.dumps({"type": "hello_ack", "chat_id": "chat"}),
+            json.dumps(
+                {
+                    "type": "session_switched",
+                    "session_id": "s-fresh",
+                    "title": "Fresh Chat",
+                    "model": "qwen2.5:7b",
+                }
+            ),
+        ]
+    )
+    monkeypatch.setattr(
+        config,
+        "connect_factory",
+        lambda: lambda *args, **kwargs: FakeContextManager(websocket),
+    )
+    session = HermesSession(make_args())
+    await session.connect()
+    session.turn_index = 5
+
+    result = await session.new_session(session_id="s-fresh")
+
+    assert session.session_id == "s-fresh"
+    assert session.turn_index == 0
+    assert session.confirmed_model == "qwen2.5:7b"
+    assert session.confirmed_title == "Fresh Chat"
+
+
+async def test_session_switch_session_updates_session_id_and_returns_history(monkeypatch):
+    history = [{"role": "user", "content": "resumed message"}]
+    websocket = FakeWebSocket(
+        [
+            json.dumps({"type": "hello_ack", "chat_id": "chat"}),
+            json.dumps(
+                {
+                    "type": "session_switched",
+                    "session_id": "s-target",
+                    "title": "Target Chat",
+                    "model": "qwen2.5:7b",
+                    "history": history,
+                }
+            ),
+        ]
+    )
+    monkeypatch.setattr(
+        config,
+        "connect_factory",
+        lambda: lambda *args, **kwargs: FakeContextManager(websocket),
+    )
+    session = HermesSession(make_args())
+    await session.connect()
+    session.turn_index = 3
+
+    result = await session.switch_session("s-target")
+
+    assert session.session_id == "s-target"
+    assert session.turn_index == 0
+    assert result["history"] == history
+

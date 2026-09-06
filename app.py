@@ -701,15 +701,24 @@ class HermesStreamingApp(App):
                 return
 
     def _refresh_connection_status(self) -> None:
-        session_id = getattr(self.args, "session_id", None) or "session"
+        session_id = (
+            getattr(self.args, "session_id", None)
+            or getattr(self.session, "session_id", None)
+            or "session"
+        )
         symbol = {
             CONNECTION_CONNECTED: "●",
             CONNECTION_CONNECTING: "◌",
             CONNECTION_RETRYING: "◌",
             CONNECTION_DISCONNECTED: "○",
         }.get(self.connection_state, "○")
-        line = f"{symbol} {self.connection_state} · session {session_id}"
-        self.sub_title = f"{self.connection_state} · session {session_id}"
+        model_part = (
+            f" · {self.session.confirmed_model}"
+            if getattr(self.session, "confirmed_model", None)
+            else ""
+        )
+        line = f"{symbol} {self.connection_state} · session {session_id}{model_part}"
+        self.sub_title = f"{self.connection_state} · session {session_id}{model_part}"
         try:
             widget = self.query_one("#connection-status", Static)
         except (NoMatches, ScreenStackError):
@@ -722,6 +731,24 @@ class HermesStreamingApp(App):
             CONNECTION_DISCONNECTED,
         ):
             widget.set_class(state == self.connection_state, f"-{state}")
+
+    def _hydrate_transcript(self, history: list[dict[str, Any]]) -> None:
+        """Populate the visible transcript with historical turns from the relay."""
+        if not history:
+            return
+        for item in history:
+            role = str(item.get("role") or "assistant").lower()
+            content = str(item.get("content") or "").strip()
+            if not content:
+                continue
+            if role == "user":
+                self.transcript.add("user", content)
+            elif role in ("assistant", "system"):
+                self.transcript.add(role, content)
+            elif role in ("thinking", "tool", "status"):
+                if self.show_details:
+                    self.transcript.add(role, content, detail=True)
+        self._refresh_transcript()
 
     @property
     def microphone_is_open(self) -> bool:
@@ -900,8 +927,19 @@ class HermesStreamingApp(App):
                 self._set_connection_state(CONNECTION_CONNECTED)
                 self._set_voice_state(VOICE_READY)
                 self._needs_reconnect = False
-                session_id = getattr(self.args, "session_id", "session")
-                self._append_block(f"Connected to {session_id} (chat {hello.get('chat_id')}).")
+                session_id = (
+                    getattr(self.session, "session_id", None)
+                    or getattr(self.args, "session_id", "session")
+                )
+                conn_details = []
+                if hello.get("chat_id"):
+                    conn_details.append(f"chat {hello.get('chat_id')}")
+                if getattr(self.session, "confirmed_model", None):
+                    conn_details.append(f"model {self.session.confirmed_model}")
+                detail_suffix = f" ({', '.join(conn_details)})" if conn_details else ""
+                self._append_block(f"Connected to {session_id}{detail_suffix}.")
+                if getattr(self.session, "initial_history", None):
+                    self._hydrate_transcript(self.session.initial_history)
                 return True
 
             self._set_connection_state(CONNECTION_DISCONNECTED)
@@ -1808,14 +1846,26 @@ class HermesStreamingApp(App):
             self.transcript.clear()
             self._refresh_transcript()
         elif command.name == "status":
-            session_id = getattr(self.args, "session_id", "session")
-            model = getattr(self.args, "model", None) or "default"
+            session_id = (
+                getattr(self.session, "session_id", None)
+                or getattr(self.args, "session_id", "session")
+            )
+            model = getattr(self.session, "confirmed_model", None) or getattr(self.args, "model", None) or "default"
+            model_label = f"{model} (confirmed)" if getattr(self.session, "confirmed_model", None) else f"{model} (unconfirmed)"
             config_path = getattr(self.args, "config", None)
             self._append_block(
-                f"session: {session_id} · {self.connection_state} · model: {model} "
+                f"session: {session_id} · {self.connection_state} · model: {model_label} "
                 f"· busy-mode: {self.busy_mode} · queued: {len(self._queued_prompts)} "
                 f"· history: {self._history.path} · config: {config_path}"
             )
+        elif command.name == "session":
+            await self._handle_session_command(invocation.args)
+        elif command.name == "sessions":
+            await self._handle_session_list_command(invocation.args)
+        elif command.name == "resume":
+            await self._handle_session_resume_command(invocation.args)
+        elif command.name == "new":
+            await self._handle_session_new_command(invocation.args)
         elif command.name == "queue":
             await self._handle_queue_command(invocation.args)
         elif command.name == "busy":
@@ -1856,6 +1906,102 @@ class HermesStreamingApp(App):
             self.exit()
         else:
             await self._dispatch_command(invocation)
+
+    async def _handle_session_command(self, args: str) -> None:
+        parts = args.strip().split(maxsplit=1)
+        subcommand = parts[0].lower() if parts else "list"
+        sub_args = parts[1] if len(parts) > 1 else ""
+        if subcommand in ("list", "ls"):
+            await self._handle_session_list_command(sub_args)
+        elif subcommand in ("new", "create"):
+            await self._handle_session_new_command(sub_args)
+        elif subcommand in ("resume", "switch", "open"):
+            await self._handle_session_resume_command(sub_args)
+        elif subcommand in ("info", "status"):
+            session_id = (
+                getattr(self.session, "session_id", None)
+                or getattr(self.args, "session_id", "session")
+            )
+            model = getattr(self.session, "confirmed_model", None) or getattr(self.args, "model", None) or "default"
+            model_info = f"{model} (confirmed)" if getattr(self.session, "confirmed_model", None) else f"{model} (unconfirmed)"
+            title = getattr(self.session, "confirmed_title", None) or "-"
+            self._append_block(
+                f"Active session: {session_id}\n"
+                f"  Title: {title}\n"
+                f"  Model: {model_info}\n"
+                f"  Connection: {self.connection_state}"
+            )
+        else:
+            self._append_block("usage: /session [list|new|switch|resume|info]")
+
+    async def _handle_session_list_command(self, args: str) -> None:
+        if not self.session.is_connected():
+            self._append_block("[error] Not connected to relay.")
+            return
+        search = args.strip()
+        try:
+            sessions = await self.session.list_sessions(limit=20, search=search)
+        except Exception as exc:
+            self._append_block(f"[error] Failed to list sessions: {exc}")
+            return
+        if not sessions:
+            self._append_block(f"No sessions found{' matching ' + repr(search) if search else ''}.")
+            return
+        lines = ["Sessions:"]
+        active_sid = getattr(self.session, "session_id", None)
+        for s in sessions:
+            sid = str(s.get("session_id") or s.get("id") or "")
+            title = str(s.get("title") or "").strip()
+            title_part = f" · {title}" if title else ""
+            model = str(s.get("model") or "").strip()
+            model_part = f" · {model}" if model else ""
+            msg_count = s.get("message_count", 0)
+            marker = "▶ " if sid == active_sid else "  "
+            lines.append(f"{marker}{sid} ({msg_count} msgs){title_part}{model_part}")
+        self._append_block("\n".join(lines))
+
+    async def _handle_session_new_command(self, args: str) -> None:
+        if self._turn_in_flight:
+            self._append_block("[busy] Cannot start a new session while a turn is active.")
+            return
+        if not self.session.is_connected():
+            self._append_block("[error] Not connected to relay.")
+            return
+        sid = args.strip() or None
+        try:
+            res = await self.session.new_session(session_id=sid)
+        except Exception as exc:
+            self._append_block(f"[error] Failed to start new session: {exc}")
+            return
+        self.transcript.clear()
+        self._refresh_transcript()
+        self._refresh_connection_status()
+        new_sid = self.session.session_id
+        self._append_block(f"Started new session {new_sid}.")
+
+    async def _handle_session_resume_command(self, args: str) -> None:
+        if self._turn_in_flight:
+            self._append_block("[busy] Cannot resume a session while a turn is active.")
+            return
+        sid = args.strip()
+        if not sid:
+            self._append_block("usage: /resume <session-id>")
+            return
+        if not self.session.is_connected():
+            self._append_block("[error] Not connected to relay.")
+            return
+        try:
+            res = await self.session.switch_session(sid)
+        except Exception as exc:
+            self._append_block(f"[error] Failed to resume session {sid}: {exc}")
+            return
+        self.transcript.clear()
+        history = res.get("history") or []
+        if history:
+            self._hydrate_transcript(history)
+        self._refresh_transcript()
+        self._refresh_connection_status()
+        self._append_block(f"Resumed session {self.session.session_id} ({len(history)} message(s)).")
 
     async def _dispatch_command(self, invocation: CommandInvocation) -> None:
         if self._command_dispatcher is None:

@@ -8,6 +8,9 @@ from client import (
     send_hello,
     send_interrupt,
     send_prompt_response,
+    send_session_list,
+    send_session_new,
+    send_session_switch,
     send_turn,
 )
 
@@ -1008,3 +1011,71 @@ async def test_the_captured_live_turn_keeps_every_segment():
     rendered = _render(events)
     assert rendered.count("\n\n") == 2, "each segment boundary is one break"
     assert len(rendered) == 338 + 83 + 309 + 4, "every spoken character survives"
+
+
+async def test_send_session_list_returns_session_records():
+    response = {
+        "type": "session_list_result",
+        "sessions": [
+            {"session_id": "s1", "title": "First", "message_count": 5},
+            {"session_id": "s2", "title": "Second", "message_count": 2},
+        ],
+    }
+    ws = FakeWebSocket([json.dumps(response)])
+
+    result = await send_session_list(ws, limit=10, search="test")
+
+    assert len(result) == 2
+    assert result[0]["session_id"] == "s1"
+    sent = json.loads(ws.sent[0])
+    assert sent["type"] == "session_list"
+    assert sent["limit"] == 10
+    assert sent["search"] == "test"
+
+
+async def test_send_session_list_raises_on_error():
+    ws = FakeWebSocket([json.dumps({"type": "error", "error": "failed"})])
+    with pytest.raises(ProtocolError):
+        await send_session_list(ws)
+
+
+async def test_send_session_new_returns_switch_result():
+    response = {
+        "type": "session_switched",
+        "session_id": "s-new",
+        "title": "Fresh Session",
+        "model": "qwen2.5:7b",
+        "history": [],
+    }
+    ws = FakeWebSocket([json.dumps(response)])
+
+    result = await send_session_new(ws, session_id="s-new", title="Fresh Session")
+
+    assert result["session_id"] == "s-new"
+    sent = json.loads(ws.sent[0])
+    assert sent["type"] == "session_new"
+    assert sent["session_id"] == "s-new"
+    assert sent["title"] == "Fresh Session"
+
+
+async def test_send_session_switch_returns_history_and_metadata():
+    response = {
+        "type": "session_switched",
+        "session_id": "s-old",
+        "title": "Old Session",
+        "model": "qwen2.5:7b",
+        "history": [
+            {"role": "user", "content": "hello"},
+            {"role": "assistant", "content": "hi there"},
+        ],
+    }
+    ws = FakeWebSocket([json.dumps(response)])
+
+    result = await send_session_switch(ws, session_id="s-old")
+
+    assert result["session_id"] == "s-old"
+    assert len(result["history"]) == 2
+    sent = json.loads(ws.sent[0])
+    assert sent["type"] == "session_switch"
+    assert sent["session_id"] == "s-old"
+

@@ -116,6 +116,70 @@ class FakeRelay:
                     )
                 elif kind == "turn":
                     await self.reply(websocket, payload)
+                elif kind == "session_list":
+                    limit = int(payload.get("limit") or 20)
+                    search = str(payload.get("search") or "").strip().lower()
+                    sessions = [
+                        {
+                            "session_id": "default",
+                            "title": "Default Session",
+                            "model": "qwen2.5:7b",
+                            "message_count": self.turns * 2,
+                            "last_active": "just now",
+                        },
+                        {
+                            "session_id": "session-123",
+                            "title": "Debug Notes",
+                            "model": "qwen2.5:7b",
+                            "message_count": 4,
+                            "last_active": "5m ago",
+                        },
+                    ]
+                    if search:
+                        sessions = [
+                            s for s in sessions
+                            if search in s["session_id"].lower() or search in s["title"].lower()
+                        ]
+                    await websocket.send(
+                        json.dumps(
+                            {
+                                "type": "session_list_result",
+                                "sessions": sessions[:limit],
+                            }
+                        )
+                    )
+                elif kind == "session_new":
+                    new_sid = payload.get("session_id") or f"session-{self.turns + 1}"
+                    title = payload.get("title") or "New Session"
+                    self.turns = 0
+                    await websocket.send(
+                        json.dumps(
+                            {
+                                "type": "session_switched",
+                                "session_id": new_sid,
+                                "title": title,
+                                "model": "qwen2.5:7b",
+                                "history": [],
+                            }
+                        )
+                    )
+                elif kind == "session_switch":
+                    target_sid = payload.get("session_id") or "default"
+                    history = [
+                        {"role": "user", "content": "Previous prompt in " + target_sid},
+                        {"role": "assistant", "content": "Previous response in " + target_sid},
+                    ]
+                    await websocket.send(
+                        json.dumps(
+                            {
+                                "type": "session_switched",
+                                "session_id": target_sid,
+                                "title": f"Session {target_sid}",
+                                "model": "qwen2.5:7b",
+                                "history": history,
+                            }
+                        )
+                    )
                 else:
                     print(f"[relay] ignoring {kind!r}")
         except websockets.exceptions.ConnectionClosed:

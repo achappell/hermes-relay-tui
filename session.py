@@ -14,7 +14,15 @@ import uuid
 from typing import Any, AsyncIterator, Protocol
 
 import config
-from client import send_hello, send_interrupt, send_prompt_response, send_turn
+from client import (
+    send_hello,
+    send_interrupt,
+    send_prompt_response,
+    send_session_list,
+    send_session_new,
+    send_session_switch,
+    send_turn,
+)
 from diagnostics import logger as diagnostic_logger, summarize_text
 from mic import (
     LocalMicrophone,
@@ -29,6 +37,8 @@ class SessionProtocol(Protocol):
     and by the test doubles, so there is exactly one code path here."""
 
     turn_index: int
+    confirmed_model: str | None
+    confirmed_title: str | None
 
     async def connect(self) -> dict[str, Any]: ...
 
@@ -36,6 +46,9 @@ class SessionProtocol(Protocol):
 
     @property
     def supports_structured_prompts(self) -> bool: ...
+
+    @property
+    def session_id(self) -> str: ...
 
     def send_turn(self, text: str, *, stt_source: str = "local") -> AsyncIterator[dict[str, Any]]: ...
 
@@ -50,6 +63,14 @@ class SessionProtocol(Protocol):
     ) -> bool: ...
 
     async def interrupt_active_turn(self) -> bool: ...
+
+    async def list_sessions(self, *, limit: int = 20, search: str = "") -> list[dict[str, Any]]: ...
+
+    async def new_session(
+        self, *, session_id: str | None = None, title: str | None = None
+    ) -> dict[str, Any]: ...
+
+    async def switch_session(self, session_id: str) -> dict[str, Any]: ...
 
     def capture_voice(self, *, wait_timeout: float | None = None) -> str: ...
 
@@ -68,6 +89,10 @@ class HermesSession:
         self.ws: Any = None
         self._connect_cm: Any = None
         self.turn_index = 0
+        self._session_id: str = str(getattr(args, "session_id", "default") or "default")
+        self.confirmed_model: str | None = None
+        self.confirmed_title: str | None = None
+        self.initial_history: list[dict[str, Any]] = []
         self.microphone: Any = None
         self.input_device = getattr(args, "mic_input_device", None)
         self._voice_cancel_requested = threading.Event()
@@ -75,6 +100,13 @@ class HermesSession:
         self._capabilities: frozenset[str] = frozenset()
         self.active_turn_id: str | None = None
         self._interrupt_sent_for_turn: str | None = None
+
+    @property
+    def session_id(self) -> str:
+        """The active Hermes session identity."""
+        if hasattr(self.args, "session_id") and self.args.session_id:
+            return str(self.args.session_id)
+        return self._session_id
 
     @property
     def supports_interrupt(self) -> bool:
@@ -111,7 +143,7 @@ class HermesSession:
         diagnostic_logger.debug(
             "connect.start url=%s session_id=%s client_id=%s device_id=%s",
             self.args.url.split("?", 1)[0],
-            self.args.session_id,
+            self._session_id,
             self.args.client_id,
             self.args.device_id,
         )
@@ -122,9 +154,25 @@ class HermesSession:
                 self.ws,
                 client_id=self.args.client_id,
                 device_id=self.args.device_id,
-                session_id=self.args.session_id,
+                session_id=self._session_id,
                 display_name=self.args.display_name,
             )
+            if hello.get("session_id"):
+                self._session_id = str(hello.get("session_id"))
+                if hasattr(self.args, "session_id"):
+                    self.args.session_id = self._session_id
+            if hello.get("model"):
+                self.confirmed_model = str(hello.get("model"))
+            if hello.get("title"):
+                self.confirmed_title = str(hello.get("title"))
+            raw_history = hello.get("history")
+            if isinstance(raw_history, list):
+                self.initial_history = [
+                    dict(m) for m in raw_history if isinstance(m, dict)
+                ]
+            else:
+                self.initial_history = []
+
             capabilities = hello.get("capabilities")
             if not isinstance(capabilities, (list, tuple, set, frozenset)):
                 nested = hello.get("payload")
@@ -186,7 +234,7 @@ class HermesSession:
         self._interrupt_sent_for_turn = None
         return send_turn(
             self.ws,
-            session_id=self.args.session_id,
+            session_id=self._session_id,
             text=text,
             stt_source=stt_source,
             turn_id=turn_id,
@@ -201,7 +249,7 @@ class HermesSession:
             return True
         await send_interrupt(
             self.ws,
-            session_id=self.args.session_id,
+            session_id=self._session_id,
             turn_id=turn_id,
         )
         self._interrupt_sent_for_turn = turn_id
@@ -225,7 +273,7 @@ class HermesSession:
             return False
         await send_prompt_response(
             self.ws,
-            session_id=self.args.session_id,
+            session_id=self._session_id,
             prompt_id=prompt_id,
             prompt_kind=prompt_kind,
             option_id=option_id,
@@ -233,6 +281,48 @@ class HermesSession:
             reason=reason,
         )
         return True
+
+    async def list_sessions(
+        self, *, limit: int = 20, search: str = ""
+    ) -> list[dict[str, Any]]:
+        """Request the session list from the relay."""
+        if not self.is_connected():
+            raise RuntimeError("Not connected to relay")
+        return await send_session_list(self.ws, limit=limit, search=search)
+
+    async def new_session(
+        self, *, session_id: str | None = None, title: str | None = None
+    ) -> dict[str, Any]:
+        """Request creation of a new session on the relay."""
+        if not self.is_connected():
+            raise RuntimeError("Not connected to relay")
+        result = await send_session_new(self.ws, session_id=session_id, title=title)
+        new_sid = str(result.get("session_id") or session_id or self._session_id)
+        self._session_id = new_sid
+        if hasattr(self.args, "session_id"):
+            self.args.session_id = new_sid
+        if result.get("model"):
+            self.confirmed_model = str(result.get("model"))
+        if result.get("title"):
+            self.confirmed_title = str(result.get("title"))
+        self.turn_index = 0
+        return result
+
+    async def switch_session(self, session_id: str) -> dict[str, Any]:
+        """Request switching to and hydrating an existing session."""
+        if not self.is_connected():
+            raise RuntimeError("Not connected to relay")
+        result = await send_session_switch(self.ws, session_id=session_id)
+        switched_sid = str(result.get("session_id") or session_id)
+        self._session_id = switched_sid
+        if hasattr(self.args, "session_id"):
+            self.args.session_id = switched_sid
+        if result.get("model"):
+            self.confirmed_model = str(result.get("model"))
+        if result.get("title"):
+            self.confirmed_title = str(result.get("title"))
+        self.turn_index = 0
+        return result
 
     def capture_voice(self, *, wait_timeout: float | None = None) -> str:
         self._voice_cancel_requested.clear()
