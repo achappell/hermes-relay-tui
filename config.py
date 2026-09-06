@@ -89,12 +89,12 @@ def config_path_from_argv(argv: Optional[list[str]]) -> Path:
     items = list(sys.argv[1:] if argv is None else argv)
     for index, item in enumerate(items):
         if item == "--config" and index + 1 < len(items):
-            return Path(items[index + 1])
+            return Path(items[index + 1]).expanduser()
         if item.startswith("--config="):
-            return Path(item.split("=", 1)[1])
+            return Path(item.split("=", 1)[1]).expanduser()
     env_value = os.getenv("HERMES_RELAY_TUI_CONFIG")
     if env_value:
-        return Path(env_value)
+        return Path(env_value).expanduser()
     return DEFAULT_CONFIG_PATH
 
 
@@ -105,7 +105,10 @@ def load_config_file(path: Optional[Path]) -> dict[str, Any]:
     ``build_arg_parser``'s precedence for each option: CLI flag > env var >
     config file > built-in default.
     """
-    if path is None or not path.exists():
+    if path is None:
+        return {}
+    path = path.expanduser()
+    if not path.exists():
         return {}
     import yaml
 
@@ -130,6 +133,7 @@ def ensure_default_config_file(path: Path) -> bool:
     when the example template isn't present alongside this module (e.g. a
     packaged install that doesn't ship it — see DIST-01/DIST-02).
     """
+    path = path.expanduser()
     if path.exists():
         return False
     template = Path(__file__).parent / "config.example.yaml"
@@ -187,8 +191,9 @@ class HouseholdProfile:
 
 
 def _lookup_env_file(path: Path, key: str) -> str:
-    paths = [path]
-    if path == DEFAULT_PROFILE_ENV and LEGACY_PROFILE_ENV != DEFAULT_PROFILE_ENV:
+    resolved_path = Path(path).expanduser()
+    paths = [resolved_path]
+    if resolved_path == DEFAULT_PROFILE_ENV and LEGACY_PROFILE_ENV != DEFAULT_PROFILE_ENV:
         paths.append(LEGACY_PROFILE_ENV)
     for p in paths:
         if not p.exists():
