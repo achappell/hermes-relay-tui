@@ -318,7 +318,7 @@ def build_hands_free(
     if _load_engine is not None:
         engine = _load_engine(getattr(args, "wake_model", None))
     elif engine_name == "sherpa" or wake_phrases:
-        phrases = wake_phrases or ["hey missy", "hey skippy", "hey spark"]
+        phrases = wake_phrases or wake.DEFAULT_SHERPA_PHRASES
         engine = wake.load_sherpa_engine(
             phrases,
             keywords_score=getattr(args, "wake_keywords_score", 1.0),

@@ -172,3 +172,10 @@ def test_build_hands_free_selects_sherpa_when_phrases_provided():
 
     listener, coordinator = handsfree.build_hands_free(session, args)
     assert isinstance(listener._detector._engine, wake._SherpaOnnxEngine)
+
+
+def test_load_sherpa_engine_defaults_to_hey_hermes():
+    engine = wake.load_sherpa_engine()
+    assert "HEY HERMES" in engine._keyword_map
+    assert engine._keyword_map["HEY HERMES"] == "hey hermes"
+

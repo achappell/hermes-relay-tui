@@ -45,7 +45,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--phrases",
         default=None,
-        help="comma-separated phrases for sherpa (default: 'hey missy, hey skippy, hey spark')",
+        help="comma-separated phrases for sherpa (default: 'hey hermes')",
     )
     parser.add_argument(
         "--keywords-score",
@@ -253,7 +253,7 @@ def main() -> int:
     print("Loading the wake-word model (this takes a moment on first run)...")
     try:
         if args.engine == "sherpa" or args.phrases:
-            phrases = args.phrases or ["hey missy", "hey skippy", "hey spark"]
+            phrases = args.phrases or list(wake.DEFAULT_SHERPA_PHRASES)
             engine = wake.load_sherpa_engine(
                 phrases,
                 keywords_score=args.keywords_score,

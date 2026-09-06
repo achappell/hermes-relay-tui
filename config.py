@@ -312,7 +312,7 @@ def build_arg_parser(argv: Optional[list[str]] = None) -> argparse.ArgumentParse
             "VOICE_SESSION_WAKE_PHRASES",
             _cfg_str(cfg, "wake_phrases"),
         ),
-        help="comma-separated wake phrases for Sherpa-ONNX (e.g. 'hey missy, hey skippy, hey spark')",
+        help="comma-separated wake phrases for Sherpa-ONNX (e.g. 'hey hermes, computer')",
     )
     parser.add_argument(
         "--wake-keywords-score",

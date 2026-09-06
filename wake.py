@@ -43,8 +43,10 @@ __all__ = [
     "DEFAULT_SILENCE_ALERT_SECONDS",
     "DEFAULT_QUEUE_SIZE",
     "DEFAULT_MAX_BUFFERED_SAMPLES",
+    "DEFAULT_SHERPA_PHRASES",
 ]
 
+DEFAULT_SHERPA_PHRASES = ("hey hermes",)
 DEFAULT_THRESHOLD = 0.6
 
 # openWakeWord scores one ~80ms frame at a time, and a stray phoneme in
@@ -612,7 +614,7 @@ def load_sherpa_engine(
     elif phrases:
         parsed = [str(p).strip() for p in phrases if str(p).strip()]
     else:
-        parsed = ["hey missy", "hey skippy", "hey spark"]
+        parsed = list(DEFAULT_SHERPA_PHRASES)
 
     sp = spm.SentencePieceProcessor()
     sp.load(str(bpe))

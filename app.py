@@ -988,7 +988,7 @@ class HermesStreamingApp(App):
         engine = getattr(self.args, "wake_engine", "openwakeword")
         phrases = getattr(self.args, "wake_phrases", None)
         if engine == "sherpa" or phrases:
-            detail = f"engine: sherpa · phrases: {phrases or 'hey missy, hey skippy, hey spark'}"
+            detail = f"engine: sherpa · phrases: {phrases or 'hey hermes'}"
         else:
             model = getattr(self.args, "wake_model", None) or "bundled hey_hermes"
             threshold = getattr(self.args, "wake_threshold", 0.6)
