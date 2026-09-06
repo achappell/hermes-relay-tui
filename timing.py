@@ -216,7 +216,9 @@ def _word_ranges(text: str) -> list[tuple[int, int, str]]:
         start = index
         while index < len(text) and not text[index].isspace():
             index += 1
-        ranges.append((start, index, _normalized_token(text[start:index])))
+        token = _normalized_token(text[start:index])
+        if token:
+            ranges.append((start, index, token))
     return ranges
 
 
