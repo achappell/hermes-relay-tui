@@ -183,6 +183,92 @@ async def send_prompt_response(
     await ws.send(json.dumps(payload))
 
 
+async def send_session_list(
+    ws: Any,
+    *,
+    limit: int = 20,
+    search: str = "",
+) -> list[dict[str, Any]]:
+    """Request available sessions from the relay."""
+    payload: dict[str, Any] = {
+        "type": "session_list",
+        "protocol_version": 1,
+        "limit": limit,
+    }
+    if search:
+        payload["search"] = search
+    logger.debug("session_list.send limit=%d search=%s", limit, summarize_text(search))
+    await ws.send(json.dumps(payload))
+    response = await _receive_json(ws)
+    logger.debug(
+        "session_list.recv kind=%s %s",
+        response.get("type"),
+        summarize_payload(response),
+    )
+    if response.get("type") != "session_list_result":
+        raise ProtocolError(f"session_list failed: {response}")
+    sessions = response.get("sessions")
+    if isinstance(sessions, list):
+        return [dict(item) for item in sessions if isinstance(item, dict)]
+    return []
+
+
+async def send_session_new(
+    ws: Any,
+    *,
+    session_id: Optional[str] = None,
+    title: Optional[str] = None,
+) -> dict[str, Any]:
+    """Request creation of a new session on the relay."""
+    payload: dict[str, Any] = {
+        "type": "session_new",
+        "protocol_version": 1,
+    }
+    if session_id:
+        payload["session_id"] = session_id
+    if title:
+        payload["title"] = title
+    logger.debug(
+        "session_new.send session_id=%s title=%s",
+        summarize_text(session_id),
+        summarize_text(title),
+    )
+    await ws.send(json.dumps(payload))
+    response = await _receive_json(ws)
+    logger.debug(
+        "session_new.recv kind=%s %s",
+        response.get("type"),
+        summarize_payload(response),
+    )
+    if response.get("type") not in ("session_switched", "session_created", "session_new_ack"):
+        raise ProtocolError(f"session_new failed: {response}")
+    return response
+
+
+async def send_session_switch(
+    ws: Any,
+    *,
+    session_id: str,
+) -> dict[str, Any]:
+    """Request switching to and hydrating an existing session."""
+    payload: dict[str, Any] = {
+        "type": "session_switch",
+        "protocol_version": 1,
+        "session_id": session_id,
+    }
+    logger.debug("session_switch.send session_id=%s", session_id)
+    await ws.send(json.dumps(payload))
+    response = await _receive_json(ws)
+    logger.debug(
+        "session_switch.recv kind=%s %s",
+        response.get("type"),
+        summarize_payload(response),
+    )
+    if response.get("type") not in ("session_switched", "session_resumed"):
+        raise ProtocolError(f"session_switch failed: {response}")
+    return response
+
+
 async def send_turn(
     ws: Any,
     *,

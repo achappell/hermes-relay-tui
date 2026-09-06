@@ -32,8 +32,14 @@ class FakeSession:
     through.
     """
 
-    def __init__(self, events=None, hello=None, connected=True, gate=None):
+    def __init__(self, events=None, hello=None, connected=True, gate=None, session_id=None):
         self.turn_index = 0
+        self._session_id = session_id
+        self.confirmed_model = None
+        self.confirmed_title = None
+        self.initial_history = []
+        self.sessions_list = []
+        self.switched_sessions = []
         self.sent_turns = []
         self.closed = False
         self.connect_calls = 0
@@ -49,6 +55,14 @@ class FakeSession:
         self.gate = gate
         self.supports_structured_prompts = True
         self.prompt_responses = []
+
+    @property
+    def session_id(self):
+        return self._session_id or "s1"
+
+    @session_id.setter
+    def session_id(self, val):
+        self._session_id = val
 
     async def send_prompt_response(
         self, *, prompt_id, prompt_kind, option_id=None, value=None, reason=None
@@ -66,8 +80,48 @@ class FakeSession:
         )
         return True
 
+    async def list_sessions(self, *, limit=20, search=""):
+        if not self.connected:
+            raise RuntimeError("not connected")
+        if search:
+            return [
+                s for s in self.sessions_list
+                if search.lower() in str(s.get("session_id") or s.get("id") or "").lower()
+                or search.lower() in str(s.get("title") or "").lower()
+            ]
+        return list(self.sessions_list[:limit])
+
+    async def new_session(self, *, session_id=None, title=None):
+        if not self.connected:
+            raise RuntimeError("not connected")
+        sid = session_id or "session-new"
+        self.session_id = sid
+        self.turn_index = 0
+        return {"type": "session_switched", "session_id": sid, "title": title or "New Session"}
+
+    async def switch_session(self, session_id):
+        if not self.connected:
+            raise RuntimeError("not connected")
+        self.session_id = session_id
+        self.switched_sessions.append(session_id)
+        self.turn_index = 0
+        return {
+            "type": "session_switched",
+            "session_id": session_id,
+            "title": f"Session {session_id}",
+            "history": self.initial_history,
+        }
+
     async def connect(self):
         self.connect_calls += 1
+        if self.hello.get("session_id"):
+            self.session_id = str(self.hello.get("session_id"))
+        if self.hello.get("model"):
+            self.confirmed_model = str(self.hello.get("model"))
+        if self.hello.get("title"):
+            self.confirmed_title = str(self.hello.get("title"))
+        if self.hello.get("history"):
+            self.initial_history = list(self.hello.get("history"))
         return self.hello
 
     def is_connected(self):
@@ -3822,3 +3876,103 @@ async def test_turn_timeout_clears_pending_prompt_state():
         assert app._pending_prompt is None
         panel = app.query_one("#prompt-panel", Static)
         assert panel.display is False
+
+
+async def test_connect_hydrates_historical_messages_into_transcript():
+    hello = {
+        "chat_id": "chat-123",
+        "session_id": "persisted-session",
+        "model": "qwen2.5:7b",
+        "history": [
+            {"role": "user", "content": "What is the capital of France?"},
+            {"role": "assistant", "content": "Paris is the capital of France."},
+        ],
+    }
+    session = FakeSession(hello=hello)
+    app = HermesStreamingApp(args=make_args(session_id="persisted-session"), session_factory=lambda: session)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+
+        assert "What is the capital of France?" in transcript_of(app)
+        assert "Paris is the capital of France." in transcript_of(app)
+        assert "Connected to persisted-session" in transcript_of(app)
+        assert "model qwen2.5:7b" in transcript_of(app)
+
+
+async def test_session_list_command_renders_sessions():
+    session = FakeSession()
+    session.sessions_list = [
+        {"session_id": "s-alpha", "title": "Alpha Project", "model": "qwen", "message_count": 8},
+        {"session_id": "s-beta", "title": "Beta Analysis", "model": "qwen", "message_count": 2},
+    ]
+    app = HermesStreamingApp(args=make_args(), session_factory=lambda: session)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        composer = app.query_one("#composer", Composer)
+        composer.text = "/session list"
+        await pilot.press("enter")
+        await pilot.pause()
+
+        text = transcript_of(app)
+        assert "Sessions:" in text
+        assert "s-alpha (8 msgs)" in text
+        assert "Alpha Project" in text
+        assert "s-beta (2 msgs)" in text
+
+
+async def test_session_new_command_clears_transcript_and_starts_session():
+    session = FakeSession()
+    app = HermesStreamingApp(args=make_args(), session_factory=lambda: session)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app._append_block("old context message")
+        assert "old context message" in transcript_of(app)
+
+        composer = app.query_one("#composer", Composer)
+        composer.text = "/new s-brand-new"
+        await pilot.press("enter")
+        await pilot.pause()
+
+        assert "Started new session s-brand-new." in transcript_of(app)
+        assert "old context message" not in transcript_of(app)
+        assert session.session_id == "s-brand-new"
+
+
+async def test_session_resume_command_switches_and_hydrates():
+    session = FakeSession()
+    session.initial_history = [
+        {"role": "user", "content": "Restored question"},
+        {"role": "assistant", "content": "Restored answer"},
+    ]
+    app = HermesStreamingApp(args=make_args(), session_factory=lambda: session)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        composer = app.query_one("#composer", Composer)
+        composer.text = "/resume s-archived"
+        await pilot.press("enter")
+        await pilot.pause()
+
+        text = transcript_of(app)
+        assert "Resumed session s-archived (2 message(s))." in text
+        assert "Restored question" in text
+        assert "Restored answer" in text
+        assert session.switched_sessions == ["s-archived"]
+
+
+async def test_status_command_shows_confirmed_model():
+    hello = {
+        "chat_id": "chat-1",
+        "session_id": "s1",
+        "model": "confirmed-qwen",
+    }
+    session = FakeSession(hello=hello)
+    app = HermesStreamingApp(args=make_args(), session_factory=lambda: session)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        composer = app.query_one("#composer", Composer)
+        composer.text = "/status"
+        await pilot.press("enter")
+        await pilot.pause()
+
+        assert "model: confirmed-qwen (confirmed)" in transcript_of(app)
+

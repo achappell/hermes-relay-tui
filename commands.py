@@ -17,14 +17,15 @@ class Command:
 
 COMMAND_REGISTRY: tuple[Command, ...] = (
     Command("help", "Show available commands", args_hint="[filter]"),
-    Command("new", "Start a fresh Hermes session"),
+    Command("new", "Start a fresh Hermes session", args_hint="[session-id]"),
     Command("clear", "Clear the visible transcript"),
     Command("status", "Show connection and session status"),
     Command("model", "Change the active Hermes model", args_hint="[model]"),
     Command("reasoning", "Change the active reasoning effort", args_hint="[level]"),
     Command("fast", "Toggle fast mode", args_hint="[on|off]"),
-    Command("sessions", "List resumable Hermes sessions"),
-    Command("resume", "Resume a Hermes session", args_hint="[session-id]"),
+    Command("session", "Manage or switch Hermes sessions", args_hint="[list|new|switch|resume|info]"),
+    Command("sessions", "List resumable Hermes sessions", args_hint="[search]"),
+    Command("resume", "Resume a Hermes session", args_hint="<session-id>"),
     Command("queue", "Queue a prompt for the next turn", args_hint="<prompt>"),
     Command("busy", "Show or set active-turn behavior", args_hint="[queue|steer|interrupt]"),
     Command("details", "Show or hide thinking and tool detail", args_hint="[show|hide]"),
