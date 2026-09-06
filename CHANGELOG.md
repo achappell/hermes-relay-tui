@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.8.0 (2026-09-06)
+
+<!-- Release notes generated using configuration in .github/release.yml at main -->
+
+## What's Changed
+### Other Changes
+* feat: add wake follow-up and visible optional installs by @achappell in https://github.com/achappell/hermes-relay-tui/pull/73
+* feat(voice): align captions with streamed playback by @achappell in https://github.com/achappell/hermes-relay-tui/pull/78
+* feat(audio): add speech alignment benchmark gate by @achappell in https://github.com/achappell/hermes-relay-tui/pull/80
+* feat(voice-session): add structured prompt client contract by @achappell in https://github.com/achappell/hermes-relay-tui/pull/82
+* feat(home-display): segment-aware audio captions and deterministic shutdown by @achappell in https://github.com/achappell/hermes-relay-tui/pull/83
+* feat(app): structured-prompt TUI (approval/confirm/clarify/sudo/secret) by @achappell in https://github.com/achappell/hermes-relay-tui/pull/84
+* feat(wake): add Sherpa-ONNX keyword spotting engine and multi-phrase routing (HOME-08) by @achappell in https://github.com/achappell/hermes-relay-tui/pull/85
+
+
+**Full Changelog**: https://github.com/achappell/hermes-relay-tui/compare/v0.7.0...v0.8.0
+
 ## 0.7.0 (2026-09-05)
 
 <!-- Release notes generated using configuration in .github/release.yml at main -->
