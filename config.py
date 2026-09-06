@@ -230,7 +230,6 @@ def _resolve_token(explicit: Optional[str], env_path: Path) -> str:
         return from_environment
     return _lookup_env_file(env_path, "VOICE_SESSION_TOKEN")
 
-
 def resolve_profile_token(
     data: dict[str, Any],
     profile_env: Path,
