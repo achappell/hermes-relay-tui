@@ -65,3 +65,25 @@
 # turn_timeout: 195.0        # 0 disables the timeout
 # connect_retries: 3
 # connect_retry_delay: 1.0
+
+# --- household profiles (HOME-13) -----------------------------------------
+# Multiple accounts routed by wake word. When defined, the home appliance
+# listens for all configured wake phrases; speaking one switches to that
+# profile's relay, session, and credentials before audio capture begins.
+#
+# profiles:
+#   amanda:
+#     display_name: "Amanda"
+#     wake_phrase: "hey missy"
+#     url: ws://localhost:8792/voice-session
+#     token: "${VOICE_SESSION_TOKEN_AMANDA}" # or token_env: VOICE_SESSION_TOKEN_AMANDA
+#     client_id: amanda-home
+#     session_id: amanda-kiosk
+#
+#   jensen:
+#     display_name: "Jensen"
+#     wake_phrase: "hey skippy"
+#     url: ws://localhost:8793/voice-session
+#     token: "${VOICE_SESSION_TOKEN_JENSEN}"
+#     client_id: jensen-home
+#     session_id: jensen-kiosk

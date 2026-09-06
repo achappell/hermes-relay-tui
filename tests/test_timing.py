@@ -154,3 +154,26 @@ def test_visible_text_maps_punctuation_and_markdown_to_the_rendered_prefix():
     assert timing is not None
 
     assert visible_text("**Hermes** keeps\nmoving.", [timing], 0.9) == "**Hermes** keeps\nmoving."
+
+
+def test_visible_text_handles_emojis_and_standalone_symbols():
+    timing = normalize_speech_timing(
+        {
+            "segment_id": "segment-1",
+            "text": "A cow Moo-oo-oo-oo I can picture it now",
+            "timing_source": "duration_fallback",
+            "audio_offset_ms": 0,
+            "duration_ms": 3000,
+        }
+    )
+    assert timing is not None
+
+    target = "A cow! Moo-oo-oo-oo! 🐮 I can picture it now"
+    # At 1.5s (halfway) it should reveal through the emoji and word
+    revealed = visible_text(target, [timing], 1.5)
+    assert "🐮" in revealed
+    assert revealed.startswith("A cow! Moo-oo-oo-oo! 🐮")
+
+    # At full duration it should reveal the entire target
+    assert visible_text(target, [timing], 3.0) == target
+

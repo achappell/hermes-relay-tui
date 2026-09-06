@@ -129,6 +129,9 @@ class Appliance:
         *,
         publisher: DisplayStatePublisher | None = None,
         session: Any = None,
+        sessions: dict[str, Any] | None = None,
+        session_factory: Callable[[config.HouseholdProfile], Any] | None = None,
+        profiles: list[config.HouseholdProfile] | None = None,
         player: Any = None,
         earcons: Any = None,
         recorder: Any = None,
@@ -141,6 +144,8 @@ class Appliance:
         self.args = args
         self.publisher = publisher or DisplayStatePublisher()
         self._session = session
+        self._session_factory = session_factory
+        self._sessions: dict[str, Any] = dict(sessions) if sessions is not None else {}
         self._player = player
         self._earcons = earcons
         self._recorder = recorder
@@ -149,6 +154,42 @@ class Appliance:
         self._reconnect_delay = reconnect_delay
         self._tick_interval = tick_interval
         self._on_ready = on_ready
+
+        if profiles is not None:
+            self._profiles = list(profiles)
+        else:
+            config_path = getattr(self.args, "config", None)
+            cfg = config.load_config_file(config_path) if config_path else {}
+            self._profiles = config.load_household_profiles(cfg, self.args)
+
+        if not self._profiles:
+            self._profiles = config.load_household_profiles({}, self.args)
+
+        self._active_profile = self._profiles[0]
+        if session is not None:
+            self._sessions[self._active_profile.name] = session
+
+        self._phrase_to_profile: dict[str, config.HouseholdProfile | None] = {}
+        for prof in self._profiles:
+            for phrase in prof.wake_phrases:
+                norm = phrase.strip().casefold()
+                if not norm:
+                    continue
+                if norm in self._phrase_to_profile:
+                    if self._phrase_to_profile[norm] != prof:
+                        self._phrase_to_profile[norm] = None
+                else:
+                    self._phrase_to_profile[norm] = prof
+
+        all_phrases: list[str] = []
+        for prof in self._profiles:
+            for p in prof.wake_phrases:
+                p_clean = p.strip()
+                if p_clean and p_clean not in all_phrases:
+                    all_phrases.append(p_clean)
+        if all_phrases:
+            if not getattr(self.args, "wake_phrases", None) or len(self._profiles) > 1:
+                self.args.wake_phrases = ", ".join(all_phrases)
 
         self._listener: Any = None
         self._coordinator: Any = None
@@ -169,6 +210,14 @@ class Appliance:
         self._signals_installed: list[signal.Signals] = []
         self._sigint_count = 0
 
+    @property
+    def active_profile(self) -> config.HouseholdProfile:
+        return self._active_profile
+
+    @property
+    def profiles(self) -> list[config.HouseholdProfile]:
+        return list(self._profiles)
+
     # ---- display -------------------------------------------------------
 
     def _publish(
@@ -182,15 +231,21 @@ class Appliance:
         if response_text is not None:
             self._response_text = response_text
         status = status_text if status_text is not None else STATUS_TEXT.get(state)
-        payload = (state, self._response_text, status)
+        account = self._active_profile.display_name if self._active_profile else None
+        payload = (state, self._response_text, status, account)
         if payload == self._published:
             return
         self._published = payload
 
         def _apply() -> None:
-            self.publisher.publish(
-                state=state, response_text=payload[1], status_text=status
-            )
+            try:
+                self.publisher.publish(
+                    state=state, response_text=payload[1], status_text=status, account=account
+                )
+            except TypeError:
+                self.publisher.publish(
+                    state=state, response_text=payload[1], status_text=status
+                )
 
         loop = self._loop
         if loop is None:
@@ -275,6 +330,11 @@ class Appliance:
         self._earcons.play(earcons_module.CAPTURE_DONE)
 
     # ---- turn ----------------------------------------------------------
+
+    def _capture_voice(self) -> str:
+        if self._stopping.is_set() or not self._connected:
+            return ""
+        return self._session.capture_voice()
 
     def _capture_follow_up(self) -> str:
         if self._stopping.is_set() or not self._connected:
@@ -716,11 +776,108 @@ class Appliance:
                 with contextlib.suppress(Exception):
                     await self._session.close()
 
+    # ---- profiles & session switching ---------------------------------
+
+    def _create_session_for_profile(self, profile: config.HouseholdProfile) -> Any:
+        if self._session_factory is not None:
+            return self._session_factory(profile)
+        if profile.name in self._sessions:
+            return self._sessions[profile.name]
+        profile_args = config.make_profile_args(self.args, profile)
+        return HermesSession(profile_args)
+
+    async def _switch_profile(self, profile: config.HouseholdProfile) -> bool:
+        if self._active_profile == profile and self._connected:
+            return True
+
+        logger.info(
+            "switching household profile: from=%s to=%s display_name=%s",
+            self._active_profile.name if self._active_profile else None,
+            profile.name,
+            profile.display_name,
+        )
+
+        old_session = self._session
+        self._connected = False
+        self._set_listening()
+        if old_session is not None:
+            with contextlib.suppress(Exception):
+                await old_session.close()
+
+        self._active_profile = profile
+        self._session = self._create_session_for_profile(profile)
+        self._session.use_shared_recorder(self._recorder)
+
+        try:
+            await self._session.connect()
+            self._connected = True
+            self._set_listening()
+            self._publish("idle", status_text=f"Switched to {profile.display_name}")
+            return True
+        except Exception:
+            logger.debug("switching profile failed for %s", profile.name, exc_info=True)
+            self._connected = False
+            self._set_listening()
+            self._publish(
+                "disconnected",
+                status_text=f"Failed to connect {profile.display_name}",
+            )
+            self._request_reconnect()
+            return False
+
+    async def route_wake(self, phrase: str | None) -> bool:
+        if self._stopping.is_set() or not self._connected:
+            return False
+        if not phrase:
+            if len(self._profiles) == 1:
+                return True
+            return False
+
+        normalized = phrase.strip().casefold()
+        profile = self._phrase_to_profile.get(normalized)
+        if profile is None:
+            logger.debug("ignoring unknown or ambiguous wake phrase: %r", phrase)
+            return False
+
+        current_state = self._coordinator.state if self._coordinator else handsfree.IDLE
+        if self._active_profile and profile.name == self._active_profile.name:
+            return True
+
+        if current_state != handsfree.IDLE:
+            logger.debug(
+                "cannot switch account to %s during active turn/playback (state=%s)",
+                profile.name,
+                current_state,
+            )
+            return False
+
+        return await self._switch_profile(profile)
+
+    def _route_wake(self, phrase: str | None) -> bool:
+        loop = self._loop
+        if loop is None:
+            return False
+        try:
+            running = asyncio.get_running_loop()
+        except RuntimeError:
+            running = None
+        if running is loop:
+            raise RuntimeError(
+                "_route_wake called synchronously on the event loop thread; "
+                "use await appliance.route_wake() or run in a worker thread"
+            )
+        future = asyncio.run_coroutine_threadsafe(self.route_wake(phrase), loop)
+        try:
+            return bool(future.result())
+        except Exception:
+            logger.debug("profile switch for wake phrase %r failed", phrase, exc_info=True)
+            return False
+
     # ---- lifecycle -----------------------------------------------------
 
     def _build(self) -> None:
         if self._session is None:
-            self._session = HermesSession(self.args)
+            self._session = self._create_session_for_profile(self._active_profile)
         if self._player is None:
             self._player = audio_module.PCMPlayer(
                 enabled=not getattr(self.args, "no_play", False),
@@ -736,17 +893,44 @@ class Appliance:
             from voice import create_audio_recorder
 
             self._recorder = create_audio_recorder()
-        built = self._build_hands_free(
-            self._session,
-            self.args,
-            on_state_change=self._on_coordinator_state,
-            send=self._send,
-            follow_up_capture=self._capture_follow_up,
-            speech_detected=self._speech_detected,
-            stop_playback=self._abort_player,
-            acknowledge=self._acknowledge_wake,
-            capture_finished=self._acknowledge_capture,
-        )
+
+        kwargs: dict[str, Any] = {
+            "on_state_change": self._on_coordinator_state,
+            "send": self._send,
+            "follow_up_capture": self._capture_follow_up,
+            "speech_detected": self._speech_detected,
+            "stop_playback": self._abort_player,
+            "acknowledge": self._acknowledge_wake,
+            "capture_finished": self._acknowledge_capture,
+        }
+        import inspect
+
+        try:
+            params = inspect.signature(self._build_hands_free).parameters
+            if "capture" in params or any(
+                p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values()
+            ):
+                kwargs["capture"] = self._capture_voice
+            if "route_wake" in params or any(
+                p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values()
+            ):
+                kwargs["route_wake"] = self._route_wake
+        except (ValueError, TypeError):
+            kwargs["capture"] = self._capture_voice
+            kwargs["route_wake"] = self._route_wake
+
+        hands_free_args = self.args
+        if getattr(self.args, "wake_phrases", None) is None:
+            all_phrases = []
+            for prof in self._profiles:
+                all_phrases.extend(prof.wake_phrases)
+            if all_phrases:
+                import copy
+
+                hands_free_args = copy.copy(self.args)
+                hands_free_args.wake_phrases = tuple(all_phrases)
+
+        built = self._build_hands_free(self._session, hands_free_args, **kwargs)
         if built is None:
             raise RuntimeError(
                 "The appliance is a hands-free unit: enable the wake word with "
@@ -856,12 +1040,39 @@ class Appliance:
         *args: Any,
         timeout: float | None = None,
     ) -> None:
+        """Run blocking teardown in a dedicated daemon thread with a hard timeout.
+
+        We intentionally avoid asyncio.to_thread() here because asyncio's
+        default ThreadPoolExecutor uses non-daemon worker threads. If a native
+        audio/PortAudio call hangs or times out, an abandoned ThreadPoolExecutor
+        worker thread will block Python's atexit._python_exit forever, trapping
+        the process at shutdown. A daemon thread ensures interpreter exit is
+        always clean and prompt.
+        """
         if func is None:
             return
         actual_timeout = timeout if timeout is not None else SHUTDOWN_TASK_TIMEOUT
+        loop = asyncio.get_running_loop()
+        future: asyncio.Future[None] = loop.create_future()
+
+        def runner() -> None:
+            try:
+                func(*args)
+            except Exception as exc:
+                if not future.done():
+                    loop.call_soon_threadsafe(future.set_exception, exc)
+                return
+            if not future.done():
+                loop.call_soon_threadsafe(future.set_result, None)
+
+        thread = threading.Thread(
+            target=runner,
+            name=f"appliance-teardown-{getattr(func, '__name__', 'worker')}",
+            daemon=True,
+        )
+        thread.start()
         try:
-            task = asyncio.create_task(asyncio.to_thread(func, *args))
-            await asyncio.wait_for(asyncio.shield(task), actual_timeout)
+            await asyncio.wait_for(future, actual_timeout)
         except asyncio.TimeoutError:
             logger.warning(
                 "appliance.shutdown.timeout operation=%s",
@@ -873,6 +1084,7 @@ class Appliance:
                 getattr(func, "__name__", str(func)),
                 exc_info=True,
             )
+
 
     async def run(self) -> None:
         self._loop = asyncio.get_running_loop()
@@ -958,6 +1170,15 @@ class Appliance:
         if self._player is not None:
             with contextlib.suppress(Exception):
                 await self._bounded_to_thread(self._abort_player)
+        if self._sessions:
+            for sess in list(self._sessions.values()):
+                if sess is not self._session:
+                    with contextlib.suppress(Exception):
+                        close_task = asyncio.create_task(sess.close())
+                        await asyncio.wait_for(
+                            asyncio.shield(close_task),
+                            SHUTDOWN_TASK_TIMEOUT,
+                        )
         if self._session is not None:
             with contextlib.suppress(Exception):
                 close_task = asyncio.create_task(self._session.close())

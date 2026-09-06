@@ -28,6 +28,7 @@ class DisplaySnapshot:
     response_text: str = ""
     status_text: str | None = None
     media: dict[str, object] | None = None
+    account: str | None = None
 
     def __post_init__(self) -> None:
         if type(self.schema) is not int or self.schema != 1:
@@ -40,6 +41,8 @@ class DisplaySnapshot:
             raise TypeError("response_text must be a string")
         if self.status_text is not None and not isinstance(self.status_text, str):
             raise TypeError("status_text must be a string or None")
+        if self.account is not None and not isinstance(self.account, str):
+            raise TypeError("account must be a string or None")
         if self.media is not None and not isinstance(self.media, dict):
             raise TypeError("media must be a dict or None")
         if self.media is not None:
@@ -51,7 +54,7 @@ class DisplaySnapshot:
                 raise ValueError("media must be JSON serializable") from error
 
     def to_dict(self) -> dict[str, object]:
-        return {
+        data: dict[str, object] = {
             "type": "snapshot",
             "schema": self.schema,
             "sequence": self.sequence,
@@ -60,6 +63,9 @@ class DisplaySnapshot:
             "status_text": self.status_text,
             "media": self.media,
         }
+        if self.account is not None:
+            data["account"] = self.account
+        return data
 
 
 class DisplayStatePublisher:
@@ -78,6 +84,7 @@ class DisplayStatePublisher:
         response_text: str = "",
         status_text: str | None = None,
         media: dict[str, object] | None = None,
+        account: str | None = None,
     ) -> DisplaySnapshot:
         snapshot = DisplaySnapshot(
             sequence=self._snapshot.sequence + 1,
@@ -85,6 +92,7 @@ class DisplayStatePublisher:
             response_text=response_text,
             status_text=status_text,
             media=media,
+            account=account,
         )
         self._snapshot = snapshot
         for queue in tuple(self._subscribers):

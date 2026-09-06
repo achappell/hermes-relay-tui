@@ -8,6 +8,7 @@ file as protocol or UI code.
 from __future__ import annotations
 
 import argparse
+from dataclasses import dataclass
 import os
 import socket
 import sys
@@ -88,12 +89,12 @@ def config_path_from_argv(argv: Optional[list[str]]) -> Path:
     items = list(sys.argv[1:] if argv is None else argv)
     for index, item in enumerate(items):
         if item == "--config" and index + 1 < len(items):
-            return Path(items[index + 1])
+            return Path(items[index + 1]).expanduser()
         if item.startswith("--config="):
-            return Path(item.split("=", 1)[1])
+            return Path(item.split("=", 1)[1]).expanduser()
     env_value = os.getenv("HERMES_RELAY_TUI_CONFIG")
     if env_value:
-        return Path(env_value)
+        return Path(env_value).expanduser()
     return DEFAULT_CONFIG_PATH
 
 
@@ -104,7 +105,10 @@ def load_config_file(path: Optional[Path]) -> dict[str, Any]:
     ``build_arg_parser``'s precedence for each option: CLI flag > env var >
     config file > built-in default.
     """
-    if path is None or not path.exists():
+    if path is None:
+        return {}
+    path = path.expanduser()
+    if not path.exists():
         return {}
     import yaml
 
@@ -129,6 +133,7 @@ def ensure_default_config_file(path: Path) -> bool:
     when the example template isn't present alongside this module (e.g. a
     packaged install that doesn't ship it — see DIST-01/DIST-02).
     """
+    path = path.expanduser()
     if path.exists():
         return False
     template = Path(__file__).parent / "config.example.yaml"
@@ -149,7 +154,7 @@ def _cfg_str(cfg: dict[str, Any], key: str, hardcoded: Optional[str] = None) -> 
 
 def _cfg_path(cfg: dict[str, Any], key: str, hardcoded: Optional[Path] = None) -> Optional[Path]:
     value = cfg.get(key)
-    return Path(value) if value else hardcoded
+    return Path(value).expanduser() if value else hardcoded
 
 
 def _cfg_bool(cfg: dict[str, Any], key: str, hardcoded: bool = False) -> bool:
@@ -164,38 +169,225 @@ def _cfg_choice(cfg: dict[str, Any], key: str, choices: tuple[str, ...], hardcod
     return hardcoded
 
 
+@dataclass(frozen=True)
+class HouseholdProfile:
+    name: str
+    display_name: str
+    wake_phrases: tuple[str, ...]
+    url: str
+    token: str
+    client_id: str
+    device_id: str
+    session_id: str
+    model: Optional[str] = None
+
+    def __repr__(self) -> str:
+        return (
+            f"HouseholdProfile(name={self.name!r}, display_name={self.display_name!r}, "
+            f"wake_phrases={self.wake_phrases!r}, url={self.url!r}, token='***', "
+            f"client_id={self.client_id!r}, device_id={self.device_id!r}, "
+            f"session_id={self.session_id!r}, model={self.model!r})"
+        )
+
+
+def _lookup_env_file(path: Path, key: str) -> str:
+    resolved_path = Path(path).expanduser()
+    paths = [resolved_path]
+    if resolved_path == DEFAULT_PROFILE_ENV and LEGACY_PROFILE_ENV != DEFAULT_PROFILE_ENV:
+        paths.append(LEGACY_PROFILE_ENV)
+    for p in paths:
+        if not p.exists():
+            continue
+        try:
+            from dotenv import dotenv_values
+
+            val = dotenv_values(p).get(key)
+            if val:
+                return str(val).strip()
+        except ImportError:
+            try:
+                for raw_line in p.read_text(encoding="utf-8").splitlines():
+                    line = raw_line.strip()
+                    if not line.startswith(f"{key}="):
+                        continue
+                    value = line.split("=", 1)[1].strip()
+                    if len(value) >= 2 and value[0] == value[-1] and value[0] in "'\"":
+                        value = value[1:-1]
+                    if value:
+                        return value
+            except (OSError, UnicodeDecodeError):
+                continue
+        except (OSError, UnicodeDecodeError):
+            continue
+    return ""
+
+
 def _resolve_token(explicit: Optional[str], env_path: Path) -> str:
     if explicit:
         return explicit
     from_environment = os.getenv("VOICE_SESSION_TOKEN", "").strip()
     if from_environment:
         return from_environment
-    paths = [env_path]
-    if env_path == DEFAULT_PROFILE_ENV and LEGACY_PROFILE_ENV != DEFAULT_PROFILE_ENV:
-        paths.append(LEGACY_PROFILE_ENV)
+    return _lookup_env_file(env_path, "VOICE_SESSION_TOKEN")
 
-    for path in paths:
-        if not path.exists():
-            continue
-        try:
-            from dotenv import dotenv_values
 
-            value = dotenv_values(path).get("VOICE_SESSION_TOKEN")
-            if value:
-                return str(value).strip()
-        except ImportError:
-            for raw_line in path.read_text(encoding="utf-8").splitlines():
-                line = raw_line.strip()
-                if not line.startswith("VOICE_SESSION_TOKEN="):
-                    continue
-                value = line.split("=", 1)[1].strip()
-                if len(value) >= 2 and value[0] == value[-1] and value[0] in "'\"":
-                    value = value[1:-1]
-                if value:
-                    return value
-        except (OSError, UnicodeDecodeError):
-            continue
-    return ""
+def resolve_profile_token(
+    data: dict[str, Any],
+    profile_env: Path,
+    fallback_token: str = "",
+) -> str:
+    token_env = data.get("token_env")
+    if token_env and isinstance(token_env, str):
+        env_key = token_env.strip()
+        val = os.getenv(env_key)
+        if val:
+            return val.strip()
+        file_val = _lookup_env_file(profile_env, env_key)
+        if file_val:
+            return file_val
+
+    raw_token = data.get("token")
+    if raw_token and isinstance(raw_token, str):
+        raw_token = raw_token.strip()
+        if raw_token.startswith("${") and raw_token.endswith("}"):
+            var_name = raw_token[2:-1].strip()
+            val = os.getenv(var_name)
+            if val:
+                return val.strip()
+            file_val = _lookup_env_file(profile_env, var_name)
+            if file_val:
+                return file_val
+        elif raw_token.startswith("$") and len(raw_token) > 1 and raw_token[1:].isidentifier():
+            var_name = raw_token[1:]
+            val = os.getenv(var_name)
+            if val:
+                return val.strip()
+            file_val = _lookup_env_file(profile_env, var_name)
+            if file_val:
+                return file_val
+        else:
+            return raw_token
+
+    name = str(data.get("name", "")).upper().replace("-", "_")
+    if name:
+        specific_env = f"VOICE_SESSION_TOKEN_{name}"
+        val = os.getenv(specific_env)
+        if val:
+            return val.strip()
+        file_val = _lookup_env_file(profile_env, specific_env)
+        if file_val:
+            return file_val
+
+    if fallback_token:
+        return fallback_token
+    return _resolve_token(None, profile_env)
+
+
+def _parse_wake_phrases(raw: Any) -> tuple[str, ...]:
+    if not raw:
+        return ()
+    if isinstance(raw, str):
+        parts = [p.strip() for p in raw.split(",") if p.strip()]
+        return tuple(parts)
+    if isinstance(raw, (list, tuple, set)):
+        parts = [str(p).strip() for p in raw if str(p).strip()]
+        return tuple(parts)
+    return ()
+
+
+def load_household_profiles(
+    cfg: dict[str, Any],
+    args: Any = None,
+) -> list[HouseholdProfile]:
+    profile_env = getattr(args, "profile_env", None) or _cfg_path(cfg, "profile_env", DEFAULT_PROFILE_ENV)
+    fallback_url = getattr(args, "url", None) or _cfg_str(cfg, "url", DEFAULT_URL)
+    fallback_client_id = getattr(args, "client_id", None) or _cfg_str(cfg, "client_id", "amanda-laptop")
+    fallback_device_id = getattr(args, "device_id", None) or _cfg_str(cfg, "device_id", default_device_id())
+    fallback_session_id = getattr(args, "session_id", None) or _cfg_str(cfg, "session_id", "hybrid-tui")
+    fallback_token = _resolve_token(getattr(args, "token", None) or _cfg_str(cfg, "token"), profile_env)
+    fallback_model = getattr(args, "model", None) or _cfg_str(cfg, "model")
+
+    raw_profiles = cfg.get("profiles")
+    if raw_profiles and isinstance(raw_profiles, (dict, list)):
+        profiles: list[HouseholdProfile] = []
+        entries: list[tuple[str, dict[str, Any]]] = []
+        if isinstance(raw_profiles, dict):
+            for k, v in raw_profiles.items():
+                if isinstance(v, dict):
+                    entries.append((str(k), v))
+        elif isinstance(raw_profiles, list):
+            for item in raw_profiles:
+                if isinstance(item, dict):
+                    k = str(item.get("name") or len(entries) + 1)
+                    entries.append((k, item))
+
+        for key, entry in entries:
+            name = str(entry.get("name") or key).strip()
+            display_name = str(entry.get("display_name") or name.capitalize()).strip()
+            raw_phrases = entry.get("wake_phrases") or entry.get("wake_phrase")
+            wake_phrases = _parse_wake_phrases(raw_phrases)
+            url = str(entry.get("url") or fallback_url).strip()
+            token = resolve_profile_token(dict(entry, name=name), profile_env, fallback_token=fallback_token)
+            client_id = str(entry.get("client_id") or f"{name}-home").strip()
+            device_id = str(entry.get("device_id") or fallback_device_id).strip()
+            session_id = str(entry.get("session_id") or f"{name}-home").strip()
+            model = entry.get("model") or fallback_model
+            if model is not None:
+                model = str(model).strip()
+
+            profiles.append(
+                HouseholdProfile(
+                    name=name,
+                    display_name=display_name,
+                    wake_phrases=wake_phrases,
+                    url=url,
+                    token=token,
+                    client_id=client_id,
+                    device_id=device_id,
+                    session_id=session_id,
+                    model=model,
+                )
+            )
+        if profiles:
+            return profiles
+
+    display_name = getattr(args, "display_name", None) or _cfg_str(cfg, "display_name", "Home")
+    raw_phrases = getattr(args, "wake_phrases", None) or _cfg_str(cfg, "wake_phrases") or _cfg_str(cfg, "wake_phrase")
+    wake_phrases = _parse_wake_phrases(raw_phrases)
+    if not wake_phrases:
+        wake_phrases = ("hey hermes",)
+
+    return [
+        HouseholdProfile(
+            name="default",
+            display_name=display_name,
+            wake_phrases=wake_phrases,
+            url=fallback_url,
+            token=fallback_token,
+            client_id=fallback_client_id,
+            device_id=fallback_device_id,
+            session_id=fallback_session_id,
+            model=fallback_model,
+        )
+    ]
+
+
+def make_profile_args(base_args: Any, profile: HouseholdProfile) -> Any:
+    """Create a copy of base_args with profile-specific session fields overridden."""
+    if hasattr(base_args, "__dict__"):
+        data = dict(vars(base_args))
+    else:
+        data = {}
+    data.update({
+        "url": profile.url,
+        "token": profile.token,
+        "client_id": profile.client_id,
+        "device_id": profile.device_id,
+        "session_id": profile.session_id,
+        "display_name": profile.display_name,
+        "model": profile.model or data.get("model"),
+    })
+    return argparse.Namespace(**data)
 
 
 def connect_factory():
@@ -489,6 +681,7 @@ __all__ = [
     "DEFAULT_PROFILE_ENV",
     "LEGACY_PROFILE_ENV",
     "DEFAULT_URL",
+    "HouseholdProfile",
     "_connection_kwargs",
     "_env_bool",
     "_env_choice",
@@ -502,4 +695,7 @@ __all__ = [
     "default_device_id",
     "ensure_default_config_file",
     "load_config_file",
+    "load_household_profiles",
+    "make_profile_args",
+    "resolve_profile_token",
 ]

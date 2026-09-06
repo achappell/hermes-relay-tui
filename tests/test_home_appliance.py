@@ -206,16 +206,19 @@ def _build(appliance_state: dict):
         *,
         on_state_change=None,
         send=None,
+        capture=None,
         follow_up_capture=None,
         speech_detected=None,
         stop_playback=None,
         acknowledge=None,
         capture_finished=None,
+        route_wake=None,
+        **kwargs,
     ):
         listener = FakeListener()
         coordinator = handsfree.HandsFreeCoordinator(
             session,
-            capture=session.capture_voice,
+            capture=capture or session.capture_voice,
             send=send,
             follow_up_capture=follow_up_capture,
             follow_up_listen_timeout=getattr(args, "wake_followup_seconds", 8.0),
@@ -226,6 +229,7 @@ def _build(appliance_state: dict):
             barge_in=getattr(args, "wake_barge_in", False),
             stop_playback=stop_playback,
             on_state_change=on_state_change,
+            route_wake=route_wake,
             now=appliance_state.get("clock", None) or (lambda: 0.0),
         )
         appliance_state["listener"] = listener
@@ -309,9 +313,11 @@ class RecordingPublisher:
 
     def __init__(self) -> None:
         self.history: list[tuple[str, str, str | None]] = []
+        self.accounts: list[str | None] = []
 
-    def publish(self, *, state, response_text="", status_text=None, media=None):
+    def publish(self, *, state, response_text="", status_text=None, media=None, account=None, **kwargs):
         self.history.append((state, response_text, status_text))
+        self.accounts.append(account)
 
     @property
     def sequence(self) -> list[str]:
@@ -1504,3 +1510,22 @@ async def test_appliance_second_signal_forces_keyboard_interrupt():
         appliance._sigint_count += 1
         if appliance._sigint_count > 1:
             raise KeyboardInterrupt
+
+
+@pytest.mark.asyncio
+async def test_bounded_to_thread_runs_daemon_thread_and_handles_timeout():
+    import threading
+    appliance, state = make_appliance()
+
+    thread_daemon_status: list[bool] = []
+    block_event = threading.Event()
+
+    def slow_func():
+        thread_daemon_status.append(threading.current_thread().daemon)
+        block_event.wait(timeout=1.0)
+
+    # Calling with small timeout should not raise, should log timeout, and use a daemon thread
+    await appliance._bounded_to_thread(slow_func, timeout=0.05)
+    block_event.set()
+    assert thread_daemon_status == [True]
+
