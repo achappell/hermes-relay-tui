@@ -39,10 +39,16 @@ class SessionProtocol(Protocol):
     turn_index: int
     confirmed_model: str | None
     confirmed_title: str | None
+    confirmed_chat_id: str | None
+    confirmed_server_version: str | None
+    confirmed_context_limit: int | None
 
     async def connect(self) -> dict[str, Any]: ...
 
     def is_connected(self) -> bool: ...
+
+    @property
+    def capabilities(self) -> frozenset[str]: ...
 
     @property
     def supports_structured_prompts(self) -> bool: ...
@@ -92,6 +98,9 @@ class HermesSession:
         self._session_id: str = str(getattr(args, "session_id", "default") or "default")
         self.confirmed_model: str | None = None
         self.confirmed_title: str | None = None
+        self.confirmed_chat_id: str | None = None
+        self.confirmed_server_version: str | None = None
+        self.confirmed_context_limit: int | None = None
         self.initial_history: list[dict[str, Any]] = []
         self.microphone: Any = None
         self.input_device = getattr(args, "mic_input_device", None)
@@ -100,6 +109,11 @@ class HermesSession:
         self._capabilities: frozenset[str] = frozenset()
         self.active_turn_id: str | None = None
         self._interrupt_sent_for_turn: str | None = None
+
+    @property
+    def capabilities(self) -> frozenset[str]:
+        """The capabilities advertised by the connected Hermes endpoint."""
+        return self._capabilities
 
     @property
     def session_id(self) -> str:
@@ -165,6 +179,17 @@ class HermesSession:
                 self.confirmed_model = str(hello.get("model"))
             if hello.get("title"):
                 self.confirmed_title = str(hello.get("title"))
+            if hello.get("chat_id"):
+                self.confirmed_chat_id = str(hello.get("chat_id"))
+            server_version = hello.get("server_version") or hello.get("version") or hello.get("relay_version")
+            if server_version:
+                self.confirmed_server_version = str(server_version)
+            raw_limit = hello.get("context_limit") or hello.get("context_window") or hello.get("max_tokens")
+            if raw_limit is not None:
+                try:
+                    self.confirmed_context_limit = int(raw_limit)
+                except (TypeError, ValueError):
+                    self.confirmed_context_limit = None
             raw_history = hello.get("history")
             if isinstance(raw_history, list):
                 self.initial_history = [
@@ -216,6 +241,9 @@ class HermesSession:
                 self._connect_cm = None
                 self.ws = None
         self._capabilities = frozenset()
+        self.confirmed_chat_id = None
+        self.confirmed_server_version = None
+        self.confirmed_context_limit = None
         self.active_turn_id = None
         self._interrupt_sent_for_turn = None
 
@@ -305,6 +333,17 @@ class HermesSession:
             self.confirmed_model = str(result.get("model"))
         if result.get("title"):
             self.confirmed_title = str(result.get("title"))
+        if result.get("chat_id"):
+            self.confirmed_chat_id = str(result.get("chat_id"))
+        server_version = result.get("server_version") or result.get("version") or result.get("relay_version")
+        if server_version:
+            self.confirmed_server_version = str(server_version)
+        raw_limit = result.get("context_limit") or result.get("context_window") or result.get("max_tokens")
+        if raw_limit is not None:
+            try:
+                self.confirmed_context_limit = int(raw_limit)
+            except (TypeError, ValueError):
+                self.confirmed_context_limit = None
         self.turn_index = 0
         return result
 
@@ -321,6 +360,17 @@ class HermesSession:
             self.confirmed_model = str(result.get("model"))
         if result.get("title"):
             self.confirmed_title = str(result.get("title"))
+        if result.get("chat_id"):
+            self.confirmed_chat_id = str(result.get("chat_id"))
+        server_version = result.get("server_version") or result.get("version") or result.get("relay_version")
+        if server_version:
+            self.confirmed_server_version = str(server_version)
+        raw_limit = result.get("context_limit") or result.get("context_window") or result.get("max_tokens")
+        if raw_limit is not None:
+            try:
+                self.confirmed_context_limit = int(raw_limit)
+            except (TypeError, ValueError):
+                self.confirmed_context_limit = None
         self.turn_index = 0
         return result
 

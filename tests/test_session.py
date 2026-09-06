@@ -178,12 +178,14 @@ async def test_session_records_confirmed_model_and_hydrates_history(monkeypatch)
             json.dumps(
                 {
                     "type": "hello_ack",
-                    "chat_id": "chat",
+                    "chat_id": "chat-42",
                     "session_id": "custom-sid",
                     "model": "qwen2.5:7b",
                     "title": "My Session",
+                    "server_version": "0.8.0",
+                    "context_limit": 128000,
                     "history": history,
-                    "capabilities": [],
+                    "capabilities": ["interrupt", "structured_prompts"],
                 }
             )
         ]
@@ -198,9 +200,19 @@ async def test_session_records_confirmed_model_and_hydrates_history(monkeypatch)
     hello = await session.connect()
 
     assert session.session_id == "custom-sid"
+    assert session.confirmed_chat_id == "chat-42"
     assert session.confirmed_model == "qwen2.5:7b"
     assert session.confirmed_title == "My Session"
+    assert session.confirmed_server_version == "0.8.0"
+    assert session.confirmed_context_limit == 128000
+    assert session.capabilities == frozenset({"interrupt", "structured_prompts"})
     assert session.initial_history == history
+
+    await session.close()
+    assert session.confirmed_chat_id is None
+    assert session.confirmed_server_version is None
+    assert session.confirmed_context_limit is None
+    assert session.capabilities == frozenset()
 
 
 async def test_session_list_sessions_delegates_to_client(monkeypatch):
@@ -238,7 +250,10 @@ async def test_session_new_session_updates_session_id_and_resets_turn_index(monk
                     "type": "session_switched",
                     "session_id": "s-fresh",
                     "title": "Fresh Chat",
+                    "chat_id": "chat-fresh",
                     "model": "qwen2.5:7b",
+                    "server_version": "0.8.0",
+                    "context_limit": 64000,
                 }
             ),
         ]
@@ -256,8 +271,11 @@ async def test_session_new_session_updates_session_id_and_resets_turn_index(monk
 
     assert session.session_id == "s-fresh"
     assert session.turn_index == 0
+    assert session.confirmed_chat_id == "chat-fresh"
     assert session.confirmed_model == "qwen2.5:7b"
     assert session.confirmed_title == "Fresh Chat"
+    assert session.confirmed_server_version == "0.8.0"
+    assert session.confirmed_context_limit == 64000
 
 
 async def test_session_switch_session_updates_session_id_and_returns_history(monkeypatch):
@@ -270,7 +288,9 @@ async def test_session_switch_session_updates_session_id_and_returns_history(mon
                     "type": "session_switched",
                     "session_id": "s-target",
                     "title": "Target Chat",
+                    "chat_id": "chat-target",
                     "model": "qwen2.5:7b",
+                    "server_version": "0.8.0",
                     "history": history,
                 }
             ),
@@ -289,5 +309,9 @@ async def test_session_switch_session_updates_session_id_and_returns_history(mon
 
     assert session.session_id == "s-target"
     assert session.turn_index == 0
+    assert session.confirmed_chat_id == "chat-target"
+    assert session.confirmed_model == "qwen2.5:7b"
+    assert session.confirmed_title == "Target Chat"
+    assert session.confirmed_server_version == "0.8.0"
     assert result["history"] == history
 
