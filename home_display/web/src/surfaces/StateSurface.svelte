@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { afterUpdate, onDestroy } from "svelte";
   import type { ConnectionState } from "../state/channel";
   import type { DisplaySnapshot, DisplayState } from "../state/protocol";
 
@@ -35,6 +36,79 @@
   // genuinely silent, so it gets a sign of life that is visibly not a claim
   // to be talking.
   $: working = displayState === "thinking" || displayState === "buffering";
+
+  let responseViewport: HTMLDivElement | undefined;
+  let showingResponse = false;
+  let previousResponse = "";
+  let lastTargetScroll = 0;
+
+  function prefersReducedMotion(): boolean {
+    if (typeof window === "undefined" || typeof window.matchMedia !== "function") {
+      return false;
+    }
+    return window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  }
+
+  function resetResponseScroll(): void {
+    if (responseViewport) {
+      if (typeof responseViewport.scrollTo === "function") {
+        responseViewport.scrollTo({ top: 0, behavior: "instant" });
+      } else {
+        responseViewport.scrollTop = 0;
+      }
+      lastTargetScroll = 0;
+    }
+  }
+
+  function keepResponseInView(): void {
+    if (!showResponse || !responseViewport) return;
+
+    const maxScroll = responseViewport.scrollHeight - responseViewport.clientHeight;
+    if (maxScroll <= 0) {
+      if (responseViewport.scrollTop !== 0) {
+        resetResponseScroll();
+      }
+      lastTargetScroll = 0;
+      return;
+    }
+
+    if (maxScroll !== lastTargetScroll) {
+      lastTargetScroll = maxScroll;
+      const behavior = prefersReducedMotion() ? "instant" : "smooth";
+      if (typeof responseViewport.scrollTo === "function") {
+        responseViewport.scrollTo({
+          top: maxScroll,
+          behavior,
+        });
+      } else {
+        responseViewport.scrollTop = maxScroll;
+      }
+    }
+  }
+
+  afterUpdate(() => {
+    if (!showResponse) {
+      resetResponseScroll();
+      showingResponse = false;
+      previousResponse = "";
+      return;
+    }
+
+    const newResponse =
+      !showingResponse ||
+      snapshot.response_text.length < previousResponse.length ||
+      !snapshot.response_text.startsWith(previousResponse);
+
+    if (newResponse) {
+      resetResponseScroll();
+    }
+
+    showingResponse = true;
+    previousResponse = snapshot.response_text;
+    keepResponseInView();
+  });
+
+  onDestroy(resetResponseScroll);
 </script>
 
 <main class:has-response={showResponse} class="state-surface" data-state={displayState} aria-live="polite">
@@ -47,6 +121,13 @@
         {status}{#if working}<span class="working-dot" data-working-dot aria-hidden="true"></span>{/if}
       </p>
     {/if}
-    <p class:visible={showResponse} class="response-text" data-response-text>{showResponse ? snapshot.response_text : ""}</p>
+    <div
+      class:visible={showResponse}
+      class="response-viewport"
+      data-response-viewport
+      bind:this={responseViewport}
+    >
+      <p class="response-text" data-response-text>{showResponse ? snapshot.response_text : ""}</p>
+    </div>
   </section>
 </main>

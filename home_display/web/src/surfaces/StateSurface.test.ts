@@ -74,6 +74,36 @@ describe("StateSurface", () => {
     expect(response).toHaveTextContent("one stable block");
   });
 
+  it("automatically advances an overflowing response viewport", async () => {
+    const { container, rerender } = render(StateSurface, {
+      props: { snapshot: snapshot("speaking", "A long response"), connectionState: "connected" },
+    });
+    const viewport = container.querySelector("[data-response-viewport]") as HTMLDivElement | null;
+
+    expect(viewport).not.toBeNull();
+    if (!viewport) return;
+
+    Object.defineProperties(viewport, {
+      clientHeight: { configurable: true, value: 100 },
+      scrollHeight: { configurable: true, value: 300 },
+      scrollTop: { configurable: true, value: 0, writable: true },
+    });
+
+    await rerender({
+      snapshot: snapshot("speaking", "A long response that continues beyond the fixed display window"),
+      connectionState: "connected",
+    });
+
+    expect(viewport.scrollTop).toBe(200);
+
+    // Resets scroll when speech ends
+    await rerender({
+      snapshot: snapshot("idle", ""),
+      connectionState: "connected",
+    });
+    expect(viewport.scrollTop).toBe(0);
+  });
+
   it("shows disconnected when the channel is down", () => {
     render(StateSurface, {
       props: { snapshot: snapshot("speaking", "stale response"), connectionState: "disconnected" },

@@ -174,6 +174,11 @@ function effect_update_depth_exceeded() {
     throw new Error(`https://svelte.dev/e/effect_update_depth_exceeded`);
   }
 }
+function lifecycle_legacy_only(name) {
+  {
+    throw new Error(`https://svelte.dev/e/lifecycle_legacy_only`);
+  }
+}
 function props_invalid_value(key) {
   {
     throw new Error(`https://svelte.dev/e/props_invalid_value`);
@@ -285,14 +290,14 @@ function clear_marked(deps) {
     );
   }
 }
-function defer_effect(effect, dirty_effects, maybe_dirty_effects) {
-  if ((effect.f & DIRTY) !== 0) {
-    dirty_effects.add(effect);
-  } else if ((effect.f & MAYBE_DIRTY) !== 0) {
-    maybe_dirty_effects.add(effect);
+function defer_effect(effect2, dirty_effects, maybe_dirty_effects) {
+  if ((effect2.f & DIRTY) !== 0) {
+    dirty_effects.add(effect2);
+  } else if ((effect2.f & MAYBE_DIRTY) !== 0) {
+    maybe_dirty_effects.add(effect2);
   }
-  clear_marked(effect.deps);
-  set_signal_status(effect, CLEAN);
+  clear_marked(effect2.deps);
+  set_signal_status(effect2, CLEAN);
 }
 let is_store_binding = false;
 function capture_store_binding(fn) {
@@ -388,21 +393,21 @@ function unset_context(deactivate_batch = true) {
   if (deactivate_batch) current_batch == null ? void 0 : current_batch.deactivate();
 }
 function increment_pending() {
-  var effect = (
+  var effect2 = (
     /** @type {Effect} */
     active_effect
   );
-  var boundary2 = effect.b;
+  var boundary2 = effect2.b;
   var batch = (
     /** @type {Batch} */
     current_batch
   );
   var blocking = !!(boundary2 == null ? void 0 : boundary2.is_rendered());
   boundary2 == null ? void 0 : boundary2.update_pending_count(1, batch);
-  batch.increment(blocking, effect);
+  batch.increment(blocking, effect2);
   return () => {
     boundary2 == null ? void 0 : boundary2.update_pending_count(-1, batch);
-    batch.decrement(blocking, effect);
+    batch.decrement(blocking, effect2);
   };
 }
 // @__NO_SIDE_EFFECTS__
@@ -453,7 +458,7 @@ function async_derived(fn, label, location) {
   var deferreds = /* @__PURE__ */ new Set();
   async_effect(() => {
     var _a2, _b2;
-    var effect = (
+    var effect2 = (
       /** @type {Effect} */
       active_effect
     );
@@ -472,21 +477,21 @@ function async_derived(fn, label, location) {
       current_batch
     );
     if (should_suspend) {
-      if ((effect.f & REACTION_RAN) !== 0) {
+      if ((effect2.f & REACTION_RAN) !== 0) {
         var decrement_pending = increment_pending();
       }
       if (
         // boundary can be null if the async derived is inside an $effect.root not connected to the component render tree
         (_a2 = parent.b) == null ? void 0 : _a2.is_rendered()
       ) {
-        (_b2 = batch.async_deriveds.get(effect)) == null ? void 0 : _b2.reject(OBSOLETE);
+        (_b2 = batch.async_deriveds.get(effect2)) == null ? void 0 : _b2.reject(OBSOLETE);
       } else {
         for (const d2 of deferreds.values()) {
           d2.reject(OBSOLETE);
         }
       }
       deferreds.add(d);
-      batch.async_deriveds.set(effect, d);
+      batch.async_deriveds.set(effect2, d);
     }
     const handler = (value, error = void 0) => {
       decrement_pending == null ? void 0 : decrement_pending();
@@ -729,11 +734,11 @@ const _Batch = class _Batch {
    * Add an effect to the #skipped_branches map and reset its children
    * @param {Effect} effect
    */
-  skip_effect(effect) {
-    if (!__privateGet(this, _skipped_branches).has(effect)) {
-      __privateGet(this, _skipped_branches).set(effect, { d: [], m: [] });
+  skip_effect(effect2) {
+    if (!__privateGet(this, _skipped_branches).has(effect2)) {
+      __privateGet(this, _skipped_branches).set(effect2, { d: [], m: [] });
     }
-    __privateGet(this, _unskipped_branches).delete(effect);
+    __privateGet(this, _unskipped_branches).delete(effect2);
   }
   /**
    * Remove an effect from the #skipped_branches map and reschedule
@@ -741,10 +746,10 @@ const _Batch = class _Batch {
    * @param {Effect} effect
    * @param {(e: Effect) => void} callback
    */
-  unskip_effect(effect, callback = (e) => this.schedule(e)) {
-    var tracked = __privateGet(this, _skipped_branches).get(effect);
+  unskip_effect(effect2, callback = (e) => this.schedule(e)) {
+    var tracked = __privateGet(this, _skipped_branches).get(effect2);
     if (tracked) {
-      __privateGet(this, _skipped_branches).delete(effect);
+      __privateGet(this, _skipped_branches).delete(effect2);
       for (var e of tracked.d) {
         set_signal_status(e, DIRTY);
         callback(e);
@@ -754,7 +759,7 @@ const _Batch = class _Batch {
         callback(e);
       }
     }
-    __privateGet(this, _unskipped_branches).add(effect);
+    __privateGet(this, _unskipped_branches).add(effect2);
   }
   /**
    * Associate a change to a given source with the current
@@ -812,32 +817,32 @@ const _Batch = class _Batch {
   /**
    * @param {Effect} effect
    */
-  register_created_effect(effect) {
-    __privateGet(this, _new_effects).push(effect);
+  register_created_effect(effect2) {
+    __privateGet(this, _new_effects).push(effect2);
   }
   /**
    * @param {boolean} blocking
    * @param {Effect} effect
    */
-  increment(blocking, effect) {
+  increment(blocking, effect2) {
     __privateSet(this, _pending, __privateGet(this, _pending) + 1);
     if (blocking) {
-      let blocking_pending_count = __privateGet(this, _blocking_pending).get(effect) ?? 0;
-      __privateGet(this, _blocking_pending).set(effect, blocking_pending_count + 1);
+      let blocking_pending_count = __privateGet(this, _blocking_pending).get(effect2) ?? 0;
+      __privateGet(this, _blocking_pending).set(effect2, blocking_pending_count + 1);
     }
   }
   /**
    * @param {boolean} blocking
    * @param {Effect} effect
    */
-  decrement(blocking, effect) {
+  decrement(blocking, effect2) {
     __privateSet(this, _pending, __privateGet(this, _pending) - 1);
     if (blocking) {
-      let blocking_pending_count = __privateGet(this, _blocking_pending).get(effect) ?? 0;
+      let blocking_pending_count = __privateGet(this, _blocking_pending).get(effect2) ?? 0;
       if (blocking_pending_count === 1) {
-        __privateGet(this, _blocking_pending).delete(effect);
+        __privateGet(this, _blocking_pending).delete(effect2);
       } else {
-        __privateGet(this, _blocking_pending).set(effect, blocking_pending_count - 1);
+        __privateGet(this, _blocking_pending).set(effect2, blocking_pending_count - 1);
       }
     }
     if (__privateGet(this, _decrement_queued)) return;
@@ -897,14 +902,14 @@ const _Batch = class _Batch {
    *
    * @param {Effect} effect
    */
-  schedule(effect) {
+  schedule(effect2) {
     var _a2;
-    last_scheduled_effect = effect;
-    if (((_a2 = effect.b) == null ? void 0 : _a2.is_pending) && (effect.f & (EFFECT | RENDER_EFFECT | MANAGED_EFFECT)) !== 0 && (effect.f & REACTION_RAN) === 0) {
-      effect.b.defer_effect(effect);
+    last_scheduled_effect = effect2;
+    if (((_a2 = effect2.b) == null ? void 0 : _a2.is_pending) && (effect2.f & (EFFECT | RENDER_EFFECT | MANAGED_EFFECT)) !== 0 && (effect2.f & REACTION_RAN) === 0) {
+      effect2.b.defer_effect(effect2);
       return;
     }
-    var e = effect;
+    var e = effect2;
     while (e.parent !== null) {
       e = e.parent;
       var flags2 = e.f;
@@ -941,8 +946,8 @@ _decrement_queued = new WeakMap();
 _Batch_instances = new WeakSet();
 is_deferred_fn = function() {
   if (this.is_fork) return true;
-  for (const effect of __privateGet(this, _blocking_pending).keys()) {
-    var e = effect;
+  for (const effect2 of __privateGet(this, _blocking_pending).keys()) {
+    var e = effect2;
     var skipped = false;
     while (e.parent !== null) {
       if (__privateGet(this, _skipped_branches).has(e)) {
@@ -1055,34 +1060,34 @@ process_fn = function() {
  */
 traverse_fn = function(root2, effects, render_effects) {
   root2.f ^= CLEAN;
-  var effect = root2.first;
-  while (effect !== null) {
-    var flags2 = effect.f;
+  var effect2 = root2.first;
+  while (effect2 !== null) {
+    var flags2 = effect2.f;
     var is_branch = (flags2 & (BRANCH_EFFECT | ROOT_EFFECT)) !== 0;
     var is_skippable_branch = is_branch && (flags2 & CLEAN) !== 0;
-    var skip = is_skippable_branch || (flags2 & INERT) !== 0 || __privateGet(this, _skipped_branches).has(effect);
-    if (!skip && effect.fn !== null) {
+    var skip = is_skippable_branch || (flags2 & INERT) !== 0 || __privateGet(this, _skipped_branches).has(effect2);
+    if (!skip && effect2.fn !== null) {
       if (is_branch) {
-        effect.f ^= CLEAN;
+        effect2.f ^= CLEAN;
       } else if ((flags2 & EFFECT) !== 0) {
-        effects.push(effect);
-      } else if (is_dirty(effect)) {
-        if ((flags2 & BLOCK_EFFECT) !== 0) __privateGet(this, _maybe_dirty_effects).add(effect);
-        update_effect(effect);
+        effects.push(effect2);
+      } else if (is_dirty(effect2)) {
+        if ((flags2 & BLOCK_EFFECT) !== 0) __privateGet(this, _maybe_dirty_effects).add(effect2);
+        update_effect(effect2);
       }
-      var child2 = effect.first;
+      var child2 = effect2.first;
       if (child2 !== null) {
-        effect = child2;
+        effect2 = child2;
         continue;
       }
     }
-    while (effect !== null) {
-      var next = effect.next;
+    while (effect2 !== null) {
+      var next = effect2.next;
       if (next !== null) {
-        effect = next;
+        effect2 = next;
         break;
       }
-      effect = effect.parent;
+      effect2 = effect2.parent;
     }
   }
 };
@@ -1111,8 +1116,8 @@ merge_fn = function(batch) {
     }
     this.current.set(source2, value);
   }
-  for (const [effect, deferred2] of batch.async_deriveds) {
-    const d = this.async_deriveds.get(effect);
+  for (const [effect2, deferred2] of batch.async_deriveds) {
+    const d = this.async_deriveds.get(effect2);
     if (d) deferred2.promise.then(d.resolve).catch(d.reject);
   }
   batch.async_deriveds.clear();
@@ -1131,14 +1136,14 @@ merge_fn = function(batch) {
           reaction
         );
       } else {
-        var effect = (
+        var effect2 = (
           /** @type {Effect} */
           reaction
         );
-        if (flags2 & (ASYNC | BLOCK_EFFECT) && !this.async_deriveds.has(effect)) {
-          __privateGet(this, _maybe_dirty_effects).delete(effect);
-          set_signal_status(effect, DIRTY);
-          this.schedule(effect);
+        if (flags2 & (ASYNC | BLOCK_EFFECT) && !this.async_deriveds.has(effect2)) {
+          __privateGet(this, _maybe_dirty_effects).delete(effect2);
+          set_signal_status(effect2, DIRTY);
+          this.schedule(effect2);
         }
       }
     }
@@ -1179,8 +1184,8 @@ commit_fn = function() {
       sources.push(source3);
     }
     if (is_earlier) {
-      for (const [effect, deferred2] of this.async_deriveds) {
-        const d = batch.async_deriveds.get(effect);
+      for (const [effect2, deferred2] of this.async_deriveds) {
+        const d = batch.async_deriveds.get(effect2);
         if (d) deferred2.promise.then(d.resolve).catch(d.reject);
       }
     }
@@ -1220,13 +1225,13 @@ commit_fn = function() {
         return v2[0] !== v1[0] || v2[1] !== v1[1];
       }).map(([c]) => c);
       if (current_unequal.length > 0) {
-        for (const effect of __privateGet(this, _new_effects)) {
-          if ((effect.f & (DESTROYED | INERT | EAGER_EFFECT)) === 0 && depends_on(effect, current_unequal, checked)) {
-            if ((effect.f & (ASYNC | BLOCK_EFFECT)) !== 0) {
-              set_signal_status(effect, DIRTY);
-              batch.schedule(effect);
+        for (const effect2 of __privateGet(this, _new_effects)) {
+          if ((effect2.f & (DESTROYED | INERT | EAGER_EFFECT)) === 0 && depends_on(effect2, current_unequal, checked)) {
+            if ((effect2.f & (ASYNC | BLOCK_EFFECT)) !== 0) {
+              set_signal_status(effect2, DIRTY);
+              batch.schedule(effect2);
             } else {
-              __privateGet(batch, _dirty_effects).add(effect);
+              __privateGet(batch, _dirty_effects).add(effect2);
             }
           }
         }
@@ -1272,12 +1277,12 @@ function flush_queued_effects(effects) {
   if (length === 0) return;
   var i = 0;
   while (i < length) {
-    var effect = effects[i++];
-    if ((effect.f & (DESTROYED | INERT)) === 0 && is_dirty(effect)) {
+    var effect2 = effects[i++];
+    if ((effect2.f & (DESTROYED | INERT)) === 0 && is_dirty(effect2)) {
       eager_block_effects = /* @__PURE__ */ new Set();
-      update_effect(effect);
-      if (effect.deps === null && effect.first === null && effect.nodes === null && effect.teardown === null && effect.ac === null) {
-        unlink_effect(effect);
+      update_effect(effect2);
+      if (effect2.deps === null && effect2.first === null && effect2.nodes === null && effect2.teardown === null && effect2.ac === null) {
+        unlink_effect(effect2);
       }
       if ((eager_block_effects == null ? void 0 : eager_block_effects.size) > 0) {
         old_values.clear();
@@ -1354,28 +1359,28 @@ function depends_on(reaction, sources, checked) {
   checked.set(reaction, false);
   return false;
 }
-function schedule_effect(effect) {
-  current_batch.schedule(effect);
+function schedule_effect(effect2) {
+  current_batch.schedule(effect2);
 }
-function reset_branch(effect, tracked) {
-  if ((effect.f & BRANCH_EFFECT) !== 0 && (effect.f & CLEAN) !== 0) {
+function reset_branch(effect2, tracked) {
+  if ((effect2.f & BRANCH_EFFECT) !== 0 && (effect2.f & CLEAN) !== 0) {
     return;
   }
-  if ((effect.f & DIRTY) !== 0) {
-    tracked.d.push(effect);
-  } else if ((effect.f & MAYBE_DIRTY) !== 0) {
-    tracked.m.push(effect);
+  if ((effect2.f & DIRTY) !== 0) {
+    tracked.d.push(effect2);
+  } else if ((effect2.f & MAYBE_DIRTY) !== 0) {
+    tracked.m.push(effect2);
   }
-  set_signal_status(effect, CLEAN);
-  var e = effect.first;
+  set_signal_status(effect2, CLEAN);
+  var e = effect2.first;
   while (e !== null) {
     reset_branch(e, tracked);
     e = e.next;
   }
 }
-function reset_all(effect) {
-  set_signal_status(effect, CLEAN);
-  var e = effect.first;
+function reset_all(effect2) {
+  set_signal_status(effect2, CLEAN);
+  var e = effect2.first;
   while (e !== null) {
     reset_all(e);
     e = e.next;
@@ -1413,6 +1418,13 @@ function mutable_source(initial_value, immutable = false, trackable = true) {
     ((_a2 = component_context.l).s ?? (_a2.s = [])).push(s);
   }
   return s;
+}
+function mutate(source2, value) {
+  set(
+    source2,
+    untrack(() => get(source2))
+  );
+  return value;
 }
 function set(source2, value, should_proxy = false) {
   if (active_reaction !== null && // since we are untracking the function inside `$inspect.with` we need to add this check
@@ -1461,18 +1473,18 @@ function internal_set(source2, value, updated_during_traversal = null) {
 }
 function flush_eager_effects() {
   eager_effects_deferred = false;
-  for (const effect of eager_effects) {
-    if ((effect.f & CLEAN) !== 0) {
-      set_signal_status(effect, MAYBE_DIRTY);
+  for (const effect2 of eager_effects) {
+    if ((effect2.f & CLEAN) !== 0) {
+      set_signal_status(effect2, MAYBE_DIRTY);
     }
     let dirty;
     try {
-      dirty = is_dirty(effect);
+      dirty = is_dirty(effect2);
     } catch {
       dirty = true;
     }
     if (dirty) {
-      update_effect(effect);
+      update_effect(effect2);
     }
   }
   eager_effects.clear();
@@ -1511,17 +1523,17 @@ function mark_reactions(signal, status, updated_during_traversal) {
         mark_reactions(derived2, MAYBE_DIRTY, updated_during_traversal);
       }
     } else if (not_dirty) {
-      var effect = (
+      var effect2 = (
         /** @type {Effect} */
         reaction
       );
       if ((flags2 & BLOCK_EFFECT) !== 0 && eager_block_effects !== null) {
-        eager_block_effects.add(effect);
+        eager_block_effects.add(effect2);
       }
       if (updated_during_traversal !== null) {
-        updated_during_traversal.push(effect);
+        updated_during_traversal.push(effect2);
       } else {
-        schedule_effect(effect);
+        schedule_effect(effect2);
       }
     }
   }
@@ -1793,33 +1805,33 @@ function create_element(tag, namespace, is) {
   }
 }
 function handle_error(error) {
-  var effect = active_effect;
-  if (effect === null) {
+  var effect2 = active_effect;
+  if (effect2 === null) {
     active_reaction.f |= ERROR_VALUE;
     return error;
   }
-  if ((effect.f & REACTION_RAN) === 0 && (effect.f & EFFECT) === 0) {
+  if ((effect2.f & REACTION_RAN) === 0 && (effect2.f & EFFECT) === 0) {
     throw error;
   }
-  invoke_error_boundary(error, effect);
+  invoke_error_boundary(error, effect2);
 }
-function invoke_error_boundary(error, effect) {
-  if (effect !== null && (effect.f & DESTROYED) !== 0) {
+function invoke_error_boundary(error, effect2) {
+  if (effect2 !== null && (effect2.f & DESTROYED) !== 0) {
     return;
   }
-  while (effect !== null) {
-    if ((effect.f & BOUNDARY_EFFECT) !== 0 && (effect.f & (DESTROYED | DESTROYING)) === 0) {
-      if ((effect.f & REACTION_RAN) === 0) {
+  while (effect2 !== null) {
+    if ((effect2.f & BOUNDARY_EFFECT) !== 0 && (effect2.f & (DESTROYED | DESTROYING)) === 0) {
+      if ((effect2.f & REACTION_RAN) === 0) {
         throw error;
       }
       try {
-        effect.b.error(error);
+        effect2.b.error(error);
         return;
       } catch (e) {
         error = e;
       }
     }
-    effect = effect.parent;
+    effect2 = effect2.parent;
   }
   throw error;
 }
@@ -1834,14 +1846,14 @@ function validate_effect(rune) {
     effect_in_teardown();
   }
 }
-function push_effect(effect, parent_effect) {
+function push_effect(effect2, parent_effect) {
   var parent_last = parent_effect.last;
   if (parent_last === null) {
-    parent_effect.last = parent_effect.first = effect;
+    parent_effect.last = parent_effect.first = effect2;
   } else {
-    parent_last.next = effect;
-    effect.prev = parent_last;
-    parent_effect.last = effect;
+    parent_last.next = effect2;
+    effect2.prev = parent_last;
+    parent_effect.last = effect2;
   }
 }
 function create_effect(type, fn) {
@@ -1849,7 +1861,7 @@ function create_effect(type, fn) {
   if (parent !== null && (parent.f & INERT) !== 0) {
     type |= INERT;
   }
-  var effect = {
+  var effect2 = {
     ctx: component_context,
     deps: null,
     nodes: null,
@@ -1865,19 +1877,19 @@ function create_effect(type, fn) {
     wv: 0,
     ac: null
   };
-  current_batch == null ? void 0 : current_batch.register_created_effect(effect);
-  var e = effect;
+  current_batch == null ? void 0 : current_batch.register_created_effect(effect2);
+  var e = effect2;
   if ((type & EFFECT) !== 0) {
     if (collected_effects !== null) {
-      collected_effects.push(effect);
+      collected_effects.push(effect2);
     } else {
-      Batch.ensure().schedule(effect);
+      Batch.ensure().schedule(effect2);
     }
   } else if (fn !== null) {
     try {
-      update_effect(effect);
+      update_effect(effect2);
     } catch (e2) {
-      destroy_effect(effect);
+      destroy_effect(effect2);
       throw e2;
     }
     if (e.deps === null && e.teardown === null && e.nodes === null && e.first === e.last && // either `null`, or a singular child
@@ -1901,16 +1913,16 @@ function create_effect(type, fn) {
       (derived2.effects ?? (derived2.effects = [])).push(e);
     }
   }
-  return effect;
+  return effect2;
 }
 function effect_tracking() {
   return active_reaction !== null && !untracking;
 }
 function teardown(fn) {
-  const effect = create_effect(RENDER_EFFECT, null);
-  set_signal_status(effect, CLEAN);
-  effect.teardown = fn;
-  return effect;
+  const effect2 = create_effect(RENDER_EFFECT, null);
+  set_signal_status(effect2, CLEAN);
+  effect2.teardown = fn;
+  return effect2;
 }
 function user_effect(fn) {
   validate_effect();
@@ -1938,20 +1950,23 @@ function user_pre_effect(fn) {
 }
 function component_root(fn) {
   Batch.ensure();
-  const effect = create_effect(ROOT_EFFECT | EFFECT_PRESERVED, fn);
+  const effect2 = create_effect(ROOT_EFFECT | EFFECT_PRESERVED, fn);
   return (options = {}) => {
     return new Promise((fulfil) => {
       if (options.outro) {
-        pause_effect(effect, () => {
-          destroy_effect(effect);
+        pause_effect(effect2, () => {
+          destroy_effect(effect2);
           fulfil(void 0);
         });
       } else {
-        destroy_effect(effect);
+        destroy_effect(effect2);
         fulfil(void 0);
       }
     });
   };
+}
+function effect(fn) {
+  return create_effect(EFFECT, fn);
 }
 function legacy_pre_effect(deps, fn) {
   var context = (
@@ -1964,15 +1979,15 @@ function legacy_pre_effect(deps, fn) {
     deps();
     if (token.ran) return;
     token.ran = true;
-    var effect = (
+    var effect2 = (
       /** @type {Effect} */
       active_effect
     );
     try {
-      set_active_effect(effect.parent);
+      set_active_effect(effect2.parent);
       untrack(fn);
     } finally {
-      set_active_effect(effect);
+      set_active_effect(effect2);
     }
   });
 }
@@ -1984,12 +1999,12 @@ function legacy_pre_effect_reset() {
   render_effect(() => {
     for (var token of context.l.$) {
       token.deps();
-      var effect = token.effect;
-      if ((effect.f & CLEAN) !== 0 && effect.deps !== null) {
-        set_signal_status(effect, MAYBE_DIRTY);
+      var effect2 = token.effect;
+      if ((effect2.f & CLEAN) !== 0 && effect2.deps !== null) {
+        set_signal_status(effect2, MAYBE_DIRTY);
       }
-      if (is_dirty(effect)) {
-        update_effect(effect);
+      if (is_dirty(effect2)) {
+        update_effect(effect2);
       }
       token.ran = false;
     }
@@ -2009,14 +2024,14 @@ function template_effect(fn, sync = [], async = [], blockers = []) {
   });
 }
 function block(fn, flags2 = 0) {
-  var effect = create_effect(BLOCK_EFFECT | flags2, fn);
-  return effect;
+  var effect2 = create_effect(BLOCK_EFFECT | flags2, fn);
+  return effect2;
 }
 function branch(fn) {
   return create_effect(BRANCH_EFFECT | EFFECT_PRESERVED, fn);
 }
-function execute_effect_teardown(effect) {
-  var teardown2 = effect.teardown;
+function execute_effect_teardown(effect2) {
+  var teardown2 = effect2.teardown;
   if (teardown2 !== null) {
     const previously_destroying_effect = is_destroying_effect;
     const previous_reaction = active_reaction;
@@ -2025,7 +2040,7 @@ function execute_effect_teardown(effect) {
     try {
       teardown2.call(null);
     } catch (error) {
-      invoke_error_boundary(error, effect.parent);
+      invoke_error_boundary(error, effect2.parent);
     } finally {
       set_is_destroying_effect(previously_destroying_effect);
       set_active_reaction(previous_reaction);
@@ -2033,61 +2048,61 @@ function execute_effect_teardown(effect) {
   }
 }
 function destroy_effect_children(signal, remove_dom = false) {
-  var effect = signal.first;
+  var effect2 = signal.first;
   signal.first = signal.last = null;
-  while (effect !== null) {
-    const controller = effect.ac;
+  while (effect2 !== null) {
+    const controller = effect2.ac;
     if (controller !== null) {
       without_reactive_context(() => {
         controller.abort(STALE_REACTION);
       });
     }
-    var next = effect.next;
-    if ((effect.f & ROOT_EFFECT) !== 0) {
-      effect.parent = null;
+    var next = effect2.next;
+    if ((effect2.f & ROOT_EFFECT) !== 0) {
+      effect2.parent = null;
     } else {
-      destroy_effect(effect, remove_dom);
+      destroy_effect(effect2, remove_dom);
     }
-    effect = next;
+    effect2 = next;
   }
 }
 function destroy_block_effect_children(signal) {
-  var effect = signal.first;
-  while (effect !== null) {
-    var next = effect.next;
-    if ((effect.f & BRANCH_EFFECT) === 0) {
-      destroy_effect(effect);
+  var effect2 = signal.first;
+  while (effect2 !== null) {
+    var next = effect2.next;
+    if ((effect2.f & BRANCH_EFFECT) === 0) {
+      destroy_effect(effect2);
     }
-    effect = next;
+    effect2 = next;
   }
 }
-function destroy_effect(effect, remove_dom = true) {
+function destroy_effect(effect2, remove_dom = true) {
   var removed = false;
-  if ((remove_dom || (effect.f & HEAD_EFFECT) !== 0) && effect.nodes !== null && effect.nodes.end !== null) {
+  if ((remove_dom || (effect2.f & HEAD_EFFECT) !== 0) && effect2.nodes !== null && effect2.nodes.end !== null) {
     remove_effect_dom(
-      effect.nodes.start,
+      effect2.nodes.start,
       /** @type {TemplateNode} */
-      effect.nodes.end
+      effect2.nodes.end
     );
     removed = true;
   }
-  effect.f |= DESTROYING;
-  destroy_effect_children(effect, remove_dom && !removed);
-  remove_reactions(effect, 0);
-  var transitions = effect.nodes && effect.nodes.t;
+  effect2.f |= DESTROYING;
+  destroy_effect_children(effect2, remove_dom && !removed);
+  remove_reactions(effect2, 0);
+  var transitions = effect2.nodes && effect2.nodes.t;
   if (transitions !== null) {
     for (const transition of transitions) {
       transition.stop();
     }
   }
-  execute_effect_teardown(effect);
-  effect.f ^= DESTROYING;
-  effect.f |= DESTROYED;
-  var parent = effect.parent;
+  execute_effect_teardown(effect2);
+  effect2.f ^= DESTROYING;
+  effect2.f |= DESTROYED;
+  var parent = effect2.parent;
   if (parent !== null && parent.first !== null) {
-    unlink_effect(effect);
+    unlink_effect(effect2);
   }
-  effect.next = effect.prev = effect.teardown = effect.ctx = effect.deps = effect.fn = effect.nodes = effect.ac = effect.b = null;
+  effect2.next = effect2.prev = effect2.teardown = effect2.ctx = effect2.deps = effect2.fn = effect2.nodes = effect2.ac = effect2.b = null;
 }
 function remove_effect_dom(node, end) {
   while (node !== null) {
@@ -2096,23 +2111,23 @@ function remove_effect_dom(node, end) {
     node = next;
   }
 }
-function unlink_effect(effect) {
-  var parent = effect.parent;
-  var prev = effect.prev;
-  var next = effect.next;
+function unlink_effect(effect2) {
+  var parent = effect2.parent;
+  var prev = effect2.prev;
+  var next = effect2.next;
   if (prev !== null) prev.next = next;
   if (next !== null) next.prev = prev;
   if (parent !== null) {
-    if (parent.first === effect) parent.first = next;
-    if (parent.last === effect) parent.last = prev;
+    if (parent.first === effect2) parent.first = next;
+    if (parent.last === effect2) parent.last = prev;
   }
 }
-function pause_effect(effect, callback, destroy = true) {
+function pause_effect(effect2, callback, destroy = true) {
   var transitions = [];
-  effect.f |= PAUSED;
-  pause_children(effect, transitions, true);
+  effect2.f |= PAUSED;
+  pause_children(effect2, transitions, true);
   var fn = () => {
-    if (destroy) destroy_effect(effect);
+    if (destroy) destroy_effect(effect2);
     if (callback) callback();
   };
   var remaining = transitions.length;
@@ -2125,10 +2140,10 @@ function pause_effect(effect, callback, destroy = true) {
     fn();
   }
 }
-function pause_children(effect, transitions, local) {
-  if ((effect.f & INERT) !== 0) return;
-  effect.f ^= INERT;
-  var t = effect.nodes && effect.nodes.t;
+function pause_children(effect2, transitions, local) {
+  if ((effect2.f & INERT) !== 0) return;
+  effect2.f ^= INERT;
+  var t = effect2.nodes && effect2.nodes.t;
   if (t !== null) {
     for (const transition of t) {
       if (transition.is_global || local) {
@@ -2136,39 +2151,39 @@ function pause_children(effect, transitions, local) {
       }
     }
   }
-  var child2 = effect.first;
+  var child2 = effect2.first;
   while (child2 !== null) {
     var sibling2 = child2.next;
     if ((child2.f & ROOT_EFFECT) === 0) {
       var transparent = (child2.f & EFFECT_TRANSPARENT) !== 0 || // If this is a branch effect without a block effect parent,
       // it means the parent block effect was pruned. In that case,
       // transparency information was transferred to the branch effect.
-      (child2.f & BRANCH_EFFECT) !== 0 && (effect.f & BLOCK_EFFECT) !== 0;
+      (child2.f & BRANCH_EFFECT) !== 0 && (effect2.f & BLOCK_EFFECT) !== 0;
       pause_children(child2, transitions, transparent ? local : false);
     }
     child2 = sibling2;
   }
 }
-function resume_effect(effect) {
-  effect.f &= ~PAUSED;
-  resume_children(effect, true);
+function resume_effect(effect2) {
+  effect2.f &= ~PAUSED;
+  resume_children(effect2, true);
 }
-function resume_children(effect, local) {
-  if ((effect.f & PAUSED) !== 0) return;
-  if ((effect.f & INERT) === 0) return;
-  effect.f ^= INERT;
-  if ((effect.f & CLEAN) === 0) {
-    set_signal_status(effect, DIRTY);
-    Batch.ensure().schedule(effect);
+function resume_children(effect2, local) {
+  if ((effect2.f & PAUSED) !== 0) return;
+  if ((effect2.f & INERT) === 0) return;
+  effect2.f ^= INERT;
+  if ((effect2.f & CLEAN) === 0) {
+    set_signal_status(effect2, DIRTY);
+    Batch.ensure().schedule(effect2);
   }
-  var child2 = effect.first;
+  var child2 = effect2.first;
   while (child2 !== null) {
     var sibling2 = child2.next;
     var transparent = (child2.f & EFFECT_TRANSPARENT) !== 0 || (child2.f & BRANCH_EFFECT) !== 0;
     resume_children(child2, transparent ? local : false);
     child2 = sibling2;
   }
-  var t = effect.nodes && effect.nodes.t;
+  var t = effect2.nodes && effect2.nodes.t;
   if (t !== null) {
     for (const transition of t) {
       if (transition.is_global || local) {
@@ -2177,10 +2192,10 @@ function resume_children(effect, local) {
     }
   }
 }
-function move_effect(effect, fragment) {
-  if (!effect.nodes) return;
-  var node = effect.nodes.start;
-  var end = effect.nodes.end;
+function move_effect(effect2, fragment) {
+  if (!effect2.nodes) return;
+  var node = effect2.nodes.start;
+  var end = effect2.nodes.end;
   while (node !== null) {
     var next = node === end ? null : /* @__PURE__ */ get_next_sibling(node);
     fragment.append(node);
@@ -2198,8 +2213,8 @@ function set_active_reaction(reaction) {
   active_reaction = reaction;
 }
 let active_effect = null;
-function set_active_effect(effect) {
-  active_effect = effect;
+function set_active_effect(effect2) {
+  active_effect = effect2;
 }
 let current_sources = null;
 function push_reaction_value(value) {
@@ -2259,7 +2274,7 @@ function is_dirty(reaction) {
   }
   return false;
 }
-function schedule_possible_effect_self_invalidation(signal, effect, root2 = true) {
+function schedule_possible_effect_self_invalidation(signal, effect2, root2 = true) {
   var reactions = signal.reactions;
   if (reactions === null) return;
   if (current_sources !== null && current_sources.has(signal)) {
@@ -2271,10 +2286,10 @@ function schedule_possible_effect_self_invalidation(signal, effect, root2 = true
       schedule_possible_effect_self_invalidation(
         /** @type {Derived} */
         reaction,
-        effect,
+        effect2,
         false
       );
-    } else if (effect === reaction) {
+    } else if (effect2 === reaction) {
       if (root2) {
         set_signal_status(reaction, DIRTY);
       } else if ((reaction.f & CLEAN) !== 0) {
@@ -2446,28 +2461,28 @@ function remove_reactions(signal, start_index) {
     remove_reaction(signal, dependencies[i]);
   }
 }
-function update_effect(effect) {
-  var flags2 = effect.f;
+function update_effect(effect2) {
+  var flags2 = effect2.f;
   if ((flags2 & DESTROYED) !== 0) {
     return;
   }
-  set_signal_status(effect, CLEAN);
+  set_signal_status(effect2, CLEAN);
   var previous_effect = active_effect;
   var was_updating_effect = is_updating_effect;
-  active_effect = effect;
+  active_effect = effect2;
   is_updating_effect = (flags2 & (BRANCH_EFFECT | ROOT_EFFECT)) === 0;
   try {
     if ((flags2 & (BLOCK_EFFECT | MANAGED_EFFECT)) !== 0) {
-      destroy_block_effect_children(effect);
+      destroy_block_effect_children(effect2);
     } else {
-      destroy_effect_children(effect);
+      destroy_effect_children(effect2);
     }
-    execute_effect_teardown(effect);
-    var teardown2 = update_reaction(effect);
-    effect.teardown = typeof teardown2 === "function" ? teardown2 : null;
-    effect.wv = write_version;
+    execute_effect_teardown(effect2);
+    var teardown2 = update_reaction(effect2);
+    effect2.teardown = typeof teardown2 === "function" ? teardown2 : null;
+    effect2.wv = write_version;
     var dep;
-    if (DEV && tracing_mode_flag && (effect.f & DIRTY) !== 0 && effect.deps !== null) ;
+    if (DEV && tracing_mode_flag && (effect2.f & DIRTY) !== 0 && effect2.deps !== null) ;
   } finally {
     is_updating_effect = was_updating_effect;
     active_effect = previous_effect;
@@ -2750,12 +2765,12 @@ function create_fragment_from_html(html) {
   return elem.content;
 }
 function assign_nodes(start, end) {
-  var effect = (
+  var effect2 = (
     /** @type {Effect} */
     active_effect
   );
-  if (effect.nodes === null) {
-    effect.nodes = { start, end, a: null, t: null };
+  if (effect2.nodes === null) {
+    effect2.nodes = { start, end, a: null, t: null };
   }
 }
 // @__NO_SIDE_EFFECTS__
@@ -2879,12 +2894,12 @@ class Boundary {
     __privateSet(this, _anchor, node);
     __privateSet(this, _props, props);
     __privateSet(this, _children, (anchor) => {
-      var effect = (
+      var effect2 = (
         /** @type {Effect} */
         active_effect
       );
-      effect.b = this;
-      effect.f |= BOUNDARY_EFFECT;
+      effect2.b = this;
+      effect2.f |= BOUNDARY_EFFECT;
       children(anchor);
     });
     this.parent = /** @type {Effect} */
@@ -2900,8 +2915,8 @@ class Boundary {
    * Defer an effect inside a pending boundary until the boundary resolves
    * @param {Effect} effect
    */
-  defer_effect(effect) {
-    defer_effect(effect, __privateGet(this, _dirty_effects2), __privateGet(this, _maybe_dirty_effects2));
+  defer_effect(effect2) {
+    defer_effect(effect2, __privateGet(this, _dirty_effects2), __privateGet(this, _maybe_dirty_effects2));
   }
   /**
    * Returns `false` if the effect exists inside a boundary whose pending snippet is shown
@@ -3191,12 +3206,12 @@ handle_error_fn = function(error) {
       __privateSet(this, _failed_effect, __privateMethod(this, _Boundary_instances, run_fn).call(this, () => {
         try {
           return branch(() => {
-            var effect = (
+            var effect2 = (
               /** @type {Effect} */
               active_effect
             );
-            effect.b = this;
-            effect.f |= BOUNDARY_EFFECT;
+            effect2.b = this;
+            effect2.f |= BOUNDARY_EFFECT;
             failed(
               __privateGet(this, _anchor),
               () => transformed_error,
@@ -3407,24 +3422,24 @@ class BranchManager {
           __privateGet(this, _offscreen).delete(k);
         }
       }
-      for (const [k, effect] of __privateGet(this, _onscreen)) {
+      for (const [k, effect2] of __privateGet(this, _onscreen)) {
         if (k === key || __privateGet(this, _outroing).has(k)) continue;
         const on_destroy = () => {
           const keys = Array.from(__privateGet(this, _batches).values());
           if (keys.includes(k)) {
             var fragment = document.createDocumentFragment();
-            move_effect(effect, fragment);
+            move_effect(effect2, fragment);
             fragment.append(create_text());
-            __privateGet(this, _offscreen).set(k, { effect, fragment });
+            __privateGet(this, _offscreen).set(k, { effect: effect2, fragment });
           } else {
-            destroy_effect(effect);
+            destroy_effect(effect2);
           }
           __privateGet(this, _outroing).delete(k);
           __privateGet(this, _onscreen).delete(k);
         };
         if (__privateGet(this, _transition) || !onscreen) {
           __privateGet(this, _outroing).add(k);
-          pause_effect(effect, on_destroy, false);
+          pause_effect(effect2, on_destroy, false);
         } else {
           on_destroy();
         }
@@ -3475,11 +3490,11 @@ class BranchManager {
     }
     __privateGet(this, _batches).set(batch, key);
     if (defer) {
-      for (const [k, effect] of __privateGet(this, _onscreen)) {
+      for (const [k, effect2] of __privateGet(this, _onscreen)) {
         if (k === key) {
-          batch.unskip_effect(effect);
+          batch.unskip_effect(effect2);
         } else {
-          batch.skip_effect(effect);
+          batch.skip_effect(effect2);
         }
       }
       for (const [k, branch2] of __privateGet(this, _offscreen)) {
@@ -3614,6 +3629,52 @@ function get_setters(element) {
     proto = get_prototype_of(proto);
   }
   return setters;
+}
+function is_bound_this(bound_value, element_or_component) {
+  return bound_value === element_or_component || (bound_value == null ? void 0 : bound_value[STATE_SYMBOL]) === element_or_component;
+}
+function bind_this(element_or_component = mark_as_component(), update, get_value, get_parts) {
+  var component_effect = (
+    /** @type {ComponentContext} */
+    component_context.r
+  );
+  var parent = (
+    /** @type {Effect} */
+    active_effect
+  );
+  effect(() => {
+    var old_parts;
+    var parts;
+    render_effect(() => {
+      old_parts = parts;
+      parts = [];
+      untrack(() => {
+        if (!is_bound_this(get_value(...parts), element_or_component)) {
+          update(element_or_component, ...parts);
+          if (old_parts && is_bound_this(get_value(...old_parts), element_or_component)) {
+            update(null, ...old_parts);
+          }
+        }
+      });
+    });
+    return () => {
+      let p = parent;
+      while (p !== component_effect && p.parent !== null && p.parent.f & DESTROYING) {
+        p = p.parent;
+      }
+      const teardown2 = () => {
+        if (parts && is_bound_this(get_value(...parts), element_or_component)) {
+          update(null, ...parts);
+        }
+      };
+      const original_teardown = p.teardown;
+      p.teardown = () => {
+        teardown2();
+        original_teardown == null ? void 0 : original_teardown();
+      };
+    };
+  });
+  return element_or_component;
 }
 function init(immutable = false) {
   const context = (
@@ -3796,6 +3857,21 @@ function onMount(fn) {
     });
   }
 }
+function onDestroy(fn) {
+  if (component_context === null) {
+    lifecycle_outside_component();
+  }
+  onMount(() => () => untrack(fn));
+}
+function afterUpdate(fn) {
+  if (component_context === null) {
+    lifecycle_outside_component();
+  }
+  if (component_context.l === null) {
+    lifecycle_legacy_only();
+  }
+  init_update_callbacks(component_context).a.push(fn);
+}
 function init_update_callbacks(context) {
   var l = (
     /** @type {ComponentContextLegacy} */
@@ -3810,7 +3886,7 @@ if (typeof window !== "undefined") {
 enable_legacy_mode_flag();
 var root = /* @__PURE__ */ from_html(`<span class="working-dot" data-working-dot="" aria-hidden="true"></span>`);
 var root_1 = /* @__PURE__ */ from_html(`<p class="status-text"> <!></p>`);
-var root_2 = /* @__PURE__ */ from_html(`<main aria-live="polite"><div class="ambient-canvas" aria-hidden="true"></div> <section class="state-overlay"><p class="state-label"> </p> <!> <p data-response-text=""> </p></section></main>`);
+var root_2 = /* @__PURE__ */ from_html(`<main aria-live="polite"><div class="ambient-canvas" aria-hidden="true"></div> <section class="state-overlay"><p class="state-label"> </p> <!> <div data-response-viewport=""><p class="response-text" data-response-text=""> </p></div></section></main>`);
 function StateSurface($$anchor, $$props) {
   push($$props, false);
   const displayState = /* @__PURE__ */ mutable_source();
@@ -3835,6 +3911,62 @@ function StateSurface($$anchor, $$props) {
     error: "Something needs attention — try again",
     disconnected: "Display disconnected — check the host connection"
   };
+  let responseViewport = /* @__PURE__ */ mutable_source();
+  let showingResponse = false;
+  let previousResponse = "";
+  let lastTargetScroll = 0;
+  function prefersReducedMotion() {
+    if (typeof window === "undefined" || typeof window.matchMedia !== "function") {
+      return false;
+    }
+    return window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  }
+  function resetResponseScroll() {
+    if (get(responseViewport)) {
+      if (typeof get(responseViewport).scrollTo === "function") {
+        get(responseViewport).scrollTo({ top: 0, behavior: "instant" });
+      } else {
+        mutate(responseViewport, get(responseViewport).scrollTop = 0);
+      }
+      lastTargetScroll = 0;
+    }
+  }
+  function keepResponseInView() {
+    if (!get(showResponse) || !get(responseViewport)) return;
+    const maxScroll = get(responseViewport).scrollHeight - get(responseViewport).clientHeight;
+    if (maxScroll <= 0) {
+      if (get(responseViewport).scrollTop !== 0) {
+        resetResponseScroll();
+      }
+      lastTargetScroll = 0;
+      return;
+    }
+    if (maxScroll !== lastTargetScroll) {
+      lastTargetScroll = maxScroll;
+      const behavior = prefersReducedMotion() ? "instant" : "smooth";
+      if (typeof get(responseViewport).scrollTo === "function") {
+        get(responseViewport).scrollTo({ top: maxScroll, behavior });
+      } else {
+        mutate(responseViewport, get(responseViewport).scrollTop = maxScroll);
+      }
+    }
+  }
+  afterUpdate(() => {
+    if (!get(showResponse)) {
+      resetResponseScroll();
+      showingResponse = false;
+      previousResponse = "";
+      return;
+    }
+    const newResponse = !showingResponse || snapshot().response_text.length < previousResponse.length || !snapshot().response_text.startsWith(previousResponse);
+    if (newResponse) {
+      resetResponseScroll();
+    }
+    showingResponse = true;
+    previousResponse = snapshot().response_text;
+    keepResponseInView();
+  });
+  onDestroy(resetResponseScroll);
   legacy_pre_effect(
     () => (deep_read_state(protocolError()), deep_read_state(connectionState()), deep_read_state(snapshot())),
     () => {
@@ -3885,15 +4017,17 @@ function StateSurface($$anchor, $$props) {
       if (get(status)) $$render(consequent_1);
     });
   }
-  var p_2 = sibling(node, 2);
+  var div = sibling(node, 2);
   let classes_1;
+  var p_2 = child(div);
   var text_2 = only_child(p_2, true);
+  bind_this(div, ($$value) => set(responseViewport, $$value), () => get(responseViewport));
   template_effect(() => {
     classes = set_class(main, 1, "state-surface", null, classes, { "has-response": get(showResponse) });
     set_attribute(main, "data-state", get(displayState));
     set_attribute(section, "aria-label", (get(displayState), untrack(() => labels[get(displayState)])));
     set_text(text, (get(displayState), untrack(() => labels[get(displayState)])));
-    classes_1 = set_class(p_2, 1, "response-text", null, classes_1, { visible: get(showResponse) });
+    classes_1 = set_class(div, 1, "response-viewport", null, classes_1, { visible: get(showResponse) });
     set_text(text_2, (get(showResponse), deep_read_state(snapshot()), untrack(() => get(showResponse) ? snapshot().response_text : "")));
   });
   append($$anchor, main);
