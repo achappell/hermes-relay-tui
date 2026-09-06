@@ -35,8 +35,30 @@ from voice import AudioRecorder  # noqa: E402
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--model", default=None, help="path to a .onnx model (default: the bundled hey_hermes)")
+    parser.add_argument(
+        "--engine",
+        choices=["openwakeword", "sherpa"],
+        default="openwakeword",
+        help="wake engine to use (openwakeword or sherpa)",
+    )
+    parser.add_argument(
+        "--phrases",
+        default=None,
+        help="comma-separated phrases for sherpa (default: 'hey missy, hey skippy, hey spark')",
+    )
+    parser.add_argument(
+        "--keywords-score",
+        type=float,
+        default=1.0,
+        help="keyword boosting score for sherpa (default: 1.0)",
+    )
+    parser.add_argument(
+        "--keywords-threshold",
+        type=float,
+        default=0.25,
+        help="keyword trigger threshold for sherpa (default: 0.25)",
+    )
     parser.add_argument("--threshold", type=float, default=wake.DEFAULT_THRESHOLD)
     parser.add_argument(
         "--confirmation-frames", type=int, default=wake.DEFAULT_CONFIRMATION_FRAMES
@@ -75,17 +97,40 @@ class _ScoreTap:
         self.level = 0
         self.level_peak = 0
 
+    def detect(self, frame):
+        try:
+            self.level = int(abs(frame).max())
+            self.level_peak = max(self.level_peak, self.level)
+        except Exception:
+            pass
+        self.frames += 1
+        detect_fn = getattr(self._engine, "detect", None)
+        if callable(detect_fn):
+            phrase = detect_fn(frame)
+            if phrase:
+                self.last = 1.0
+                self.peak = 1.0
+                return phrase
+            self.last = 0.0
+            return None
+        return None
+
     def score(self, frame):
         try:
             self.level = int(abs(frame).max())
             self.level_peak = max(self.level_peak, self.level)
         except Exception:
             pass
+        self.frames += 1
         value = self._engine.score(frame)
         self.last = value
         self.peak = max(self.peak, value)
-        self.frames += 1
         return value
+
+    def reset(self):
+        reset_fn = getattr(self._engine, "reset", None)
+        if callable(reset_fn):
+            reset_fn()
 
 
 def _meter(value: float, width: int = 40) -> str:
@@ -207,7 +252,17 @@ def main() -> int:
 
     print("Loading the wake-word model (this takes a moment on first run)...")
     try:
-        engine = wake.load_openwakeword_engine(args.model)
+        if args.engine == "sherpa" or args.phrases:
+            phrases = args.phrases or ["hey missy", "hey skippy", "hey spark"]
+            engine = wake.load_sherpa_engine(
+                phrases,
+                keywords_score=args.keywords_score,
+                keywords_threshold=args.keywords_threshold,
+            )
+            phrase = f"{phrases} (engine: sherpa)"
+        else:
+            engine = wake.load_openwakeword_engine(args.model)
+            phrase = args.model or "hey hermes (engine: openwakeword)"
     except wake.MissingWakeDependency as error:
         print(f"\n{error}\n", file=sys.stderr)
         return 1
@@ -220,13 +275,15 @@ def main() -> int:
         cooldown_seconds=args.refractory_seconds,
     )
 
-    detections: list[float] = []
+    detections: list[tuple[float, str]] = []
     started = time.monotonic()
 
-    def on_wake() -> None:
-        detections.append(time.monotonic() - started)
-        print(f"\r*** WAKE  #{len(detections)}  at {detections[-1]:6.1f}s  "
-              f"score {tap.last:.3f}{' ' * 20}")
+    def on_wake(detected_phrase: str | None = None) -> None:
+        name = detected_phrase or "wake"
+        detections.append((time.monotonic() - started, name))
+        tag = f"[{name}]" if detected_phrase else f"score {tap.last:.3f}"
+        print(f"\r*** WAKE  #{len(detections)}  at {detections[-1][0]:6.1f}s  "
+              f"{tag}{' ' * 20}")
 
     def on_silent_stream() -> None:
         print("\r!!! The microphone is open but sending pure silence. "
@@ -250,7 +307,6 @@ def main() -> int:
     recorder.set_frame_observer(listener.submit)
     recorder.open_for_listening()
 
-    phrase = args.model or "hey hermes"
     print(f"\nListening for: {phrase}")
     print(f"threshold={args.threshold}  confirmation_frames={args.confirmation_frames}  "
           f"refractory={args.refractory_seconds}s")
@@ -287,7 +343,7 @@ def main() -> int:
     if listener.dropped_frames:
         print(f"dropped frames      {listener.dropped_frames}")
     if detections:
-        print("fired at            " + ", ".join(f"{t:.1f}s" for t in detections))
+        print("fired at            " + ", ".join(f"{t[0]:.1f}s [{t[1]}]" for t in detections))
     else:
         print()
         if tap.level_peak < 10:
