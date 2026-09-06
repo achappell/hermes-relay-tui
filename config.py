@@ -150,7 +150,7 @@ def _cfg_str(cfg: dict[str, Any], key: str, hardcoded: Optional[str] = None) -> 
 
 def _cfg_path(cfg: dict[str, Any], key: str, hardcoded: Optional[Path] = None) -> Optional[Path]:
     value = cfg.get(key)
-    return Path(value) if value else hardcoded
+    return Path(value).expanduser() if value else hardcoded
 
 
 def _cfg_bool(cfg: dict[str, Any], key: str, hardcoded: bool = False) -> bool:
@@ -252,7 +252,6 @@ def resolve_profile_token(
             file_val = _lookup_env_file(profile_env, var_name)
             if file_val:
                 return file_val
-            return ""
         elif raw_token.startswith("$") and len(raw_token) > 1 and raw_token[1:].isidentifier():
             var_name = raw_token[1:]
             val = os.getenv(var_name)
@@ -261,7 +260,6 @@ def resolve_profile_token(
             file_val = _lookup_env_file(profile_env, var_name)
             if file_val:
                 return file_val
-            return ""
         else:
             return raw_token
 
