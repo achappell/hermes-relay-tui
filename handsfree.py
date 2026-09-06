@@ -77,6 +77,7 @@ class HandsFreeCoordinator:
         capture_finished: Callable[[], Any] | None = None,
         barge_in: bool = False,
         on_state_change: Callable[[str], Any] | None = None,
+        route_wake: Callable[[str | None], bool] | None = None,
         is_hallucination: Callable[[str], bool] | None = None,
         now: Callable[[], float] = time.monotonic,
     ) -> None:
@@ -93,6 +94,7 @@ class HandsFreeCoordinator:
         self._capture_finished = capture_finished
         self._barge_in = barge_in
         self._on_state_change = on_state_change
+        self._route_wake = route_wake
         self._is_hallucination = is_hallucination
         self._now = now
         self._state = IDLE
@@ -162,6 +164,22 @@ class HandsFreeCoordinator:
             self._last_wake_phrase = "hey hermes"
         else:
             self._last_wake_phrase = None
+        with self._lock:
+            if self._state == SPEAKING:
+                if not self._barge_in:
+                    return False
+            elif self._state != IDLE:
+                return False
+
+        if self._route_wake is not None:
+            try:
+                allowed = self._route_wake(self._last_wake_phrase)
+            except Exception:
+                logger.debug("route_wake callback failed", exc_info=True)
+                allowed = False
+            if not allowed:
+                return False
+
         with self._lock:
             if self._state == SPEAKING:
                 if not self._barge_in:
@@ -294,6 +312,7 @@ def build_hands_free(
     stop_playback: Callable[[], Any] | None = None,
     acknowledge: Callable[[], Any] | None = None,
     capture_finished: Callable[[], Any] | None = None,
+    route_wake: Callable[[str | None], bool] | None = None,
     _load_engine: Callable[[str | None], Any] | None = None,
     _load_sherpa_engine: Callable[..., Any] | None = None,
 ):
@@ -362,6 +381,7 @@ def build_hands_free(
         acknowledge=acknowledge,
         capture_finished=capture_finished,
         on_state_change=on_state_change,
+        route_wake=route_wake,
         is_hallucination=is_whisper_hallucination,
     )
 
