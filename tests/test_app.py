@@ -3800,8 +3800,12 @@ async def test_disconnect_mid_prompt_clears_pending_prompt_state():
 
 async def test_turn_timeout_clears_pending_prompt_state():
     session = QueuedEventsSession()
+    # A generous timeout: this test needs the prompt_request to be observed
+    # well before the clock fires, not just eventually before it. A tight
+    # margin here is exactly the kind of thing that passes locally and flakes
+    # on a loaded CI runner.
     app = HermesStreamingApp(
-        args=make_args(turn_timeout=0.05), session_factory=lambda: session
+        args=make_args(turn_timeout=1.0), session_factory=lambda: session
     )
     async with app.run_test() as pilot:
         await pilot.pause()
