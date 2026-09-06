@@ -15,8 +15,8 @@ var _started, _prev, _next, _commit_callbacks, _discard_callbacks, _pending, _bl
   if (relList && relList.supports && relList.supports("modulepreload")) {
     return;
   }
-  for (const link of document.querySelectorAll('link[rel="modulepreload"]')) {
-    processPreload(link);
+  for (const link2 of document.querySelectorAll('link[rel="modulepreload"]')) {
+    processPreload(link2);
   }
   new MutationObserver((mutations) => {
     for (const mutation of mutations) {
@@ -29,22 +29,22 @@ var _started, _prev, _next, _commit_callbacks, _discard_callbacks, _pending, _bl
       }
     }
   }).observe(document, { childList: true, subtree: true });
-  function getFetchOpts(link) {
+  function getFetchOpts(link2) {
     const fetchOpts = {};
-    if (link.integrity) fetchOpts.integrity = link.integrity;
-    if (link.referrerPolicy) fetchOpts.referrerPolicy = link.referrerPolicy;
-    if (link.crossOrigin === "use-credentials")
+    if (link2.integrity) fetchOpts.integrity = link2.integrity;
+    if (link2.referrerPolicy) fetchOpts.referrerPolicy = link2.referrerPolicy;
+    if (link2.crossOrigin === "use-credentials")
       fetchOpts.credentials = "include";
-    else if (link.crossOrigin === "anonymous") fetchOpts.credentials = "omit";
+    else if (link2.crossOrigin === "anonymous") fetchOpts.credentials = "omit";
     else fetchOpts.credentials = "same-origin";
     return fetchOpts;
   }
-  function processPreload(link) {
-    if (link.ep)
+  function processPreload(link2) {
+    if (link2.ep)
       return;
-    link.ep = true;
-    const fetchOpts = getFetchOpts(link);
-    fetch(link.href, fetchOpts);
+    link2.ep = true;
+    const fetchOpts = getFetchOpts(link2);
+    fetch(link2.href, fetchOpts);
   }
 })();
 const DEV = false;
@@ -100,6 +100,7 @@ const EAGER_EFFECT = 1 << 17;
 const HEAD_EFFECT = 1 << 18;
 const EFFECT_PRESERVED = 1 << 19;
 const USER_EFFECT = 1 << 20;
+const EFFECT_OFFSCREEN = 1 << 25;
 const WAS_MARKED = 1 << 16;
 const REACTION_IS_UPDATING = 1 << 21;
 const ASYNC = 1 << 22;
@@ -119,6 +120,9 @@ const STALE_REACTION = new class StaleReactionError extends Error {
     __publicField(this, "message", "The reaction that called `getAbortSignal()` was re-run or destroyed");
   }
 }();
+const EACH_ITEM_REACTIVE = 1;
+const EACH_INDEX_REACTIVE = 1 << 1;
+const EACH_ITEM_IMMUTABLE = 1 << 4;
 const PROPS_IS_RUNES = 1 << 1;
 const PROPS_IS_UPDATED = 1 << 2;
 const PROPS_IS_BINDABLE = 1 << 3;
@@ -152,6 +156,11 @@ function lifecycle_outside_component(name) {
 function async_derived_orphan() {
   {
     throw new Error(`https://svelte.dev/e/async_derived_orphan`);
+  }
+}
+function each_key_duplicate(a, b, value) {
+  {
+    throw new Error(`https://svelte.dev/e/each_key_duplicate`);
   }
 }
 function effect_in_teardown(rune) {
@@ -1778,6 +1787,13 @@ function child(node, is_text) {
     return /* @__PURE__ */ get_first_child(node);
   }
 }
+function first_child(node, is_text = false) {
+  {
+    var first = /* @__PURE__ */ get_first_child(node);
+    if (first instanceof Comment && first.data === "") return /* @__PURE__ */ get_next_sibling(first);
+    return first;
+  }
+}
 function only_child(node, is_text = false) {
   {
     return /* @__PURE__ */ get_first_child(node);
@@ -1792,6 +1808,9 @@ function sibling(node, count = 1, is_text = false) {
   {
     return next_sibling;
   }
+}
+function clear_text_content(node) {
+  node.textContent = "";
 }
 function should_defer_append() {
   return false;
@@ -2649,22 +2668,54 @@ function is_passive_event(name) {
 const event_symbol = Symbol("events");
 const all_registered_events = /* @__PURE__ */ new Set();
 const root_event_handles = /* @__PURE__ */ new Set();
+function create_event(event_name, dom, handler, options = {}) {
+  function target_handler(event2) {
+    if (!options.capture) {
+      handle_event_propagation.call(dom, event2);
+    }
+    if (!event2.cancelBubble) {
+      return without_reactive_context(() => {
+        return handler == null ? void 0 : handler.call(this, event2);
+      });
+    }
+  }
+  if (event_name.startsWith("pointer") || event_name.startsWith("touch") || event_name === "wheel") {
+    queue_micro_task(() => {
+      dom.addEventListener(event_name, target_handler, options);
+    });
+  } else {
+    dom.addEventListener(event_name, target_handler, options);
+  }
+  return target_handler;
+}
+function event(event_name, dom, handler, capture2, passive) {
+  var options = { capture: capture2, passive };
+  var target_handler = create_event(event_name, dom, handler, options);
+  if (dom === document.body || // @ts-ignore
+  dom === window || // @ts-ignore
+  dom === document || // Firefox has quirky behavior, it can happen that we still get "canplay" events when the element is already removed
+  dom instanceof HTMLMediaElement) {
+    teardown(() => {
+      dom.removeEventListener(event_name, target_handler, options);
+    });
+  }
+}
 let last_propagated_event = null;
 let last_propagated_event_clear_scheduled = false;
-function handle_event_propagation(event) {
+function handle_event_propagation(event2) {
   var _a2, _b2;
   var handler_element = this;
   var owner_document = (
     /** @type {Node} */
     handler_element.ownerDocument
   );
-  var event_name = event.type;
-  var path = ((_a2 = event.composedPath) == null ? void 0 : _a2.call(event)) || [];
+  var event_name = event2.type;
+  var path = ((_a2 = event2.composedPath) == null ? void 0 : _a2.call(event2)) || [];
   var current_target = (
     /** @type {null | Element} */
-    path[0] || event.target
+    path[0] || event2.target
   );
-  last_propagated_event = event;
+  last_propagated_event = event2;
   if (!last_propagated_event_clear_scheduled) {
     last_propagated_event_clear_scheduled = true;
     setTimeout(() => {
@@ -2673,12 +2724,12 @@ function handle_event_propagation(event) {
     });
   }
   var path_idx = 0;
-  var handled_at = last_propagated_event === event && event[event_symbol];
+  var handled_at = last_propagated_event === event2 && event2[event_symbol];
   if (handled_at) {
     var at_idx = path.indexOf(handled_at);
     if (at_idx !== -1 && (handler_element === document || handler_element === /** @type {any} */
     window)) {
-      event[event_symbol] = handler_element;
+      event2[event_symbol] = handler_element;
       return;
     }
     var handler_idx = path.indexOf(handler_element);
@@ -2690,9 +2741,9 @@ function handle_event_propagation(event) {
     }
   }
   current_target = /** @type {Element} */
-  path[path_idx] || event.target;
+  path[path_idx] || event2.target;
   if (current_target === handler_element) return;
-  define_property(event, "currentTarget", {
+  define_property(event2, "currentTarget", {
     configurable: true,
     get() {
       return current_target || owner_document;
@@ -2712,8 +2763,8 @@ function handle_event_propagation(event) {
         if (delegated != null && (!/** @type {any} */
         current_target.disabled || // DOM could've been updated already by the time this is reached, so we check this as well
         // -> the target could not have been disabled because it emits the event in the first place
-        event.target === current_target)) {
-          delegated.call(current_target, event);
+        event2.target === current_target)) {
+          delegated.call(current_target, event2);
         }
       } catch (error) {
         if (throw_error) {
@@ -2722,7 +2773,7 @@ function handle_event_propagation(event) {
           throw_error = error;
         }
       }
-      if (event.cancelBubble) break;
+      if (event2.cancelBubble) break;
       path_idx++;
       current_target = path_idx < path.length ? (
         /** @type {Element} */
@@ -2738,8 +2789,8 @@ function handle_event_propagation(event) {
       throw throw_error;
     }
   } finally {
-    event[event_symbol] = handler_element;
-    delete event.currentTarget;
+    event2[event_symbol] = handler_element;
+    delete event2.currentTarget;
     set_active_reaction(previous_reaction);
     set_active_effect(previous_effect);
   }
@@ -2793,6 +2844,14 @@ function from_html(content, flags2) {
     }
     return clone;
   };
+}
+function comment() {
+  var frag = document.createDocumentFragment();
+  var start = document.createComment("");
+  var anchor = create_text();
+  frag.append(start, anchor);
+  assign_nodes(start, anchor);
+  return frag;
 }
 function append(anchor, dom) {
   if (anchor === null) {
@@ -3535,9 +3594,390 @@ function if_block(node, fn, elseif = false) {
     }
   }, flags2);
 }
+function pause_effects(state2, to_destroy, controlled_anchor) {
+  var transitions = [];
+  var length = to_destroy.length;
+  var group;
+  var remaining = to_destroy.length;
+  for (var i = 0; i < length; i++) {
+    let effect2 = to_destroy[i];
+    pause_effect(
+      effect2,
+      () => {
+        if (group) {
+          group.pending.delete(effect2);
+          group.done.add(effect2);
+          if (group.pending.size === 0) {
+            var groups = (
+              /** @type {Set<EachOutroGroup>} */
+              state2.outrogroups
+            );
+            destroy_effects(state2, array_from(group.done));
+            groups.delete(group);
+            if (groups.size === 0) {
+              state2.outrogroups = null;
+            }
+          }
+        } else {
+          remaining -= 1;
+        }
+      },
+      false
+    );
+  }
+  if (remaining === 0) {
+    var fast_path = transitions.length === 0 && controlled_anchor !== null && state2.pending.size === 0;
+    if (fast_path) {
+      var anchor = (
+        /** @type {Element} */
+        controlled_anchor
+      );
+      var parent_node = (
+        /** @type {Element} */
+        anchor.parentNode
+      );
+      clear_text_content(parent_node);
+      parent_node.append(anchor);
+      state2.items.clear();
+    }
+    destroy_effects(state2, to_destroy, !fast_path);
+  } else {
+    group = {
+      pending: new Set(to_destroy),
+      done: /* @__PURE__ */ new Set()
+    };
+    (state2.outrogroups ?? (state2.outrogroups = /* @__PURE__ */ new Set())).add(group);
+  }
+}
+function destroy_effects(state2, to_destroy, remove_dom = true) {
+  var preserved_effects;
+  if (state2.pending.size > 0) {
+    preserved_effects = /* @__PURE__ */ new Set();
+    for (const keys of state2.pending.values()) {
+      for (const key of keys) {
+        preserved_effects.add(
+          /** @type {EachItem} */
+          state2.items.get(key).e
+        );
+      }
+    }
+  }
+  for (var i = 0; i < to_destroy.length; i++) {
+    var e = to_destroy[i];
+    if (preserved_effects == null ? void 0 : preserved_effects.has(e)) {
+      e.f |= EFFECT_OFFSCREEN;
+      const fragment = document.createDocumentFragment();
+      move_effect(e, fragment);
+    } else {
+      destroy_effect(to_destroy[i], remove_dom);
+    }
+  }
+}
+var offscreen_anchor;
+function each(node, flags2, get_collection, get_key, render_fn2, fallback_fn = null) {
+  var anchor = node;
+  var items = /* @__PURE__ */ new Map();
+  {
+    var parent_node = (
+      /** @type {Element} */
+      node
+    );
+    anchor = parent_node.appendChild(create_text());
+  }
+  var fallback = null;
+  var each_array = /* @__PURE__ */ derived_safe_equal(() => {
+    var collection = get_collection();
+    return (
+      /** @type {V[]} */
+      is_array(collection) ? collection : collection == null ? [] : array_from(collection)
+    );
+  });
+  var array;
+  var pending = /* @__PURE__ */ new Map();
+  var first_run = true;
+  function commit(batch) {
+    if ((state2.effect.f & DESTROYED) !== 0) {
+      return;
+    }
+    state2.pending.delete(batch);
+    state2.fallback = fallback;
+    reconcile(state2, array, anchor, flags2, get_key);
+    if (fallback !== null) {
+      if (array.length === 0) {
+        if ((fallback.f & EFFECT_OFFSCREEN) === 0) {
+          resume_effect(fallback);
+        } else {
+          fallback.f ^= EFFECT_OFFSCREEN;
+          move(fallback, null, anchor);
+        }
+      } else {
+        pause_effect(fallback, () => {
+          fallback = null;
+        });
+      }
+    }
+  }
+  function discard(batch) {
+    state2.pending.delete(batch);
+  }
+  var effect2 = block(() => {
+    array = /** @type {V[]} */
+    get(each_array);
+    var length = array.length;
+    var keys = /* @__PURE__ */ new Set();
+    var batch = (
+      /** @type {Batch} */
+      current_batch
+    );
+    var defer = should_defer_append();
+    for (var index = 0; index < length; index += 1) {
+      var value = array[index];
+      var key = get_key(value, index);
+      var item = first_run ? null : items.get(key);
+      if (item) {
+        if (item.v) internal_set(item.v, value);
+        if (item.i) internal_set(item.i, index);
+        if (defer) {
+          batch.unskip_effect(item.e);
+        }
+      } else {
+        item = create_item(
+          items,
+          first_run ? anchor : offscreen_anchor ?? (offscreen_anchor = create_text()),
+          value,
+          key,
+          index,
+          render_fn2,
+          flags2,
+          get_collection
+        );
+        if (!first_run) {
+          item.e.f |= EFFECT_OFFSCREEN;
+        }
+        items.set(key, item);
+      }
+      keys.add(key);
+    }
+    if (length === 0 && fallback_fn && !fallback) {
+      if (first_run) {
+        fallback = branch(() => fallback_fn(anchor));
+      } else {
+        fallback = branch(() => fallback_fn(offscreen_anchor ?? (offscreen_anchor = create_text())));
+        fallback.f |= EFFECT_OFFSCREEN;
+      }
+    }
+    if (length > keys.size) {
+      {
+        each_key_duplicate();
+      }
+    }
+    if (!first_run) {
+      pending.set(batch, keys);
+      if (defer) {
+        for (const [key2, item2] of items) {
+          if (!keys.has(key2)) {
+            batch.skip_effect(item2.e);
+          }
+        }
+        batch.oncommit(commit);
+        batch.ondiscard(discard);
+      } else {
+        commit(batch);
+      }
+    }
+    get(each_array);
+  });
+  var state2 = { effect: effect2, items, pending, outrogroups: null, fallback };
+  first_run = false;
+}
+function skip_to_branch(effect2) {
+  while (effect2 !== null && (effect2.f & BRANCH_EFFECT) === 0) {
+    effect2 = effect2.next;
+  }
+  return effect2;
+}
+function reconcile(state2, array, anchor, flags2, get_key) {
+  var _a2;
+  var length = array.length;
+  var items = state2.items;
+  var current = skip_to_branch(state2.effect.first);
+  var seen;
+  var prev = null;
+  var matched = [];
+  var stashed = [];
+  var value;
+  var key;
+  var effect2;
+  var i;
+  for (i = 0; i < length; i += 1) {
+    value = array[i];
+    key = get_key(value, i);
+    effect2 = /** @type {EachItem} */
+    items.get(key).e;
+    if (state2.outrogroups !== null) {
+      for (const group of state2.outrogroups) {
+        group.pending.delete(effect2);
+        group.done.delete(effect2);
+      }
+    }
+    if ((effect2.f & INERT) !== 0) {
+      resume_effect(effect2);
+    }
+    if ((effect2.f & EFFECT_OFFSCREEN) !== 0) {
+      effect2.f ^= EFFECT_OFFSCREEN;
+      if (effect2 === current) {
+        move(effect2, null, anchor);
+      } else {
+        var next = prev ? prev.next : current;
+        if (effect2 === state2.effect.last) {
+          state2.effect.last = effect2.prev;
+        }
+        if (effect2.prev) effect2.prev.next = effect2.next;
+        if (effect2.next) effect2.next.prev = effect2.prev;
+        link(state2, prev, effect2);
+        link(state2, effect2, next);
+        move(effect2, next, anchor);
+        prev = effect2;
+        matched = [];
+        stashed = [];
+        current = skip_to_branch(prev.next);
+        continue;
+      }
+    }
+    if (effect2 !== current) {
+      if (seen !== void 0 && seen.has(effect2)) {
+        if (matched.length < stashed.length) {
+          var start = stashed[0];
+          var j;
+          prev = start.prev;
+          var a = matched[0];
+          var b = matched[matched.length - 1];
+          for (j = 0; j < matched.length; j += 1) {
+            move(matched[j], start, anchor);
+          }
+          for (j = 0; j < stashed.length; j += 1) {
+            seen.delete(stashed[j]);
+          }
+          link(state2, a.prev, b.next);
+          link(state2, prev, a);
+          link(state2, b, start);
+          current = start;
+          prev = b;
+          i -= 1;
+          matched = [];
+          stashed = [];
+        } else {
+          seen.delete(effect2);
+          move(effect2, current, anchor);
+          link(state2, effect2.prev, effect2.next);
+          link(state2, effect2, prev === null ? state2.effect.first : prev.next);
+          link(state2, prev, effect2);
+          prev = effect2;
+        }
+        continue;
+      }
+      matched = [];
+      stashed = [];
+      while (current !== null && current !== effect2) {
+        (seen ?? (seen = /* @__PURE__ */ new Set())).add(current);
+        stashed.push(current);
+        current = skip_to_branch(current.next);
+      }
+      if (current === null) {
+        continue;
+      }
+    }
+    if ((effect2.f & EFFECT_OFFSCREEN) === 0) {
+      matched.push(effect2);
+    }
+    prev = effect2;
+    current = skip_to_branch(effect2.next);
+  }
+  if (state2.outrogroups !== null) {
+    for (const group of state2.outrogroups) {
+      if (group.pending.size === 0) {
+        destroy_effects(state2, array_from(group.done));
+        (_a2 = state2.outrogroups) == null ? void 0 : _a2.delete(group);
+      }
+    }
+    if (state2.outrogroups.size === 0) {
+      state2.outrogroups = null;
+    }
+  }
+  if (current !== null || seen !== void 0) {
+    var to_destroy = [];
+    if (seen !== void 0) {
+      for (effect2 of seen) {
+        if ((effect2.f & INERT) === 0) {
+          to_destroy.push(effect2);
+        }
+      }
+    }
+    while (current !== null) {
+      if ((current.f & INERT) === 0 && current !== state2.fallback) {
+        to_destroy.push(current);
+      }
+      current = skip_to_branch(current.next);
+    }
+    var destroy_length = to_destroy.length;
+    if (destroy_length > 0) {
+      var controlled_anchor = length === 0 ? anchor : null;
+      pause_effects(state2, to_destroy, controlled_anchor);
+    }
+  }
+}
+function create_item(items, anchor, value, key, index, render_fn2, flags2, get_collection) {
+  var v = (flags2 & EACH_ITEM_REACTIVE) !== 0 ? (flags2 & EACH_ITEM_IMMUTABLE) === 0 ? /* @__PURE__ */ mutable_source(value, false, false) : source(value) : null;
+  var i = (flags2 & EACH_INDEX_REACTIVE) !== 0 ? source(index) : null;
+  return {
+    v,
+    i,
+    e: branch(() => {
+      render_fn2(anchor, v ?? value, i ?? index, get_collection);
+      return () => {
+        items.delete(key);
+      };
+    })
+  };
+}
+function move(effect2, next, anchor) {
+  if (!effect2.nodes) return;
+  var node = effect2.nodes.start;
+  var end = effect2.nodes.end;
+  var dest = next && (next.f & EFFECT_OFFSCREEN) === 0 ? (
+    /** @type {EffectNodes} */
+    next.nodes.start
+  ) : anchor;
+  while (node !== null) {
+    var next_node = (
+      /** @type {TemplateNode} */
+      /* @__PURE__ */ get_next_sibling(node)
+    );
+    dest.before(node);
+    if (node === end) {
+      return;
+    }
+    node = next_node;
+  }
+}
+function link(state2, prev, next) {
+  if (prev === null) {
+    state2.effect.first = next;
+  } else {
+    prev.next = next;
+  }
+  if (next === null) {
+    state2.effect.last = prev;
+  } else {
+    next.prev = prev;
+  }
+}
 const whitespace = [..." 	\n\r\f \v\uFEFF"];
 function to_class(value, hash, directives) {
   var classname = value == null ? "" : "" + value;
+  if (hash) {
+    classname = classname ? classname + " " + hash : hash;
+  }
   if (directives) {
     for (var key of Object.keys(directives)) {
       if (directives[key]) {
@@ -3884,9 +4324,9 @@ if (typeof window !== "undefined") {
   ((_b = window.__svelte ?? (window.__svelte = {})).v ?? (_b.v = /* @__PURE__ */ new Set())).add(PUBLIC_VERSION);
 }
 enable_legacy_mode_flag();
-var root = /* @__PURE__ */ from_html(`<span class="working-dot" data-working-dot="" aria-hidden="true"></span>`);
-var root_1 = /* @__PURE__ */ from_html(`<p class="status-text"> <!></p>`);
-var root_2 = /* @__PURE__ */ from_html(`<main aria-live="polite"><div class="ambient-canvas" aria-hidden="true"></div> <section class="state-overlay"><p class="state-label"> </p> <!> <div data-response-viewport=""><p class="response-text" data-response-text=""> </p></div></section></main>`);
+var root$1 = /* @__PURE__ */ from_html(`<span class="working-dot" data-working-dot="" aria-hidden="true"></span>`);
+var root_1$1 = /* @__PURE__ */ from_html(`<p class="status-text"> <!></p>`);
+var root_2$1 = /* @__PURE__ */ from_html(`<main aria-live="polite"><div class="ambient-canvas" aria-hidden="true"></div> <section class="state-overlay"><p class="state-label"> </p> <!> <div data-response-viewport=""><p class="response-text" data-response-text=""> </p></div></section></main>`);
 function StateSurface($$anchor, $$props) {
   push($$props, false);
   const displayState = /* @__PURE__ */ mutable_source();
@@ -3904,7 +4344,8 @@ function StateSurface($$anchor, $$props) {
     speaking: "Speaking",
     buffering: "Buffering",
     error: "Error",
-    disconnected: "Disconnected"
+    disconnected: "Disconnected",
+    prompt: "Prompt"
   };
   const fallbackStatus = {
     buffering: "Still working — please wait",
@@ -3990,7 +4431,7 @@ function StateSurface($$anchor, $$props) {
   });
   legacy_pre_effect_reset();
   init();
-  var main = root_2();
+  var main = root_2$1();
   let classes;
   var section = sibling(child(main), 2);
   var p = child(section);
@@ -3998,12 +4439,12 @@ function StateSurface($$anchor, $$props) {
   var node = sibling(p, 2);
   {
     var consequent_1 = ($$anchor2) => {
-      var p_1 = root_1();
+      var p_1 = root_1$1();
       var text_1 = child(p_1);
       var node_1 = sibling(text_1);
       {
         var consequent = ($$anchor3) => {
-          var span = root();
+          var span = root$1();
           append($$anchor3, span);
         };
         if_block(node_1, ($$render) => {
@@ -4033,6 +4474,92 @@ function StateSurface($$anchor, $$props) {
   append($$anchor, main);
   pop();
 }
+var root = /* @__PURE__ */ from_html(`<div class="prompt-account svelte-glm292"> </div>`);
+var root_1 = /* @__PURE__ */ from_html(`<button> </button>`);
+var root_2 = /* @__PURE__ */ from_html(`<div class="prompt-overlay svelte-glm292" role="dialog" aria-modal="true" aria-labelledby="prompt-title"><div class="ambient-canvas svelte-glm292" aria-hidden="true"></div> <div class="prompt-card svelte-glm292"><!> <h1 class="prompt-title svelte-glm292" id="prompt-title"> </h1> <p class="prompt-body svelte-glm292"> </p> <div class="prompt-actions svelte-glm292"></div></div></div>`);
+function PromptOverlay($$anchor, $$props) {
+  push($$props, false);
+  let prompt = prop($$props, "prompt", 8);
+  let account = prop($$props, "account", 8, null);
+  let dismissed = /* @__PURE__ */ mutable_source(false);
+  let timeoutId = /* @__PURE__ */ mutable_source(null);
+  function sendAction(actionId, choice) {
+    if (get(dismissed)) return;
+    set(dismissed, true);
+    if (get(timeoutId) !== null) {
+      clearTimeout(get(timeoutId));
+      set(timeoutId, null);
+    }
+    const url = `/action?action_id=${encodeURIComponent(actionId)}&choice=${encodeURIComponent(choice)}`;
+    fetch(url, { method: "POST" }).catch(() => {
+    });
+  }
+  function handleOption(option) {
+    sendAction(prompt().action_id, option.id);
+  }
+  legacy_pre_effect(
+    () => (get(timeoutId), deep_read_state(prompt()), get(dismissed)),
+    () => {
+      var _a2;
+      if (get(timeoutId) !== null) {
+        clearTimeout(get(timeoutId));
+        set(timeoutId, null);
+      }
+      if (prompt().timeout_seconds !== null && prompt().timeout_seconds > 0 && !get(dismissed)) {
+        const defaultChoice = ((_a2 = prompt().options[0]) == null ? void 0 : _a2.id) ?? "no";
+        set(timeoutId, setTimeout(
+          () => {
+            sendAction(prompt().action_id, defaultChoice);
+          },
+          prompt().timeout_seconds * 1e3
+        ));
+      }
+    }
+  );
+  legacy_pre_effect_reset();
+  init();
+  var div = root_2();
+  var div_1 = sibling(child(div), 2);
+  var node = child(div_1);
+  {
+    var consequent = ($$anchor2) => {
+      var div_2 = root();
+      var text = only_child(div_2, true);
+      template_effect(() => set_text(text, account()));
+      append($$anchor2, div_2);
+    };
+    if_block(node, ($$render) => {
+      if (account()) $$render(consequent);
+    });
+  }
+  var h1 = sibling(node, 2);
+  var text_1 = only_child(h1, true);
+  var p = sibling(h1, 2);
+  var text_2 = only_child(p, true);
+  var div_3 = sibling(p, 2);
+  each(
+    div_3,
+    5,
+    () => (deep_read_state(prompt()), untrack(() => prompt().options)),
+    (option) => option.id,
+    ($$anchor2, option) => {
+      var button = root_1();
+      var text_3 = only_child(button, true);
+      template_effect(() => {
+        set_class(button, 1, `prompt-btn prompt-btn--${(get(option), untrack(() => get(option).id)) ?? ""}`, "svelte-glm292");
+        set_text(text_3, (get(option), untrack(() => get(option).label)));
+      });
+      event("click", button, () => handleOption(get(option)));
+      append($$anchor2, button);
+    }
+  );
+  template_effect(() => {
+    set_text(text_1, (deep_read_state(prompt()), untrack(() => prompt().title)));
+    set_text(text_2, (deep_read_state(prompt()), untrack(() => prompt().body)));
+  });
+  append($$anchor, div);
+  pop();
+}
 const displayStates = [
   "idle",
   "heard",
@@ -4041,17 +4568,57 @@ const displayStates = [
   "speaking",
   "buffering",
   "error",
-  "disconnected"
+  "disconnected",
+  "prompt"
 ];
 const isRecord = (value) => typeof value === "object" && value !== null && !Array.isArray(value);
+function parsePromptOption(raw) {
+  if (!isRecord(raw)) return null;
+  const { id, label } = raw;
+  if (typeof id !== "string" || !id) return null;
+  if (typeof label !== "string" || !label) return null;
+  return { id, label };
+}
+function parseDisplayPrompt(raw) {
+  if (!isRecord(raw)) return null;
+  const { kind, title, body, options, action_id, timeout_seconds } = raw;
+  if (typeof kind !== "string" || !kind) return null;
+  if (typeof title !== "string" || !title) return null;
+  if (typeof body !== "string") return null;
+  if (!Array.isArray(options)) return null;
+  const parsedOptions = [];
+  for (const opt of options) {
+    const parsed = parsePromptOption(opt);
+    if (!parsed) return null;
+    parsedOptions.push(parsed);
+  }
+  if (parsedOptions.length === 0) return null;
+  if (typeof action_id !== "string" || !action_id) return null;
+  if (timeout_seconds !== null && typeof timeout_seconds !== "number") return null;
+  return {
+    kind,
+    title,
+    body,
+    options: parsedOptions,
+    action_id,
+    timeout_seconds
+  };
+}
 function parseSnapshot(raw) {
   if (!isRecord(raw)) {
     return null;
   }
-  const { type, schema, sequence, state: state2, response_text, status_text, media } = raw;
+  const { type, schema, sequence, state: state2, response_text, status_text, media, prompt } = raw;
   if (type !== "snapshot" || schema !== 1 || typeof sequence !== "number" || !Number.isSafeInteger(sequence) || sequence < 0 || !displayStates.includes(state2) || typeof response_text !== "string" || status_text !== null && typeof status_text !== "string" || media !== null && !isRecord(media)) {
     return null;
   }
+  let parsedPrompt = null;
+  if (prompt !== null && prompt !== void 0) {
+    parsedPrompt = parseDisplayPrompt(prompt);
+    if (parsedPrompt === null) return null;
+  }
+  if (state2 === "prompt" && parsedPrompt === null) return null;
+  if (state2 !== "prompt" && parsedPrompt !== null) return null;
   return {
     type,
     schema,
@@ -4059,7 +4626,8 @@ function parseSnapshot(raw) {
     state: state2,
     response_text,
     status_text,
-    media
+    media,
+    prompt: parsedPrompt
   };
 }
 const defaultSocketFactory = (url) => new WebSocket(url);
@@ -4126,11 +4694,11 @@ class StateChannel {
       this.lastSequence = -1;
       this.reconnectAttempt = 0;
     };
-    socket.onmessage = (event) => {
+    socket.onmessage = (event2) => {
       if (!this.isCurrent(socket)) {
         return;
       }
-      this.handleMessage(event.data);
+      this.handleMessage(event2.data);
     };
     socket.onerror = () => {
     };
@@ -4193,6 +4761,7 @@ class StateChannel {
 }
 function App($$anchor, $$props) {
   push($$props, false);
+  const account = /* @__PURE__ */ mutable_source();
   const initialSnapshot = {
     type: "snapshot",
     schema: 1,
@@ -4200,7 +4769,8 @@ function App($$anchor, $$props) {
     state: "idle",
     response_text: "",
     status_text: null,
-    media: null
+    media: null,
+    prompt: null
   };
   let snapshot = /* @__PURE__ */ mutable_source(initialSnapshot);
   let connectionState = /* @__PURE__ */ mutable_source("connecting");
@@ -4229,18 +4799,43 @@ function App($$anchor, $$props) {
     channel.start();
     return () => channel.stop();
   });
-  init();
-  StateSurface($$anchor, {
-    get snapshot() {
-      return get(snapshot);
-    },
-    get connectionState() {
-      return get(connectionState);
-    },
-    get protocolError() {
-      return get(protocolError);
-    }
+  legacy_pre_effect(() => get(snapshot), () => {
+    set(account, get(snapshot).account ?? null);
   });
+  legacy_pre_effect_reset();
+  init();
+  var fragment = comment();
+  var node = first_child(fragment);
+  {
+    var consequent = ($$anchor2) => {
+      PromptOverlay($$anchor2, {
+        get prompt() {
+          return get(snapshot), untrack(() => get(snapshot).prompt);
+        },
+        get account() {
+          return get(account);
+        }
+      });
+    };
+    var alternate = ($$anchor2) => {
+      StateSurface($$anchor2, {
+        get snapshot() {
+          return get(snapshot);
+        },
+        get connectionState() {
+          return get(connectionState);
+        },
+        get protocolError() {
+          return get(protocolError);
+        }
+      });
+    };
+    if_block(node, ($$render) => {
+      if (get(snapshot), untrack(() => get(snapshot).state === "prompt" && get(snapshot).prompt !== null)) $$render(consequent);
+      else $$render(alternate, -1);
+    });
+  }
+  append($$anchor, fragment);
   pop();
 }
 const target = document.getElementById("app");

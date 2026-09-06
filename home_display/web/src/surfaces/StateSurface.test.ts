@@ -14,6 +14,7 @@ const snapshot = (state: string, response_text = "", status_text: string | null 
   response_text,
   status_text,
   media: null,
+  prompt: null,
 });
 
 class FakeSocket implements WebSocketLike {

@@ -2,6 +2,7 @@
   import { onMount } from "svelte";
   import "./styles.css";
   import StateSurface from "./surfaces/StateSurface.svelte";
+  import PromptOverlay from "./surfaces/PromptOverlay.svelte";
   import { StateChannel, type ConnectionState } from "./state/channel";
   import type { DisplaySnapshot } from "./state/protocol";
 
@@ -13,6 +14,7 @@
     response_text: "",
     status_text: null,
     media: null,
+    prompt: null,
   };
 
   let snapshot = initialSnapshot;
@@ -45,6 +47,12 @@
 
     return () => channel.stop();
   });
+
+  $: account = (snapshot as any).account ?? null;
 </script>
 
-<StateSurface {snapshot} {connectionState} {protocolError} />
+{#if snapshot.state === "prompt" && snapshot.prompt !== null}
+  <PromptOverlay prompt={snapshot.prompt} {account} />
+{:else}
+  <StateSurface {snapshot} {connectionState} {protocolError} />
+{/if}

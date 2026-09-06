@@ -10,7 +10,7 @@ def test_initial_snapshot_is_idle_and_json_safe():
     assert DisplayStatePublisher().snapshot.to_dict() == {
         "type": "snapshot", "schema": 1, "sequence": 0,
         "state": "idle", "response_text": "", "status_text": None,
-        "media": None,
+        "media": None, "prompt": None,
     }
 
 

@@ -16,6 +16,7 @@
     buffering: "Buffering",
     error: "Error",
     disconnected: "Disconnected",
+    prompt: "Prompt",
   };
 
   const fallbackStatus: Partial<Record<DisplayState, string>> = {
