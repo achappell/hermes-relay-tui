@@ -31,6 +31,8 @@ voice = [
 wake = [
   "openwakeword>=0.6",
   "onnxruntime>=1.17",
+  "sherpa-onnx>=1.10",
+  "sentencepiece>=0.2.0",
 ]
 
 # Everything the household appliance needs, as one name. The home unit is a
@@ -58,4 +60,4 @@ namespaces = false
 home_display = ["static/**/*"]
 # Bundled so hands-free works on a clean machine: no Hermes install to read
 # models out of, and no first-run download.
-wakewords = ["*.onnx", "README.md"]
+wakewords = ["*.onnx", "README.md", "sherpa/*"]

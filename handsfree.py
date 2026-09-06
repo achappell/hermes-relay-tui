@@ -97,7 +97,12 @@ class HandsFreeCoordinator:
         self._now = now
         self._state = IDLE
         self._capture_started = 0.0
+        self._last_wake_phrase: str | None = None
         self._lock = threading.Lock()
+
+    @property
+    def last_wake_phrase(self) -> str | None:
+        return self._last_wake_phrase
 
     @property
     def state(self) -> str:
@@ -149,8 +154,14 @@ class HandsFreeCoordinator:
                 return
             self._set_state(IDLE)
 
-    def on_wake(self) -> bool:
+    def on_wake(self, phrase: str | bool | None = None) -> bool:
         """Handle a detection and its one optional wake-word-free follow-up."""
+        if isinstance(phrase, str) and phrase.strip():
+            self._last_wake_phrase = phrase.strip()
+        elif phrase is True:
+            self._last_wake_phrase = "hey hermes"
+        else:
+            self._last_wake_phrase = None
         with self._lock:
             if self._state == SPEAKING:
                 if not self._barge_in:
@@ -284,6 +295,7 @@ def build_hands_free(
     acknowledge: Callable[[], Any] | None = None,
     capture_finished: Callable[[], Any] | None = None,
     _load_engine: Callable[[str | None], Any] | None = None,
+    _load_sherpa_engine: Callable[..., Any] | None = None,
 ):
     """Assemble the hands-free loop for a front end, or None when disabled.
 
@@ -301,8 +313,27 @@ def build_hands_free(
     import wake  # noqa: PLC0415 - keep the optional-dependency seam explicit
     from voice import is_whisper_hallucination  # noqa: PLC0415
 
-    loader = _load_engine or wake.load_openwakeword_engine
-    engine = loader(getattr(args, "wake_model", None))
+    engine_name = getattr(args, "wake_engine", "openwakeword")
+    wake_phrases = getattr(args, "wake_phrases", None)
+
+    if _load_sherpa_engine is not None:
+        phrases = wake_phrases or wake.DEFAULT_SHERPA_PHRASES
+        engine = _load_sherpa_engine(
+            phrases,
+            keywords_score=getattr(args, "wake_keywords_score", 1.0),
+            keywords_threshold=getattr(args, "wake_keywords_threshold", 0.25),
+        )
+    elif _load_engine is not None and not (engine_name == "sherpa" or wake_phrases):
+        engine = _load_engine(getattr(args, "wake_model", None))
+    elif engine_name == "sherpa" or wake_phrases:
+        phrases = wake_phrases or wake.DEFAULT_SHERPA_PHRASES
+        engine = wake.load_sherpa_engine(
+            phrases,
+            keywords_score=getattr(args, "wake_keywords_score", 1.0),
+            keywords_threshold=getattr(args, "wake_keywords_threshold", 0.25),
+        )
+    else:
+        engine = wake.load_openwakeword_engine(getattr(args, "wake_model", None))
 
     detector = wake.WakeDetector(
         engine,

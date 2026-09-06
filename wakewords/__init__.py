@@ -42,10 +42,31 @@ WAKE_MODEL = MODEL_DIR / "hey_hermes.onnx"
 MELSPECTROGRAM_MODEL = MODEL_DIR / "melspectrogram.onnx"
 EMBEDDING_MODEL = MODEL_DIR / "embedding_model.onnx"
 
+SHERPA_DIR = MODEL_DIR / "sherpa"
+SHERPA_ENCODER = SHERPA_DIR / "encoder.onnx"
+SHERPA_DECODER = SHERPA_DIR / "decoder.onnx"
+SHERPA_JOINER = SHERPA_DIR / "joiner.onnx"
+SHERPA_TOKENS = SHERPA_DIR / "tokens.txt"
+SHERPA_BPE = SHERPA_DIR / "bpe.model"
+
 
 def bundled_models_present() -> bool:
     """Whether every bundled model survived packaging."""
     return all(
         path.is_file()
         for path in (WAKE_MODEL, MELSPECTROGRAM_MODEL, EMBEDDING_MODEL)
+    )
+
+
+def bundled_sherpa_models_present() -> bool:
+    """Whether every bundled Sherpa-ONNX model file is present."""
+    return all(
+        path.is_file()
+        for path in (
+            SHERPA_ENCODER,
+            SHERPA_DECODER,
+            SHERPA_JOINER,
+            SHERPA_TOKENS,
+            SHERPA_BPE,
+        )
     )

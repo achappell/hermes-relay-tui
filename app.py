@@ -1048,11 +1048,15 @@ class HermesStreamingApp(App):
                 "wake mode: off — the microphone is closed. Turn it on with /wake on."
             )
             return
-        model = getattr(self.args, "wake_model", None) or "bundled hey_hermes"
-        threshold = getattr(self.args, "wake_threshold", 0.6)
-        self._append_block(
-            f"wake mode: on — listening · model: {model} · threshold: {threshold}"
-        )
+        engine = getattr(self.args, "wake_engine", "openwakeword")
+        phrases = getattr(self.args, "wake_phrases", None)
+        if engine == "sherpa" or phrases:
+            detail = f"engine: sherpa · phrases: {phrases or 'hey hermes'}"
+        else:
+            model = getattr(self.args, "wake_model", None) or "bundled hey_hermes"
+            threshold = getattr(self.args, "wake_threshold", 0.6)
+            detail = f"model: {model} · threshold: {threshold}"
+        self._append_block(f"wake mode: on — listening · {detail}")
 
     async def _arm_wake(self) -> None:
         if self.wake_armed:

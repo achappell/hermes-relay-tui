@@ -120,6 +120,7 @@ def test_the_models_are_declared_as_package_data():
 
     assert "wakewords" in setuptools["packages"]["find"]["include"]
     assert "*.onnx" in setuptools["package-data"]["wakewords"]
+    assert "sherpa/*" in setuptools["package-data"]["wakewords"]
 
 
 def test_the_wake_modules_are_actually_installed():
@@ -130,3 +131,19 @@ def test_the_wake_modules_are_actually_installed():
 
     assert "wake" in modules
     assert "handsfree" in modules
+
+
+def test_bundled_sherpa_models_are_present_and_real():
+    assert wakewords.bundled_sherpa_models_present() is True
+    assert wakewords.SHERPA_ENCODER.stat().st_size > 4_000_000
+    assert wakewords.SHERPA_DECODER.stat().st_size > 200_000
+    assert wakewords.SHERPA_JOINER.stat().st_size > 100_000
+    assert wakewords.SHERPA_TOKENS.stat().st_size > 2_000
+    assert wakewords.SHERPA_BPE.stat().st_size > 100_000
+
+
+def test_bundled_sherpa_model_paths_returns_all_keys():
+    paths = wake.bundled_sherpa_model_paths()
+    assert set(paths.keys()) == {"encoder", "decoder", "joiner", "tokens", "bpe_model"}
+    for p in paths.values():
+        assert Path(p).is_file()

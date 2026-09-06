@@ -21,6 +21,7 @@ DEFAULT_PROFILE_ENV = Path.home() / ".hermes-relay-tui" / ".env"
 LEGACY_PROFILE_ENV = Path.home() / ".hermes" / "profiles" / "amanda" / ".env"
 DEFAULT_CONFIG_PATH = Path.home() / ".hermes-relay-tui" / "config.yaml"
 BUSY_MODES = ("queue", "steer", "interrupt")
+WAKE_ENGINES = ("openwakeword", "sherpa")
 
 
 def default_device_id() -> str:
@@ -294,6 +295,42 @@ def build_arg_parser(argv: Optional[list[str]] = None) -> argparse.ArgumentParse
         action="store_true",
         default=_cfg_bool(cfg, "wake_enabled"),
         help="listen continuously for the wake phrase (needs the 'wake' extra)",
+    )
+    parser.add_argument(
+        "--wake-engine",
+        choices=WAKE_ENGINES,
+        default=_env_choice(
+            "VOICE_SESSION_WAKE_ENGINE",
+            WAKE_ENGINES,
+            _cfg_choice(cfg, "wake_engine", WAKE_ENGINES, "openwakeword"),
+        ),
+        help="wake-word detection engine ('openwakeword' or 'sherpa')",
+    )
+    parser.add_argument(
+        "--wake-phrases",
+        default=os.getenv(
+            "VOICE_SESSION_WAKE_PHRASES",
+            _cfg_str(cfg, "wake_phrases"),
+        ),
+        help="comma-separated wake phrases for Sherpa-ONNX (e.g. 'hey hermes, computer')",
+    )
+    parser.add_argument(
+        "--wake-keywords-score",
+        type=float,
+        default=_env_float(
+            "VOICE_SESSION_WAKE_KEYWORDS_SCORE",
+            cfg.get("wake_keywords_score", 1.0),
+        ),
+        help="keyword boosting score for Sherpa-ONNX (default: 1.0)",
+    )
+    parser.add_argument(
+        "--wake-keywords-threshold",
+        type=float,
+        default=_env_float(
+            "VOICE_SESSION_WAKE_KEYWORDS_THRESHOLD",
+            cfg.get("wake_keywords_threshold", 0.25),
+        ),
+        help="keyword spotting threshold for Sherpa-ONNX (default: 0.25)",
     )
     parser.add_argument(
         "--wake-model",
