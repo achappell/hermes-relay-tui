@@ -110,7 +110,10 @@ class FakeRelay:
                                 "protocol_version": 1,
                                 "session_id": payload.get("session_id", "default"),
                                 "chat_id": "stub-chat",
-                                "capabilities": ["structured_prompts"],
+                                "model": self.args.model,
+                                "server_version": self.args.relay_version,
+                                "context_limit": self.args.context_limit,
+                                "capabilities": ["structured_prompts", "interrupt", "sessions"],
                             }
                         )
                     )
@@ -123,14 +126,14 @@ class FakeRelay:
                         {
                             "session_id": "default",
                             "title": "Default Session",
-                            "model": "qwen2.5:7b",
+                            "model": self.args.model,
                             "message_count": self.turns * 2,
                             "last_active": "just now",
                         },
                         {
                             "session_id": "session-123",
                             "title": "Debug Notes",
-                            "model": "qwen2.5:7b",
+                            "model": self.args.model,
                             "message_count": 4,
                             "last_active": "5m ago",
                         },
@@ -158,7 +161,9 @@ class FakeRelay:
                                 "type": "session_switched",
                                 "session_id": new_sid,
                                 "title": title,
-                                "model": "qwen2.5:7b",
+                                "model": self.args.model,
+                                "server_version": self.args.relay_version,
+                                "context_limit": self.args.context_limit,
                                 "history": [],
                             }
                         )
@@ -175,7 +180,9 @@ class FakeRelay:
                                 "type": "session_switched",
                                 "session_id": target_sid,
                                 "title": f"Session {target_sid}",
-                                "model": "qwen2.5:7b",
+                                "model": self.args.model,
+                                "server_version": self.args.relay_version,
+                                "context_limit": self.args.context_limit,
                                 "history": history,
                             }
                         )
@@ -360,6 +367,22 @@ def build_parser() -> argparse.ArgumentParser:
         "--prompt-reject-once",
         action="store_true",
         help="reject the first prompt_response for each turn, then accept the retry",
+    )
+    parser.add_argument(
+        "--model",
+        default="qwen2.5:7b",
+        help="model name to report in hello_ack and session operations",
+    )
+    parser.add_argument(
+        "--relay-version",
+        default="0.8.0",
+        help="relay server version to report in hello_ack and session operations",
+    )
+    parser.add_argument(
+        "--context-limit",
+        type=int,
+        default=128000,
+        help="context limit token count to report in hello_ack",
     )
     return parser
 

@@ -37,6 +37,10 @@ class FakeSession:
         self._session_id = session_id
         self.confirmed_model = None
         self.confirmed_title = None
+        self.confirmed_chat_id = None
+        self.confirmed_server_version = None
+        self.confirmed_context_limit = None
+        self.capabilities = frozenset()
         self.initial_history = []
         self.sessions_list = []
         self.switched_sessions = []
@@ -120,6 +124,14 @@ class FakeSession:
             self.confirmed_model = str(self.hello.get("model"))
         if self.hello.get("title"):
             self.confirmed_title = str(self.hello.get("title"))
+        if self.hello.get("chat_id"):
+            self.confirmed_chat_id = str(self.hello.get("chat_id"))
+        if self.hello.get("server_version") or self.hello.get("version"):
+            self.confirmed_server_version = str(self.hello.get("server_version") or self.hello.get("version"))
+        if self.hello.get("context_limit"):
+            self.confirmed_context_limit = int(self.hello.get("context_limit"))
+        if self.hello.get("capabilities"):
+            self.capabilities = frozenset(self.hello.get("capabilities"))
         if self.hello.get("history"):
             self.initial_history = list(self.hello.get("history"))
         return self.hello
@@ -3964,6 +3976,8 @@ async def test_status_command_shows_confirmed_model():
         "chat_id": "chat-1",
         "session_id": "s1",
         "model": "confirmed-qwen",
+        "server_version": "0.8.0",
+        "capabilities": ["interrupt", "structured_prompts"],
     }
     session = FakeSession(hello=hello)
     app = HermesStreamingApp(args=make_args(), session_factory=lambda: session)
@@ -3974,5 +3988,52 @@ async def test_status_command_shows_confirmed_model():
         await pilot.press("enter")
         await pilot.pause()
 
-        assert "model: confirmed-qwen (confirmed)" in transcript_of(app)
+        text = transcript_of(app)
+        assert "model: confirmed-qwen (confirmed)" in text
+        assert "chat: chat-1" in text
+        assert "relay: v0.8.0" in text
+        assert "caps: interrupt,structured_prompts" in text
+
+
+async def test_session_info_command_shows_confirmed_metadata():
+    hello = {
+        "chat_id": "chat-99",
+        "session_id": "s-prod",
+        "title": "Production Logs",
+        "model": "claude-3-5-sonnet",
+        "server_version": "0.8.0",
+        "context_limit": 200000,
+        "capabilities": ["interrupt", "structured_prompts", "sessions"],
+    }
+    session = FakeSession(hello=hello)
+    app = HermesStreamingApp(args=make_args(), session_factory=lambda: session)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        composer = app.query_one("#composer", Composer)
+        composer.text = "/session info"
+        await pilot.press("enter")
+        await pilot.pause()
+
+        text = transcript_of(app)
+        assert "Active session: s-prod" in text
+        assert "Title: Production Logs" in text
+        assert "Model: claude-3-5-sonnet (confirmed)" in text
+        assert "Chat ID: chat-99" in text
+        assert "Capabilities: interrupt, sessions, structured_prompts" in text
+        assert "Context Limit: 200,000 tokens" in text
+        assert "Relay Version: 0.8.0" in text
+        assert "Connection: connected" in text
+
+
+async def test_connect_banner_shows_unconfirmed_model_when_relay_omits():
+    hello = {"chat_id": "chat-2", "session_id": "s-custom"}
+    session = FakeSession(hello=hello)
+    app = HermesStreamingApp(
+        args=make_args(model="cli-model", session_id="s-custom"),
+        session_factory=lambda: session,
+    )
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        text = transcript_of(app)
+        assert "Connected to s-custom (chat chat-2, model cli-model (unconfirmed))." in text
 

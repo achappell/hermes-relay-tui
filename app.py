@@ -932,10 +932,15 @@ class HermesStreamingApp(App):
                     or getattr(self.args, "session_id", "session")
                 )
                 conn_details = []
-                if hello.get("chat_id"):
-                    conn_details.append(f"chat {hello.get('chat_id')}")
+                chat_id = getattr(self.session, "confirmed_chat_id", None) or hello.get("chat_id")
+                if chat_id:
+                    conn_details.append(f"chat {chat_id}")
                 if getattr(self.session, "confirmed_model", None):
                     conn_details.append(f"model {self.session.confirmed_model}")
+                elif getattr(self.args, "model", None):
+                    conn_details.append(f"model {self.args.model} (unconfirmed)")
+                if getattr(self.session, "confirmed_server_version", None):
+                    conn_details.append(f"relay v{self.session.confirmed_server_version}")
                 detail_suffix = f" ({', '.join(conn_details)})" if conn_details else ""
                 self._append_block(f"Connected to {session_id}{detail_suffix}.")
                 if getattr(self.session, "initial_history", None):
@@ -1852,9 +1857,15 @@ class HermesStreamingApp(App):
             )
             model = getattr(self.session, "confirmed_model", None) or getattr(self.args, "model", None) or "default"
             model_label = f"{model} (confirmed)" if getattr(self.session, "confirmed_model", None) else f"{model} (unconfirmed)"
+            chat_id = getattr(self.session, "confirmed_chat_id", None)
+            chat_label = f" · chat: {chat_id}" if chat_id else ""
+            version = getattr(self.session, "confirmed_server_version", None)
+            ver_label = f" · relay: v{version}" if version else ""
+            caps = sorted(getattr(self.session, "capabilities", ()))
+            caps_label = f" · caps: {','.join(caps)}" if caps else ""
             config_path = getattr(self.args, "config", None)
             self._append_block(
-                f"session: {session_id} · {self.connection_state} · model: {model_label} "
+                f"session: {session_id} · {self.connection_state} · model: {model_label}{chat_label}{ver_label}{caps_label} "
                 f"· busy-mode: {self.busy_mode} · queued: {len(self._queued_prompts)} "
                 f"· history: {self._history.path} · config: {config_path}"
             )
@@ -1925,12 +1936,23 @@ class HermesStreamingApp(App):
             model = getattr(self.session, "confirmed_model", None) or getattr(self.args, "model", None) or "default"
             model_info = f"{model} (confirmed)" if getattr(self.session, "confirmed_model", None) else f"{model} (unconfirmed)"
             title = getattr(self.session, "confirmed_title", None) or "-"
-            self._append_block(
-                f"Active session: {session_id}\n"
-                f"  Title: {title}\n"
-                f"  Model: {model_info}\n"
-                f"  Connection: {self.connection_state}"
-            )
+            chat_id = getattr(self.session, "confirmed_chat_id", None) or "-"
+            version = getattr(self.session, "confirmed_server_version", None)
+            caps = ", ".join(sorted(getattr(self.session, "capabilities", ()))) or "none"
+            limit = getattr(self.session, "confirmed_context_limit", None)
+            lines = [
+                f"Active session: {session_id}",
+                f"  Title: {title}",
+                f"  Model: {model_info}",
+                f"  Chat ID: {chat_id}",
+                f"  Capabilities: {caps}",
+            ]
+            if limit is not None:
+                lines.append(f"  Context Limit: {limit:,} tokens")
+            if version:
+                lines.append(f"  Relay Version: {version}")
+            lines.append(f"  Connection: {self.connection_state}")
+            self._append_block("\n".join(lines))
         else:
             self._append_block("usage: /session [list|new|switch|resume|info]")
 
