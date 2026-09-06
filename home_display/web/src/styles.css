@@ -56,8 +56,8 @@ body {
 }
 
 .state-overlay {
-  max-width: min(74rem, 82vw);
-  text-wrap: balance;
+  width: 100%;
+  max-width: 100%;
 }
 
 .state-label,
@@ -79,14 +79,19 @@ body {
   font-weight: 620;
   line-height: 1.2;
   margin-top: 0.75rem;
+  max-width: 100%;
+  text-wrap: balance;
 }
 
 .response-viewport {
   display: none;
-  max-height: var(--bottom-sheet-height);
+  width: 100%;
+  max-width: 100%;
+  max-height: min(56dvh, 36rem);
   overflow-y: auto;
   overscroll-behavior: contain;
   scrollbar-width: none;
+  scroll-behavior: smooth;
 }
 
 .response-viewport::-webkit-scrollbar {
@@ -101,8 +106,10 @@ body {
   font-size: clamp(1.5rem, 3.7vw, 4.5rem);
   font-weight: 650;
   line-height: 1.16;
-  margin-top: clamp(1.25rem, 3vw, 3rem);
-  max-width: 22ch;
+  margin-top: clamp(1rem, 2.5vw, 2.5rem);
+  width: 100%;
+  max-width: 100%;
+  text-wrap: pretty;
   white-space: pre-wrap;
 }
 
@@ -157,6 +164,10 @@ body {
   .working-dot {
     animation: none;
     opacity: 0.7;
+  }
+
+  .response-viewport {
+    scroll-behavior: auto;
   }
 }
 

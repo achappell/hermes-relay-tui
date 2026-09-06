@@ -3911,49 +3911,48 @@ function StateSurface($$anchor, $$props) {
     error: "Something needs attention — try again",
     disconnected: "Display disconnected — check the host connection"
   };
-  const AUTO_SCROLL_INTERVAL_MS = 50;
-  const AUTO_SCROLL_PIXELS = 1;
   let responseViewport = /* @__PURE__ */ mutable_source();
-  let scrollTimer = null;
   let showingResponse = false;
   let previousResponse = "";
-  function stopAutoScroll() {
-    if (scrollTimer !== null) {
-      clearInterval(scrollTimer);
-      scrollTimer = null;
+  let lastTargetScroll = 0;
+  function prefersReducedMotion() {
+    if (typeof window === "undefined" || typeof window.matchMedia !== "function") {
+      return false;
     }
+    return window.matchMedia("(prefers-reduced-motion: reduce)").matches;
   }
   function resetResponseScroll() {
     if (get(responseViewport)) {
-      mutate(responseViewport, get(responseViewport).scrollTop = 0);
+      if (typeof get(responseViewport).scrollTo === "function") {
+        get(responseViewport).scrollTo({ top: 0, behavior: "instant" });
+      } else {
+        mutate(responseViewport, get(responseViewport).scrollTop = 0);
+      }
+      lastTargetScroll = 0;
     }
   }
-  function scrollResponse() {
-    if (!get(showResponse) || !get(responseViewport)) {
-      stopAutoScroll();
-      return;
-    }
-    const maximumScroll = get(responseViewport).scrollHeight - get(responseViewport).clientHeight;
-    if (maximumScroll <= get(responseViewport).scrollTop) {
-      stopAutoScroll();
-      return;
-    }
-    mutate(responseViewport, get(responseViewport).scrollTop = Math.min(maximumScroll, get(responseViewport).scrollTop + AUTO_SCROLL_PIXELS));
-  }
-  function startAutoScroll() {
+  function keepResponseInView() {
     if (!get(showResponse) || !get(responseViewport)) return;
-    const maximumScroll = get(responseViewport).scrollHeight - get(responseViewport).clientHeight;
-    if (maximumScroll <= get(responseViewport).scrollTop) {
-      stopAutoScroll();
+    const maxScroll = get(responseViewport).scrollHeight - get(responseViewport).clientHeight;
+    if (maxScroll <= 0) {
+      if (get(responseViewport).scrollTop !== 0) {
+        resetResponseScroll();
+      }
+      lastTargetScroll = 0;
       return;
     }
-    if (scrollTimer === null) {
-      scrollTimer = setInterval(scrollResponse, AUTO_SCROLL_INTERVAL_MS);
+    if (maxScroll !== lastTargetScroll) {
+      lastTargetScroll = maxScroll;
+      const behavior = prefersReducedMotion() ? "instant" : "smooth";
+      if (typeof get(responseViewport).scrollTo === "function") {
+        get(responseViewport).scrollTo({ top: maxScroll, behavior });
+      } else {
+        mutate(responseViewport, get(responseViewport).scrollTop = maxScroll);
+      }
     }
   }
   afterUpdate(() => {
     if (!get(showResponse)) {
-      stopAutoScroll();
       resetResponseScroll();
       showingResponse = false;
       previousResponse = "";
@@ -3961,14 +3960,13 @@ function StateSurface($$anchor, $$props) {
     }
     const newResponse = !showingResponse || snapshot().response_text.length < previousResponse.length || !snapshot().response_text.startsWith(previousResponse);
     if (newResponse) {
-      stopAutoScroll();
       resetResponseScroll();
     }
     showingResponse = true;
     previousResponse = snapshot().response_text;
-    startAutoScroll();
+    keepResponseInView();
   });
-  onDestroy(stopAutoScroll);
+  onDestroy(resetResponseScroll);
   legacy_pre_effect(
     () => (deep_read_state(protocolError()), deep_read_state(connectionState()), deep_read_state(snapshot())),
     () => {

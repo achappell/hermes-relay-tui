@@ -37,61 +37,57 @@
   // to be talking.
   $: working = displayState === "thinking" || displayState === "buffering";
 
-  const AUTO_SCROLL_INTERVAL_MS = 50;
-  const AUTO_SCROLL_PIXELS = 1;
   let responseViewport: HTMLDivElement | undefined;
-  let scrollTimer: ReturnType<typeof setInterval> | null = null;
   let showingResponse = false;
   let previousResponse = "";
+  let lastTargetScroll = 0;
 
-  function stopAutoScroll(): void {
-    if (scrollTimer !== null) {
-      clearInterval(scrollTimer);
-      scrollTimer = null;
+  function prefersReducedMotion(): boolean {
+    if (typeof window === "undefined" || typeof window.matchMedia !== "function") {
+      return false;
     }
+    return window.matchMedia("(prefers-reduced-motion: reduce)").matches;
   }
 
   function resetResponseScroll(): void {
     if (responseViewport) {
-      responseViewport.scrollTop = 0;
+      if (typeof responseViewport.scrollTo === "function") {
+        responseViewport.scrollTo({ top: 0, behavior: "instant" });
+      } else {
+        responseViewport.scrollTop = 0;
+      }
+      lastTargetScroll = 0;
     }
   }
 
-  function scrollResponse(): void {
-    if (!showResponse || !responseViewport) {
-      stopAutoScroll();
-      return;
-    }
-
-    const maximumScroll = responseViewport.scrollHeight - responseViewport.clientHeight;
-    if (maximumScroll <= responseViewport.scrollTop) {
-      stopAutoScroll();
-      return;
-    }
-
-    responseViewport.scrollTop = Math.min(
-      maximumScroll,
-      responseViewport.scrollTop + AUTO_SCROLL_PIXELS,
-    );
-  }
-
-  function startAutoScroll(): void {
+  function keepResponseInView(): void {
     if (!showResponse || !responseViewport) return;
 
-    const maximumScroll = responseViewport.scrollHeight - responseViewport.clientHeight;
-    if (maximumScroll <= responseViewport.scrollTop) {
-      stopAutoScroll();
+    const maxScroll = responseViewport.scrollHeight - responseViewport.clientHeight;
+    if (maxScroll <= 0) {
+      if (responseViewport.scrollTop !== 0) {
+        resetResponseScroll();
+      }
+      lastTargetScroll = 0;
       return;
     }
 
-    if (scrollTimer === null) {
-      scrollTimer = setInterval(scrollResponse, AUTO_SCROLL_INTERVAL_MS);
+    if (maxScroll !== lastTargetScroll) {
+      lastTargetScroll = maxScroll;
+      const behavior = prefersReducedMotion() ? "instant" : "smooth";
+      if (typeof responseViewport.scrollTo === "function") {
+        responseViewport.scrollTo({
+          top: maxScroll,
+          behavior,
+        });
+      } else {
+        responseViewport.scrollTop = maxScroll;
+      }
     }
   }
 
   afterUpdate(() => {
     if (!showResponse) {
-      stopAutoScroll();
       resetResponseScroll();
       showingResponse = false;
       previousResponse = "";
@@ -104,16 +100,15 @@
       !snapshot.response_text.startsWith(previousResponse);
 
     if (newResponse) {
-      stopAutoScroll();
       resetResponseScroll();
     }
 
     showingResponse = true;
     previousResponse = snapshot.response_text;
-    startAutoScroll();
+    keepResponseInView();
   });
 
-  onDestroy(stopAutoScroll);
+  onDestroy(resetResponseScroll);
 </script>
 
 <main class:has-response={showResponse} class="state-surface" data-state={displayState} aria-live="polite">

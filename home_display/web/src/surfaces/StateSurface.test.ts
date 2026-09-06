@@ -75,7 +75,6 @@ describe("StateSurface", () => {
   });
 
   it("automatically advances an overflowing response viewport", async () => {
-    vi.useFakeTimers();
     const { container, rerender } = render(StateSurface, {
       props: { snapshot: snapshot("speaking", "A long response"), connectionState: "connected" },
     });
@@ -94,10 +93,15 @@ describe("StateSurface", () => {
       snapshot: snapshot("speaking", "A long response that continues beyond the fixed display window"),
       connectionState: "connected",
     });
-    vi.advanceTimersByTime(1000);
 
-    expect(viewport.scrollTop).toBeGreaterThan(0);
-    expect(viewport.scrollTop).toBeLessThanOrEqual(200);
+    expect(viewport.scrollTop).toBe(200);
+
+    // Resets scroll when speech ends
+    await rerender({
+      snapshot: snapshot("idle", ""),
+      connectionState: "connected",
+    });
+    expect(viewport.scrollTop).toBe(0);
   });
 
   it("shows disconnected when the channel is down", () => {
