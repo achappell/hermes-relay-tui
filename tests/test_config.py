@@ -226,6 +226,7 @@ def test_config_file_fills_the_fiddly_defaults(tmp_path):
                 "turn_timeout: 60",
                 "history_path: /custom/history.jsonl",
                 "allow_shell: true",
+                "wake_enabled: true",
             ]
         )
     )
@@ -245,6 +246,7 @@ def test_config_file_fills_the_fiddly_defaults(tmp_path):
     assert args.turn_timeout == 60
     assert str(args.history_path) == "/custom/history.jsonl"
     assert args.allow_shell is True
+    assert args.wake_enabled is True
 
 
 def test_cli_flag_overrides_config_file(tmp_path):
