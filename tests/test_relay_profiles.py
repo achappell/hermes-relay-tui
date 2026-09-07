@@ -9,6 +9,7 @@ import yaml
 
 import config
 from config import (
+    DEFAULT_URL,
     RelayProfile,
     delete_relay_profile,
     load_relay_profiles,
@@ -98,6 +99,36 @@ def test_named_profiles_do_not_fall_back_to_another_profile_token(tmp_path, monk
     )
 
     assert profiles[0].token == ""
+
+
+def test_named_profiles_do_not_inherit_root_connection_settings(tmp_path, monkeypatch):
+    env_path = tmp_path / ".env"
+    env_path.write_text('VOICE_SESSION_TOKEN_JENSEN="jensen-secret"\n', encoding="utf-8")
+    monkeypatch.setattr(config, "default_device_id", lambda: "local-device")
+
+    profiles = load_relay_profiles(
+        {
+            "profile_env": str(env_path),
+            "url": "wss://root.example/voice-session",
+            "token": "root-secret",
+            "client_id": "root-client",
+            "device_id": "root-device",
+            "session_id": "root-session",
+            "model": "root-model",
+            "profiles": {
+                "jensen": {
+                    "token_env": "VOICE_SESSION_TOKEN_JENSEN",
+                }
+            },
+        }
+    )
+
+    assert profiles[0].url == DEFAULT_URL
+    assert profiles[0].token == "jensen-secret"
+    assert profiles[0].client_id == "jensen-relay"
+    assert profiles[0].device_id == "local-device"
+    assert profiles[0].session_id == "jensen-session"
+    assert profiles[0].model is None
 
 
 def test_legacy_migration_moves_literal_token_to_private_env(tmp_path):
@@ -265,6 +296,35 @@ def test_parser_uses_selected_profile_connection_defaults(tmp_path, monkeypatch)
     assert args.display_name == "Jensen"
 
 
+def test_parser_uses_selected_profile_wake_phrases(tmp_path, monkeypatch):
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        yaml.safe_dump(
+            {
+                "wake_phrases": "hey generic",
+                "profiles": {
+                    "amanda": {
+                        "url": "wss://amanda.example/voice-session",
+                        "wake_phrase": "hey missy",
+                    },
+                    "jensen": {
+                        "url": "wss://jensen.example/voice-session",
+                        "wake_phrases": ["hey skippy", "skippy"],
+                    },
+                },
+            },
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.delenv("VOICE_SESSION_WAKE_PHRASES", raising=False)
+
+    argv = ["--config", str(config_path), "--profile", "jensen"]
+    args = config.build_arg_parser(argv).parse_args(argv)
+
+    assert args.wake_phrases == "hey skippy, skippy"
+
+
 def test_parser_keeps_explicit_connection_overrides_above_profile(tmp_path):
     config_path = tmp_path / "config.yaml"
     config_path.write_text(
@@ -301,6 +361,40 @@ def test_parser_keeps_explicit_connection_overrides_above_profile(tmp_path):
     assert args.url == "wss://cli.example/voice-session"
     assert args.client_id == "cli-client"
     assert args.device_id == "profile-device"
+
+
+def test_parser_does_not_use_root_connection_defaults_for_named_profile(tmp_path, monkeypatch):
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        yaml.safe_dump(
+            {
+                "url": "wss://root.example/voice-session",
+                "client_id": "root-client",
+                "device_id": "root-device",
+                "session_id": "root-session",
+                "model": "root-model",
+                "profiles": {
+                    "jensen": {"token_env": "VOICE_SESSION_TOKEN_JENSEN"},
+                },
+            },
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.delenv("VOICE_SESSION_PROFILE", raising=False)
+    monkeypatch.delenv("HERMES_VOICE_SESSION_URL", raising=False)
+    monkeypatch.delenv("VOICE_SESSION_CLIENT_ID", raising=False)
+    monkeypatch.delenv("VOICE_SESSION_DEVICE_ID", raising=False)
+    monkeypatch.delenv("VOICE_SESSION_ID", raising=False)
+
+    argv = ["--config", str(config_path), "--profile", "jensen"]
+    args = config.build_arg_parser(argv).parse_args(argv)
+
+    assert args.url == DEFAULT_URL
+    assert args.client_id == "jensen-relay"
+    assert args.device_id == config.default_device_id()
+    assert args.session_id == "jensen-session"
+    assert args.model is None
 
 
 def test_parser_uses_configured_or_environment_selected_profile(tmp_path, monkeypatch):

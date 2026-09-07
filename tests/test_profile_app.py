@@ -34,6 +34,7 @@ def _profile_args(tmp_path: Path):
                     "jensen": {
                         "display_name": "Jensen",
                         "url": "wss://jensen.example/voice-session",
+                        "wake_phrase": "hey skippy",
                         "token_env": "VOICE_SESSION_TOKEN_JENSEN",
                         "client_id": "jensen-client",
                         "device_id": "device",
@@ -109,6 +110,7 @@ async def test_profile_switch_closes_old_session_preserves_draft_and_scopes_stat
         assert factory.sessions[-1][1].connect_calls == 1
         assert app.args.profile_name == "jensen"
         assert app.args.url == "wss://jensen.example/voice-session"
+        assert app.args.wake_phrases == "hey skippy"
         assert composer.text == "draft for Jensen"
         assert app._queued_prompts == []
         assert "Amanda private transcript" not in transcript_of(app)

@@ -30,6 +30,10 @@ def _add_profile_fields(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--device-id", help="machine/device identity")
     parser.add_argument("--session-id", help="Hermes session identity")
     parser.add_argument("--model", help="configured model hint")
+    parser.add_argument(
+        "--wake-phrases",
+        help="comma-separated wake phrases for this profile",
+    )
     parser.add_argument("--token-env", help="private env variable containing the bearer token")
     parser.add_argument(
         "--profile-env",
@@ -247,6 +251,7 @@ def run_profile_command(
                 **fields,
                 token=token,
                 model=args.model,
+                wake_phrases=args.wake_phrases,
                 token_env=args.token_env,
                 profile_env=args.profile_env,
             )
@@ -265,6 +270,7 @@ def run_profile_command(
                 **fields,
                 token=token or None,
                 model=args.model,
+                wake_phrases=args.wake_phrases,
                 token_env=args.token_env,
                 profile_env=args.profile_env,
             )

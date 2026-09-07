@@ -15,6 +15,11 @@
 # HERMES_RELAY_TUI_CONFIG environment variable.
 
 # --- connection ---------------------------------------------------------
+# These root-level connection keys are for the legacy single-profile setup.
+# When `profiles:` is present below, each profile owns its own endpoint,
+# credentials, client/device/session identity, display name, and model; these
+# root connection keys are ignored. `profile_env` remains the shared private
+# env-file location for profile token references.
 # Which Hermes backend to relay to. Point this at the media-server gateway,
 # your laptop's local Hermes agent, or anywhere else reachable.
 # url: wss://media-server.local:8792/voice-session

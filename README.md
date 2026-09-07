@@ -295,6 +295,7 @@ profile_env: ~/.hermes-relay-tui/.env
 profiles:
   amanda:
     display_name: Amanda
+    wake_phrase: "hey missy"
     url: wss://amanda.example/voice-session
     token_env: VOICE_SESSION_TOKEN_AMANDA
     client_id: amanda-laptop
@@ -302,12 +303,27 @@ profiles:
     session_id: amanda-session
   jensen:
     display_name: Jensen
+    wake_phrase: "hey skippy"
     url: wss://jensen.example/voice-session
     token_env: VOICE_SESSION_TOKEN_JENSEN
     client_id: jensen-laptop
     device_id: jensen-mac
     session_id: jensen-session
 ```
+
+When `profiles:` is present, it is canonical for relay connection settings.
+The root-level `url`, `token`, `client_id`, `device_id`, `session_id`,
+`display_name`, and `model` keys are ignored for named profiles; a missing
+profile field uses its built-in/profile-name default instead of inheriting from
+another target. `profile_env` and `active_profile` remain global profile
+catalog settings. A profile's `wake_phrase` or `wake_phrases` is loaded into
+the TUI automatically at launch and after `/profile select`; explicit
+`--wake-phrases` or `VOICE_SESSION_WAKE_PHRASES` still overrides it.
+Explicit command-line connection flags and their environment variables still
+act as launch-time overrides.
+
+Without `profiles:`, the root-level connection keys continue to support the
+legacy single-profile configuration.
 
 Inside the TUI, `/profile list` inspects the catalog and `/profile select
 <name>` switches deliberately. The old session closes before the new one

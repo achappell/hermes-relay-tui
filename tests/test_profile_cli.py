@@ -52,6 +52,22 @@ def test_profile_cli_create_and_list_keep_token_out_of_config_and_output(tmp_pat
     assert "token configured" in listing
 
 
+def test_profile_cli_can_configure_profile_wake_phrases(tmp_path):
+    config_path = tmp_path / "config.yaml"
+    env_path = tmp_path / ".env"
+    args = _create_args("jensen", "wss://jensen.example", env_path)
+    args.extend(["--wake-phrases", "hey skippy, skippy"])
+
+    assert run_profile_command(
+        ["--config", str(config_path), *args],
+        secret_fn=lambda prompt: "jensen-secret",
+        output_fn=lambda message: None,
+    ) == 0
+
+    saved = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    assert saved["profiles"]["jensen"]["wake_phrases"] == ["hey skippy", "skippy"]
+
+
 def test_profile_cli_edit_select_and_delete(tmp_path):
     config_path = tmp_path / "config.yaml"
     env_path = tmp_path / ".env"

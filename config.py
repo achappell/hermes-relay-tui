@@ -214,6 +214,7 @@ class RelayProfile:
     session_id: str
     model: Optional[str] = None
     legacy: bool = False
+    wake_phrases: tuple[str, ...] = ()
 
     @property
     def token_configured(self) -> bool:
@@ -225,7 +226,7 @@ class RelayProfile:
             f"url={self.url!r}, token='***', token_env={self.token_env!r}, "
             f"client_id={self.client_id!r}, device_id={self.device_id!r}, "
             f"session_id={self.session_id!r}, model={self.model!r}, "
-            f"legacy={self.legacy!r})"
+            f"legacy={self.legacy!r}, wake_phrases={self.wake_phrases!r})"
         )
 
 
@@ -304,6 +305,8 @@ def resolve_profile_token(
     data: dict[str, Any],
     profile_env: Path,
     fallback_token: str = "",
+    *,
+    allow_generic_fallback: bool = True,
 ) -> str:
     token_env = data.get("token_env")
     if token_env and isinstance(token_env, str):
@@ -349,7 +352,9 @@ def resolve_profile_token(
 
     if fallback_token:
         return fallback_token
-    return _resolve_token(None, profile_env)
+    if allow_generic_fallback:
+        return _resolve_token(None, profile_env)
+    return ""
 
 
 def _profile_entries(cfg: dict[str, Any]) -> list[tuple[str, dict[str, Any]]]:
@@ -433,10 +438,8 @@ def load_relay_profiles(cfg: dict[str, Any], args: Any = None) -> list[RelayProf
     entries = _profile_entries(cfg)
     profile_env = _profile_env_path(cfg, args)
     if entries:
-        fallback_url = _cfg_str(cfg, "url", DEFAULT_URL) or DEFAULT_URL
-        fallback_client_id = _cfg_str(cfg, "client_id", "amanda-laptop") or "amanda-laptop"
-        fallback_device_id = _cfg_str(cfg, "device_id", default_device_id()) or default_device_id()
-        fallback_model = _cfg_str(cfg, "model")
+        # A named profile is self-contained. Root-level connection keys are
+        # legacy single-target settings and must not leak into this catalog.
         profiles: list[RelayProfile] = []
         seen: set[str] = set()
         for key, entry in entries:
@@ -445,18 +448,21 @@ def load_relay_profiles(cfg: dict[str, Any], args: Any = None) -> list[RelayProf
                 raise ValueError(f"duplicate relay profile: {name}")
             seen.add(name)
             token = _resolve_relay_profile_token(entry, name, profile_env)
-            model = entry.get("model") or fallback_model
+            wake_phrases = _parse_wake_phrases(
+                entry.get("wake_phrases") or entry.get("wake_phrase")
+            )
             profiles.append(
                 RelayProfile(
                     name=name,
                     display_name=str(entry.get("display_name") or name.capitalize()).strip(),
-                    url=str(entry.get("url") or fallback_url).strip(),
+                    url=str(entry.get("url") or DEFAULT_URL).strip(),
                     token=token,
                     token_env=_profile_token_source(entry, name),
                     client_id=str(entry.get("client_id") or f"{name}-relay").strip(),
-                    device_id=str(entry.get("device_id") or fallback_device_id).strip(),
+                    device_id=str(entry.get("device_id") or default_device_id()).strip(),
                     session_id=str(entry.get("session_id") or f"{name}-session").strip(),
-                    model=str(model).strip() if model is not None else None,
+                    model=str(entry["model"]).strip() if entry.get("model") is not None else None,
+                    wake_phrases=wake_phrases,
                 )
             )
         return profiles
@@ -484,6 +490,10 @@ def load_relay_profiles(cfg: dict[str, Any], args: Any = None) -> list[RelayProf
     model = (
         getattr(args, "model", None) if args is not None else None
     ) or _cfg_str(cfg, "model")
+    raw_wake_phrases = (
+        getattr(args, "wake_phrases", None) if args is not None else None
+    ) or _cfg_str(cfg, "wake_phrases") or _cfg_str(cfg, "wake_phrase")
+    wake_phrases = _parse_wake_phrases(raw_wake_phrases)
     return [
         RelayProfile(
             name="default",
@@ -496,6 +506,7 @@ def load_relay_profiles(cfg: dict[str, Any], args: Any = None) -> list[RelayProf
             session_id=str(fallback_session_id).strip(),
             model=str(model).strip() if model is not None else None,
             legacy=True,
+            wake_phrases=wake_phrases,
         )
     ]
 
@@ -685,6 +696,7 @@ def save_relay_profile(
     device_id: str,
     session_id: str,
     model: str | None = None,
+    wake_phrases: str | None = None,
     token_env: str | None = None,
     profile_env: Path | None = None,
 ) -> RelayProfile:
@@ -731,6 +743,14 @@ def save_relay_profile(
         entry["model"] = str(model).strip()
     elif not old_entry:
         entry.pop("model", None)
+    if wake_phrases is not None:
+        parsed_wake_phrases = _parse_wake_phrases(wake_phrases)
+        if parsed_wake_phrases:
+            entry["wake_phrases"] = list(parsed_wake_phrases)
+            entry.pop("wake_phrase", None)
+        else:
+            entry.pop("wake_phrases", None)
+            entry.pop("wake_phrase", None)
     entry.pop("token", None)
     profiles[canonical] = entry
     document["profiles"] = profiles
@@ -797,12 +817,6 @@ def load_household_profiles(
     args: Any = None,
 ) -> list[HouseholdProfile]:
     profile_env = getattr(args, "profile_env", None) or _cfg_path(cfg, "profile_env", DEFAULT_PROFILE_ENV)
-    fallback_url = getattr(args, "url", None) or _cfg_str(cfg, "url", DEFAULT_URL)
-    fallback_client_id = getattr(args, "client_id", None) or _cfg_str(cfg, "client_id", "amanda-laptop")
-    fallback_device_id = getattr(args, "device_id", None) or _cfg_str(cfg, "device_id", default_device_id())
-    fallback_session_id = getattr(args, "session_id", None) or _cfg_str(cfg, "session_id", "hybrid-tui")
-    fallback_token = _resolve_token(getattr(args, "token", None) or _cfg_str(cfg, "token"), profile_env)
-    fallback_model = getattr(args, "model", None) or _cfg_str(cfg, "model")
 
     raw_profiles = cfg.get("profiles")
     if raw_profiles and isinstance(raw_profiles, (dict, list)):
@@ -823,12 +837,16 @@ def load_household_profiles(
             display_name = str(entry.get("display_name") or name.capitalize()).strip()
             raw_phrases = entry.get("wake_phrases") or entry.get("wake_phrase")
             wake_phrases = _parse_wake_phrases(raw_phrases)
-            url = str(entry.get("url") or fallback_url).strip()
-            token = resolve_profile_token(dict(entry, name=name), profile_env, fallback_token=fallback_token)
+            url = str(entry.get("url") or DEFAULT_URL).strip()
+            token = resolve_profile_token(
+                dict(entry, name=name),
+                profile_env,
+                allow_generic_fallback=False,
+            )
             client_id = str(entry.get("client_id") or f"{name}-home").strip()
-            device_id = str(entry.get("device_id") or fallback_device_id).strip()
+            device_id = str(entry.get("device_id") or default_device_id()).strip()
             session_id = str(entry.get("session_id") or f"{name}-home").strip()
-            model = entry.get("model") or fallback_model
+            model = entry.get("model")
             if model is not None:
                 model = str(model).strip()
 
@@ -848,6 +866,15 @@ def load_household_profiles(
         if profiles:
             return profiles
 
+    # Without a profiles mapping, preserve the original single-target config.
+    # Once profiles exist, their connection fields are canonical; none of the
+    # root-level connection keys above are consulted for those entries.
+    fallback_url = getattr(args, "url", None) or _cfg_str(cfg, "url", DEFAULT_URL)
+    fallback_client_id = getattr(args, "client_id", None) or _cfg_str(cfg, "client_id", "amanda-laptop")
+    fallback_device_id = getattr(args, "device_id", None) or _cfg_str(cfg, "device_id", default_device_id())
+    fallback_session_id = getattr(args, "session_id", None) or _cfg_str(cfg, "session_id", "hybrid-tui")
+    fallback_token = _resolve_token(getattr(args, "token", None) or _cfg_str(cfg, "token"), profile_env)
+    fallback_model = getattr(args, "model", None) or _cfg_str(cfg, "model")
     display_name = getattr(args, "display_name", None) or _cfg_str(cfg, "display_name", "Home")
     raw_phrases = getattr(args, "wake_phrases", None) or _cfg_str(cfg, "wake_phrases") or _cfg_str(cfg, "wake_phrase")
     wake_phrases = _parse_wake_phrases(raw_phrases)
@@ -883,6 +910,7 @@ def make_profile_args(base_args: Any, profile: HouseholdProfile) -> Any:
         "session_id": profile.session_id,
         "display_name": profile.display_name,
         "model": profile.model or data.get("model"),
+        "wake_phrases": ", ".join(getattr(profile, "wake_phrases", ())) or None,
         "profile_name": profile.name,
         "profile_token_env": getattr(profile, "token_env", None),
         "profile_legacy": getattr(profile, "legacy", False),
@@ -1014,6 +1042,7 @@ def build_arg_parser(argv: Optional[list[str]] = None) -> argparse.ArgumentParse
     selected_display_name = selected_profile.display_name
     selected_model = selected_profile.model
     selected_token = selected_profile.token
+    selected_wake_phrases = ", ".join(selected_profile.wake_phrases) or None
     parser.add_argument(
         "--url", default=os.getenv("HERMES_VOICE_SESSION_URL", selected_url)
     )
@@ -1090,7 +1119,7 @@ def build_arg_parser(argv: Optional[list[str]] = None) -> argparse.ArgumentParse
         "--wake-phrases",
         default=os.getenv(
             "VOICE_SESSION_WAKE_PHRASES",
-            _cfg_str(cfg, "wake_phrases"),
+            selected_wake_phrases,
         ),
         help="comma-separated wake phrases for Sherpa-ONNX (e.g. 'hey hermes, computer')",
     )
