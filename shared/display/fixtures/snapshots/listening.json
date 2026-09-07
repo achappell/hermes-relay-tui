@@ -1,0 +1,11 @@
+{
+  "type": "snapshot",
+  "schema": 1,
+  "sequence": 4,
+  "state": "listening",
+  "response_text": "",
+  "status_text": "Listening",
+  "media": null,
+  "prompt": null,
+  "capabilities": { "actions": [], "features": ["voice_input"] }
+}

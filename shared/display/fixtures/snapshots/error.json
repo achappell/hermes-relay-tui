@@ -1,0 +1,11 @@
+{
+  "type": "snapshot",
+  "schema": 1,
+  "sequence": 8,
+  "state": "error",
+  "response_text": "",
+  "status_text": "Display connection error",
+  "media": null,
+  "prompt": null,
+  "capabilities": { "actions": [], "features": [] }
+}

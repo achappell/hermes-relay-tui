@@ -1,0 +1,17 @@
+{
+  "type": "snapshot",
+  "schema": 1,
+  "sequence": 1,
+  "state": "prompt",
+  "response_text": "",
+  "status_text": null,
+  "media": null,
+  "prompt": {
+    "kind": "confirm",
+    "title": "Empty",
+    "body": "This must be rejected.",
+    "options": [],
+    "action_id": "bad",
+    "timeout_seconds": null
+  }
+}

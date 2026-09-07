@@ -1,0 +1,16 @@
+{
+  "type": "snapshot",
+  "schema": 1,
+  "sequence": 1,
+  "state": "prompt",
+  "response_text": "",
+  "status_text": null,
+  "prompt": {
+    "kind": "confirm",
+    "title": "Bad timeout",
+    "body": "This must be rejected.",
+    "options": [{ "id": "yes", "label": "Yes" }],
+    "action_id": "bad",
+    "timeout_seconds": 0
+  }
+}

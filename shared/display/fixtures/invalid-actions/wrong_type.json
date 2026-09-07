@@ -1,0 +1,6 @@
+{
+  "type": "snapshot",
+  "schema": 1,
+  "action_id": "sethome",
+  "choice": "yes"
+}

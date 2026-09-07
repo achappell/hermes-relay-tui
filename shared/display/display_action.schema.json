@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hermes-relay.dev/schemas/display-action-1.json",
+  "title": "Hermes display action",
+  "description": "A normalized action emitted by a display adapter after a prompt choice.",
+  "type": "object",
+  "additionalProperties": true,
+  "properties": {
+    "type": { "const": "action" },
+    "schema": { "const": 1 },
+    "action_id": { "type": "string", "minLength": 1, "maxLength": 64 },
+    "choice": { "type": "string", "minLength": 1, "maxLength": 32 }
+  },
+  "required": ["type", "schema", "action_id", "choice"]
+}

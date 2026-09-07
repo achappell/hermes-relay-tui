@@ -1,0 +1,17 @@
+{
+  "type": "snapshot",
+  "schema": 1,
+  "sequence": 1,
+  "state": "idle",
+  "response_text": "",
+  "status_text": null,
+  "media": null,
+  "prompt": {
+    "kind": "confirm",
+    "title": "Unexpected prompt",
+    "body": "This must be rejected.",
+    "options": [{ "id": "yes", "label": "Yes" }],
+    "action_id": "bad",
+    "timeout_seconds": null
+  }
+}

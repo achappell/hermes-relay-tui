@@ -1,0 +1,11 @@
+{
+  "type": "snapshot",
+  "schema": 1,
+  "sequence": 5,
+  "state": "thinking",
+  "response_text": "",
+  "status_text": "Thinking",
+  "media": null,
+  "prompt": null,
+  "capabilities": { "actions": [], "features": ["streaming_text"] }
+}

@@ -1,0 +1,9 @@
+{
+  "type": "snapshot",
+  "schema": 1,
+  "sequence": 1,
+  "state": "prompt",
+  "response_text": "",
+  "status_text": null,
+  "media": null
+}

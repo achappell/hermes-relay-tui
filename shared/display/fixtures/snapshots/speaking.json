@@ -1,0 +1,12 @@
+{
+  "type": "snapshot",
+  "schema": 1,
+  "sequence": 6,
+  "state": "speaking",
+  "response_text": "The answer is arriving.",
+  "status_text": "Speaking",
+  "media": { "kind": "audio", "active": true },
+  "account": "Amanda",
+  "prompt": null,
+  "capabilities": { "actions": [], "features": ["streaming_text", "audio"] }
+}

@@ -1,0 +1,11 @@
+{
+  "type": "snapshot",
+  "schema": 1,
+  "sequence": 7,
+  "state": "buffering",
+  "response_text": "The answer is arriving.",
+  "status_text": "Buffering",
+  "media": null,
+  "prompt": null,
+  "capabilities": { "actions": [], "features": ["streaming_text"] }
+}
