@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.9.0 (2026-09-07)
+
+<!-- Release notes generated using configuration in .github/release.yml at main -->
+
+## What's Changed
+### Other Changes
+* Feat/home 08 sherpa wake by @achappell in https://github.com/achappell/hermes-relay-tui/pull/86
+* feat: household account profiles routed by wake word (HOME-13) by @achappell in https://github.com/achappell/hermes-relay-tui/pull/87
+* feat(home-display): interactive prompt overlay and gateway notice handling (HOME-15) by @achappell in https://github.com/achappell/hermes-relay-tui/pull/89
+* feat(session): session browser, commands, and transcript hydration (SESSION-01) by @achappell in https://github.com/achappell/hermes-relay-tui/pull/91
+* feat(session): surface confirmed server metadata, capabilities, and status (SESSION-02) by @achappell in https://github.com/achappell/hermes-relay-tui/pull/92
+* feat(app): interactive session picker selection modal (SESSION-03) by @achappell in https://github.com/achappell/hermes-relay-tui/pull/93
+* ci(actions): bump actions/setup-node from 4.4.0 to 7.0.0 by @dependabot[bot] in https://github.com/achappell/hermes-relay-tui/pull/94
+
+
+**Full Changelog**: https://github.com/achappell/hermes-relay-tui/compare/v0.8.0...v0.9.0
+
 ## 0.8.0 (2026-09-06)
 
 <!-- Release notes generated using configuration in .github/release.yml at main -->
