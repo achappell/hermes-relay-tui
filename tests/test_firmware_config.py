@@ -129,3 +129,13 @@ def test_simulator_html_content():
     assert "btn-tl" in content and "btn-tr" in content and "btn-bl" in content and "btn-br" in content
     assert "touch-pointer" in content
 
+
+def test_native_sdl_simulator_files():
+    sim_dir = FIRMWARE_DIR / "simulator"
+    assert (sim_dir / "Makefile").exists()
+    assert (sim_dir / "sdl_main.c").exists()
+    assert (sim_dir / "CMakeLists.txt").exists()
+    assert (sim_dir / "include" / "esp_timer.h").exists()
+    assert (REPO_ROOT / "scripts" / "simulate_native.sh").exists()
+
+

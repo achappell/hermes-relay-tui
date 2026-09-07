@@ -1,0 +1,4 @@
+lvgl/
+esp32_display_sim
+*.o
+build/
