@@ -37,8 +37,29 @@ ends that consume it.
 **Front-end-specific:** `app.py` (Textual), `transcript.py` (Rich rendering for
 a terminal transcript), `prompts.py` (structured-prompt state and rendering
 for the Textual TUI), `session_picker.py` (interactive session picker modal for
-the Textual TUI), and `home_display/` (the household appliance: its
-display server, state channel, and `appliance.py` loop).
+the Textual TUI), `home_display/` (the household appliance: its
+display server, state channel, and `appliance.py` loop), and
+`firmware/esp32-s3-touch-lcd-7/` (the unified C / LVGL smart display firmware
+and simulator).
+
+### Smart Display Appliance & Shared LVGL Architecture
+
+The smart display appliance UI is powered by a **Single-Source C / LVGL UI Engine**
+located in `firmware/esp32-s3-touch-lcd-7/main/src/`:
+
+- **Modular UI Components (`ui_*.c`):** Implements appliance states (`ui_snapshot.c`),
+  interactive prompt dialogs (`ui_prompt.c`), timers, weather, and context cards in C using LVGL 8.
+- **Three Compilation Targets from One Codebase:**
+  1. **Physical ESP32-S3 Hardware:** Waveshare ESP32-S3-Touch-LCD-7B (1024×600 RGB LCD,
+     GT911 capacitive touch over I2C, 8MB Octal PSRAM double buffering, dual I2S audio).
+  2. **Native macOS Desktop Simulator:** Compiles the exact C codebase directly on macOS via
+     Clang and SDL2 (`./scripts/simulate_native.sh`) for rapid desktop UI development.
+  3. **WebAssembly Web Kiosk (HOME-16):** Compiles the C/LVGL UI to WebAssembly (`.wasm`),
+     hosted in an HTML5 `<canvas>` for iPad / Chromium kiosks with a lightweight
+     Web Audio and WebSocket bridge.
+- **Shared State Contract:** All targets consume the exact same `/ws` `DisplaySnapshot`
+  JSON stream from `home_display/server.py` and dispatch touch choices back to `/action`.
+
 
 Rules:
 

@@ -767,6 +767,14 @@ The PCM stream must be signed 16-bit audio, and `sounddevice` must be able to op
 
 The default timeout is 195 seconds. Check the endpoint and server-side model health, then retry with a fresh `--session-id`; a timed-out turn is not replayed automatically because the remote side may already have processed it. Use `--turn-timeout 0` only when an unbounded wait is genuinely wanted.
 
+## Smart Display & Embedded Hardware
+
+The repository includes firmware and desktop simulators for dedicated household smart display appliances (Waveshare ESP32-S3-Touch-LCD-7B):
+
+- **Physical Hardware Firmware (`firmware/esp32-s3-touch-lcd-7/`):** ESP-IDF & PlatformIO build targets driving the 1024×600 RGB LCD, GT911 capacitive touch controller, 8MB Octal PSRAM, and dual I2S audio pipeline.
+- **Native macOS Simulator (`./scripts/simulate_native.sh`):** Compiles the exact C / LVGL UI codebase natively with Clang and SDL2 for desktop interaction and testing without physical hardware.
+- **Interactive Browser Canvas (`./scripts/simulate_esp32_display.py`):** Lightweight web simulator previewing the 1024×600 viewport at `http://localhost:8794`.
+
 ## Project layout
 
 ```text
@@ -776,6 +784,9 @@ config.py     CLI and environment configuration
 audio.py      PCM playback and WAV writing
 mic.py        Hermes microphone loader
 transcript.py Typed message records and Markdown rendering
+firmware/     ESP32-S3 smart display firmware and native SDL2 simulator
+home_display/ Household appliance server, state channel, and Web kiosk
 tests/        Automated tests
 docs/         Design and implementation notes
 ```
+
