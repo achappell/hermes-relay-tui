@@ -67,7 +67,11 @@ from diagnostics import (
     summarize_text,
     trace_monotonic_ms,
 )
-from history import PromptHistory, history_path_for_url
+from history import (
+    PromptHistory,
+    artifact_path_for_profile,
+    history_path_for_profile,
+)
 from prompts import PendingPrompt
 from session import HermesSession, SessionProtocol
 from session_picker import SessionPickerModal
@@ -371,6 +375,7 @@ VOICE_GATEWAY_COMMANDS = frozenset({"on", "off", "tts", "status"})
 
 def _write_new_text_file(path: Path, text: str) -> None:
     """Create a UTF-8 text file and fail safely if it already exists."""
+    path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("x", encoding="utf-8") as handle:
         handle.write(text)
 
@@ -530,7 +535,7 @@ class HermesStreamingApp(App):
     def __init__(
         self,
         args=None,
-        session_factory: Optional[Callable[[], Any]] = None,
+        session_factory: Optional[Callable[..., Any]] = None,
         command_dispatcher: Optional[Callable[[CommandInvocation], Awaitable[str] | str]] = None,
         argv: Optional[list[str]] = None,
         build_hands_free: Optional[Callable[..., Any]] = None,
@@ -546,6 +551,16 @@ class HermesStreamingApp(App):
         self._session_factory = session_factory
         self._command_dispatcher = command_dispatcher
         self.session: SessionProtocol = None  # type: ignore[assignment]
+        self._active_profile_name = (
+            getattr(args, "profile_name", None)
+            or getattr(args, "profile", None)
+            or "default"
+        )
+        self._profiles_configured = bool(getattr(args, "profiles_configured", False))
+        self._profile_names = tuple(
+            getattr(args, "profile_names", ())
+            or (self._active_profile_name,)
+        )
         self.player = PCMPlayer(
             enabled=not (args and args.no_play),
             output_device=getattr(args, "audio_output_device", None),
@@ -599,10 +614,7 @@ class HermesStreamingApp(App):
         if self.busy_mode not in config.BUSY_MODES:
             self.busy_mode = "queue"
         self._busy_transition_owner: Optional[asyncio.Task[None]] = None
-        history_path = getattr(args, "history_path", None) or history_path_for_url(
-            getattr(args, "url", None)
-        )
-        self._history = PromptHistory(history_path)
+        self._history = PromptHistory(self._history_path_for_args(args))
         self._history_index: Optional[int] = None
         self._history_draft = ""
         # Set when the user changes these interactively this session, so a later
@@ -701,6 +713,72 @@ class HermesStreamingApp(App):
                 self.query_one(selector).set_class(compact, "-compact")
             except (NoMatches, ScreenStackError):
                 return
+
+    @staticmethod
+    def _profile_target_tuple(args: Any) -> tuple[Any, ...]:
+        """Return connection identity without ever rendering its token."""
+        configured = bool(getattr(args, "profiles_configured", False))
+        if not configured:
+            # Legacy reload deliberately retains its existing in-memory
+            # session behavior; TUI-02 reconnects only when a named catalog is
+            # actually in play.
+            return (False,)
+        return (
+            True,
+            getattr(args, "profile_name", None) or getattr(args, "profile", None),
+            getattr(args, "url", None),
+            getattr(args, "token", None),
+            getattr(args, "client_id", None),
+            getattr(args, "device_id", None),
+            getattr(args, "session_id", None),
+            getattr(args, "display_name", None),
+        )
+
+    def _history_path_for_args(self, args: Any) -> Path:
+        profile_name = (
+            getattr(args, "profile_name", None)
+            or getattr(args, "profile", None)
+            or "default"
+        )
+        configured_path = getattr(args, "history_path", None)
+        return history_path_for_profile(
+            getattr(args, "url", None),
+            profile_name,
+            configured_path=configured_path,
+            legacy=not bool(getattr(args, "profiles_configured", False)),
+        )
+
+    def _sync_profile_metadata(self, args: Any) -> None:
+        self._active_profile_name = (
+            getattr(args, "profile_name", None)
+            or getattr(args, "profile", None)
+            or "default"
+        )
+        self._profiles_configured = bool(getattr(args, "profiles_configured", False))
+        self._profile_names = tuple(
+            getattr(args, "profile_names", ()) or (self._active_profile_name,)
+        )
+
+    def _new_session(self, args: Any) -> SessionProtocol:
+        """Build a session while retaining the repository's zero-arg test seam."""
+        if self._session_factory is None:
+            return HermesSession(args)
+        factory = self._session_factory
+        try:
+            parameters = inspect.signature(factory).parameters.values()
+        except (TypeError, ValueError):
+            return factory(args)
+        positional = [
+            parameter
+            for parameter in parameters
+            if parameter.kind
+            in (inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD)
+        ]
+        if any(parameter.kind == inspect.Parameter.VAR_POSITIONAL for parameter in parameters):
+            return factory(args)
+        if positional and any(parameter.default is inspect.Parameter.empty for parameter in positional):
+            return factory(args)
+        return factory()
 
     def _refresh_connection_status(self) -> None:
         session_id = (
@@ -844,7 +922,7 @@ class HermesStreamingApp(App):
     # --- lifecycle ------------------------------------------------------------
 
     async def on_mount(self) -> None:
-        self.session = self._session_factory() if self._session_factory else HermesSession(self.args)
+        self.session = self._new_session(self.args)
         self._refresh_queue_shelf()
         self._refresh_prompt_panel()
         self.query_one("#command-suggestions", Static).display = False
@@ -934,6 +1012,8 @@ class HermesStreamingApp(App):
                     or getattr(self.args, "session_id", "session")
                 )
                 conn_details = []
+                if self._profiles_configured:
+                    conn_details.append(f"profile {self._active_profile_name}")
                 chat_id = getattr(self.session, "confirmed_chat_id", None) or hello.get("chat_id")
                 if chat_id:
                     conn_details.append(f"chat {chat_id}")
@@ -1881,11 +1961,15 @@ class HermesStreamingApp(App):
             caps = sorted(getattr(self.session, "capabilities", ()))
             caps_label = f" · caps: {','.join(caps)}" if caps else ""
             config_path = getattr(self.args, "config", None)
+            endpoint = str(getattr(self.args, "url", "")).split("?", 1)[0] or "-"
             self._append_block(
+                f"profile: {self._active_profile_name} · endpoint: {endpoint} · "
                 f"session: {session_id} · {self.connection_state} · model: {model_label}{chat_label}{ver_label}{caps_label} "
                 f"· busy-mode: {self.busy_mode} · queued: {len(self._queued_prompts)} "
                 f"· history: {self._history.path} · config: {config_path}"
             )
+        elif command.name == "profile":
+            await self._handle_profile_command(invocation.args)
         elif command.name == "session":
             await self._handle_session_command(invocation.args)
         elif command.name == "sessions":
@@ -1934,6 +2018,165 @@ class HermesStreamingApp(App):
             self.exit()
         else:
             await self._dispatch_command(invocation)
+
+    def _load_profile_catalog(self) -> list[config.RelayProfile]:
+        config_path = getattr(self.args, "config", None)
+        document = config.load_config_file(config_path) if config_path else {}
+        profile_env = getattr(self.args, "profile_env", None)
+        profile_args = copy.copy(self.args)
+        if profile_env is not None:
+            profile_args.profile_env = profile_env
+        return config.load_relay_profiles(document, profile_args)
+
+    def _profile_switch_is_busy(self) -> bool:
+        if self._turn_in_flight or self._wake_starting or self._barge_capture_active:
+            return True
+        capture = self._voice_capture_task
+        if capture is not None and not capture.done():
+            return True
+        return self._pending_prompt is not None
+
+    def _profile_switch_busy_message(self) -> str:
+        if self._turn_in_flight:
+            return "[busy] Cannot switch profile while a turn is active."
+        if self._pending_prompt is not None:
+            return (
+                "[busy] Cannot switch profile while a structured prompt is awaiting an answer."
+            )
+        return "[busy] Cannot switch profile while voice capture is active."
+
+    async def _switch_to_args(self, new_args: Any, *, reason: str) -> bool:
+        """Replace the relay session only after the old target is closed."""
+        if self._profile_switch_is_busy():
+            self._append_block(self._profile_switch_busy_message())
+            return False
+
+        old_args = self.args
+        old_name = self._active_profile_name
+        new_name = (
+            getattr(new_args, "profile_name", None)
+            or getattr(new_args, "profile", None)
+            or "default"
+        )
+        old_endpoint = str(getattr(old_args, "url", "")).split("?", 1)[0] or "-"
+        new_endpoint = str(getattr(new_args, "url", "")).split("?", 1)[0] or "-"
+        dropped_queue = len(self._queued_prompts)
+        dropped_attachments = len(self._staged_attachments)
+        close_error: Exception | None = None
+
+        async with self._connection_lock:
+            if self.wake_armed or self._wake_starting:
+                self._disarm_wake(
+                    "wake mode off — profile switching released the microphone. "
+                    "Run /wake on after switching if needed."
+                )
+            old_session = self.session
+            if old_session is not None:
+                try:
+                    await old_session.close()
+                except Exception as exc:
+                    close_error = exc
+
+            self.args = new_args
+            self._sync_profile_metadata(new_args)
+            self.session = self._new_session(new_args)
+            self._needs_reconnect = False
+            self._history = PromptHistory(self._history_path_for_args(new_args))
+            self._queued_prompts.clear()
+            self._staged_attachments.clear()
+            self._pending_prompt = None
+            self._last_prompt = None
+            self._last_prompt_status = None
+            self._refresh_queue_shelf()
+            self._refresh_prompt_panel()
+            self.transcript.clear()
+            self._refresh_transcript()
+            self._set_connection_state(CONNECTION_CONNECTING)
+            self._set_voice_state(VOICE_CONNECTING)
+            detail = (
+                f"{reason}: switching profile {old_name} → {new_name}; "
+                f"closed {old_endpoint}, connecting to {new_endpoint}."
+            )
+            if dropped_queue:
+                detail += f" Discarded {dropped_queue} queued prompt(s); none were replayed."
+            if dropped_attachments:
+                detail += f" Cleared {dropped_attachments} staged attachment(s)."
+            if close_error is not None:
+                detail += f" Old-session cleanup reported: {close_error}."
+            self._append_block(detail)
+
+        # Keep the lock free while the new hello handshake waits on the relay.
+        return await self._connect(force=True)
+
+    async def _handle_profile_command(self, args: str) -> None:
+        """List profiles or deliberately replace the active relay target."""
+        parts = args.strip().split(maxsplit=1)
+        action = parts[0].lower() if parts else "list"
+        sub_args = parts[1].strip() if len(parts) > 1 else ""
+        if action in {"list", "ls", "status", "show"}:
+            try:
+                profiles = self._load_profile_catalog()
+            except (OSError, UnicodeDecodeError, ValueError, SystemExit) as exc:
+                self._append_block(f"[error] /profile: {exc}")
+                return
+            if action in {"status", "show"} and not sub_args:
+                sub_args = self._active_profile_name
+            lines = ["Relay profiles:"]
+            for profile in profiles:
+                if sub_args and profile.name != sub_args.lower():
+                    continue
+                marker = "*" if profile.name == self._active_profile_name else " "
+                state = "token configured" if profile.token_configured else "token missing"
+                endpoint = profile.url.split("?", 1)[0]
+                lines.append(
+                    f"{marker} {profile.name} — {profile.display_name} · {endpoint} · "
+                    f"client {profile.client_id} · session {profile.session_id} · {state}"
+                )
+            if len(lines) == 1:
+                self._append_block(f"[error] unknown relay profile: {sub_args}")
+            else:
+                self._append_block("\n".join(lines))
+            return
+
+        if action in {"select", "use", "switch"}:
+            if not sub_args or " " in sub_args:
+                self._append_block("usage: /profile [list|select <name>]")
+                return
+            try:
+                target = config.validate_profile_name(sub_args)
+                profiles = self._load_profile_catalog()
+                profile = next(profile for profile in profiles if profile.name == target)
+            except (OSError, UnicodeDecodeError, ValueError, SystemExit, StopIteration) as exc:
+                self._append_block(f"[error] /profile select: {exc}")
+                return
+            if profile.name == self._active_profile_name:
+                self._append_block(f"profile already active: {profile.name}")
+                return
+            if self._profile_switch_is_busy():
+                self._append_block(self._profile_switch_busy_message())
+                return
+            config_path = getattr(self.args, "config", None)
+            if config_path is not None:
+                try:
+                    profile = config.select_relay_profile(config_path, profile.name)
+                except (OSError, UnicodeDecodeError, ValueError, SystemExit) as exc:
+                    self._append_block(f"[error] /profile select: {exc}")
+                    return
+            new_args = config.make_profile_args(self.args, profile)
+            new_args.profile_names = tuple(item.name for item in profiles)
+            new_args.profiles_configured = True
+            new_args.profile_legacy = False
+            await self._switch_to_args(new_args, reason="profile selection")
+            return
+
+        if action in {"create", "edit", "delete", "remove", "migrate"}:
+            self._append_block(
+                "Use the terminal configuration surface before launch: "
+                "hermes-relay profile create|edit|delete|migrate."
+            )
+            return
+
+        self._append_block("usage: /profile [list|select <name>]")
 
     async def _handle_session_command(self, args: str) -> None:
         parts = args.strip().split(maxsplit=1)
@@ -2210,11 +2453,14 @@ class HermesStreamingApp(App):
             self._append_block("[error] /save: transcript is empty")
             return
         raw_path = args.strip()
-        path = (
-            Path(raw_path).expanduser()
-            if raw_path
-            else Path.cwd() / f"hermes-transcript-{datetime.now():%Y%m%d-%H%M%S}.txt"
+        path = Path(raw_path).expanduser() if raw_path else Path.cwd() / (
+            f"hermes-transcript-{datetime.now():%Y%m%d-%H%M%S}.txt"
         )
+        path = artifact_path_for_profile(
+            path,
+            self._active_profile_name,
+            legacy=not self._profiles_configured,
+        ) or path
         try:
             await asyncio.to_thread(_write_new_text_file, path, text)
         except FileExistsError:
@@ -2345,12 +2591,32 @@ class HermesStreamingApp(App):
             self._append_block(f"[error] /reload: {exc}")
             return
 
+        if self._profile_target_tuple(self.args) != self._profile_target_tuple(new_args):
+            if self._profile_switch_is_busy():
+                self._append_block(
+                    "[busy] Cannot reload to a different relay profile while a turn "
+                    "or voice capture is active. The current profile remains active."
+                )
+                return
+            self.run_worker(
+                self._reload_profile_after_config(new_args),
+                name="profile reload",
+                group="interaction",
+                exit_on_error=False,
+            )
+            return
+
+        self._apply_reload_settings(new_args)
+
+    def _apply_reload_settings(self, new_args: Any) -> None:
+        """Apply non-session settings after a config parse has succeeded."""
         if self.wake_armed or self._wake_starting:
             self._disarm_wake(
                 "wake mode off — config reloaded; microphone released. "
                 "Run /wake on to arm again."
             )
         self.args = new_args
+        self._sync_profile_metadata(new_args)
         self._refresh_connection_status()
         skipped: list[str] = []
 
@@ -2385,6 +2651,19 @@ class HermesStreamingApp(App):
         if skipped:
             message += " kept session-set: " + ", ".join(skipped) + "."
         self._append_block(message)
+
+    async def _reload_profile_after_config(self, new_args: Any) -> None:
+        """Apply a config-selected profile by replacing its session."""
+        connected = await self._switch_to_args(new_args, reason="config reload")
+        # `_switch_to_args` installs the new args even when its handshake fails;
+        # apply the ordinary reload rules in both cases and report the actual
+        # connection state through the normal connection banner.
+        self._apply_reload_settings(new_args)
+        if not connected:
+            self._append_block(
+                f"config reloaded from {new_args.config}; profile "
+                f"{self._active_profile_name} remains selected but disconnected."
+            )
 
     async def _handle_audio_command(self, args: str) -> None:
         """Show and change local input/output devices for this session."""
@@ -3499,6 +3778,17 @@ class HermesStreamingApp(App):
         base = getattr(self.args, "output", None)
         if not (audio and audio_format and (base or not played_live or playback_failed)):
             return
+        if base is not None:
+            base = artifact_path_for_profile(
+                Path(base),
+                self._active_profile_name,
+                legacy=not self._profiles_configured,
+            )
+        elif self._profiles_configured:
+            base = artifact_path_for_profile(
+                Path.cwd() / "hermes-audio" / "response.wav",
+                self._active_profile_name,
+            )
         output = audio_path(base, index, turn_id or "turn")
         try:
             write_wav(output, audio, audio_format)
@@ -3518,6 +3808,10 @@ def main() -> int:
         from installer import run_install
 
         return run_install(sys.argv[2:])
+    if len(sys.argv) > 1 and sys.argv[1] == "profile":
+        from profile_cli import run_profile_command
+
+        return run_profile_command(sys.argv[2:])
     parser = config.build_arg_parser()
     args = parser.parse_args()
     config.ensure_default_config_file(args.config)

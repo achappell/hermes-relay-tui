@@ -1,0 +1,24 @@
+{
+  "type": "snapshot",
+  "schema": 1,
+  "sequence": 10,
+  "state": "prompt",
+  "response_text": "",
+  "status_text": "Choose an option",
+  "media": null,
+  "prompt": {
+    "kind": "confirm",
+    "title": "Set this as home?",
+    "body": "Use this device as the household home display?",
+    "options": [
+      { "id": "yes", "label": "Yes" },
+      { "id": "no", "label": "No" }
+    ],
+    "action_id": "sethome",
+    "timeout_seconds": 30
+  },
+  "capabilities": {
+    "actions": ["prompt.choose", "prompt.dismiss"],
+    "features": ["touch", "prompt_overlay"]
+  }
+}

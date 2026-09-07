@@ -80,6 +80,16 @@ def test_image_command_is_registered_for_local_attachments():
     assert invocation.args == "list"
 
 
+def test_profile_command_is_registered_for_local_relay_switching():
+    invocation = parse_slash_command("/profile select jensen")
+
+    assert invocation is not None
+    assert invocation.command is not None
+    assert invocation.command.name == "profile"
+    assert invocation.args == "select jensen"
+    assert complete_slash_command("/profile se") == ["/profile select"]
+
+
 def test_help_can_filter_commands():
     rendered = help_text("voice")
 

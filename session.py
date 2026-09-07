@@ -147,7 +147,15 @@ class HermesSession:
         if self._connect_cm is not None or self.ws is not None:
             await self.close()
         connect = config.connect_factory()
-        token = config._resolve_token(self.args.token, self.args.profile_env)
+        profile_token_env = getattr(self.args, "profile_token_env", None)
+        if profile_token_env and not getattr(self.args, "token", None):
+            profile_env = getattr(self.args, "profile_env", None) or config.DEFAULT_PROFILE_ENV
+            token = config.resolve_profile_token_source(profile_env, profile_token_env)
+        else:
+            token = config._resolve_token(
+                getattr(self.args, "token", None),
+                getattr(self.args, "profile_env", None) or config.DEFAULT_PROFILE_ENV,
+            )
         if not token:
             raise RuntimeError(
                 "No voice-session token found. Run `hermes-relay setup`, "

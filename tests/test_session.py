@@ -88,6 +88,38 @@ async def test_session_sends_interrupt_for_the_active_turn_when_capability_is_ad
     await stream.aclose()
 
 
+async def test_session_uses_the_selected_profile_token_source_without_generic_fallback(
+    tmp_path, monkeypatch
+):
+    monkeypatch.delenv("VOICE_SESSION_TOKEN", raising=False)
+    env_path = tmp_path / ".env"
+    env_path.write_text('VOICE_SESSION_TOKEN_AMANDA="profile-token"\n', encoding="utf-8")
+    websocket = FakeWebSocket(
+        [json.dumps({"type": "hello_ack", "chat_id": "chat"})]
+    )
+    captured = {}
+
+    def connect(url, **kwargs):
+        captured["url"] = url
+        captured["kwargs"] = kwargs
+        return FakeContextManager(websocket)
+
+    monkeypatch.setattr(config, "connect_factory", lambda: connect)
+    session = HermesSession(
+        make_args(
+            token="",
+            profile_env=env_path,
+            profile_token_env="VOICE_SESSION_TOKEN_AMANDA",
+        )
+    )
+
+    await session.connect()
+
+    assert captured["kwargs"]["extra_headers"] == {
+        "Authorization": "Bearer profile-token"
+    }
+
+
 async def test_session_does_not_claim_interrupt_support_when_capability_is_absent(
     monkeypatch,
 ):
@@ -314,4 +346,3 @@ async def test_session_switch_session_updates_session_id_and_returns_history(mon
     assert session.confirmed_title == "Target Chat"
     assert session.confirmed_server_version == "0.8.0"
     assert result["history"] == history
-

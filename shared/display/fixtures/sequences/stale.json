@@ -1,0 +1,14 @@
+{
+  "baseline_sequence": 11,
+  "snapshot": {
+    "type": "snapshot",
+    "schema": 1,
+    "sequence": 10,
+    "state": "speaking",
+    "response_text": "An older answer.",
+    "status_text": "Speaking",
+    "media": null,
+    "prompt": null
+  },
+  "expected": { "classification": "stale" }
+}

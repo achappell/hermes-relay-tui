@@ -1,0 +1,11 @@
+{
+  "type": "snapshot",
+  "schema": 1,
+  "sequence": 9,
+  "state": "disconnected",
+  "response_text": "",
+  "status_text": "Reconnecting",
+  "media": null,
+  "prompt": null,
+  "capabilities": { "actions": [], "features": ["reconnect"] }
+}

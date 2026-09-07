@@ -163,7 +163,7 @@ writes lives in one directory:
 | --- | --- |
 | `~/.hermes-relay-tui/config.yaml` | editable connection defaults |
 | `~/.hermes-relay-tui/.env` | **bearer token** (owner-only) |
-| `~/.hermes-relay-tui/history.jsonl`, `history/` | prompt history, per endpoint |
+| `~/.hermes-relay-tui/history.jsonl`, `history/` | prompt history, per endpoint/profile |
 | `~/.hermes-relay-tui/crash.log` | crash reports; appends until removed |
 | `$TMPDIR/hermes-relay-tui-debug.log` | debug trace, only with `--debug` |
 
@@ -249,6 +249,94 @@ venv/bin/python app.py \
 ```
 
 The endpoint must be reachable from the machine running the TUI, and the server must accept the supplied bearer token.
+
+## Named relay profiles
+
+Use profiles when this client talks to more than one Hermes account or backend.
+The profile catalog is stored in `~/.hermes-relay-tui/config.yaml`; only the
+environment-variable name is stored there. Bearer tokens stay in the private
+`.env` file named by `profile_env`, with mode `0600`.
+
+The terminal configuration surface is deliberately separate from the live TUI:
+
+```bash
+hermes-relay profile list
+hermes-relay profile create amanda
+hermes-relay profile edit amanda
+hermes-relay profile select amanda
+hermes-relay profile delete amanda --yes
+```
+
+Create and edit prompt for a bearer token without echoing it. `delete` requires
+`--yes`; deleting the final profile is refused. `hermes-relay profile migrate`
+converts an existing single-profile YAML plus `.env` into a `default` profile,
+moving a legacy literal token into the private env file before removing it from
+YAML. `profile list` shows the display name, endpoint, identity, session, and
+whether its private token is configured; it never prints the token.
+
+The launch target comes from `--profile`, then `VOICE_SESSION_PROFILE`, then
+`active_profile` in YAML. For example:
+
+```bash
+hermes-relay amanda
+hermes-relay --profile jensen
+VOICE_SESSION_PROFILE=jensen hermes-relay
+```
+
+The bare first argument is a profile shorthand, so flags can follow it as in
+`hermes-relay amanda --no-play`. The `setup`, `install`, and `profile`
+subcommands remain reserved.
+
+The equivalent editable shape is:
+
+```yaml
+active_profile: amanda
+profile_env: ~/.hermes-relay-tui/.env
+profiles:
+  amanda:
+    display_name: Amanda
+    wake_phrase: "hey missy"
+    url: wss://amanda.example/voice-session
+    token_env: VOICE_SESSION_TOKEN_AMANDA
+    client_id: amanda-laptop
+    device_id: amanda-mac
+    session_id: amanda-session
+  jensen:
+    display_name: Jensen
+    wake_phrase: "hey skippy"
+    url: wss://jensen.example/voice-session
+    token_env: VOICE_SESSION_TOKEN_JENSEN
+    client_id: jensen-laptop
+    device_id: jensen-mac
+    session_id: jensen-session
+```
+
+When `profiles:` is present, it is canonical for relay connection settings.
+The root-level `url`, `token`, `client_id`, `device_id`, `session_id`,
+`display_name`, and `model` keys are ignored for named profiles; a missing
+profile field uses its built-in/profile-name default instead of inheriting from
+another target. `profile_env` and `active_profile` remain global profile
+catalog settings. A profile's `wake_phrase` or `wake_phrases` is loaded into
+the TUI automatically at launch and after `/profile select`; explicit
+`--wake-phrases` or `VOICE_SESSION_WAKE_PHRASES` still overrides it.
+Explicit command-line connection flags and their environment variables still
+act as launch-time overrides.
+
+Without `profiles:`, the root-level connection keys continue to support the
+legacy single-profile configuration.
+
+Inside the TUI, `/profile list` inspects the catalog and `/profile select
+<name>` switches deliberately. The old session closes before the new one
+connects; a current turn, capture, or structured prompt blocks the switch.
+The composer draft survives, while the old visible transcript and queued
+prompts are discarded so an uncertain prompt cannot cross accounts. A failed
+target remains selected and visibly disconnected; the client does not silently
+fall back to the old relay. `/reload` applies the same replacement when the
+selected profile or its endpoint identity changes.
+
+Prompt history, default transcript exports, and response-audio fallbacks live
+under a profile namespace once named profiles are active, so local continuity
+cannot mix Amanda's and Jensen's prompts.
 
 Richer gateway-style events are normalized when the relay sends them. Thinking
 deltas accumulate into one replaceable detail line and become a short elapsed
@@ -341,7 +429,7 @@ above the composer lists matching commands and their args/description as you
 type, and disappears once you've typed a space or the text no longer looks
 like a command. `Tab` fills in a uniquely-matching command name without
 moving focus out of the composer. The initial commands
-are `/help`, `/clear`, `/status`, `/queue`, `/busy`, `/details`, `/voice`, `/wake`, `/audio`, `/image`, `/history`, `/save`, `/copy`, `/logs`, `/retry`, `/undo`, `/usage`, `/compress`, and `/quit`;
+are `/help`, `/clear`, `/status`, `/profile`, `/queue`, `/busy`, `/details`, `/voice`, `/wake`, `/audio`, `/image`, `/history`, `/save`, `/copy`, `/logs`, `/retry`, `/undo`, `/usage`, `/compress`, and `/quit`;
 `/queue`
 also supports `list`, `edit <number> <replacement>`, `drop <number>`, and
 `clear`. `/busy [queue|steer|interrupt]` changes the mode for the current
@@ -357,6 +445,11 @@ those other gateway commands, usage, conversation compression, or remote undo,
 so they fail visibly instead of being sent to the model as prose. Use
 `/busy steer` or `--busy-mode steer` to change what ordinary submissions do
 while a turn is active.
+
+`/profile` lists the configured relay targets; `/profile select <name>` changes
+the active target after the current work is idle. Use `hermes-relay profile
+create|edit|delete` before launch for the configuration operations that need
+hidden token input or deletion confirmation.
 
 `/save` and `/copy` use the exact visible transcript projection, so hidden
 thinking and tool detail is excluded while `/details show` includes it. `/save`
@@ -406,6 +499,7 @@ it. A turn that may already have reached Hermes is never replayed automatically.
 | Option | Purpose |
 | --- | --- |
 | `--url URL` | Override the voice-session WebSocket URL |
+| `--profile NAME` | Select a named relay profile for this launch |
 | `--token TOKEN` | Supply the bearer token explicitly |
 | `--session-id ID` | Create or resume a server-side session |
 | `--profile-env PATH` | `.env` file used for token lookup |

@@ -175,6 +175,41 @@ def test_load_household_profiles_dict_and_list_schemas(tmp_path: Path, monkeypat
     assert jensen.client_id == "jensen-home"
 
 
+def test_household_profiles_do_not_inherit_root_connection_settings(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    env_file = tmp_path / ".env"
+    env_file.write_text("VOICE_SESSION_TOKEN_JENSEN=jensen-profile-token\n", encoding="utf-8")
+    monkeypatch.setattr(config, "default_device_id", lambda: "local-device")
+
+    profiles = load_household_profiles(
+        {
+            "profile_env": str(env_file),
+            "url": "ws://root.example/voice-session",
+            "token": "root-token",
+            "client_id": "root-client",
+            "device_id": "root-device",
+            "session_id": "root-session",
+            "model": "root-model",
+            "profiles": {
+                "jensen": {
+                    "wake_phrase": "hey skippy",
+                }
+            },
+        }
+    )
+
+    assert len(profiles) == 1
+    profile = profiles[0]
+    assert profile.url == config.DEFAULT_URL
+    assert profile.token == "jensen-profile-token"
+    assert profile.client_id == "jensen-home"
+    assert profile.device_id == "local-device"
+    assert profile.session_id == "jensen-home"
+    assert profile.model is None
+
+
 def test_make_profile_args_overrides_session_parameters():
     base_args = types.SimpleNamespace(
         url="ws://default:8792",
@@ -544,4 +579,3 @@ async def test_route_wake_synchronous_from_worker_thread():
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await task
-
