@@ -49,3 +49,22 @@ advertised or that the current snapshot does not permit.
 - `fixtures/sequences/` covers ordering cases such as stale snapshots.
 
 The fixtures are the conformance seed for the reducer and all three adapters.
+
+## Reducer
+
+`display_rules.h` and `display_rules.c` contain the portable business-rules
+reducer. It has no rendering, transport, device, or clock dependency and can
+be compiled as native C or WebAssembly.
+
+- The first valid snapshot establishes state; later snapshots must advance
+  `sequence` strictly or return `STALE` without mutation.
+- Normal conversation follows idle → heard → listening → thinking → speaking
+  → buffering/speaking → idle. Error and disconnected states are explicit
+  recovery paths rather than hidden transport side effects.
+- The reducer derives `is_busy`, `connection_healthy`, `can_choose`, and
+  `can_dismiss` for renderers and adapters.
+- Prompt choices require an active prompt, the matching `action_id`, an
+  advertised choice capability, and an option present in the prompt. Dismiss
+  is independently capability-gated. Validation never mutates reducer state.
+- Every failure is a typed result so a renderer cannot accidentally treat a
+  stale snapshot or rejected action as accepted state.
