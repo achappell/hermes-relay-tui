@@ -36,7 +36,8 @@ ends that consume it.
 
 **Front-end-specific:** `app.py` (Textual), `transcript.py` (Rich rendering for
 a terminal transcript), `prompts.py` (structured-prompt state and rendering
-for the Textual TUI), and `home_display/` (the household appliance: its
+for the Textual TUI), `session_picker.py` (interactive session picker modal for
+the Textual TUI), and `home_display/` (the household appliance: its
 display server, state channel, and `appliance.py` loop).
 
 Rules:

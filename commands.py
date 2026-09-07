@@ -13,6 +13,7 @@ class Command:
     description: str
     aliases: tuple[str, ...] = ()
     args_hint: str = ""
+    subcommands: tuple[str, ...] = ()
 
 
 COMMAND_REGISTRY: tuple[Command, ...] = (
@@ -22,25 +23,52 @@ COMMAND_REGISTRY: tuple[Command, ...] = (
     Command("status", "Show connection and session status"),
     Command("model", "Change the active Hermes model", args_hint="[model]"),
     Command("reasoning", "Change the active reasoning effort", args_hint="[level]"),
-    Command("fast", "Toggle fast mode", args_hint="[on|off]"),
-    Command("session", "Manage or switch Hermes sessions", args_hint="[list|new|switch|resume|info]"),
-    Command("sessions", "List resumable Hermes sessions", args_hint="[search]"),
-    Command("resume", "Resume a Hermes session", args_hint="<session-id>"),
+    Command("fast", "Toggle fast mode", args_hint="[on|off]", subcommands=("on", "off")),
+    Command(
+        "session",
+        "Manage or switch Hermes sessions",
+        args_hint="[list|new|switch|resume|info]",
+        subcommands=("list", "new", "switch", "resume", "info"),
+    ),
+    Command("sessions", "List and select Hermes sessions", args_hint="[search]"),
+    Command("resume", "Resume a Hermes session", args_hint="[session-id]"),
     Command("queue", "Queue a prompt for the next turn", args_hint="<prompt>"),
-    Command("busy", "Show or set active-turn behavior", args_hint="[queue|steer|interrupt]"),
-    Command("details", "Show or hide thinking and tool detail", args_hint="[show|hide]"),
+    Command(
+        "busy",
+        "Show or set active-turn behavior",
+        args_hint="[queue|steer|interrupt]",
+        subcommands=("queue", "steer", "interrupt"),
+    ),
+    Command(
+        "details",
+        "Show or hide thinking and tool detail",
+        args_hint="[show|hide]",
+        subcommands=("show", "hide"),
+    ),
     Command(
         "voice",
         "Control voice mode through the relay",
         args_hint="[on|off|tts|status]",
+        subcommands=("on", "off", "tts", "status"),
     ),
     Command(
         "wake",
         "Arm or release local hands-free wake-word listening",
         args_hint="[on|off|status]",
+        subcommands=("on", "off", "status"),
     ),
-    Command("audio", "List or select local audio devices", args_hint="[list|status|input|output]"),
-    Command("image", "Stage a local image attachment", args_hint="<path>|list|clear"),
+    Command(
+        "audio",
+        "List or select local audio devices",
+        args_hint="[list|status|input|output]",
+        subcommands=("list", "status", "input", "output"),
+    ),
+    Command(
+        "image",
+        "Stage a local image attachment",
+        args_hint="<path>|list|clear",
+        subcommands=("list", "clear"),
+    ),
     Command("history", "Search or show prompt history", args_hint="[search term]"),
     Command("save", "Save the visible transcript locally", args_hint="[path]"),
     Command("copy", "Copy the visible transcript to the system clipboard"),
@@ -81,13 +109,30 @@ def parse_slash_command(text: str) -> CommandInvocation | None:
 
 
 def complete_slash_command(text: str) -> list[str]:
-    """Return command-name completions for a bare slash word."""
-    if not text.startswith("/") or any(character.isspace() for character in text):
+    """Return command-name or subcommand completions for slash commands."""
+    if not text.startswith("/"):
         return []
-    prefix = text[1:].lower()
-    names = [command.name for command in COMMAND_REGISTRY]
-    names.extend(alias for command in COMMAND_REGISTRY for alias in command.aliases)
-    return [f"/{name}" for name in names if name.startswith(prefix)]
+
+    if " " not in text:
+        prefix = text[1:].lower()
+        names = [command.name for command in COMMAND_REGISTRY]
+        names.extend(alias for command in COMMAND_REGISTRY for alias in command.aliases)
+        return [f"/{name}" for name in names if name.startswith(prefix)]
+
+    parts = text[1:].split(maxsplit=1)
+    if not parts:
+        return []
+    cmd_name = parts[0].lower()
+    cmd = _COMMAND_LOOKUP.get(cmd_name)
+    if cmd is None or not cmd.subcommands:
+        return []
+
+    after_cmd = text[1 + len(parts[0]):]
+    sub_text = after_cmd.lstrip()
+    if " " in sub_text:
+        return []
+    sub_prefix = sub_text.lower()
+    return [f"/{cmd.name} {sub}" for sub in cmd.subcommands if sub.startswith(sub_prefix)]
 
 
 def help_text(filter_text: str = "") -> str:

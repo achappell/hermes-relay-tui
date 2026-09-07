@@ -16,6 +16,7 @@ import app as app_module
 from app import Composer, HermesSession, HermesStreamingApp
 from client import ProtocolError
 from commands import parse_slash_command
+from session_picker import SessionPickerModal
 
 DEFAULT_EVENTS = [
     {"type": "text_delta", "text": "ok"},
@@ -801,6 +802,41 @@ async def test_tab_completes_a_unique_slash_command_and_keeps_draft_local():
 
         assert composer.text == "/status "
         assert session.sent_turns == []
+
+
+async def test_tab_completes_common_prefix_for_multiple_candidates():
+    session = FakeSession()
+    app = HermesStreamingApp(args=make_args(), session_factory=lambda: session)
+    async with app.run_test() as pilot:
+        composer = app.query_one("#composer", Composer)
+        composer.text = "/ses"
+        composer.move_cursor((0, len(composer.text)))
+        await pilot.press("tab")
+        await pilot.pause()
+
+        # Expands /ses to common prefix /session
+        assert composer.text == "/session"
+        assert session.sent_turns == []
+
+        # Tab again on exact command completes trailing space
+        await pilot.press("tab")
+        await pilot.pause()
+        assert composer.text == "/session "
+
+
+async def test_tab_completes_subcommand_in_composer():
+    session = FakeSession()
+    app = HermesStreamingApp(args=make_args(), session_factory=lambda: session)
+    async with app.run_test() as pilot:
+        composer = app.query_one("#composer", Composer)
+        composer.text = "/session li"
+        composer.move_cursor((0, len(composer.text)))
+        await pilot.press("tab")
+        await pilot.pause()
+
+        assert composer.text == "/session list "
+        assert session.sent_turns == []
+
 
 
 async def test_slash_types_inline_without_opening_an_overlay():
@@ -3911,11 +3947,15 @@ async def test_connect_hydrates_historical_messages_into_transcript():
         assert "model qwen2.5:7b" in transcript_of(app)
 
 
-async def test_session_list_command_renders_sessions():
+async def test_session_list_command_opens_picker_and_switches_session():
     session = FakeSession()
     session.sessions_list = [
         {"session_id": "s-alpha", "title": "Alpha Project", "model": "qwen", "message_count": 8},
         {"session_id": "s-beta", "title": "Beta Analysis", "model": "qwen", "message_count": 2},
+    ]
+    session.initial_history = [
+        {"role": "user", "content": "Beta question"},
+        {"role": "assistant", "content": "Beta answer"},
     ]
     app = HermesStreamingApp(args=make_args(), session_factory=lambda: session)
     async with app.run_test() as pilot:
@@ -3925,11 +3965,90 @@ async def test_session_list_command_renders_sessions():
         await pilot.press("enter")
         await pilot.pause()
 
+        # Modal is open
+        assert isinstance(app.screen, SessionPickerModal)
+        # Navigate down to s-beta
+        await pilot.press("down")
+        await pilot.pause()
+        # Hit enter to resume s-beta
+        await pilot.press("enter")
+        await pilot.pause()
+
+        # Modal is dismissed and session resumed
+        assert not isinstance(app.screen, SessionPickerModal)
         text = transcript_of(app)
-        assert "Sessions:" in text
-        assert "s-alpha (8 msgs)" in text
-        assert "Alpha Project" in text
-        assert "s-beta (2 msgs)" in text
+        assert "Resumed session s-beta (2 message(s))." in text
+        assert "Beta question" in text
+        assert "Beta answer" in text
+        assert session.switched_sessions == ["s-beta"]
+
+
+async def test_sessions_command_with_search_prefills_filter():
+    session = FakeSession()
+    session.sessions_list = [
+        {"session_id": "s-alpha", "title": "Alpha Project", "model": "qwen", "message_count": 8},
+        {"session_id": "s-beta", "title": "Beta Analysis", "model": "qwen", "message_count": 2},
+    ]
+    app = HermesStreamingApp(args=make_args(), session_factory=lambda: session)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        composer = app.query_one("#composer", Composer)
+        composer.text = "/sessions beta"
+        await pilot.press("enter")
+        await pilot.pause()
+
+        assert isinstance(app.screen, SessionPickerModal)
+        modal = app.screen
+        assert len(modal.filtered_sessions) == 1
+        assert modal.filtered_sessions[0]["session_id"] == "s-beta"
+
+        # Press enter immediately to resume the filtered session
+        await pilot.press("enter")
+        await pilot.pause()
+
+        assert not isinstance(app.screen, SessionPickerModal)
+        assert session.switched_sessions == ["s-beta"]
+
+
+async def test_resume_command_without_args_opens_picker():
+    session = FakeSession()
+    session.sessions_list = [
+        {"session_id": "s-alpha", "title": "Alpha Project"},
+    ]
+    app = HermesStreamingApp(args=make_args(), session_factory=lambda: session)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        composer = app.query_one("#composer", Composer)
+        composer.text = "/resume"
+        await pilot.press("enter")
+        await pilot.pause()
+
+        assert isinstance(app.screen, SessionPickerModal)
+
+        # Escape closes modal without switching
+        await pilot.press("escape")
+        await pilot.pause()
+
+        assert not isinstance(app.screen, SessionPickerModal)
+        assert session.switched_sessions == []
+
+
+async def test_session_picker_handles_relay_error():
+    class FailingListSession(FakeSession):
+        async def list_sessions(self, *, limit=20, search=""):
+            raise RuntimeError("relay session lookup failed")
+
+    session = FailingListSession()
+    app = HermesStreamingApp(args=make_args(), session_factory=lambda: session)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        composer = app.query_one("#composer", Composer)
+        composer.text = "/sessions"
+        await pilot.press("enter")
+        await pilot.pause()
+
+        assert not isinstance(app.screen, SessionPickerModal)
+        assert "[error] Failed to list sessions: relay session lookup failed" in transcript_of(app)
 
 
 async def test_session_new_command_clears_transcript_and_starts_session():
