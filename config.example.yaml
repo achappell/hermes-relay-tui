@@ -60,6 +60,7 @@
 # busy_mode: queue           # queue | steer | interrupt
 # hide_thinking: false
 # allow_shell: false         # enables bounded local !command execution
+# wake_enabled: false        # arm TUI hands-free listening after initial connection
 # wake_followup_seconds: 8.0 # silence window after a wake-triggered reply
 # wake_barge_in_min_speech_duration: 0.30 # energy window before interruption
 

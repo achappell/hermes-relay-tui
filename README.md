@@ -564,8 +564,9 @@ venv/bin/python -m home_display.appliance --wake-enabled
 hermes-relay install
 python scripts/wake_check.py
 
-# In the terminal client, hands-free is armed in-session, never at launch.
-hermes-relay          # then type: /wake on
+# In the terminal client, wake mode is still opt-in. Configure it for launch,
+# or omit it and type /wake on after the client connects.
+hermes-relay --wake-enabled
 ```
 
 `hermes-relay-home` is the whole unit: it opens one microphone stream for the
@@ -600,7 +601,7 @@ works on a clean machine and on a network that is not up yet when it boots.
 
 | Flag | Default | What it does |
 |---|---|---|
-| `--wake-enabled` | off | Listen continuously for the phrase. **Appliance only** — `hermes-relay` refuses it and points at `/wake on`. |
+| `--wake-enabled` | off | Opt in to continuous listening. The TUI arms it after the initial connection; the appliance arms it as part of its startup. |
 | `--wake-model` | bundled `hey_hermes` | Path to a `.onnx` model, or a built-in openWakeWord name. |
 | `--wake-threshold` | `0.6` | Per-frame score above which the phrase counts as present. |
 | `--wake-confirmation-frames` | `3` | Consecutive over-threshold frames required to fire. |
@@ -635,8 +636,9 @@ never announces a misfire.
 
 ### Hands-free in the terminal client
 
-`hermes-relay` never arms the microphone at launch. Wake mode is turned on
-inside the session and stays on until you turn it off:
+`hermes-relay` keeps wake mode off by default. Set `wake_enabled: true` in the
+YAML config, pass `--wake-enabled`, or turn it on inside the session. A
+configured launch arms the microphone only after the initial connection:
 
 | Command | What happens |
 |---|---|
@@ -702,11 +704,11 @@ loss also releases the microphone and reconnecting never re-arms it. The
 transcript reports both transitions. A malformed reload is not applied, so an
 already-armed listener remains unchanged while the error is shown.
 
-This is deliberately not a command-line flag. An always-open microphone should
-be something you did on purpose and can see, not a side effect of how the
-process was started — which is why `hermes-relay --wake-enabled` refuses rather
-than silently arming. The household appliance is the opposite case by design:
-it exists to listen, so it takes the flag.
+This remains an explicit opt-in rather than a default. The TUI reports its
+startup stages and keeps the microphone closed when the setting is absent. A
+successful reload, connection loss, or reconnect does not silently re-arm it;
+use `/wake on` when you want to resume listening. The household appliance uses
+the same opt-in flag as part of its always-listening startup.
 
 ### Knowing it heard you
 
