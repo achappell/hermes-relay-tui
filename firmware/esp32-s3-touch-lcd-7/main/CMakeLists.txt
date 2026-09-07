@@ -1,0 +1,18 @@
+idf_component_register(
+    SRCS 
+        "src/main.c"
+        "src/bsp_lcd.c"
+        "src/bsp_touch.c"
+        "src/bsp_io_expander.c"
+        "src/ui_test.c"
+    INCLUDE_DIRS 
+        "include"
+    REQUIRES 
+        driver
+        esp_lcd
+        esp_timer
+        freertos
+        esp_common
+        log
+        heap
+)
