@@ -226,12 +226,13 @@ Do not put a real token in this file or in the README.
   and the capture teardown all call `_refresh_voice_status` directly. The
   capture task must also be assigned *before* the listening state paints.
 - Use `/wake [on|off|status]` to arm or release local hands-free listening.
-  It is off at every launch; `hermes-relay --wake-enabled` refuses rather than
-  arming a microphone from a command-line flag. `/wake off` closes the input
-  stream, it does not merely pause the detector. A successful `/reload` and a
-  connection loss both disarm wake mode and report that `/wake on` is required
-  to arm it again; reconnect never reopens the microphone silently. After a
-  wake-triggered response, the TUI listens for a bounded follow-up window
+  It is off by default; `wake_enabled: true` in config or
+  `hermes-relay --wake-enabled` arms it after the initial connection. `/wake
+  off` closes the input stream, it does not merely pause the detector. A
+  successful `/reload` and a connection loss both disarm wake mode and report
+  that `/wake on` is required to arm it again; reconnect never reopens the
+  microphone silently. After a wake-triggered response, the TUI listens for a
+  bounded follow-up window
   (`--wake-followup-seconds`, default 8 seconds) without another wake phrase.
   Saying exactly `stop` during hands-free capture closes it locally and
   silently, both for the initial wake capture and that follow-up window;
