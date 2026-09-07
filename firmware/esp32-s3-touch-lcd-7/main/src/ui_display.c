@@ -12,6 +12,22 @@
 #define HAVE_LVGL 0
 #endif
 
+static display_rules_reducer_t s_reducer;
+static ui_snapshot_t s_snapshot;
+
+static display_rules_result_t apply_snapshot_model(const ui_snapshot_t *snapshot)
+{
+    if (snapshot == NULL) return DISPLAY_RULES_INVALID_ARGUMENT;
+    display_rules_snapshot_t rules_snapshot;
+    if (!ui_snapshot_to_rules(snapshot, &rules_snapshot)) {
+        return DISPLAY_RULES_INVALID_SNAPSHOT;
+    }
+    display_rules_result_t result = display_rules_apply_snapshot(&s_reducer, &rules_snapshot);
+    if (result != DISPLAY_RULES_ACCEPTED) return result;
+    s_snapshot = *snapshot;
+    return result;
+}
+
 #if HAVE_LVGL
 static lv_obj_t *s_state_label;
 static lv_obj_t *s_status_label;
@@ -22,7 +38,6 @@ static lv_obj_t *s_prompt_title;
 static lv_obj_t *s_prompt_body;
 static lv_obj_t *s_prompt_buttons[UI_SNAPSHOT_OPTION_COUNT_MAX];
 static lv_obj_t *s_diagnostics_label;
-static ui_snapshot_t s_snapshot;
 static ui_display_action_cb s_action_cb;
 static void *s_action_user_data;
 
@@ -46,7 +61,11 @@ static void prompt_button_cb(lv_event_t *event)
     lv_obj_t *button = lv_event_get_target(event);
     for (uint8_t index = 0; index < s_snapshot.prompt.option_count; index++) {
         if (button == s_prompt_buttons[index]) {
-            s_action_cb(s_snapshot.prompt.action_id, s_snapshot.prompt.options[index].id, s_action_user_data);
+            const char *action_id = s_snapshot.prompt.action_id;
+            const char *choice = s_snapshot.prompt.options[index].id;
+            if (ui_display_validate_choice(action_id, choice) == DISPLAY_RULES_ACCEPTED) {
+                s_action_cb(action_id, choice, s_action_user_data);
+            }
             return;
         }
     }
@@ -71,9 +90,15 @@ static void render_prompt(void)
     lv_obj_clear_flag(s_prompt_panel, LV_OBJ_FLAG_HIDDEN);
     lv_label_set_text(s_prompt_title, s_snapshot.prompt.title);
     lv_label_set_text(s_prompt_body, s_snapshot.prompt.body);
+    const display_rules_view_t *view = ui_display_rules_view();
     for (uint8_t index = 0; index < UI_SNAPSHOT_OPTION_COUNT_MAX; index++) {
         if (index < s_snapshot.prompt.option_count) {
             lv_obj_clear_flag(s_prompt_buttons[index], LV_OBJ_FLAG_HIDDEN);
+            if (view != NULL && view->can_choose) {
+                lv_obj_clear_state(s_prompt_buttons[index], LV_STATE_DISABLED);
+            } else {
+                lv_obj_add_state(s_prompt_buttons[index], LV_STATE_DISABLED);
+            }
             lv_label_set_text(lv_obj_get_child(s_prompt_buttons[index], 0), s_snapshot.prompt.options[index].label);
         } else {
             lv_obj_add_flag(s_prompt_buttons[index], LV_OBJ_FLAG_HIDDEN);
@@ -83,8 +108,10 @@ static void render_prompt(void)
 
 static void render_snapshot(void)
 {
-    lv_label_set_text(s_state_label, ui_display_state_name(s_snapshot.state));
-    lv_obj_set_style_text_color(s_state_label, state_color(s_snapshot.state), 0);
+    const display_rules_view_t *view = ui_display_rules_view();
+    ui_display_state_t state = view == NULL ? UI_DISPLAY_UNKNOWN : view->state;
+    lv_label_set_text(s_state_label, ui_display_state_name(state));
+    lv_obj_set_style_text_color(s_state_label, state_color(state), 0);
     lv_label_set_text(s_status_label, s_snapshot.status_text[0] ? s_snapshot.status_text : "Ready");
     lv_label_set_text(s_account_label, s_snapshot.account[0] ? s_snapshot.account : "Hermes home display");
     lv_label_set_text(s_response_label, s_snapshot.response_text[0] ? s_snapshot.response_text : "Ask me anything");
@@ -93,6 +120,7 @@ static void render_snapshot(void)
 
 bool ui_display_init(ui_display_action_cb action_cb, void *user_data)
 {
+    display_rules_init(&s_reducer);
     s_action_cb = action_cb;
     s_action_user_data = user_data;
     ui_snapshot_init(&s_snapshot);
@@ -151,11 +179,12 @@ bool ui_display_init(ui_display_action_cb action_cb, void *user_data)
     return true;
 }
 
-void ui_display_set_snapshot(const ui_snapshot_t *snapshot)
+display_rules_result_t ui_display_set_snapshot(const ui_snapshot_t *snapshot)
 {
-    if (snapshot == NULL) return;
-    s_snapshot = *snapshot;
+    display_rules_result_t result = apply_snapshot_model(snapshot);
+    if (result != DISPLAY_RULES_ACCEPTED) return result;
     render_snapshot();
+    return result;
 }
 
 void ui_display_update_diagnostics(bool touch_active, uint16_t x, uint16_t y, uint8_t point_count, uint32_t fps)
@@ -172,14 +201,15 @@ void ui_display_update_diagnostics(bool touch_active, uint16_t x, uint16_t y, ui
 #else
 bool ui_display_init(ui_display_action_cb action_cb, void *user_data)
 {
+    display_rules_init(&s_reducer);
     (void)action_cb;
     (void)user_data;
     return true;
 }
 
-void ui_display_set_snapshot(const ui_snapshot_t *snapshot)
+display_rules_result_t ui_display_set_snapshot(const ui_snapshot_t *snapshot)
 {
-    (void)snapshot;
+    return apply_snapshot_model(snapshot);
 }
 
 void ui_display_update_diagnostics(bool touch_active, uint16_t x, uint16_t y, uint8_t point_count, uint32_t fps)
@@ -191,3 +221,43 @@ void ui_display_update_diagnostics(bool touch_active, uint16_t x, uint16_t y, ui
     (void)fps;
 }
 #endif
+
+display_rules_result_t ui_display_set_connection_state(ui_display_connection_state_t state)
+{
+    if (state == UI_DISPLAY_CONNECTION_CONNECTED) {
+        display_rules_init(&s_reducer);
+        ui_snapshot_init(&s_snapshot);
+#if HAVE_LVGL
+        render_snapshot();
+#endif
+        return DISPLAY_RULES_ACCEPTED;
+    }
+
+    ui_snapshot_t snapshot;
+    if (!ui_snapshot_init(&snapshot)) return DISPLAY_RULES_INVALID_ARGUMENT;
+    const display_rules_view_t *view = ui_display_rules_view();
+    snapshot.sequence = view != NULL && view->initialized ? view->sequence + 1 : 0;
+    snapshot.state = state == UI_DISPLAY_CONNECTION_ERROR ? UI_DISPLAY_ERROR : UI_DISPLAY_DISCONNECTED;
+    if (!ui_snapshot_set_text(
+            &snapshot,
+            "",
+            state == UI_DISPLAY_CONNECTION_ERROR ? "Display connection error" : "Reconnecting to display")) {
+        return DISPLAY_RULES_INVALID_ARGUMENT;
+    }
+    return ui_display_set_snapshot(&snapshot);
+}
+
+display_rules_result_t ui_display_validate_choice(const char *action_id, const char *choice)
+{
+    return display_rules_validate_choice(&s_reducer, action_id, choice);
+}
+
+display_rules_result_t ui_display_validate_dismiss(void)
+{
+    return display_rules_validate_dismiss(&s_reducer);
+}
+
+const display_rules_view_t *ui_display_rules_view(void)
+{
+    return display_rules_view(&s_reducer);
+}

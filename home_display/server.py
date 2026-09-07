@@ -206,17 +206,29 @@ class DisplayServer:
         subscription = self._publisher.subscribe()
         next_snapshot = asyncio.create_task(anext(subscription))
         closed = asyncio.create_task(websocket.wait_closed())
+        incoming = asyncio.create_task(websocket.recv())
         try:
             while True:
                 done, _pending = await asyncio.wait(
-                    {next_snapshot, closed}, return_when=asyncio.FIRST_COMPLETED
+                    {next_snapshot, closed, incoming}, return_when=asyncio.FIRST_COMPLETED
                 )
                 if closed in done:
                     return
 
-                snapshot = next_snapshot.result()
-                await websocket.send(json.dumps(snapshot.to_dict()))
-                next_snapshot = asyncio.create_task(anext(subscription))
+                if incoming in done:
+                    try:
+                        action = self._parse_websocket_action(incoming.result())
+                    except ConnectionClosed:
+                        return
+                    if action is not None and self._on_action is not None:
+                        loop = asyncio.get_event_loop()
+                        loop.create_task(self._on_action(*action))
+                    incoming = asyncio.create_task(websocket.recv())
+
+                if next_snapshot in done:
+                    snapshot = next_snapshot.result()
+                    await websocket.send(json.dumps(snapshot.to_dict()))
+                    next_snapshot = asyncio.create_task(anext(subscription))
         except ConnectionClosed:
             return
         finally:
@@ -226,7 +238,33 @@ class DisplayServer:
             if not closed.done():
                 closed.cancel()
                 await asyncio.gather(closed, return_exceptions=True)
+            if not incoming.done():
+                incoming.cancel()
+                await asyncio.gather(incoming, return_exceptions=True)
             await subscription.aclose()  # type: ignore[attr-defined]
+
+    @staticmethod
+    def _parse_websocket_action(message: str | bytes) -> tuple[str, str] | None:
+        if not isinstance(message, (str, bytes)):
+            return None
+        try:
+            payload = json.loads(message)
+        except (TypeError, ValueError):
+            return None
+        if not isinstance(payload, dict):
+            return None
+        if payload.get("type") != "action" or payload.get("schema") != 1:
+            return None
+        action_id = payload.get("action_id")
+        choice = payload.get("choice")
+        if (
+            not isinstance(action_id, str)
+            or not 0 < len(action_id) <= 64
+            or not isinstance(choice, str)
+            or not 0 < len(choice) <= 32
+        ):
+            return None
+        return action_id, choice
 
     @staticmethod
     def _http_response(

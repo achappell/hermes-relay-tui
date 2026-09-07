@@ -74,3 +74,31 @@ bool ui_snapshot_set_text(ui_snapshot_t *snapshot, const char *response_text, co
     }
     return true;
 }
+
+bool ui_snapshot_to_rules(const ui_snapshot_t *snapshot, display_rules_snapshot_t *rules_snapshot)
+{
+    if (snapshot == NULL || rules_snapshot == NULL) return false;
+
+    memset(rules_snapshot, 0, sizeof(*rules_snapshot));
+    rules_snapshot->schema = snapshot->schema;
+    rules_snapshot->sequence = snapshot->sequence;
+    rules_snapshot->state = snapshot->state;
+    rules_snapshot->prompt.present = snapshot->prompt.present;
+    rules_snapshot->prompt.can_choose = snapshot->prompt.can_choose;
+    rules_snapshot->prompt.can_dismiss = snapshot->prompt.can_dismiss;
+
+    if (!snapshot->prompt.present) return true;
+
+    copy_bounded(
+        rules_snapshot->prompt.action_id,
+        sizeof(rules_snapshot->prompt.action_id),
+        snapshot->prompt.action_id);
+    rules_snapshot->prompt.option_count = snapshot->prompt.option_count;
+    for (uint8_t index = 0; index < snapshot->prompt.option_count; index++) {
+        copy_bounded(
+            rules_snapshot->prompt.options[index].id,
+            sizeof(rules_snapshot->prompt.options[index].id),
+            snapshot->prompt.options[index].id);
+    }
+    return true;
+}

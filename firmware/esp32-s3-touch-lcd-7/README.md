@@ -98,14 +98,16 @@ pio device monitor
 
 ## ESP-02 Shared Display Shell
 
-The firmware and native simulator now consume the same bounded C snapshot model
-(`ui_snapshot`) and LVGL surface (`ui_display`). The JSON parser accepts the
-schema-1 `DisplaySnapshot` contract emitted by `home_display/server.py`,
-including the nine display states and bounded prompt options. The ESP-IDF
-WebSocket client subscribes to the server's `/state` endpoint, reassembles
-fragmented JSON frames, and uses the built-in reconnect ladder. The host
-appliance must opt into a LAN bind with `--display-remote`; loopback remains
-the default.
+The firmware and native simulator consume the same bounded C snapshot model
+(`ui_snapshot`), portable reducer (`shared/display/display_rules`), and LVGL
+surface (`ui_display`). The JSON parser accepts the schema-1 `DisplaySnapshot`
+contract emitted by `home_display/server.py`, including the nine display states,
+capability-gated actions, and bounded prompt options. The ESP-IDF WebSocket
+client subscribes to the server's `/state` endpoint, reassembles fragmented
+JSON frames, rejects stale snapshots through the shared reducer, and uses the
+built-in reconnect ladder. Valid touch choices are sent back as normalized
+schema-1 action frames on the same WebSocket. The host appliance must opt into a
+LAN bind with `--display-remote`; loopback remains the default.
 
 The native simulator demonstrates the state surface without a relay. With the
 window focused, press `1` for idle, `2` for listening, `3` for speaking, `4`

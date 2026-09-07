@@ -32,6 +32,8 @@ static const char *TAG = "main";
 static SemaphoreHandle_t s_lvgl_mutex = NULL;
 static ui_snapshot_t s_pending_snapshot;
 static bool s_pending_snapshot_valid = false;
+static ui_display_connection_state_t s_pending_transport_state;
+static bool s_pending_transport_state_valid = false;
 #endif
 
 #if HAVE_LVGL
@@ -78,16 +80,25 @@ static void transport_state_cb(ui_transport_state_t state, void *user_data)
     (void)user_data;
     if (s_lvgl_mutex == NULL) return;
     if (xSemaphoreTake(s_lvgl_mutex, pdMS_TO_TICKS(20)) == pdTRUE) {
-        if (state == UI_TRANSPORT_DISCONNECTED || state == UI_TRANSPORT_ERROR) {
-            ui_snapshot_init(&s_pending_snapshot);
-            s_pending_snapshot.state = state == UI_TRANSPORT_ERROR ? UI_DISPLAY_ERROR : UI_DISPLAY_DISCONNECTED;
-            ui_snapshot_set_text(
-                &s_pending_snapshot,
-                "",
-                state == UI_TRANSPORT_ERROR ? "Display connection error" : "Reconnecting to display");
-            s_pending_snapshot_valid = true;
+        if (state == UI_TRANSPORT_CONNECTED) {
+            s_pending_transport_state = UI_DISPLAY_CONNECTION_CONNECTED;
+            s_pending_transport_state_valid = true;
+        } else if (state == UI_TRANSPORT_DISCONNECTED || state == UI_TRANSPORT_ERROR) {
+            s_pending_transport_state = state == UI_TRANSPORT_ERROR
+                ? UI_DISPLAY_CONNECTION_ERROR
+                : UI_DISPLAY_CONNECTION_DISCONNECTED;
+            s_pending_transport_state_valid = true;
         }
         xSemaphoreGive(s_lvgl_mutex);
+    }
+}
+
+static void transport_action_cb(const char *action_id, const char *choice, void *user_data)
+{
+    (void)user_data;
+    esp_err_t err = ui_transport_send_action(action_id, choice);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "Display action send failed: %s", esp_err_to_name(err));
     }
 }
 
@@ -101,9 +112,18 @@ static void lvgl_ui_task(void *pvParameters)
 
     while (1) {
         if (pdTRUE == xSemaphoreTake(s_lvgl_mutex, portMAX_DELAY)) {
+            if (s_pending_transport_state_valid &&
+                s_pending_transport_state == UI_DISPLAY_CONNECTION_CONNECTED) {
+                ui_display_set_connection_state(s_pending_transport_state);
+                s_pending_transport_state_valid = false;
+            }
             if (s_pending_snapshot_valid) {
                 ui_display_set_snapshot(&s_pending_snapshot);
                 s_pending_snapshot_valid = false;
+            }
+            if (s_pending_transport_state_valid) {
+                ui_display_set_connection_state(s_pending_transport_state);
+                s_pending_transport_state_valid = false;
             }
             uint32_t task_delay_ms = lv_timer_handler();
             
@@ -222,7 +242,7 @@ void app_main(void)
     lv_indev_drv_register(&indev_drv);
 
     /* Initialize Bring-up Test Scene */
-    ui_display_init(NULL, NULL);
+    ui_display_init(transport_action_cb, NULL);
 
     /* Launch UI Task pinned to Core 1 */
     xTaskCreatePinnedToCore(lvgl_ui_task, "lvgl_ui", 8192, NULL, 5, NULL, 1);

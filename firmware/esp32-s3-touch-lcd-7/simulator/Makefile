@@ -6,10 +6,10 @@ SDL_LDFLAGS ?= $(shell /opt/homebrew/bin/sdl2-config --libs 2>/dev/null || sdl2-
 LVGL_DIR ?= lvgl
 LVGL_SRC := $(shell find $(LVGL_DIR)/src -name '*.c' 2>/dev/null)
 
-INCLUDES = -Iinclude -I../main/include -I$(LVGL_DIR) $(SDL_CFLAGS)
+INCLUDES = -Iinclude -I../main/include -I../../../shared/display -I$(LVGL_DIR) $(SDL_CFLAGS)
 DEFINES = -DLV_CONF_INCLUDE_SIMPLE -DSIMULATOR_BUILD=1
 
-SRCS = sdl_main.c ../main/src/ui_snapshot.c ../main/src/ui_display.c ../main/src/ui_test.c $(LVGL_SRC)
+SRCS = sdl_main.c ../main/src/ui_snapshot.c ../main/src/ui_display.c ../main/src/ui_test.c ../../../shared/display/display_rules.c $(LVGL_SRC)
 OBJS = $(SRCS:.c=.o)
 TARGET = esp32_display_sim
 
@@ -21,7 +21,7 @@ $(LVGL_DIR):
 
 $(TARGET): $(LVGL_DIR)
 	@echo "Compiling native SDL2 simulator..."
-	$(CC) $(CFLAGS) $(DEFINES) $(INCLUDES) sdl_main.c ../main/src/ui_snapshot.c ../main/src/ui_display.c ../main/src/ui_test.c $(shell find $(LVGL_DIR)/src -name '*.c') $(SDL_LDFLAGS) -o $(TARGET)
+	$(CC) $(CFLAGS) $(DEFINES) $(INCLUDES) sdl_main.c ../main/src/ui_snapshot.c ../main/src/ui_display.c ../main/src/ui_test.c ../../../shared/display/display_rules.c $(shell find $(LVGL_DIR)/src -name '*.c') $(SDL_LDFLAGS) -o $(TARGET)
 	@echo "Build complete: ./$(TARGET)"
 
 clean:
