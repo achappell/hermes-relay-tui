@@ -17,14 +17,18 @@ static bool s_mouse_down = false;
 static int s_mouse_x = 0;
 static int s_mouse_y = 0;
 static ui_snapshot_t s_demo_snapshot;
+static uint32_t s_demo_sequence = 0;
 
 static void demo_snapshot(ui_display_state_t state, const char *response, const char *status)
 {
     ui_snapshot_init(&s_demo_snapshot);
+    s_demo_snapshot.sequence = ++s_demo_sequence;
     s_demo_snapshot.state = state;
     ui_snapshot_set_text(&s_demo_snapshot, response, status);
     if (state == UI_DISPLAY_PROMPT) {
         s_demo_snapshot.prompt.present = true;
+        s_demo_snapshot.prompt.can_choose = true;
+        s_demo_snapshot.prompt.can_dismiss = true;
         snprintf(s_demo_snapshot.prompt.title, sizeof(s_demo_snapshot.prompt.title), "Permission needed");
         snprintf(s_demo_snapshot.prompt.body, sizeof(s_demo_snapshot.prompt.body), "Allow Hermes to continue?");
         snprintf(s_demo_snapshot.prompt.action_id, sizeof(s_demo_snapshot.prompt.action_id), "demo");
@@ -162,10 +166,15 @@ int main(int argc, char *argv[])
                 if (event.key.keysym.sym == SDLK_1) {
                     demo_snapshot(UI_DISPLAY_IDLE, "Ask me anything", "Ready");
                 } else if (event.key.keysym.sym == SDLK_2) {
+                    demo_snapshot(UI_DISPLAY_IDLE, "Ask me anything", "Ready");
                     demo_snapshot(UI_DISPLAY_LISTENING, "", "Listening");
                 } else if (event.key.keysym.sym == SDLK_3) {
+                    demo_snapshot(UI_DISPLAY_IDLE, "Ask me anything", "Ready");
+                    demo_snapshot(UI_DISPLAY_HEARD, "", "Heard");
+                    demo_snapshot(UI_DISPLAY_THINKING, "", "Thinking");
                     demo_snapshot(UI_DISPLAY_SPEAKING, "The shared snapshot is rendering live text.", "Speaking");
                 } else if (event.key.keysym.sym == SDLK_4) {
+                    demo_snapshot(UI_DISPLAY_IDLE, "Ask me anything", "Ready");
                     demo_snapshot(UI_DISPLAY_PROMPT, "", "");
                 } else if (event.key.keysym.sym == SDLK_5) {
                     demo_snapshot(UI_DISPLAY_ERROR, "", "Connection lost");

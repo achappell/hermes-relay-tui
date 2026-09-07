@@ -19,6 +19,7 @@ FetchContent_MakeAvailable(lvgl)
 include_directories(
     ${CMAKE_CURRENT_SOURCE_DIR}/../main/include
     ${CMAKE_CURRENT_SOURCE_DIR}/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../../shared/display
     ${SDL2_INCLUDE_DIRS}
     ${lvgl_SOURCE_DIR}
 )
@@ -26,7 +27,10 @@ include_directories(
 # Simulator executable
 add_executable(esp32_display_sim
     sdl_main.c
+    ../main/src/ui_snapshot.c
+    ../main/src/ui_display.c
     ../main/src/ui_test.c
+    ../../../shared/display/display_rules.c
 )
 
 target_compile_definitions(esp32_display_sim PRIVATE

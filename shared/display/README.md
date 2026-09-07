@@ -34,6 +34,11 @@ end. The current browser transport encodes the same fields as
 `POST /action?action_id=...&choice=...`; that transport detail belongs to the
 Web adapter and may differ on ESP or TUI.
 
+The ESP adapter sends the same normalized object as a text action frame on its
+state WebSocket. The display server accepts those frames alongside the
+browser's HTTP action path, so a reducer-validated touch choice reaches the
+same appliance callback regardless of front end.
+
 Capability names are deliberately small and explicit. `prompt.choose` means a
 front end can submit a selected option; `prompt.dismiss` means it can close a
 prompt without choosing. A target must not emit an action it has not

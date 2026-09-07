@@ -8,6 +8,7 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 FIRMWARE_DIR = REPO_ROOT / "firmware" / "esp32-s3-touch-lcd-7"
+SHARED_DISPLAY_DIR = REPO_ROOT / "shared" / "display"
 
 
 def _compile_and_run(source: str) -> subprocess.CompletedProcess[str]:
@@ -24,6 +25,8 @@ def _compile_and_run(source: str) -> subprocess.CompletedProcess[str]:
                 "-Werror",
                 "-I",
                 str(FIRMWARE_DIR / "main" / "include"),
+                "-I",
+                str(SHARED_DISPLAY_DIR),
                 str(harness),
                 str(FIRMWARE_DIR / "main" / "src" / "ui_snapshot.c"),
                 "-o",

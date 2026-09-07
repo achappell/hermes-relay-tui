@@ -41,6 +41,31 @@ async def test_server_pushes_published_state_without_reconnecting(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_server_dispatches_normalized_websocket_actions(tmp_path):
+    (tmp_path / "index.html").write_text("ok", encoding="utf-8")
+    calls: list[tuple[str, str]] = []
+
+    async def on_action(action_id: str, choice: str) -> None:
+        calls.append((action_id, choice))
+
+    server = DisplayServer(DisplayStatePublisher(), tmp_path, on_action=on_action)
+    info = await server.start()
+    try:
+        async with connect(info.websocket_url) as socket:
+            await socket.recv()
+            await socket.send(json.dumps({
+                "type": "action",
+                "schema": 1,
+                "action_id": "sethome",
+                "choice": "yes",
+            }))
+            await asyncio.sleep(0.01)
+        assert calls == [("sethome", "yes")]
+    finally:
+        await server.close()
+
+
+@pytest.mark.asyncio
 async def test_server_serves_mime_typed_static_assets(tmp_path):
     (tmp_path / "index.html").write_text("ok", encoding="utf-8")
     (tmp_path / "app.js").write_text("console.log('home')", encoding="utf-8")

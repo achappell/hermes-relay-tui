@@ -4,11 +4,11 @@
 
 #include <string.h>
 
-static bool copy_bounded(char *destination, size_t capacity, const char *source)
+static bool copy_strict(char *destination, size_t capacity, const char *source)
 {
     if (destination == NULL || capacity == 0 || source == NULL) return false;
     size_t length = strlen(source);
-    if (length >= capacity) length = capacity - 1;
+    if (length >= capacity) return false;
     memcpy(destination, source, length);
     destination[length] = '\0';
     return true;
@@ -23,7 +23,7 @@ static bool required_string(const cJSON *object, const char *name, char *destina
 {
     const cJSON *item = object_item(object, name);
     return cJSON_IsString(item) && item->valuestring[0] != '\0' &&
-           copy_bounded(destination, capacity, item->valuestring);
+           copy_strict(destination, capacity, item->valuestring);
 }
 
 static bool optional_string(const cJSON *object, const char *name, char *destination, size_t capacity)
@@ -33,13 +33,44 @@ static bool optional_string(const cJSON *object, const char *name, char *destina
         destination[0] = '\0';
         return true;
     }
-    return cJSON_IsString(item) && copy_bounded(destination, capacity, item->valuestring);
+    return cJSON_IsString(item) && copy_strict(destination, capacity, item->valuestring);
 }
 
 static bool required_text(const cJSON *object, const char *name, char *destination, size_t capacity)
 {
     const cJSON *item = object_item(object, name);
-    return cJSON_IsString(item) && copy_bounded(destination, capacity, item->valuestring);
+    return cJSON_IsString(item) && copy_strict(destination, capacity, item->valuestring);
+}
+
+static bool parse_capabilities(const cJSON *root, ui_snapshot_t *snapshot)
+{
+    const cJSON *raw = object_item(root, "capabilities");
+    snapshot->prompt.can_choose = false;
+    snapshot->prompt.can_dismiss = false;
+    if (raw == NULL) return true;
+    if (!cJSON_IsObject(raw)) return false;
+
+    const cJSON *actions = object_item(raw, "actions");
+    const cJSON *features = object_item(raw, "features");
+    if (!cJSON_IsArray(actions) || !cJSON_IsArray(features)) return false;
+
+    cJSON *action = NULL;
+    cJSON_ArrayForEach(action, actions) {
+        if (!cJSON_IsString(action)) return false;
+        if (strcmp(action->valuestring, "prompt.choose") == 0) {
+            snapshot->prompt.can_choose = true;
+        } else if (strcmp(action->valuestring, "prompt.dismiss") == 0) {
+            snapshot->prompt.can_dismiss = true;
+        } else {
+            return false;
+        }
+    }
+
+    cJSON *feature = NULL;
+    cJSON_ArrayForEach(feature, features) {
+        if (!cJSON_IsString(feature) || feature->valuestring[0] == '\0') return false;
+    }
+    return true;
 }
 
 static bool parse_prompt(const cJSON *raw, ui_snapshot_prompt_t *prompt)
@@ -115,6 +146,7 @@ bool ui_snapshot_from_json(const char *json, ui_snapshot_t *snapshot)
         } else if (prompt != NULL && !cJSON_IsNull(prompt)) {
             break;
         }
+        if (!parse_capabilities(root, snapshot)) break;
         valid = true;
     } while (0);
 

@@ -1,5 +1,6 @@
 #include "ui_transport.h"
 
+#include "cJSON.h"
 #include "esp_log.h"
 #include "esp_websocket_client.h"
 #include "freertos/FreeRTOS.h"
@@ -185,4 +186,34 @@ esp_err_t ui_transport_stop(void)
 bool ui_transport_is_connected(void)
 {
     return s_transport.connected;
+}
+
+esp_err_t ui_transport_send_action(const char *action_id, const char *choice)
+{
+    if (action_id == NULL || action_id[0] == '\0' || choice == NULL || choice[0] == '\0') {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (s_transport.client == NULL || !s_transport.connected) return ESP_ERR_INVALID_STATE;
+
+    cJSON *action = cJSON_CreateObject();
+    if (action == NULL ||
+        !cJSON_AddStringToObject(action, "type", "action") ||
+        !cJSON_AddNumberToObject(action, "schema", 1) ||
+        !cJSON_AddStringToObject(action, "action_id", action_id) ||
+        !cJSON_AddStringToObject(action, "choice", choice)) {
+        cJSON_Delete(action);
+        return ESP_ERR_NO_MEM;
+    }
+
+    char *payload = cJSON_PrintUnformatted(action);
+    cJSON_Delete(action);
+    if (payload == NULL) return ESP_ERR_NO_MEM;
+
+    int sent = esp_websocket_client_send_text(
+        s_transport.client,
+        payload,
+        strlen(payload),
+        pdMS_TO_TICKS(1000));
+    cJSON_free(payload);
+    return sent < 0 ? ESP_FAIL : ESP_OK;
 }

@@ -29,4 +29,5 @@ typedef struct {
 
 esp_err_t ui_transport_start(const ui_transport_config_t *config);
 esp_err_t ui_transport_stop(void);
+esp_err_t ui_transport_send_action(const char *action_id, const char *choice);
 bool ui_transport_is_connected(void);

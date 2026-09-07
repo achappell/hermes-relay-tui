@@ -10,8 +10,10 @@ idf_component_register(
         "src/ui_transport.c"
         "src/ui_display.c"
         "src/ui_test.c"
+        "${CMAKE_CURRENT_LIST_DIR}/../../../shared/display/display_rules.c"
     INCLUDE_DIRS 
         "include"
+        "${CMAKE_CURRENT_LIST_DIR}/../../../shared/display"
     REQUIRES 
         driver
         esp_lcd
