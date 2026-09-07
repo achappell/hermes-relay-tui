@@ -69,6 +69,7 @@ from diagnostics import (
 from history import PromptHistory, history_path_for_url
 from prompts import PendingPrompt
 from session import HermesSession, SessionProtocol
+from session_picker import SessionPickerModal
 from shell import (
     ShellExecutionError,
     ShellPolicy,
@@ -1957,30 +1958,14 @@ class HermesStreamingApp(App):
             self._append_block("usage: /session [list|new|switch|resume|info]")
 
     async def _handle_session_list_command(self, args: str) -> None:
+        if self._turn_in_flight:
+            self._append_block("[busy] Cannot list sessions while a turn is active.")
+            return
         if not self.session.is_connected():
             self._append_block("[error] Not connected to relay.")
             return
         search = args.strip()
-        try:
-            sessions = await self.session.list_sessions(limit=20, search=search)
-        except Exception as exc:
-            self._append_block(f"[error] Failed to list sessions: {exc}")
-            return
-        if not sessions:
-            self._append_block(f"No sessions found{' matching ' + repr(search) if search else ''}.")
-            return
-        lines = ["Sessions:"]
-        active_sid = getattr(self.session, "session_id", None)
-        for s in sessions:
-            sid = str(s.get("session_id") or s.get("id") or "")
-            title = str(s.get("title") or "").strip()
-            title_part = f" · {title}" if title else ""
-            model = str(s.get("model") or "").strip()
-            model_part = f" · {model}" if model else ""
-            msg_count = s.get("message_count", 0)
-            marker = "▶ " if sid == active_sid else "  "
-            lines.append(f"{marker}{sid} ({msg_count} msgs){title_part}{model_part}")
-        self._append_block("\n".join(lines))
+        await self._open_session_picker(initial_search=search)
 
     async def _handle_session_new_command(self, args: str) -> None:
         if self._turn_in_flight:
@@ -2007,7 +1992,41 @@ class HermesStreamingApp(App):
             return
         sid = args.strip()
         if not sid:
-            self._append_block("usage: /resume <session-id>")
+            await self._open_session_picker(initial_search="")
+            return
+        await self._resume_session(sid)
+
+    async def _open_session_picker(self, initial_search: str = "") -> None:
+        if self._turn_in_flight:
+            self._append_block("[busy] Cannot select a session while a turn is active.")
+            return
+        if not self.session.is_connected():
+            self._append_block("[error] Not connected to relay.")
+            return
+        try:
+            sessions = await self.session.list_sessions(limit=100)
+        except Exception as exc:
+            self._append_block(f"[error] Failed to list sessions: {exc}")
+            return
+
+        active_sid = getattr(self.session, "session_id", None) or ""
+
+        def _on_session_picked(chosen_sid: str | None) -> None:
+            if chosen_sid:
+                self.run_worker(self._resume_session(chosen_sid))
+
+        self.push_screen(
+            SessionPickerModal(
+                sessions=sessions,
+                current_session_id=active_sid,
+                initial_search=initial_search,
+            ),
+            callback=_on_session_picked,
+        )
+
+    async def _resume_session(self, sid: str) -> None:
+        if self._turn_in_flight:
+            self._append_block("[busy] Cannot resume a session while a turn is active.")
             return
         if not self.session.is_connected():
             self._append_block("[error] Not connected to relay.")
