@@ -9,9 +9,13 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import dataclass
+import json
 import os
+import re
 import socket
 import sys
+import tempfile
+import types
 from pathlib import Path
 from typing import Any, Optional
 
@@ -190,6 +194,72 @@ class HouseholdProfile:
         )
 
 
+@dataclass(frozen=True)
+class RelayProfile:
+    """One laptop relay target with its bearer token resolved in memory.
+
+    ``token_env`` is the only credential reference that belongs in the
+    editable YAML document. ``token`` exists for the connection boundary and
+    is deliberately redacted from ``repr`` so diagnostics and test failures
+    cannot turn a profile object into a credential leak.
+    """
+
+    name: str
+    display_name: str
+    url: str
+    token: str
+    token_env: str
+    client_id: str
+    device_id: str
+    session_id: str
+    model: Optional[str] = None
+    legacy: bool = False
+
+    @property
+    def token_configured(self) -> bool:
+        return bool(self.token)
+
+    def __repr__(self) -> str:
+        return (
+            f"RelayProfile(name={self.name!r}, display_name={self.display_name!r}, "
+            f"url={self.url!r}, token='***', token_env={self.token_env!r}, "
+            f"client_id={self.client_id!r}, device_id={self.device_id!r}, "
+            f"session_id={self.session_id!r}, model={self.model!r}, "
+            f"legacy={self.legacy!r})"
+        )
+
+
+_PROFILE_NAME_RE = re.compile(r"^[a-z][a-z0-9_-]{0,63}$")
+_TOKEN_ENV_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
+def validate_profile_name(value: str) -> str:
+    """Return a canonical profile name suitable for config and file paths."""
+    name = str(value or "").strip().lower()
+    if not _PROFILE_NAME_RE.fullmatch(name):
+        raise ValueError(
+            "profile name must start with a letter and contain only letters, "
+            "numbers, '-' or '_'"
+        )
+    return name
+
+
+def validate_token_env(value: str) -> str:
+    """Validate a private environment variable reference."""
+    env_name = str(value or "").strip()
+    if not _TOKEN_ENV_RE.fullmatch(env_name):
+        raise ValueError("token environment name must be a valid variable name")
+    return env_name
+
+
+def profile_token_env(name: str) -> str:
+    """Return the default private env key for a profile."""
+    canonical = validate_profile_name(name)
+    if canonical == "default":
+        return "VOICE_SESSION_TOKEN"
+    return f"VOICE_SESSION_TOKEN_{canonical.upper()}"
+
+
 def _lookup_env_file(path: Path, key: str) -> str:
     resolved_path = Path(path).expanduser()
     paths = [resolved_path]
@@ -280,6 +350,434 @@ def resolve_profile_token(
     if fallback_token:
         return fallback_token
     return _resolve_token(None, profile_env)
+
+
+def _profile_entries(cfg: dict[str, Any]) -> list[tuple[str, dict[str, Any]]]:
+    """Read either HOME-13's mapping or list profile shape in file order."""
+    raw_profiles = cfg.get("profiles")
+    entries: list[tuple[str, dict[str, Any]]] = []
+    if isinstance(raw_profiles, dict):
+        for key, value in raw_profiles.items():
+            if isinstance(value, dict):
+                entries.append((str(key), dict(value)))
+    elif isinstance(raw_profiles, list):
+        for item in raw_profiles:
+            if isinstance(item, dict):
+                key = str(item.get("name") or len(entries) + 1)
+                entries.append((key, dict(item)))
+    return entries
+
+
+def _profile_token_source(entry: dict[str, Any], name: str, *, legacy: bool = False) -> str:
+    explicit = entry.get("token_env")
+    if isinstance(explicit, str) and explicit.strip():
+        return validate_token_env(explicit)
+
+    raw_token = entry.get("token")
+    if isinstance(raw_token, str):
+        token = raw_token.strip()
+        if token.startswith("${") and token.endswith("}"):
+            return validate_token_env(token[2:-1].strip())
+        if token.startswith("$") and len(token) > 1 and token[1:].isidentifier():
+            return validate_token_env(token[1:])
+
+    return profile_token_env(name) if not legacy else "VOICE_SESSION_TOKEN"
+
+
+def _private_env_value(path: Path, key: str) -> str:
+    """Resolve one profile-specific key without falling back to another key."""
+    value = os.getenv(key, "").strip()
+    return value or _lookup_env_file(path, key)
+
+
+def _resolve_relay_profile_token(
+    entry: dict[str, Any],
+    name: str,
+    profile_env: Path,
+) -> str:
+    """Resolve a laptop profile token without generic-token cross-talk."""
+    explicit_source = entry.get("token_env")
+    if isinstance(explicit_source, str) and explicit_source.strip():
+        return _private_env_value(profile_env, validate_token_env(explicit_source))
+
+    raw_token = entry.get("token")
+    if isinstance(raw_token, str):
+        raw_token = raw_token.strip()
+        if raw_token.startswith("${") and raw_token.endswith("}"):
+            return _private_env_value(profile_env, validate_token_env(raw_token[2:-1].strip()))
+        if raw_token.startswith("$") and len(raw_token) > 1 and raw_token[1:].isidentifier():
+            return _private_env_value(profile_env, validate_token_env(raw_token[1:]))
+        if raw_token:
+            return raw_token
+
+    return _private_env_value(profile_env, profile_token_env(name))
+
+
+def resolve_profile_token_source(profile_env: Path, token_env: str) -> str:
+    """Resolve exactly one profile token source for a session boundary."""
+    return _private_env_value(Path(profile_env).expanduser(), validate_token_env(token_env))
+
+
+def _profile_env_path(cfg: dict[str, Any], args: Any = None) -> Path:
+    value = getattr(args, "profile_env", None) if args is not None else None
+    if value is None:
+        value = cfg.get("profile_env")
+    return Path(value).expanduser() if value else DEFAULT_PROFILE_ENV
+
+
+def load_relay_profiles(cfg: dict[str, Any], args: Any = None) -> list[RelayProfile]:
+    """Resolve laptop relay profiles without importing a user-interface layer."""
+    if not isinstance(cfg, dict):
+        raise ValueError("config must contain a mapping of settings")
+
+    entries = _profile_entries(cfg)
+    profile_env = _profile_env_path(cfg, args)
+    if entries:
+        fallback_url = _cfg_str(cfg, "url", DEFAULT_URL) or DEFAULT_URL
+        fallback_client_id = _cfg_str(cfg, "client_id", "amanda-laptop") or "amanda-laptop"
+        fallback_device_id = _cfg_str(cfg, "device_id", default_device_id()) or default_device_id()
+        fallback_model = _cfg_str(cfg, "model")
+        profiles: list[RelayProfile] = []
+        seen: set[str] = set()
+        for key, entry in entries:
+            name = validate_profile_name(str(entry.get("name") or key))
+            if name in seen:
+                raise ValueError(f"duplicate relay profile: {name}")
+            seen.add(name)
+            token = _resolve_relay_profile_token(entry, name, profile_env)
+            model = entry.get("model") or fallback_model
+            profiles.append(
+                RelayProfile(
+                    name=name,
+                    display_name=str(entry.get("display_name") or name.capitalize()).strip(),
+                    url=str(entry.get("url") or fallback_url).strip(),
+                    token=token,
+                    token_env=_profile_token_source(entry, name),
+                    client_id=str(entry.get("client_id") or f"{name}-relay").strip(),
+                    device_id=str(entry.get("device_id") or fallback_device_id).strip(),
+                    session_id=str(entry.get("session_id") or f"{name}-session").strip(),
+                    model=str(model).strip() if model is not None else None,
+                )
+            )
+        return profiles
+
+    # A legacy root config is a real, usable one-profile catalog. It becomes
+    # persistent only when a profile command writes the config.
+    fallback_url = (
+        getattr(args, "url", None) if args is not None else None
+    ) or _cfg_str(cfg, "url", DEFAULT_URL) or DEFAULT_URL
+    fallback_client_id = (
+        getattr(args, "client_id", None) if args is not None else None
+    ) or _cfg_str(cfg, "client_id", "amanda-laptop") or "amanda-laptop"
+    fallback_device_id = (
+        getattr(args, "device_id", None) if args is not None else None
+    ) or _cfg_str(cfg, "device_id", default_device_id()) or default_device_id()
+    fallback_session_id = (
+        getattr(args, "session_id", None) if args is not None else None
+    ) or _cfg_str(cfg, "session_id", "hybrid-tui") or "hybrid-tui"
+    explicit_token = getattr(args, "token", None) if args is not None else None
+    raw_token = explicit_token or cfg.get("token")
+    token = _resolve_token(raw_token, profile_env)
+    display_name = (
+        getattr(args, "display_name", None) if args is not None else None
+    ) or _cfg_str(cfg, "display_name", "Amanda streaming TUI") or "Amanda streaming TUI"
+    model = (
+        getattr(args, "model", None) if args is not None else None
+    ) or _cfg_str(cfg, "model")
+    return [
+        RelayProfile(
+            name="default",
+            display_name=display_name,
+            url=str(fallback_url).strip(),
+            token=token,
+            token_env="VOICE_SESSION_TOKEN",
+            client_id=str(fallback_client_id).strip(),
+            device_id=str(fallback_device_id).strip(),
+            session_id=str(fallback_session_id).strip(),
+            model=str(model).strip() if model is not None else None,
+            legacy=True,
+        )
+    ]
+
+
+def _write_private_env_lines(path: Path, lines: list[str]) -> None:
+    path = Path(path).expanduser()
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    fd, temporary = tempfile.mkstemp(dir=path.parent, prefix=".env.", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.writelines(lines)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+        os.chmod(path, 0o600)
+    except BaseException:
+        try:
+            os.unlink(temporary)
+        except OSError:
+            pass
+        raise
+
+
+def write_private_env_value(path: Path, key: str, value: str) -> None:
+    """Replace one private env value without exposing it in YAML."""
+    key = validate_token_env(key)
+    if not value or any(char in value for char in "\r\n"):
+        raise ValueError("bearer token must be a non-empty single line")
+    path = Path(path).expanduser()
+    lines = path.read_text(encoding="utf-8").splitlines(keepends=True) if path.exists() else []
+    replacement = f"{key}={json.dumps(value)}\n"
+    for index, line in enumerate(lines):
+        stripped = line.lstrip()
+        if stripped.startswith(f"{key}=") or stripped.startswith(f"export {key}="):
+            lines[index] = replacement
+            break
+    else:
+        if lines and not lines[-1].endswith("\n"):
+            lines[-1] += "\n"
+        lines.append(replacement)
+    _write_private_env_lines(path, lines)
+
+
+def _remove_private_env_value(path: Path, key: str) -> None:
+    key = validate_token_env(key)
+    path = Path(path).expanduser()
+    if not path.exists():
+        return
+    lines = path.read_text(encoding="utf-8").splitlines(keepends=True)
+    kept = [
+        line
+        for line in lines
+        if not line.lstrip().startswith((f"{key}=", f"export {key}="))
+    ]
+    if kept != lines:
+        _write_private_env_lines(path, kept)
+
+
+def _write_config_document(path: Path, document: dict[str, Any]) -> None:
+    import yaml
+
+    path = Path(path).expanduser()
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    content = yaml.safe_dump(document, sort_keys=False)
+    fd, temporary = tempfile.mkstemp(dir=path.parent, prefix=".config.", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(content)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+        os.chmod(path, 0o600)
+    except BaseException:
+        try:
+            os.unlink(temporary)
+        except OSError:
+            pass
+        raise
+
+
+def _mutable_config(path: Path) -> dict[str, Any]:
+    document = load_config_file(path)
+    return dict(document)
+
+
+def _legacy_config_has_connection(document: dict[str, Any]) -> bool:
+    return any(
+        key in document
+        for key in (
+            "url",
+            "token",
+            "profile_env",
+            "client_id",
+            "device_id",
+            "session_id",
+            "display_name",
+            "model",
+            "wake_phrase",
+            "wake_phrases",
+        )
+    )
+
+
+def _migrate_document(document: dict[str, Any], profile_env: Path | None = None) -> RelayProfile:
+    """Convert legacy root connection keys in a mutable document."""
+    env_path = Path(profile_env or _profile_env_path(document)).expanduser()
+    raw_token = document.get("token")
+    token_data: dict[str, Any]
+    if raw_token:
+        token_data = {"token": raw_token, "name": "default"}
+    else:
+        token_data = {"token_env": "VOICE_SESSION_TOKEN", "name": "default"}
+    token = resolve_profile_token(token_data, env_path)
+    if token:
+        write_private_env_value(env_path, "VOICE_SESSION_TOKEN", token)
+
+    entry: dict[str, Any] = {
+        "display_name": str(document.get("display_name") or "Amanda streaming TUI"),
+        "url": str(document.get("url") or DEFAULT_URL),
+        "token_env": "VOICE_SESSION_TOKEN",
+        "client_id": str(document.get("client_id") or "amanda-laptop"),
+        "device_id": str(document.get("device_id") or default_device_id()),
+        "session_id": str(document.get("session_id") or "hybrid-tui"),
+    }
+    for key in ("model", "wake_phrase", "wake_phrases"):
+        if key in document:
+            entry[key] = document[key]
+
+    document.pop("token", None)
+    document["profiles"] = {"default": entry}
+    document["active_profile"] = "default"
+    profiles = load_relay_profiles(document, types.SimpleNamespace(profile_env=env_path))
+    return profiles[0]
+
+
+def migrate_legacy_profile_config(config_path: Path) -> RelayProfile:
+    """Persist the legacy root connection as the private-token default profile."""
+    path = Path(config_path).expanduser()
+    document = _mutable_config(path)
+    if _profile_entries(document):
+        profiles = load_relay_profiles(document)
+        return profiles[0]
+    profile = _migrate_document(document)
+    _write_config_document(path, document)
+    return profile
+
+
+def _normalized_profile_document(
+    document: dict[str, Any],
+    config_path: Path,
+    *,
+    profile_env: Path | None = None,
+) -> tuple[dict[str, Any], dict[str, dict[str, Any]], Path]:
+    """Prepare a document and mapping for a profile mutation."""
+    entries = _profile_entries(document)
+    if not entries and _legacy_config_has_connection(document):
+        _migrate_document(document, profile_env=profile_env)
+        entries = _profile_entries(document)
+    elif not entries:
+        document["profiles"] = {}
+    env_path = Path(
+        profile_env
+        or document.get("profile_env")
+        or DEFAULT_PROFILE_ENV
+    ).expanduser()
+    if profile_env is not None:
+        document["profile_env"] = str(env_path)
+    profiles: dict[str, dict[str, Any]] = {}
+    for key, entry in entries:
+        name = validate_profile_name(str(entry.get("name") or key))
+        if name in profiles:
+            raise ValueError(f"duplicate relay profile: {name}")
+        profiles[name] = dict(entry)
+        profiles[name].pop("name", None)
+    document["profiles"] = profiles
+    return document, profiles, env_path
+
+
+def save_relay_profile(
+    config_path: Path,
+    *,
+    name: str,
+    display_name: str,
+    url: str,
+    token: str | None,
+    client_id: str,
+    device_id: str,
+    session_id: str,
+    model: str | None = None,
+    token_env: str | None = None,
+    profile_env: Path | None = None,
+) -> RelayProfile:
+    """Create or update one profile, keeping its bearer token private."""
+    canonical = validate_profile_name(name)
+    path = Path(config_path).expanduser()
+    document = _mutable_config(path)
+    document, profiles, env_path = _normalized_profile_document(
+        document,
+        path,
+        profile_env=profile_env,
+    )
+    old_entry = profiles.get(canonical, {})
+    old_source = _profile_token_source(old_entry, canonical) if old_entry else None
+    old_token = (
+        _resolve_relay_profile_token(old_entry, canonical, env_path)
+        if old_entry
+        else ""
+    )
+    source = validate_token_env(token_env) if token_env else (old_source or profile_token_env(canonical))
+    if token and token.strip():
+        write_private_env_value(env_path, source, token.strip())
+    elif old_entry and old_token and source != old_source:
+        # Changing the reference while retaining the old secret must not leave
+        # the newly selected profile disconnected by accident.
+        write_private_env_value(env_path, source, old_token)
+    elif old_entry and "token" in old_entry and old_token:
+        # HOME-13 tolerated a literal token for backwards compatibility. Any
+        # profile edit is the opportunity to remove that leak from YAML.
+        write_private_env_value(env_path, source, old_token)
+
+    entry = dict(old_entry)
+    entry.update(
+        {
+            "display_name": str(display_name).strip(),
+            "url": str(url).strip(),
+            "token_env": source,
+            "client_id": str(client_id).strip(),
+            "device_id": str(device_id).strip(),
+            "session_id": str(session_id).strip(),
+        }
+    )
+    if model is not None and str(model).strip():
+        entry["model"] = str(model).strip()
+    elif not old_entry:
+        entry.pop("model", None)
+    entry.pop("token", None)
+    profiles[canonical] = entry
+    document["profiles"] = profiles
+    active = str(document.get("active_profile") or "").strip().lower()
+    if not active or active not in profiles:
+        document["active_profile"] = canonical
+    _write_config_document(path, document)
+    resolved = load_relay_profiles(document, types.SimpleNamespace(profile_env=env_path))
+    return next(profile for profile in resolved if profile.name == canonical)
+
+
+def select_relay_profile(config_path: Path, name: str) -> RelayProfile:
+    """Persist the active profile selection and return its resolved profile."""
+    canonical = validate_profile_name(name)
+    path = Path(config_path).expanduser()
+    document = _mutable_config(path)
+    document, profiles, env_path = _normalized_profile_document(document, path)
+    if canonical not in profiles:
+        raise ValueError(f"unknown relay profile: {canonical}")
+    document["active_profile"] = canonical
+    _write_config_document(path, document)
+    resolved = load_relay_profiles(document, types.SimpleNamespace(profile_env=env_path))
+    return next(profile for profile in resolved if profile.name == canonical)
+
+
+def delete_relay_profile(config_path: Path, name: str) -> None:
+    """Delete a profile and its private token when no profile shares it."""
+    canonical = validate_profile_name(name)
+    path = Path(config_path).expanduser()
+    document = _mutable_config(path)
+    document, profiles, env_path = _normalized_profile_document(document, path)
+    if canonical not in profiles:
+        raise ValueError(f"unknown relay profile: {canonical}")
+    if len(profiles) <= 1:
+        raise ValueError("cannot delete the last relay profile")
+    removed = profiles.pop(canonical)
+    source = _profile_token_source(removed, canonical)
+    shared_sources = {
+        _profile_token_source(entry, other_name)
+        for other_name, entry in profiles.items()
+    }
+    document["profiles"] = profiles
+    if str(document.get("active_profile") or "").strip().lower() == canonical:
+        document["active_profile"] = next(iter(profiles))
+    _write_config_document(path, document)
+    if source not in shared_sources:
+        _remove_private_env_value(env_path, source)
 
 
 def _parse_wake_phrases(raw: Any) -> tuple[str, ...]:
@@ -385,6 +883,10 @@ def make_profile_args(base_args: Any, profile: HouseholdProfile) -> Any:
         "session_id": profile.session_id,
         "display_name": profile.display_name,
         "model": profile.model or data.get("model"),
+        "profile_name": profile.name,
+        "profile_token_env": getattr(profile, "token_env", None),
+        "profile_legacy": getattr(profile, "legacy", False),
+        "profiles_configured": not getattr(profile, "legacy", False),
     })
     return argparse.Namespace(**data)
 
@@ -409,14 +911,64 @@ def _connection_kwargs(connect: Any, token: str) -> dict[str, Any]:
     return {header_name: headers, "max_size": 256 * 1024}
 
 
+def _option_value(argv: list[str], option: str) -> str | None:
+    """Read one simple option before argparse has been built."""
+    for index, item in enumerate(argv):
+        if item == option and index + 1 < len(argv):
+            return argv[index + 1]
+        if item.startswith(option + "="):
+            return item.split("=", 1)[1]
+    return None
+
+
+def _profile_selection(argv: list[str], cfg: dict[str, Any]) -> str | None:
+    explicit = _option_value(argv, "--profile")
+    if explicit:
+        return explicit.strip().lower()
+    from_environment = os.getenv("VOICE_SESSION_PROFILE", "").strip()
+    if from_environment:
+        return from_environment.lower()
+    configured = cfg.get("active_profile")
+    if configured:
+        return str(configured).strip().lower()
+    entries = _profile_entries(cfg)
+    if entries:
+        return str(entries[0][1].get("name") or entries[0][0]).strip().lower()
+    return "default"
+
+
 def build_arg_parser(argv: Optional[list[str]] = None) -> argparse.ArgumentParser:
     """Build the CLI parser, layering defaults as CLI flag > env var > YAML config > built-in.
 
     ``argv`` only affects finding ``--config`` before the full parser exists;
     the returned parser still needs ``parse_args(argv)`` called on it as usual.
     """
-    config_path = config_path_from_argv(argv)
+    raw_argv = list(sys.argv[1:] if argv is None else argv)
+    config_path = config_path_from_argv(raw_argv)
     cfg = load_config_file(config_path)
+
+    profile_env_override = _option_value(raw_argv, "--profile-env")
+    profile_args = types.SimpleNamespace(
+        profile_env=Path(profile_env_override).expanduser()
+        if profile_env_override
+        else None
+    )
+    try:
+        relay_profiles = load_relay_profiles(cfg, profile_args)
+    except ValueError as exc:
+        raise SystemExit(f"error: invalid relay profile configuration: {exc}") from exc
+    configured_profile_names = tuple(profile.name for profile in relay_profiles)
+    selected_name = _profile_selection(raw_argv, cfg) or "default"
+    try:
+        selected_profile = next(
+            profile for profile in relay_profiles if profile.name == selected_name
+        )
+    except StopIteration as exc:
+        available = ", ".join(configured_profile_names) or "none"
+        raise SystemExit(
+            f"error: unknown relay profile {selected_name!r}; available: {available}"
+        ) from exc
+    profiles_configured = bool(_profile_entries(cfg))
 
     parser = argparse.ArgumentParser(description="Hermes streaming TUI")
     parser.add_argument(
@@ -426,26 +978,49 @@ def build_arg_parser(argv: Optional[list[str]] = None) -> argparse.ArgumentParse
         help=f"YAML config file for defaults (default: {DEFAULT_CONFIG_PATH})",
     )
     parser.add_argument(
-        "--url", default=os.getenv("HERMES_VOICE_SESSION_URL", _cfg_str(cfg, "url", DEFAULT_URL))
+        "--profile",
+        default=selected_profile.name,
+        choices=configured_profile_names if profiles_configured else None,
+        help=(
+            "named relay profile to use (default: active_profile in the config; "
+            "also accepts VOICE_SESSION_PROFILE)"
+        ),
+    )
+    parser.set_defaults(
+        profile_name=selected_profile.name,
+        profile_token_env=selected_profile.token_env,
+        profile_legacy=selected_profile.legacy,
+        profiles_configured=profiles_configured,
+        profile_names=configured_profile_names,
+    )
+    selected_url = selected_profile.url
+    selected_client_id = selected_profile.client_id
+    selected_device_id = selected_profile.device_id
+    selected_session_id = selected_profile.session_id
+    selected_display_name = selected_profile.display_name
+    selected_model = selected_profile.model
+    selected_token = selected_profile.token
+    parser.add_argument(
+        "--url", default=os.getenv("HERMES_VOICE_SESSION_URL", selected_url)
     )
     parser.add_argument(
         "--token",
-        default=_cfg_str(cfg, "token"),
+        default=_cfg_str(cfg, "token") if selected_profile.legacy else selected_token,
         help="Bearer token; prefer VOICE_SESSION_TOKEN or the profile .env",
     )
     parser.add_argument("--profile-env", type=Path, default=_cfg_path(cfg, "profile_env", DEFAULT_PROFILE_ENV))
     parser.add_argument(
         "--client-id",
-        default=os.getenv("VOICE_SESSION_CLIENT_ID", _cfg_str(cfg, "client_id", "amanda-laptop")),
+        default=os.getenv("VOICE_SESSION_CLIENT_ID", selected_client_id),
     )
     parser.add_argument(
         "--device-id",
-        default=os.getenv("VOICE_SESSION_DEVICE_ID", _cfg_str(cfg, "device_id", default_device_id())),
+        default=os.getenv("VOICE_SESSION_DEVICE_ID", selected_device_id),
     )
     parser.add_argument(
-        "--session-id", default=os.getenv("VOICE_SESSION_ID", _cfg_str(cfg, "session_id", "hybrid-tui"))
+        "--session-id", default=os.getenv("VOICE_SESSION_ID", selected_session_id)
     )
-    parser.add_argument("--display-name", default=_cfg_str(cfg, "display_name", "Amanda streaming TUI"))
+    parser.add_argument("--display-name", default=selected_display_name)
     parser.add_argument(
         "--no-play",
         action="store_true",
@@ -607,7 +1182,7 @@ def build_arg_parser(argv: Optional[list[str]] = None) -> argparse.ArgumentParse
     )
     parser.add_argument(
         "--model",
-        default=os.getenv("VOICE_SESSION_MODEL") or _cfg_str(cfg, "model"),
+        default=os.getenv("VOICE_SESSION_MODEL") or selected_model,
         help="model shown as the session's active model (relay-confirmed changes are not yet supported)",
     )
     parser.add_argument(
@@ -681,6 +1256,7 @@ __all__ = [
     "LEGACY_PROFILE_ENV",
     "DEFAULT_URL",
     "HouseholdProfile",
+    "RelayProfile",
     "_connection_kwargs",
     "_env_bool",
     "_env_choice",
@@ -695,6 +1271,16 @@ __all__ = [
     "ensure_default_config_file",
     "load_config_file",
     "load_household_profiles",
+    "load_relay_profiles",
     "make_profile_args",
+    "delete_relay_profile",
+    "migrate_legacy_profile_config",
+    "profile_token_env",
     "resolve_profile_token",
+    "resolve_profile_token_source",
+    "save_relay_profile",
+    "select_relay_profile",
+    "validate_profile_name",
+    "validate_token_env",
+    "write_private_env_value",
 ]

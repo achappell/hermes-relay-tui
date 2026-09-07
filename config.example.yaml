@@ -47,6 +47,7 @@
 
 # --- session/config state -------------------------------------------------
 # model: null                # shown in /status; not yet relay-confirmed (RELAY-02)
+# active_profile: default    # selected named profile; use `hermes-relay profile select`
 # history_path: null         # default: scoped per --url host under
                               # ~/.hermes-relay-tui/history/
 
@@ -76,7 +77,7 @@
 #     display_name: "Amanda"
 #     wake_phrase: "hey missy"
 #     url: ws://localhost:8792/voice-session
-#     token: "${VOICE_SESSION_TOKEN_AMANDA}" # or token_env: VOICE_SESSION_TOKEN_AMANDA
+#     token_env: VOICE_SESSION_TOKEN_AMANDA
 #     client_id: amanda-home
 #     session_id: amanda-kiosk
 #
@@ -84,6 +85,10 @@
 #     display_name: "Jensen"
 #     wake_phrase: "hey skippy"
 #     url: ws://localhost:8793/voice-session
-#     token: "${VOICE_SESSION_TOKEN_JENSEN}"
+#     token_env: VOICE_SESSION_TOKEN_JENSEN
 #     client_id: jensen-home
 #     session_id: jensen-kiosk
+
+# The terminal client also uses this same mapping without wake phrases. Its
+# profile commands write token_env references and keep the bearer values in the
+# private profile_env file; do not add a literal token to YAML.

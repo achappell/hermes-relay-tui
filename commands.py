@@ -30,6 +30,12 @@ COMMAND_REGISTRY: tuple[Command, ...] = (
         args_hint="[list|new|switch|resume|info]",
         subcommands=("list", "new", "switch", "resume", "info"),
     ),
+    Command(
+        "profile",
+        "Manage or switch local relay profiles",
+        args_hint="[list|select|create|edit|delete]",
+        subcommands=("list", "select", "use", "create", "edit", "delete"),
+    ),
     Command("sessions", "List and select Hermes sessions", args_hint="[search]"),
     Command("resume", "Resume a Hermes session", args_hint="[session-id]"),
     Command("queue", "Queue a prompt for the next turn", args_hint="<prompt>"),

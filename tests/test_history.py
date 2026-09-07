@@ -1,5 +1,10 @@
 import history as history_module
-from history import PromptHistory, history_path_for_url
+from history import (
+    PromptHistory,
+    artifact_path_for_profile,
+    history_path_for_profile,
+    history_path_for_url,
+)
 
 
 def test_new_history_file_starts_empty(tmp_path):
@@ -56,6 +61,36 @@ def test_history_path_for_url_differs_between_hosts():
 def test_history_path_for_url_falls_back_without_a_host():
     assert history_path_for_url(None) == history_module.DEFAULT_HISTORY_PATH
     assert history_path_for_url("not a url") == history_module.DEFAULT_HISTORY_PATH
+
+
+def test_profile_history_is_namespaced_under_the_profile_name():
+    amanda = history_path_for_profile(
+        "wss://relay.example:8792/voice-session", "amanda"
+    )
+    jensen = history_path_for_profile(
+        "wss://relay.example:8792/voice-session", "jensen"
+    )
+
+    assert amanda == history_module.DEFAULT_HISTORY_DIR / "profiles" / "amanda" / "relay.example_8792.jsonl"
+    assert jensen != amanda
+
+
+def test_legacy_profile_keeps_existing_history_path():
+    configured = history_module.DEFAULT_HISTORY_DIR / "legacy.jsonl"
+    assert history_path_for_profile(
+        "wss://relay.example/voice-session",
+        "default",
+        configured_path=configured,
+        legacy=True,
+    ) == configured
+
+
+def test_profile_artifact_path_namespaces_an_explicit_path():
+    path = artifact_path_for_profile(
+        history_module.DEFAULT_APP_DIR / "transcripts" / "reply.wav",
+        "amanda",
+    )
+    assert path == history_module.DEFAULT_APP_DIR / "transcripts" / "profiles" / "amanda" / "reply.wav"
 
 
 def test_history_caps_entry_count(tmp_path):

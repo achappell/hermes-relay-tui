@@ -42,6 +42,38 @@ def history_path_for_url(url: Optional[str]) -> Path:
     return DEFAULT_HISTORY_DIR / f"{slug}.jsonl"
 
 
+def _profile_slug(name: str) -> str:
+    """Keep profile-derived paths inside the chosen artifact directory."""
+    slug = re.sub(r"[^A-Za-z0-9_-]+", "_", str(name or "default").strip().lower())
+    return slug or "default"
+
+
+def artifact_path_for_profile(
+    base: Optional[Path],
+    profile_name: str,
+    *,
+    legacy: bool = False,
+) -> Optional[Path]:
+    """Namespace one local artifact path for a named profile."""
+    if base is None or legacy:
+        return base
+    path = Path(base).expanduser()
+    return path.parent / "profiles" / _profile_slug(profile_name) / path.name
+
+
+def history_path_for_profile(
+    url: Optional[str],
+    profile_name: str,
+    *,
+    configured_path: Optional[Path] = None,
+    legacy: bool = False,
+) -> Path:
+    """Return prompt history isolated from every other named profile."""
+    base = Path(configured_path).expanduser() if configured_path is not None else history_path_for_url(url)
+    scoped = artifact_path_for_profile(base, profile_name, legacy=legacy)
+    return Path(scoped) if scoped is not None else base
+
+
 class PromptHistory:
     """Ordered prompt history backed by a JSONL file, oldest first."""
 
@@ -93,5 +125,7 @@ __all__ = [
     "DEFAULT_HISTORY_PATH",
     "MAX_HISTORY_ENTRIES",
     "PromptHistory",
+    "artifact_path_for_profile",
+    "history_path_for_profile",
     "history_path_for_url",
 ]
