@@ -18,6 +18,7 @@ import asyncio
 import copy
 import inspect
 import math
+import os
 import sys
 import time
 from datetime import datetime
@@ -1638,11 +1639,26 @@ class HermesStreamingApp(App):
             event.composer.load_text(path_candidates[0])
             event.composer.move_cursor((0, len(event.composer.text)))
             return
+        elif len(path_candidates) > 1:
+            common = os.path.commonprefix(path_candidates)
+            if len(common) > len(event.text):
+                event.composer.load_text(common)
+                event.composer.move_cursor((0, len(event.composer.text)))
+                return
+
         candidates = complete_slash_command(event.text)
-        if len(candidates) != 1:
-            return
-        event.composer.load_text(f"{candidates[0]} ")
-        event.composer.move_cursor((0, len(event.composer.text)))
+        if len(candidates) == 1:
+            event.composer.load_text(f"{candidates[0]} ")
+            event.composer.move_cursor((0, len(event.composer.text)))
+        elif len(candidates) > 1:
+            common = os.path.commonprefix(candidates)
+            if len(common) > len(event.text):
+                event.composer.load_text(common)
+                event.composer.move_cursor((0, len(event.composer.text)))
+            elif any(c.lower() == event.text.lower() for c in candidates):
+                exact = next(c for c in candidates if c.lower() == event.text.lower())
+                event.composer.load_text(f"{exact} ")
+                event.composer.move_cursor((0, len(event.composer.text)))
 
     def on_text_area_changed(self, event: TextArea.Changed) -> None:
         if event.text_area.id == "composer":

@@ -176,3 +176,38 @@ async def test_session_picker_jk_keys_on_option_list():
         await pilot.press("k")
         await pilot.pause()
         assert opt_list.highlighted == 1
+
+
+async def test_session_picker_tab_autocompletes_filter():
+    sessions = [
+        {"session_id": "s-alpha-research", "title": "Alpha Research"},
+        {"session_id": "s-beta-analysis", "title": "Beta Analysis"},
+    ]
+    modal = SessionPickerModal(sessions)
+    app = DummyApp()
+    chosen = []
+    async with app.run_test() as pilot:
+        app.push_screen(modal, callback=lambda res: chosen.append(res))
+        await pilot.pause()
+
+        # Type partial prefix
+        await pilot.press("b", "e")
+        await pilot.pause()
+
+        inp = modal.query_one("#session-picker-filter", Input)
+        assert inp.value == "be"
+
+        # Tab autocompletes the input value to the highlighted session_id
+        await pilot.press("tab")
+        await pilot.pause()
+
+        assert inp.value == "s-beta-analysis"
+        assert len(modal.filtered_sessions) == 1
+
+        # Tab again submits the matching session
+        await pilot.press("tab")
+        await pilot.pause()
+
+        assert chosen == ["s-beta-analysis"]
+        assert len(app.screen_stack) == 1
+

@@ -804,6 +804,27 @@ async def test_tab_completes_a_unique_slash_command_and_keeps_draft_local():
         assert session.sent_turns == []
 
 
+async def test_tab_completes_common_prefix_for_multiple_candidates():
+    session = FakeSession()
+    app = HermesStreamingApp(args=make_args(), session_factory=lambda: session)
+    async with app.run_test() as pilot:
+        composer = app.query_one("#composer", Composer)
+        composer.text = "/ses"
+        composer.move_cursor((0, len(composer.text)))
+        await pilot.press("tab")
+        await pilot.pause()
+
+        # Expands /ses to common prefix /session
+        assert composer.text == "/session"
+        assert session.sent_turns == []
+
+        # Tab again on exact command completes trailing space
+        await pilot.press("tab")
+        await pilot.pause()
+        assert composer.text == "/session "
+
+
+
 async def test_slash_types_inline_without_opening_an_overlay():
     session = FakeSession()
     app = HermesStreamingApp(args=make_args(), session_factory=lambda: session)

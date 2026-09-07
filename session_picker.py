@@ -109,7 +109,7 @@ class SessionPickerModal(ModalScreen[Optional[str]]):
             yield OptionList(id="session-picker-list")
             with Horizontal(id="session-picker-footer"):
                 yield Static(
-                    "[↑/↓/j/k] Navigate  [Enter] Resume  [Esc] Cancel",
+                    "[↑/↓/j/k] Navigate  [Tab] Autocomplete  [Enter] Resume  [Esc] Cancel",
                     id="session-picker-help",
                 )
                 yield Button("Cancel", id="session-picker-cancel")
@@ -121,6 +121,24 @@ class SessionPickerModal(ModalScreen[Optional[str]]):
     def on_key(self, event: events.Key) -> None:
         option_list = self.query_one("#session-picker-list", OptionList)
         filter_input = self.query_one("#session-picker-filter", Input)
+
+        if event.key == "tab":
+            if (
+                self.filtered_sessions
+                and option_list.highlighted is not None
+                and 0 <= option_list.highlighted < len(self.filtered_sessions)
+            ):
+                s = self.filtered_sessions[option_list.highlighted]
+                sid = str(s.get("session_id") or s.get("id") or "")
+                if filter_input.value != sid:
+                    filter_input.value = sid
+                    filter_input.cursor_position = len(sid)
+                    self.apply_filter(sid)
+                else:
+                    self.dismiss(sid)
+                event.stop()
+                event.prevent_default()
+                return
 
         if filter_input.has_focus:
             if event.key == "down":
