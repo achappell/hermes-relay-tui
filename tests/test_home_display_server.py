@@ -91,6 +91,20 @@ def test_server_rejects_non_loopback_host(tmp_path, host):
 
 
 @pytest.mark.asyncio
+async def test_server_allows_explicit_remote_bind_for_lan_display(tmp_path):
+    (tmp_path / "index.html").write_text("home", encoding="utf-8")
+    server = DisplayServer(
+        DisplayStatePublisher(), tmp_path, host="0.0.0.0", allow_remote=True
+    )
+    info = await server.start()
+    try:
+        async with connect(f"ws://127.0.0.1:{info.port}/state") as socket:
+            assert json.loads(await socket.recv())["state"] == "idle"
+    finally:
+        await server.close()
+
+
+@pytest.mark.asyncio
 async def test_server_rejects_websocket_upgrade_for_non_state_path(tmp_path):
     (tmp_path / "index.html").write_text("home", encoding="utf-8")
     (tmp_path / "app.js").write_text("console.log('home')", encoding="utf-8")

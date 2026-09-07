@@ -1115,7 +1115,9 @@ class Appliance:
             self._server = DisplayServer(
                 self.publisher,
                 Path(__file__).with_name("static"),
+                host=getattr(self.args, "display_host", "127.0.0.1"),
                 port=getattr(self.args, "display_port", 0),
+                allow_remote=getattr(self.args, "display_remote", False),
                 on_action=self._on_action,
             )
         self._session.use_shared_recorder(self._recorder)
@@ -1373,10 +1375,20 @@ class Appliance:
 def build_arg_parser(argv: list[str] | None = None) -> argparse.ArgumentParser:
     parser = config.build_arg_parser(argv)
     parser.add_argument(
+        "--display-host",
+        default="127.0.0.1",
+        help="display bind address; keep loopback unless --display-remote is set",
+    )
+    parser.add_argument(
         "--display-port",
         type=int,
         default=0,
-        help="loopback port for the display; 0 selects an available port",
+        help="display port; 0 selects an available port",
+    )
+    parser.add_argument(
+        "--display-remote",
+        action="store_true",
+        help="allow the display server to bind beyond loopback for a LAN appliance",
     )
 
     # Only substitute the hands-free default when nobody has said otherwise.
