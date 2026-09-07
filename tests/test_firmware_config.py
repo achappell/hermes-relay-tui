@@ -155,17 +155,6 @@ def test_sdkconfig_and_platformio_config():
     assert (FIRMWARE_DIR / "boards" / "waveshare-esp32-s3-touch-lcd-7b.json").exists()
 
 
-def test_simulator_html_content():
-    simulator_path = FIRMWARE_DIR / "simulator.py"
-    assert simulator_path.exists()
-    content = simulator_path.read_text()
-
-    assert "1024x600" in content or "1024×600" in content
-    assert "GT911" in content
-    assert "btn-tl" in content and "btn-tr" in content and "btn-bl" in content and "btn-br" in content
-    assert "touch-pointer" in content
-
-
 def test_native_sdl_simulator_files():
     sim_dir = FIRMWARE_DIR / "simulator"
     assert (sim_dir / "Makefile").exists()

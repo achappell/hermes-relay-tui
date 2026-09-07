@@ -773,7 +773,6 @@ The repository includes firmware and desktop simulators for dedicated household 
 
 - **Physical Hardware Firmware (`firmware/esp32-s3-touch-lcd-7/`):** ESP-IDF & PlatformIO build targets driving the 1024×600 RGB LCD, GT911 capacitive touch controller, 8MB Octal PSRAM, and dual I2S audio pipeline.
 - **Native macOS Simulator (`./scripts/simulate_native.sh`):** Compiles the exact C / LVGL UI codebase natively with Clang and SDL2 for desktop interaction and testing without physical hardware.
-- **Interactive Browser Canvas (`./scripts/simulate_esp32_display.py`):** Lightweight web simulator previewing the 1024×600 viewport at `http://localhost:8794`.
 
 ## Project layout
 
@@ -789,4 +788,3 @@ home_display/ Household appliance server, state channel, and Web kiosk
 tests/        Automated tests
 docs/         Design and implementation notes
 ```
-
