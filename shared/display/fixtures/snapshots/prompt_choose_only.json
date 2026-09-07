@@ -1,0 +1,24 @@
+{
+  "type": "snapshot",
+  "schema": 1,
+  "sequence": 11,
+  "state": "prompt",
+  "response_text": "",
+  "status_text": "Choose an option",
+  "media": null,
+  "prompt": {
+    "kind": "approval",
+    "title": "Allow this action?",
+    "body": "Choose whether to continue.",
+    "options": [
+      { "id": "yes", "label": "Allow" },
+      { "id": "no", "label": "Deny" }
+    ],
+    "action_id": "approval-1",
+    "timeout_seconds": null
+  },
+  "capabilities": {
+    "actions": ["prompt.choose"],
+    "features": []
+  }
+}
