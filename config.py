@@ -925,6 +925,15 @@ def _profile_selection(argv: list[str], cfg: dict[str, Any]) -> str | None:
     explicit = _option_value(argv, "--profile")
     if explicit:
         return explicit.strip().lower()
+    if argv and not argv[0].startswith("-") and argv[0] not in {
+        "setup",
+        "install",
+        "profile",
+    }:
+        # A bare first word is the concise launch form: `hermes-relay amanda`.
+        # The reserved subcommands are dispatched by app.main before this
+        # parser runs and must never be mistaken for profile names here.
+        return argv[0].strip().lower()
     from_environment = os.getenv("VOICE_SESSION_PROFILE", "").strip()
     if from_environment:
         return from_environment.lower()
@@ -985,6 +994,11 @@ def build_arg_parser(argv: Optional[list[str]] = None) -> argparse.ArgumentParse
             "named relay profile to use (default: active_profile in the config; "
             "also accepts VOICE_SESSION_PROFILE)"
         ),
+    )
+    parser.add_argument(
+        "profile_shorthand",
+        nargs="?",
+        help=argparse.SUPPRESS,
     )
     parser.set_defaults(
         profile_name=selected_profile.name,

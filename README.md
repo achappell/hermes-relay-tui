@@ -278,9 +278,14 @@ The launch target comes from `--profile`, then `VOICE_SESSION_PROFILE`, then
 `active_profile` in YAML. For example:
 
 ```bash
+hermes-relay amanda
 hermes-relay --profile jensen
 VOICE_SESSION_PROFILE=jensen hermes-relay
 ```
+
+The bare first argument is a profile shorthand, so flags can follow it as in
+`hermes-relay amanda --no-play`. The `setup`, `install`, and `profile`
+subcommands remain reserved.
 
 The equivalent editable shape is:
 

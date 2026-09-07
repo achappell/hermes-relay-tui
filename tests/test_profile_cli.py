@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from pathlib import Path
+import subprocess
+import sys
 
 import yaml
 
@@ -105,3 +107,39 @@ def test_profile_cli_delete_requires_deliberate_confirmation(tmp_path):
     assert result == 2
     assert "--yes" in "\n".join(output)
     assert yaml.safe_load(config_path.read_text(encoding="utf-8"))["profiles"]
+
+
+def test_app_entrypoint_accepts_bare_profile_before_options(tmp_path):
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        yaml.safe_dump(
+            {
+                "profiles": {
+                    "amanda": {
+                        "url": "wss://amanda.example/voice-session",
+                        "client_id": "amanda-client",
+                    }
+                }
+            },
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(Path(__file__).parents[1] / "app.py"),
+            "amanda",
+            "--config",
+            str(config_path),
+            "--help",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0
+    assert "--profile" in result.stdout
+    assert "amanda" in result.stdout

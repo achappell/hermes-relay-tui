@@ -327,6 +327,42 @@ def test_parser_uses_configured_or_environment_selected_profile(tmp_path, monkey
     assert args.url == "wss://amanda.example"
 
 
+def test_parser_accepts_bare_profile_shorthand_and_flags_after_it(tmp_path):
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        yaml.safe_dump(
+            {
+                "profiles": {
+                    "amanda": {
+                        "url": "wss://amanda.example/voice-session",
+                        "client_id": "amanda-client",
+                    },
+                    "jensen": {
+                        "url": "wss://jensen.example/voice-session",
+                        "client_id": "jensen-client",
+                    },
+                }
+            },
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+
+    argv = ["amanda", "--config", str(config_path), "--no-play"]
+    args = config.build_arg_parser(argv).parse_args(argv)
+
+    assert args.profile == "amanda"
+    assert args.profile_shorthand == "amanda"
+    assert args.url == "wss://amanda.example/voice-session"
+    assert args.client_id == "amanda-client"
+    assert args.no_play is True
+
+    explicit = ["amanda", "--config", str(config_path), "--profile", "jensen"]
+    explicit_args = config.build_arg_parser(explicit).parse_args(explicit)
+    assert explicit_args.profile == "jensen"
+    assert explicit_args.url == "wss://jensen.example/voice-session"
+
+
 def test_parser_rejects_unknown_selected_profile(tmp_path):
     config_path = tmp_path / "config.yaml"
     config_path.write_text("profiles:\n  amanda:\n    url: wss://amanda.example\n", encoding="utf-8")
