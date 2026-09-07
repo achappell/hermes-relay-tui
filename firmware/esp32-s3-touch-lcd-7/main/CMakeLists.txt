@@ -1,6 +1,7 @@
 idf_component_register(
     SRCS 
         "src/main.c"
+        "src/bsp_i2c.c"
         "src/bsp_lcd.c"
         "src/bsp_touch.c"
         "src/bsp_io_expander.c"

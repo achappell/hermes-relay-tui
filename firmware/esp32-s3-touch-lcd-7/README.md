@@ -11,10 +11,10 @@ Firmware baseline and hardware bring-up for the **Waveshare ESP32-S3-Touch-LCD-7
 | **MCU** | ESP32-S3-WROOM-1-N16R8 | Dual-core Xtensa LX7 @ 240MHz, Vector Instructions |
 | **Flash** | 16MB Quad SPI (QIO) | Embedded firmware, wake models, fonts, assets |
 | **PSRAM** | 8MB Octal SPI (OPI @ 80MHz) | Double-buffered framebuffers (~2.45MB) + LVGL heap |
-| **Display** | 7.0" IPS LCD (1024×600) | 16-bit parallel RGB565 interface, 16MHz PCLK |
+| **Display** | 7.0" IPS LCD (1024×600) | 16-bit parallel RGB565 interface, 30MHz PCLK |
 | **Touch** | Goodix GT911 | 5-point capacitive multi-touch over I2C |
-| **IO Expander** | CH422G / PCA9554 | I2C expander for LCD_RST, TP_RST, LCD_BL, SD_CS |
-| **Backlight** | LEDC PWM @ 5kHz | Smooth hardware brightness scaling (0..100%) |
+| **IO Expander** | CH422G at 0x24 | Shared I2C control for LCD_RST, TP_RST, DISP, SD_CS and brightness |
+| **Backlight** | CH422G enable + PWM | Smooth hardware brightness scaling (0..97%) |
 
 ---
 
@@ -24,29 +24,31 @@ Firmware baseline and hardware bring-up for the **Waveshare ESP32-S3-Touch-LCD-7
 
 | Signal | GPIO | Description |
 |---|:---:|---|
-| `PCLK` | **GPIO 8** | Pixel clock (16 MHz) |
+| `PCLK` | **GPIO 7** | Pixel clock (30 MHz) |
 | `VSYNC` | **GPIO 3** | Vertical sync |
 | `HSYNC` | **GPIO 46** | Horizontal sync |
-| `DE` | **GPIO 9** | Data enable |
-| `R0`..`R4` | **GPIO 1, 2, 42, 41, 40** | Red data bus (5 bits) |
-| `G0`..`G5` | **GPIO 39, 0, 45, 48, 47, 21** | Green data bus (6 bits) |
-| `B0`..`B4` | **GPIO 14, 38, 18, 17, 10** | Blue data bus (5 bits) |
+| `DE` | **GPIO 5** | Data enable |
+| `R3`..`R7` | **GPIO 1, 2, 42, 41, 40** | Red data bus (5 bits) |
+| `G2`..`G7` | **GPIO 39, 0, 45, 48, 47, 21** | Green data bus (6 bits) |
+| `B3`..`B7` | **GPIO 14, 38, 18, 17, 10** | Blue data bus (5 bits) |
 
 ### 2. GT911 Touch & I2C Bus
 
 | Signal | GPIO | Description |
 |---|:---:|---|
-| `I2C SDA` | **GPIO 19** | I2C Data (with pull-up) |
-| `I2C SCL` | **GPIO 20** | I2C Clock (with pull-up) |
-| `TP_INT` | **GPIO 11** | GT911 Interrupt / Address select |
-| `TP_RST` | **GPIO 4** or Expander `EXIO1` | GT911 Hardware Reset |
+| `I2C SDA` | **GPIO 8** | I2C Data (with pull-up) |
+| `I2C SCL` | **GPIO 9** | I2C Clock (with pull-up) |
+| `TP_INT` | **GPIO 4** | GT911 interrupt / address select |
+| `TP_RST` | **CH422G EXIO1** | GT911 hardware reset |
 
 ### 3. Backlight & Power
 
 | Signal | Pin / Channel | Description |
 |---|:---:|---|
-| `LCD_BL` (PWM) | **GPIO 6** | Hardware LEDC PWM brightness |
-| `LCD_BL` (Power) | Expander `EXIO3` | Backlight power gate |
+| `DISP` (enable) | **CH422G EXIO2** | Backlight / display enable |
+| `LCD_RST` | **CH422G EXIO3** | LCD panel reset |
+| `LCD_BL` (PWM) | **CH422G PWM register** | Hardware brightness scaling |
+| `LCD_VDD_EN` | **CH422G EXIO6** | Panel voltage enable |
 
 ---
 
@@ -92,4 +94,4 @@ pio device monitor
    - Tap **TR [1023, 0]** (Top-Right): Button turns green.
    - Tap **BL [0, 599]** (Bottom-Left): Button turns green.
    - Tap **BR [1023, 599]** (Bottom-Right): Button turns green.
-4. **Benchmark & Frame Rate:** Confirm benchmark arc/slider animates smoothly at 30+ FPS without visual stutter or PSRAM bandwidth under-run artifacts.
+4. **Benchmark & Frame Rate:** Confirm benchmark arc/slider animates smoothly at 30+ FPS without visual stutter or PSRAM bandwidth under-run artifacts. The 7B timing is 30MHz PCLK with 1386×661 total timing, approximately 32.7Hz.

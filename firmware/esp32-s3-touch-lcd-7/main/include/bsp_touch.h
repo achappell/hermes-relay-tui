@@ -29,7 +29,7 @@ esp_err_t bsp_touch_init(void);
 /**
  * @brief Read touch data from the GT911 controller.
  * @param touch_data Output struct filled with touch count and points.
- * @return ESP_OK if valid data read, ESP_ERR_INVALID_STATE if no touch.
+ * @return ESP_OK if valid data read, ESP_ERR_NOT_FOUND if no touch is ready.
  */
 esp_err_t bsp_touch_read(bsp_touch_data_t *touch_data);
 

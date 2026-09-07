@@ -10,16 +10,19 @@ def test_firmware_files_exist():
     expected_files = [
         FIRMWARE_DIR / "CMakeLists.txt",
         FIRMWARE_DIR / "sdkconfig.defaults",
+        FIRMWARE_DIR / "partitions_16mb.csv",
         FIRMWARE_DIR / "platformio.ini",
         FIRMWARE_DIR / "README.md",
         FIRMWARE_DIR / "main" / "CMakeLists.txt",
         FIRMWARE_DIR / "main" / "include" / "board_config.h",
+        FIRMWARE_DIR / "main" / "include" / "bsp_i2c.h",
         FIRMWARE_DIR / "main" / "include" / "bsp_lcd.h",
         FIRMWARE_DIR / "main" / "include" / "bsp_touch.h",
         FIRMWARE_DIR / "main" / "include" / "bsp_io_expander.h",
         FIRMWARE_DIR / "main" / "include" / "ui_test.h",
         FIRMWARE_DIR / "main" / "include" / "lv_conf.h",
         FIRMWARE_DIR / "main" / "src" / "main.c",
+        FIRMWARE_DIR / "main" / "src" / "bsp_i2c.c",
         FIRMWARE_DIR / "main" / "src" / "bsp_lcd.c",
         FIRMWARE_DIR / "main" / "src" / "bsp_touch.c",
         FIRMWARE_DIR / "main" / "src" / "bsp_io_expander.c",
@@ -57,17 +60,18 @@ def test_board_config_timings_and_frame_rate():
 
     assert h_res == 1024
     assert v_res == 600
-    assert pclk >= 16_000_000
+    assert pclk == 30_000_000
 
     total_h = h_res + hpw + hbp + hfp
     total_v = v_res + vpw + vbp + vfp
     total_pixels_per_frame = total_h * total_v
 
     assert total_pixels_per_frame > (h_res * v_res)
+    assert total_h == 1386
+    assert total_v == 661
 
     fps = pclk / total_pixels_per_frame
-    # Assert refresh rate is within standard 18Hz..65Hz range for LCD panel
-    assert 18.0 <= fps <= 65.0, f"Calculated FPS {fps} out of range"
+    assert 32.0 <= fps <= 33.0, f"Calculated FPS {fps} out of range"
 
 
 def test_board_config_pin_conflicts():
@@ -81,6 +85,33 @@ def test_board_config_pin_conflicts():
     # Every mapped pin should be unique (no hardware GPIO collisions)
     assert len(used_pins) == len(set(used_pins)), f"Found duplicate GPIO pin mappings: {used_pins}"
     assert len(used_pins) >= 20, f"Expected at least 20 hardware pin definitions, got {len(used_pins)}"
+
+
+def test_waveshare_7b_pinout_matches_published_board():
+    board_config_path = FIRMWARE_DIR / "main" / "include" / "board_config.h"
+    content = board_config_path.read_text()
+
+    expected_definitions = {
+        "BOARD_LCD_PIN_PCLK": "GPIO_NUM_7",
+        "BOARD_LCD_PIN_DE": "GPIO_NUM_5",
+        "BOARD_I2C_PIN_SDA": "GPIO_NUM_8",
+        "BOARD_I2C_PIN_SCL": "GPIO_NUM_9",
+        "BOARD_TOUCH_PIN_INT": "GPIO_NUM_4",
+        "BOARD_TOUCH_PIN_RST": "GPIO_NUM_NC",
+        "BOARD_EXPANDER_CH422G_ADDR": "0x24",
+        "BOARD_EXP_PIN_TP_RST": "1",
+        "BOARD_EXP_PIN_DISP": "2",
+        "BOARD_EXP_PIN_LCD_RST": "3",
+        "BOARD_EXP_PIN_SD_CS": "4",
+        "BOARD_EXP_PIN_LCD_VDD_EN": "6",
+    }
+
+    for name, value in expected_definitions.items():
+        assert re.search(rf"#define\s+{name}\s+{re.escape(value)}\b", content), (
+            f"{name} must be {value} for the Waveshare 7B pinout"
+        )
+
+    assert "BOARD_BACKLIGHT_PIN" not in content
 
 
 def test_psram_memory_budget():
@@ -109,14 +140,19 @@ def test_sdkconfig_and_platformio_config():
     assert "CONFIG_SPIRAM=y" in sdk_content
     assert "CONFIG_SPIRAM_MODE_OCT=y" in sdk_content
     assert "CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y" in sdk_content
+    assert "CONFIG_PARTITION_TABLE_CUSTOM=y" in sdk_content
+    assert 'CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions_16mb.csv"' in sdk_content
     assert "CONFIG_LV_COLOR_DEPTH_16=y" in sdk_content
 
     pio_path = FIRMWARE_DIR / "platformio.ini"
     pio_content = pio_path.read_text()
 
     assert "esp32-s3-touch-lcd-7b" in pio_content
-    assert "esp32-s3-devkitc-1" in pio_content
+    assert "waveshare-esp32-s3-touch-lcd-7b" in pio_content
     assert "board_build.psram_type = opi" in pio_content
+    assert "board_build.partitions = partitions_16mb.csv" in pio_content
+    assert "boards_dir = boards" in pio_content
+    assert (FIRMWARE_DIR / "boards" / "waveshare-esp32-s3-touch-lcd-7b.json").exists()
 
 
 def test_simulator_html_content():
@@ -137,5 +173,3 @@ def test_native_sdl_simulator_files():
     assert (sim_dir / "CMakeLists.txt").exists()
     assert (sim_dir / "include" / "esp_timer.h").exists()
     assert (REPO_ROOT / "scripts" / "simulate_native.sh").exists()
-
-

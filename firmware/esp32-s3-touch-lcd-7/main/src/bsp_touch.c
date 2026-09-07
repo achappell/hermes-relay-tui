@@ -1,5 +1,6 @@
 #include "bsp_touch.h"
 #include "board_config.h"
+#include "bsp_i2c.h"
 #include "bsp_io_expander.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
@@ -39,18 +40,9 @@ esp_err_t bsp_touch_init(void)
     ESP_LOGI(TAG, "Initializing GT911 Capacitive Touch on I2C port %d (SDA: %d, SCL: %d)",
              BOARD_I2C_PORT, BOARD_I2C_PIN_SDA, BOARD_I2C_PIN_SCL);
 
-    /* Initialize I2C driver if not already done */
-    i2c_config_t conf = {
-        .mode = I2C_MODE_MASTER,
-        .sda_io_num = BOARD_I2C_PIN_SDA,
-        .scl_io_num = BOARD_I2C_PIN_SCL,
-        .sda_pullup_en = GPIO_PULLUP_ENABLE,
-        .scl_pullup_en = GPIO_PULLUP_ENABLE,
-        .master.clk_speed = BOARD_I2C_FREQ_HZ,
-    };
-    esp_err_t err = i2c_param_config(BOARD_I2C_PORT, &conf);
-    if (err == ESP_OK) {
-        i2c_driver_install(BOARD_I2C_PORT, conf.mode, 0, 0, 0);
+    esp_err_t err = bsp_i2c_init();
+    if (err != ESP_OK) {
+        return err;
     }
 
     /* Reset sequence to latch primary address 0x5D (INT pin held low during reset release) */
@@ -64,10 +56,13 @@ esp_err_t bsp_touch_init(void)
     gpio_config(&io_conf);
     gpio_set_level(BOARD_TOUCH_PIN_INT, 0);
 
-    bsp_io_expander_reset_touch();
-    vTaskDelay(pdMS_TO_TICKS(50));
+    err = bsp_io_expander_reset_touch();
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "GT911 reset failed: %s", esp_err_to_name(err));
+        return err;
+    }
 
-    /* Release INT pin to floating input */
+    /* Release INT pin to input after reset; low during reset selects 0x5D. */
     io_conf.mode = GPIO_MODE_INPUT;
     io_conf.pull_down_en = GPIO_PULLDOWN_DISABLE;
     gpio_config(&io_conf);
