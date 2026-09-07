@@ -1,4 +1,4 @@
-"""VOICE-10: wake mode as something the TUI is told to do, never assumes.
+"""Wake mode is opt-in, and a configured launch arms it after connecting.
 
 The whole point of this card is that an open microphone is always the result
 of a deliberate act. These tests drive that with fakes: no wake engine, no
@@ -280,7 +280,7 @@ async def test_cancelling_wake_start_retains_late_open_cleanup():
         assert recorder.listening is False
 
 
-# ---- the microphone is closed until told otherwise --------------------
+# ---- the microphone is closed unless explicitly configured or requested ----
 
 
 async def test_the_tui_launches_with_wake_mode_off():
@@ -292,6 +292,21 @@ async def test_the_tui_launches_with_wake_mode_off():
         assert app.wake_armed is False
         assert fakes.builds == 0
         assert fakes.recorders == []
+
+
+async def test_configured_wake_enabled_arms_after_initial_connection():
+    app, fakes, _ = make_app(wake_enabled=True)
+
+    async with app.run_test() as pilot:
+        for _ in range(100):
+            await pilot.pause()
+            if app.wake_armed:
+                break
+
+        assert app.wake_armed is True
+        assert fakes.builds == 1
+        assert fakes.recorders[0].listening is True
+        assert "wake mode on" in transcript_text(app)
 
 
 async def test_wake_status_reports_disarmed_before_anything_happens():
@@ -1225,21 +1240,24 @@ async def test_reconnect_disarms_wake_mode_before_opening_a_new_session():
         assert "wake mode off — connection lost" in transcript_text(app)
 
 
-# ---- the launch flag stops lying --------------------------------------
+# ---- the launch flag is honored ---------------------------------------
 
 
-def test_the_launch_flag_refuses_and_points_at_the_command(monkeypatch, capsys):
-    """`--wake-enabled` parsed and did nothing at all: app.py contained no
-    reference to wake or handsfree. Refusing is honest; silently ignoring is
-    not."""
+def test_the_launch_flag_is_honored_by_the_tui(monkeypatch):
     monkeypatch.setattr(app_module.sys, "argv", ["hermes-relay", "--wake-enabled"])
     started = []
-    monkeypatch.setattr(
-        app_module.HermesStreamingApp, "run", lambda self: started.append(True)
-    )
+
+    class StubApp:
+        def __init__(self, *, args):
+            self.args = args
+
+        def run(self):
+            started.append(self.args.wake_enabled)
+
+    monkeypatch.setattr(app_module, "HermesStreamingApp", StubApp)
+    monkeypatch.setattr(app_module.config, "ensure_default_config_file", lambda path: None)
 
     code = app_module.main()
 
-    assert code == 2
-    assert started == []
-    assert "/wake on" in capsys.readouterr().err
+    assert code == 0
+    assert started == [True]

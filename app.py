@@ -579,10 +579,12 @@ class HermesStreamingApp(App):
         self._voice_capture_cancelled = False
         self._shutting_down = False
         self._cleanup_tasks: set[asyncio.Task[Any]] = set()
-        # Wake mode is off at every launch and only ever armed by /wake on.
-        # An always-open microphone is not something a configuration file or a
-        # command-line flag gets to decide on the user's behalf.
+        # Wake mode remains off unless the user explicitly opts in through
+        # configuration or --wake-enabled. A configured launch arms it only
+        # after the initial connection; reconnects and reloads never reopen a
+        # microphone silently.
         self.wake_armed = False
+        self._launch_wake_attempted = False
         self._build_hands_free = build_hands_free or handsfree.build_hands_free
         self._recorder_factory = recorder_factory
         self._barge_listener_factory = barge_listener_factory
@@ -1027,6 +1029,13 @@ class HermesStreamingApp(App):
                 self._append_block(f"Connected to {session_id}{detail_suffix}.")
                 if getattr(self.session, "initial_history", None):
                     self._hydrate_transcript(self.session.initial_history)
+                if (
+                    not reconnecting
+                    and not self._launch_wake_attempted
+                    and getattr(self.args, "wake_enabled", False)
+                ):
+                    self._launch_wake_attempted = True
+                    await self._arm_wake()
                 return True
 
             self._set_connection_state(CONNECTION_DISCONNECTED)
@@ -1198,9 +1207,8 @@ class HermesStreamingApp(App):
         self._set_voice_state(VOICE_STARTING)
         self._append_block("wake mode starting — loading wake model…")
 
-        # The builder reads --wake-* settings off args, but wake_enabled is
-        # refused at launch for this front end, so arm it here instead of
-        # asking the user to have set a flag they are not allowed to pass.
+        # Keep the builder's complete wake configuration, while ensuring this
+        # path always requests an active hands-free listener.
         args = copy.copy(self.args)
         args.wake_enabled = True
 
@@ -3817,19 +3825,6 @@ def main() -> int:
     config.ensure_default_config_file(args.config)
     if args.log_file is not None:
         args.debug = True
-    if getattr(args, "wake_enabled", False):
-        # The flag used to parse here and do nothing whatsoever: app.py had no
-        # reference to wake or handsfree, so only the appliance honoured it.
-        # Refusing is honest. Silently ignoring a flag about the microphone is
-        # not, and it is the microphone.
-        print(
-            "hermes-relay does not arm hands-free listening at launch.\n"
-            "Start the client, then turn it on in-session with: /wake on\n"
-            "For the always-on household unit, use: hermes-relay-home "
-            "--wake-enabled",
-            file=sys.stderr,
-        )
-        return 2
     log_path = config.configure_logging(debug=args.debug, log_file=args.log_file)
     if log_path is not None:
         diagnostic_logger.info("app.start url=%s", args.url.split("?", 1)[0])
