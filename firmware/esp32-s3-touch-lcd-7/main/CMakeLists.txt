@@ -5,6 +5,10 @@ idf_component_register(
         "src/bsp_lcd.c"
         "src/bsp_touch.c"
         "src/bsp_io_expander.c"
+        "src/ui_snapshot.c"
+        "src/ui_snapshot_json.c"
+        "src/ui_transport.c"
+        "src/ui_display.c"
         "src/ui_test.c"
     INCLUDE_DIRS 
         "include"
@@ -15,5 +19,7 @@ idf_component_register(
         freertos
         esp_common
         log
+        json
+        esp_websocket_client
         heap
 )

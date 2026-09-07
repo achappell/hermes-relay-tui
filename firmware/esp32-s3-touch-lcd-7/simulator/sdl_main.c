@@ -3,7 +3,7 @@
 #include <SDL.h>
 #include "lvgl.h"
 #include "board_config.h"
-#include "ui_test.h"
+#include "ui_display.h"
 
 #define SIM_WIDTH  BOARD_LCD_H_RES
 #define SIM_HEIGHT BOARD_LCD_V_RES
@@ -16,6 +16,26 @@ static uint32_t s_pixel_buffer[SIM_WIDTH * SIM_HEIGHT];
 static bool s_mouse_down = false;
 static int s_mouse_x = 0;
 static int s_mouse_y = 0;
+static ui_snapshot_t s_demo_snapshot;
+
+static void demo_snapshot(ui_display_state_t state, const char *response, const char *status)
+{
+    ui_snapshot_init(&s_demo_snapshot);
+    s_demo_snapshot.state = state;
+    ui_snapshot_set_text(&s_demo_snapshot, response, status);
+    if (state == UI_DISPLAY_PROMPT) {
+        s_demo_snapshot.prompt.present = true;
+        snprintf(s_demo_snapshot.prompt.title, sizeof(s_demo_snapshot.prompt.title), "Permission needed");
+        snprintf(s_demo_snapshot.prompt.body, sizeof(s_demo_snapshot.prompt.body), "Allow Hermes to continue?");
+        snprintf(s_demo_snapshot.prompt.action_id, sizeof(s_demo_snapshot.prompt.action_id), "demo");
+        s_demo_snapshot.prompt.option_count = 2;
+        snprintf(s_demo_snapshot.prompt.options[0].id, sizeof(s_demo_snapshot.prompt.options[0].id), "yes");
+        snprintf(s_demo_snapshot.prompt.options[0].label, sizeof(s_demo_snapshot.prompt.options[0].label), "Approve");
+        snprintf(s_demo_snapshot.prompt.options[1].id, sizeof(s_demo_snapshot.prompt.options[1].id), "no");
+        snprintf(s_demo_snapshot.prompt.options[1].label, sizeof(s_demo_snapshot.prompt.options[1].label), "Deny");
+    }
+    ui_display_set_snapshot(&s_demo_snapshot);
+}
 
 static void sdl_disp_flush(lv_disp_drv_t *disp_drv, const lv_area_t *area, lv_color_t *color_p)
 {
@@ -110,8 +130,9 @@ int main(int argc, char *argv[])
     indev_drv.read_cb = sdl_mouse_read;
     lv_indev_drv_register(&indev_drv);
 
-    /* Initialize exact C test scene */
-    ui_test_init();
+    /* Initialize the shared C/LVGL appliance shell. */
+    ui_display_init(NULL, NULL);
+    demo_snapshot(UI_DISPLAY_IDLE, "Ask me anything", "Ready");
 
     bool running = true;
     uint32_t last_time = SDL_GetTicks();
@@ -137,6 +158,18 @@ int main(int argc, char *argv[])
             } else if (event.type == SDL_MOUSEMOTION) {
                 s_mouse_x = event.motion.x;
                 s_mouse_y = event.motion.y;
+            } else if (event.type == SDL_KEYDOWN) {
+                if (event.key.keysym.sym == SDLK_1) {
+                    demo_snapshot(UI_DISPLAY_IDLE, "Ask me anything", "Ready");
+                } else if (event.key.keysym.sym == SDLK_2) {
+                    demo_snapshot(UI_DISPLAY_LISTENING, "", "Listening");
+                } else if (event.key.keysym.sym == SDLK_3) {
+                    demo_snapshot(UI_DISPLAY_SPEAKING, "The shared snapshot is rendering live text.", "Speaking");
+                } else if (event.key.keysym.sym == SDLK_4) {
+                    demo_snapshot(UI_DISPLAY_PROMPT, "", "");
+                } else if (event.key.keysym.sym == SDLK_5) {
+                    demo_snapshot(UI_DISPLAY_ERROR, "", "Connection lost");
+                }
             }
         }
 
@@ -150,7 +183,7 @@ int main(int argc, char *argv[])
             last_fps_time = now;
         }
 
-        ui_test_update_touch(s_mouse_down, (uint16_t)s_mouse_x, (uint16_t)s_mouse_y, s_mouse_down ? 1 : 0, current_fps);
+        ui_display_update_diagnostics(s_mouse_down, (uint16_t)s_mouse_x, (uint16_t)s_mouse_y, s_mouse_down ? 1 : 0, current_fps);
 
         /* Update texture and render */
         SDL_UpdateTexture(s_texture, NULL, s_pixel_buffer, SIM_WIDTH * sizeof(uint32_t));

@@ -479,8 +479,11 @@ listener to hear the room, captures a turn when the phrase fires, plays the
 reply, and serves the kiosk display on a loopback URL that reflects what is
 actually happening. `hermes-relay-home-demo` still serves the display alone,
 driven by a scripted fake, for working on the browser shell with no relay and
-no hardware. Use `--display-port` to pin the display to a fixed loopback port
-so a kiosk browser can be pointed at it. The [HOME-09 smoke procedure](docs/testing/home-09-appliance-loop.md)
+no hardware. Use `--display-port` to pin the display to a fixed port so a kiosk
+browser can be pointed at it. For the ESP display, set an explicit LAN address
+and opt in to the remote bind, for example
+`--display-host 192.168.1.20 --display-remote --display-port 8765`; the ESP
+client then connects to `ws://192.168.1.20:8765/state`. The [HOME-09 smoke procedure](docs/testing/home-09-appliance-loop.md)
 is how the real loop gets validated — including
 `scripts/fake_relay.py`, a stand-in server that lets the whole appliance be
 tested with no Hermes at all.

@@ -46,6 +46,7 @@ class DisplayServer:
         *,
         host: str = "127.0.0.1",
         port: int = 0,
+        allow_remote: bool = False,
         on_action: Callable[[str, str], Awaitable[None]] | None = None,
     ) -> None:
         """Create a display server.
@@ -59,7 +60,7 @@ class DisplayServer:
             host_address = ipaddress.ip_address(host)
         except (ValueError, TypeError) as error:
             raise ValueError("host must be a loopback IP address") from error
-        if not host_address.is_loopback:
+        if not host_address.is_loopback and not allow_remote:
             raise ValueError("host must be a loopback IP address")
 
         self._publisher = publisher

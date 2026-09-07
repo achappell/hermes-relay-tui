@@ -14,12 +14,16 @@ def test_firmware_files_exist():
         FIRMWARE_DIR / "platformio.ini",
         FIRMWARE_DIR / "README.md",
         FIRMWARE_DIR / "main" / "CMakeLists.txt",
+        FIRMWARE_DIR / "main" / "idf_component.yml",
         FIRMWARE_DIR / "main" / "include" / "board_config.h",
         FIRMWARE_DIR / "main" / "include" / "bsp_i2c.h",
         FIRMWARE_DIR / "main" / "include" / "bsp_lcd.h",
         FIRMWARE_DIR / "main" / "include" / "bsp_touch.h",
         FIRMWARE_DIR / "main" / "include" / "bsp_io_expander.h",
         FIRMWARE_DIR / "main" / "include" / "ui_test.h",
+        FIRMWARE_DIR / "main" / "include" / "ui_snapshot.h",
+        FIRMWARE_DIR / "main" / "include" / "ui_display.h",
+        FIRMWARE_DIR / "main" / "include" / "ui_transport.h",
         FIRMWARE_DIR / "main" / "include" / "lv_conf.h",
         FIRMWARE_DIR / "main" / "src" / "main.c",
         FIRMWARE_DIR / "main" / "src" / "bsp_i2c.c",
@@ -27,6 +31,10 @@ def test_firmware_files_exist():
         FIRMWARE_DIR / "main" / "src" / "bsp_touch.c",
         FIRMWARE_DIR / "main" / "src" / "bsp_io_expander.c",
         FIRMWARE_DIR / "main" / "src" / "ui_test.c",
+        FIRMWARE_DIR / "main" / "src" / "ui_snapshot.c",
+        FIRMWARE_DIR / "main" / "src" / "ui_snapshot_json.c",
+        FIRMWARE_DIR / "main" / "src" / "ui_display.c",
+        FIRMWARE_DIR / "main" / "src" / "ui_transport.c",
     ]
     for file_path in expected_files:
         assert file_path.exists(), f"Missing firmware file: {file_path}"

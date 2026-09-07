@@ -1047,6 +1047,21 @@ def test_an_explicit_silence_duration_still_wins(tmp_path, monkeypatch):
     assert from_flag.mic_silence_duration == 4.0
 
 
+def test_display_remote_bind_is_opt_in():
+    from home_display import appliance
+
+    defaults = appliance.build_arg_parser().parse_args([])
+    remote = appliance.build_arg_parser().parse_args(
+        ["--display-host", "192.168.1.20", "--display-port", "8765", "--display-remote"]
+    )
+
+    assert defaults.display_host == "127.0.0.1"
+    assert defaults.display_remote is False
+    assert remote.display_host == "192.168.1.20"
+    assert remote.display_port == 8765
+    assert remote.display_remote is True
+
+
 @pytest.mark.asyncio
 async def test_speaking_waits_for_audio_that_can_actually_be_heard():
     """`audio_start` is a header, not a sound. Against a live gateway the
@@ -1528,4 +1543,3 @@ async def test_bounded_to_thread_runs_daemon_thread_and_handles_timeout():
     await appliance._bounded_to_thread(slow_func, timeout=0.05)
     block_event.set()
     assert thread_daemon_status == [True]
-

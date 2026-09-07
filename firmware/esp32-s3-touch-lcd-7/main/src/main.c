@@ -14,7 +14,8 @@
 #include "bsp_io_expander.h"
 #include "bsp_lcd.h"
 #include "bsp_touch.h"
-#include "ui_test.h"
+#include "ui_display.h"
+#include "ui_transport.h"
 
 #if __has_include("lvgl.h")
     #include "lvgl.h"
@@ -29,6 +30,8 @@
 static const char *TAG = "main";
 #if HAVE_LVGL
 static SemaphoreHandle_t s_lvgl_mutex = NULL;
+static ui_snapshot_t s_pending_snapshot;
+static bool s_pending_snapshot_valid = false;
 #endif
 
 #if HAVE_LVGL
@@ -59,6 +62,35 @@ static void lvgl_touch_read_cb(lv_indev_drv_t *drv, lv_indev_data_t *data)
     }
 }
 
+static void transport_snapshot_cb(const ui_snapshot_t *snapshot, void *user_data)
+{
+    (void)user_data;
+    if (snapshot == NULL || s_lvgl_mutex == NULL) return;
+    if (xSemaphoreTake(s_lvgl_mutex, pdMS_TO_TICKS(20)) == pdTRUE) {
+        s_pending_snapshot = *snapshot;
+        s_pending_snapshot_valid = true;
+        xSemaphoreGive(s_lvgl_mutex);
+    }
+}
+
+static void transport_state_cb(ui_transport_state_t state, void *user_data)
+{
+    (void)user_data;
+    if (s_lvgl_mutex == NULL) return;
+    if (xSemaphoreTake(s_lvgl_mutex, pdMS_TO_TICKS(20)) == pdTRUE) {
+        if (state == UI_TRANSPORT_DISCONNECTED || state == UI_TRANSPORT_ERROR) {
+            ui_snapshot_init(&s_pending_snapshot);
+            s_pending_snapshot.state = state == UI_TRANSPORT_ERROR ? UI_DISPLAY_ERROR : UI_DISPLAY_DISCONNECTED;
+            ui_snapshot_set_text(
+                &s_pending_snapshot,
+                "",
+                state == UI_TRANSPORT_ERROR ? "Display connection error" : "Reconnecting to display");
+            s_pending_snapshot_valid = true;
+        }
+        xSemaphoreGive(s_lvgl_mutex);
+    }
+}
+
 static void lvgl_ui_task(void *pvParameters)
 {
     ESP_LOGI(TAG, "LVGL UI Task started on Core %d", xPortGetCoreID());
@@ -69,6 +101,10 @@ static void lvgl_ui_task(void *pvParameters)
 
     while (1) {
         if (pdTRUE == xSemaphoreTake(s_lvgl_mutex, portMAX_DELAY)) {
+            if (s_pending_snapshot_valid) {
+                ui_display_set_snapshot(&s_pending_snapshot);
+                s_pending_snapshot_valid = false;
+            }
             uint32_t task_delay_ms = lv_timer_handler();
             
             /* Read touch state for UI updates */
@@ -87,7 +123,7 @@ static void lvgl_ui_task(void *pvParameters)
                 last_fps_time = now;
             }
 
-            ui_test_update_touch(touch_active, tx, ty, count, current_fps);
+            ui_display_update_diagnostics(touch_active, tx, ty, count, current_fps);
             xSemaphoreGive(s_lvgl_mutex);
 
             if (task_delay_ms < 1) task_delay_ms = 1;
@@ -186,10 +222,26 @@ void app_main(void)
     lv_indev_drv_register(&indev_drv);
 
     /* Initialize Bring-up Test Scene */
-    ui_test_init();
+    ui_display_init(NULL, NULL);
 
     /* Launch UI Task pinned to Core 1 */
     xTaskCreatePinnedToCore(lvgl_ui_task, "lvgl_ui", 8192, NULL, 5, NULL, 1);
+
+#ifdef HERMES_DISPLAY_WS_URI
+    static const ui_transport_config_t transport_config = {
+        .uri = HERMES_DISPLAY_WS_URI,
+        .on_snapshot = transport_snapshot_cb,
+        .on_state = transport_state_cb,
+        .user_data = NULL,
+        .reconnect_timeout_ms = 5000,
+    };
+    err = ui_transport_start(&transport_config);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Display WebSocket start failed: %s", esp_err_to_name(err));
+    }
+#else
+    ESP_LOGI(TAG, "Display WebSocket disabled; define HERMES_DISPLAY_WS_URI to connect");
+#endif
 #else
     ESP_LOGI(TAG, "Direct mode test complete. Framebuffers active.");
 #endif

@@ -95,3 +95,19 @@ pio device monitor
    - Tap **BL [0, 599]** (Bottom-Left): Button turns green.
    - Tap **BR [1023, 599]** (Bottom-Right): Button turns green.
 4. **Benchmark & Frame Rate:** Confirm benchmark arc/slider animates smoothly at 30+ FPS without visual stutter or PSRAM bandwidth under-run artifacts. The 7B timing is 30MHz PCLK with 1386×661 total timing, approximately 32.7Hz.
+
+## ESP-02 Shared Display Shell
+
+The firmware and native simulator now consume the same bounded C snapshot model
+(`ui_snapshot`) and LVGL surface (`ui_display`). The JSON parser accepts the
+schema-1 `DisplaySnapshot` contract emitted by `home_display/server.py`,
+including the nine display states and bounded prompt options. The ESP-IDF
+WebSocket client subscribes to the server's `/state` endpoint, reassembles
+fragmented JSON frames, and uses the built-in reconnect ladder. The host
+appliance must opt into a LAN bind with `--display-remote`; loopback remains
+the default.
+
+The native simulator demonstrates the state surface without a relay. With the
+window focused, press `1` for idle, `2` for listening, `3` for speaking, `4`
+for a two-choice prompt, or `5` for an error. The diagnostic line retains live
+touch coordinates and frame rate while the same UI sources build for ESP-IDF.
