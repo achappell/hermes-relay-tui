@@ -49,6 +49,11 @@ advertised or that the current snapshot does not permit.
 - `fixtures/sequences/` covers ordering cases such as stale snapshots.
 
 The fixtures are the conformance seed for the reducer and all three adapters.
+The Python contract tests validate the JSON corpus and action shapes, the
+native conformance test compiles the portable reducer and compares its
+normalized view for every valid snapshot, and the Web tests feed the same
+valid/invalid snapshots through the browser parser. This keeps the corpus
+executable before the TUI adapter is migrated in UI-CORE-06.
 
 ## Reducer
 
