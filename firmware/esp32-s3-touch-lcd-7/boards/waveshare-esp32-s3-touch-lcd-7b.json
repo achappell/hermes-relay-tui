@@ -1,0 +1,34 @@
+{
+  "build": {
+    "core": "esp32",
+    "f_cpu": "240000000L",
+    "f_flash": "80000000L",
+    "flash_mode": "qio",
+    "mcu": "esp32s3",
+    "variant": "esp32s3"
+  },
+  "connectivity": [
+    "bluetooth",
+    "wifi"
+  ],
+  "debug": {
+    "default_tool": "esp-builtin",
+    "onboard_tools": [
+      "esp-builtin"
+    ],
+    "openocd_target": "esp32s3.cfg"
+  },
+  "frameworks": [
+    "espidf"
+  ],
+  "name": "Waveshare ESP32-S3-Touch-LCD-7B (16MB Flash, 8MB OPI PSRAM)",
+  "upload": {
+    "flash_size": "16MB",
+    "maximum_ram_size": 8388608,
+    "maximum_size": 16777216,
+    "require_upload_port": true,
+    "speed": 921600
+  },
+  "url": "https://www.waveshare.com/esp32-s3-lcd-7b.htm",
+  "vendor": "Waveshare"
+}

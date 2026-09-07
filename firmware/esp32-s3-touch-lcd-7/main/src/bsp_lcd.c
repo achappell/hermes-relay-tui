@@ -2,8 +2,6 @@
 #include "board_config.h"
 #include "bsp_io_expander.h"
 #include "esp_log.h"
-#include "driver/ledc.h"
-#include "esp_heap_caps.h"
 
 static const char *TAG = "bsp_lcd";
 
@@ -29,8 +27,12 @@ esp_err_t bsp_lcd_init(bsp_lcd_vsync_cb_t on_vsync, void *user_data)
     ESP_LOGI(TAG, "Initializing %s (%dx%d @ %d MHz)", 
              BOARD_NAME, BOARD_LCD_H_RES, BOARD_LCD_V_RES, BOARD_LCD_PIXEL_CLOCK_HZ / 1000000);
 
-    /* Hardware reset via IO expander */
-    bsp_io_expander_reset_lcd();
+    /* Hardware reset via the board's CH422G IO expander. */
+    esp_err_t ret = bsp_io_expander_reset_lcd();
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "LCD reset failed: %s", esp_err_to_name(ret));
+        return ret;
+    }
 
     esp_lcd_rgb_panel_config_t rgb_config = {
         .clk_src = LCD_CLK_SRC_DEFAULT,
@@ -86,7 +88,7 @@ esp_err_t bsp_lcd_init(bsp_lcd_vsync_cb_t on_vsync, void *user_data)
         },
     };
 
-    esp_err_t ret = esp_lcd_new_rgb_panel(&rgb_config, &s_panel_handle);
+    ret = esp_lcd_new_rgb_panel(&rgb_config, &s_panel_handle);
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "Failed to create RGB LCD panel: %s", esp_err_to_name(ret));
         return ret;
@@ -134,35 +136,10 @@ esp_err_t bsp_lcd_get_frame_buffers(void **fb0, void **fb1)
 
 esp_err_t bsp_lcd_backlight_init(void)
 {
-    /* Enable backlight power on IO expander */
-    bsp_io_expander_set_backlight(true);
-
-    /* Configure LEDC PWM for hardware brightness scaling on BOARD_BACKLIGHT_PIN */
-    ledc_timer_config_t ledc_timer = {
-        .speed_mode = LEDC_LOW_SPEED_MODE,
-        .duty_resolution = LEDC_TIMER_8_BIT,
-        .timer_num = LEDC_TIMER_0,
-        .freq_hz = BOARD_BACKLIGHT_PWM_FREQ_HZ,
-        .clk_cfg = LEDC_AUTO_CLK
-    };
-    esp_err_t err = ledc_timer_config(&ledc_timer);
+    /* The board routes the boost enable and PWM brightness through CH422G. */
+    esp_err_t err = bsp_io_expander_set_backlight(true);
     if (err != ESP_OK) {
-        ESP_LOGW(TAG, "LEDC timer config failed: %s", esp_err_to_name(err));
-        return err;
-    }
-
-    ledc_channel_config_t ledc_channel = {
-        .speed_mode = LEDC_LOW_SPEED_MODE,
-        .channel = LEDC_CHANNEL_0,
-        .timer_sel = LEDC_TIMER_0,
-        .intr_type = LEDC_INTR_DISABLE,
-        .gpio_num = BOARD_BACKLIGHT_PIN,
-        .duty = 0,
-        .hpoint = 0
-    };
-    err = ledc_channel_config(&ledc_channel);
-    if (err != ESP_OK) {
-        ESP_LOGW(TAG, "LEDC channel config failed: %s", esp_err_to_name(err));
+        ESP_LOGW(TAG, "Backlight enable failed: %s", esp_err_to_name(err));
         return err;
     }
 
@@ -172,7 +149,12 @@ esp_err_t bsp_lcd_backlight_init(void)
 esp_err_t bsp_lcd_set_backlight(uint8_t percent)
 {
     if (percent > 100) percent = 100;
-    uint32_t duty = (percent * 255) / 100;
-    ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0, duty);
-    return ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0);
+    if (percent == 0) {
+        return bsp_io_expander_set_backlight(false);
+    }
+    esp_err_t err = bsp_io_expander_set_backlight(true);
+    if (err != ESP_OK) {
+        return err;
+    }
+    return bsp_io_expander_set_brightness(percent);
 }

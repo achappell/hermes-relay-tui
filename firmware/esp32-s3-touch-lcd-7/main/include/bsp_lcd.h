@@ -33,7 +33,7 @@ esp_lcd_panel_handle_t bsp_lcd_get_panel_handle(void);
 esp_err_t bsp_lcd_get_frame_buffers(void **fb0, void **fb1);
 
 /**
- * @brief Initialize backlight control (PWM on GPIO or expander).
+ * @brief Initialize CH422G-controlled backlight enable and PWM.
  */
 esp_err_t bsp_lcd_backlight_init(void);
 

@@ -1,5 +1,6 @@
 #include "bsp_io_expander.h"
 #include "board_config.h"
+#include "bsp_i2c.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -10,36 +11,36 @@ static uint8_t s_output_state = 0xFF;
 
 esp_err_t bsp_io_expander_init(void)
 {
-    /* Probe CH422G first */
-    uint8_t dummy = 0x01;
-    esp_err_t err = i2c_master_write_to_device(BOARD_I2C_PORT, BOARD_EXPANDER_CH422G_ADDR, &dummy, 1, pdMS_TO_TICKS(50));
+    esp_err_t err = bsp_i2c_init();
+    if (err != ESP_OK) {
+        return err;
+    }
+
+    /* The Waveshare board uses a CH422G at 0x24. Configure all EXIO pins as
+     * outputs; this write also acts as the presence probe. */
+    uint8_t mode_cmd[2] = {0x02, 0xFF};
+    err = i2c_master_write_to_device(BOARD_I2C_PORT, BOARD_EXPANDER_CH422G_ADDR,
+                                     mode_cmd, sizeof(mode_cmd), pdMS_TO_TICKS(50));
     if (err == ESP_OK) {
         s_expander_type = EXPANDER_TYPE_CH422G;
         ESP_LOGI(TAG, "Detected CH422G IO Expander at 0x%02X", BOARD_EXPANDER_CH422G_ADDR);
         /* Set initial output state: all high */
         s_output_state = 0xFF;
-        uint8_t cmd[2] = {0x00, s_output_state};
-        i2c_master_write_to_device(BOARD_I2C_PORT, BOARD_EXPANDER_CH422G_ADDR, cmd, 2, pdMS_TO_TICKS(50));
+        uint8_t cmd[2] = {0x03, s_output_state};
+        err = i2c_master_write_to_device(BOARD_I2C_PORT, BOARD_EXPANDER_CH422G_ADDR,
+                                         cmd, sizeof(cmd), pdMS_TO_TICKS(50));
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "CH422G output initialization failed: %s", esp_err_to_name(err));
+            s_expander_type = EXPANDER_TYPE_NONE;
+            return err;
+        }
         return ESP_OK;
     }
 
-    /* Probe PCA9554 */
-    uint8_t reg_cfg = 0x03; /* Configuration register */
-    uint8_t cfg_val = 0x00; /* All outputs */
-    uint8_t data[2] = {reg_cfg, cfg_val};
-    err = i2c_master_write_to_device(BOARD_I2C_PORT, BOARD_EXPANDER_PCA9554_ADDR, data, 2, pdMS_TO_TICKS(50));
-    if (err == ESP_OK) {
-        s_expander_type = EXPANDER_TYPE_PCA9554;
-        ESP_LOGI(TAG, "Detected PCA9554 IO Expander at 0x%02X", BOARD_EXPANDER_PCA9554_ADDR);
-        s_output_state = 0xFF;
-        uint8_t out_cmd[2] = {0x01, s_output_state}; /* Output port register */
-        i2c_master_write_to_device(BOARD_I2C_PORT, BOARD_EXPANDER_PCA9554_ADDR, out_cmd, 2, pdMS_TO_TICKS(50));
-        return ESP_OK;
-    }
-
-    ESP_LOGW(TAG, "No dedicated IO expander detected; using direct GPIO / defaults");
+    ESP_LOGE(TAG, "CH422G probe failed at 0x%02X: %s", BOARD_EXPANDER_CH422G_ADDR,
+             esp_err_to_name(err));
     s_expander_type = EXPANDER_TYPE_NONE;
-    return ESP_ERR_NOT_FOUND;
+    return err;
 }
 
 bsp_expander_type_t bsp_io_expander_get_type(void)
@@ -52,54 +53,80 @@ esp_err_t bsp_io_expander_set_level(uint8_t pin_num, uint8_t level)
     if (s_expander_type == EXPANDER_TYPE_NONE) {
         return ESP_ERR_INVALID_STATE;
     }
+    if (pin_num > 7) {
+        return ESP_ERR_INVALID_ARG;
+    }
 
+    uint8_t next_output_state = s_output_state;
     if (level) {
-        s_output_state |= (1 << pin_num);
+        next_output_state |= (uint8_t)(1U << pin_num);
     } else {
-        s_output_state &= ~(1 << pin_num);
+        next_output_state &= (uint8_t)~(1U << pin_num);
     }
 
     if (s_expander_type == EXPANDER_TYPE_CH422G) {
-        uint8_t cmd[2] = {0x00, s_output_state};
-        return i2c_master_write_to_device(BOARD_I2C_PORT, BOARD_EXPANDER_CH422G_ADDR, cmd, 2, pdMS_TO_TICKS(50));
-    } else if (s_expander_type == EXPANDER_TYPE_PCA9554) {
-        uint8_t cmd[2] = {0x01, s_output_state};
-        return i2c_master_write_to_device(BOARD_I2C_PORT, BOARD_EXPANDER_PCA9554_ADDR, cmd, 2, pdMS_TO_TICKS(50));
+        uint8_t cmd[2] = {0x03, next_output_state};
+        esp_err_t err = i2c_master_write_to_device(BOARD_I2C_PORT, BOARD_EXPANDER_CH422G_ADDR,
+                                                   cmd, sizeof(cmd), pdMS_TO_TICKS(50));
+        if (err == ESP_OK) {
+            s_output_state = next_output_state;
+        }
+        return err;
     }
 
     return ESP_FAIL;
 }
 
-void bsp_io_expander_reset_lcd(void)
+esp_err_t bsp_io_expander_reset_lcd(void)
 {
-    if (s_expander_type != EXPANDER_TYPE_NONE) {
-        bsp_io_expander_set_level(BOARD_EXP_PIN_LCD_RST, 0);
-        vTaskDelay(pdMS_TO_TICKS(20));
-        bsp_io_expander_set_level(BOARD_EXP_PIN_LCD_RST, 1);
-        vTaskDelay(pdMS_TO_TICKS(50));
+    if (s_expander_type == EXPANDER_TYPE_NONE) {
+        return ESP_ERR_INVALID_STATE;
     }
+
+    esp_err_t err = bsp_io_expander_set_level(BOARD_EXP_PIN_LCD_RST, 0);
+    if (err != ESP_OK) return err;
+    vTaskDelay(pdMS_TO_TICKS(20));
+    err = bsp_io_expander_set_level(BOARD_EXP_PIN_LCD_RST, 1);
+    if (err != ESP_OK) return err;
+    vTaskDelay(pdMS_TO_TICKS(50));
+    return ESP_OK;
 }
 
-void bsp_io_expander_reset_touch(void)
+esp_err_t bsp_io_expander_reset_touch(void)
 {
-    if (s_expander_type != EXPANDER_TYPE_NONE) {
-        bsp_io_expander_set_level(BOARD_EXP_PIN_TP_RST, 0);
-        vTaskDelay(pdMS_TO_TICKS(20));
-        bsp_io_expander_set_level(BOARD_EXP_PIN_TP_RST, 1);
-        vTaskDelay(pdMS_TO_TICKS(50));
-    } else {
-        /* Direct GPIO reset */
-        gpio_set_direction(BOARD_TOUCH_PIN_RST, GPIO_MODE_OUTPUT);
-        gpio_set_level(BOARD_TOUCH_PIN_RST, 0);
-        vTaskDelay(pdMS_TO_TICKS(20));
-        gpio_set_level(BOARD_TOUCH_PIN_RST, 1);
-        vTaskDelay(pdMS_TO_TICKS(50));
+    if (s_expander_type == EXPANDER_TYPE_NONE) {
+        return ESP_ERR_INVALID_STATE;
     }
+
+    esp_err_t err = bsp_io_expander_set_level(BOARD_EXP_PIN_TP_RST, 0);
+    if (err != ESP_OK) return err;
+    vTaskDelay(pdMS_TO_TICKS(20));
+    err = bsp_io_expander_set_level(BOARD_EXP_PIN_TP_RST, 1);
+    if (err != ESP_OK) return err;
+    vTaskDelay(pdMS_TO_TICKS(100));
+    return ESP_OK;
 }
 
-void bsp_io_expander_set_backlight(bool enable)
+esp_err_t bsp_io_expander_set_backlight(bool enable)
 {
-    if (s_expander_type != EXPANDER_TYPE_NONE) {
-        bsp_io_expander_set_level(BOARD_EXP_PIN_LCD_BL, enable ? 1 : 0);
+    if (s_expander_type == EXPANDER_TYPE_CH422G) {
+        return bsp_io_expander_set_level(BOARD_EXP_PIN_DISP, enable ? 1 : 0);
     }
+    return ESP_ERR_INVALID_STATE;
+}
+
+esp_err_t bsp_io_expander_set_brightness(uint8_t percent)
+{
+    if (s_expander_type != EXPANDER_TYPE_CH422G) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    /* The CH422G PWM register is 8-bit and the board example caps brightness
+     * at 97% so the boost converter is never driven fully on. */
+    if (percent >= 97) {
+        percent = 97;
+    }
+    uint8_t cmd[2] = {0x05, (uint8_t)((percent * 255) / 100)};
+    return i2c_master_write_to_device(BOARD_I2C_PORT, BOARD_EXPANDER_CH422G_ADDR,
+                                      cmd, sizeof(cmd), pdMS_TO_TICKS(50));
 }

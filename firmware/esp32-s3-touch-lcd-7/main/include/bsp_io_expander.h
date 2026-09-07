@@ -10,13 +10,12 @@ extern "C" {
 
 typedef enum {
     EXPANDER_TYPE_NONE = 0,
-    EXPANDER_TYPE_CH422G,
-    EXPANDER_TYPE_PCA9554
+    EXPANDER_TYPE_CH422G
 } bsp_expander_type_t;
 
 /**
- * @brief Initialize the onboard IO expander (auto-detects CH422G / PCA9554).
- * @return ESP_OK on success, or ESP_ERR_NOT_FOUND if neither expander responds.
+ * @brief Initialize the onboard CH422G IO expander at 0x24.
+ * @return ESP_OK on success, or the I2C error from the probe.
  */
 esp_err_t bsp_io_expander_init(void);
 
@@ -33,19 +32,25 @@ bsp_expander_type_t bsp_io_expander_get_type(void);
 esp_err_t bsp_io_expander_set_level(uint8_t pin_num, uint8_t level);
 
 /**
- * @brief Reset LCD panel via IO expander or GPIO.
+ * @brief Reset LCD panel via the CH422G IO expander.
  */
-void bsp_io_expander_reset_lcd(void);
+esp_err_t bsp_io_expander_reset_lcd(void);
 
 /**
- * @brief Reset Touch controller via IO expander or GPIO.
+ * @brief Reset Touch controller via the CH422G IO expander.
  */
-void bsp_io_expander_reset_touch(void);
+esp_err_t bsp_io_expander_reset_touch(void);
 
 /**
- * @brief Enable/disable LCD backlight via IO expander.
+ * @brief Enable/disable the LCD display output via CH422G EXIO2.
  */
-void bsp_io_expander_set_backlight(bool enable);
+esp_err_t bsp_io_expander_set_backlight(bool enable);
+
+/**
+ * @brief Set CH422G-controlled backlight brightness.
+ * @param percent Brightness level from 0 to 100 (capped at 97 by the board).
+ */
+esp_err_t bsp_io_expander_set_brightness(uint8_t percent);
 
 #ifdef __cplusplus
 }

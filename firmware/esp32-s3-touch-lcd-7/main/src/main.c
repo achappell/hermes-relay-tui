@@ -10,6 +10,7 @@
 #include "esp_timer.h"
 
 #include "board_config.h"
+#include "bsp_i2c.h"
 #include "bsp_io_expander.h"
 #include "bsp_lcd.h"
 #include "bsp_touch.h"
@@ -26,7 +27,9 @@
 #endif
 
 static const char *TAG = "main";
+#if HAVE_LVGL
 static SemaphoreHandle_t s_lvgl_mutex = NULL;
+#endif
 
 #if HAVE_LVGL
 static void lvgl_flush_cb(lv_disp_drv_t *drv, const lv_area_t *area, lv_color_t *color_map)
@@ -120,14 +123,28 @@ void app_main(void)
                  (unsigned int)(psram_size / 1024));
     }
 
-    /* 3. Initialize I2C and IO Expander */
-    bsp_io_expander_init();
+    /* 3. Initialize the shared I2C bus and IO expander */
+    esp_err_t err = bsp_i2c_init();
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "I2C initialization failed: %s", esp_err_to_name(err));
+        return;
+    }
+
+    err = bsp_io_expander_init();
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "CH422G IO expander initialization failed: %s", esp_err_to_name(err));
+        return;
+    }
 
     /* 4. Initialize Backlight */
-    bsp_lcd_backlight_init();
+    err = bsp_lcd_backlight_init();
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Backlight initialization failed: %s", esp_err_to_name(err));
+        return;
+    }
 
     /* 5. Initialize 1024x600 RGB LCD */
-    esp_err_t err = bsp_lcd_init(NULL, NULL);
+    err = bsp_lcd_init(NULL, NULL);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "LCD Initialization failed: %s", esp_err_to_name(err));
         return;
