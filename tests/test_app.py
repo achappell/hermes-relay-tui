@@ -824,6 +824,20 @@ async def test_tab_completes_common_prefix_for_multiple_candidates():
         assert composer.text == "/session "
 
 
+async def test_tab_completes_subcommand_in_composer():
+    session = FakeSession()
+    app = HermesStreamingApp(args=make_args(), session_factory=lambda: session)
+    async with app.run_test() as pilot:
+        composer = app.query_one("#composer", Composer)
+        composer.text = "/session li"
+        composer.move_cursor((0, len(composer.text)))
+        await pilot.press("tab")
+        await pilot.pause()
+
+        assert composer.text == "/session list "
+        assert session.sent_turns == []
+
+
 
 async def test_slash_types_inline_without_opening_an_overlay():
     session = FakeSession()

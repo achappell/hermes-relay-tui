@@ -26,10 +26,14 @@ def test_unknown_command_stays_a_command_for_gateway_dispatch():
     assert invocation.args == "--flag"
 
 
-def test_completion_only_targets_a_bare_slash_word():
+def test_completion_targets_slash_words_and_subcommands():
     assert complete_slash_command("/sta") == ["/status"]
     assert complete_slash_command("/q") == ["/queue", "/quit"]
+    assert complete_slash_command("/session li") == ["/session list"]
+    assert complete_slash_command("/session res") == ["/session resume"]
+    assert complete_slash_command("/busy q") == ["/busy queue"]
     assert complete_slash_command("/model gpt") == []
+    assert complete_slash_command("/session list extra") == []
 
 
 def test_steer_is_not_a_registered_command():
