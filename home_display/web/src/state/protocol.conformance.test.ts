@@ -21,6 +21,7 @@ import speaking from "../../../../shared/display/fixtures/snapshots/speaking.jso
 import thinking from "../../../../shared/display/fixtures/snapshots/thinking.json";
 import unknownField from "../../../../shared/display/fixtures/snapshots/unknown_field.json";
 import { parseSnapshot } from "./protocol";
+import { createDisplayReducer } from "./reducer";
 
 const validSnapshots = [
   idle,
@@ -67,5 +68,28 @@ describe("shared display fixture conformance", () => {
 
   it.each(invalidSnapshots)("rejects the invalid %j snapshot", (fixture) => {
     expect(parseSnapshot(fixture)).toBeNull();
+  });
+
+  it.each(validSnapshots)("normalizes the valid %j snapshot like the shared reducer", (fixture) => {
+    const parsed = parseSnapshot(fixture);
+    expect(parsed).not.toBeNull();
+    if (parsed === null) return;
+
+    const result = createDisplayReducer().applySnapshot(parsed);
+    const capabilities = "capabilities" in fixture ? fixture.capabilities : undefined;
+
+    expect(result).toMatchObject({
+      kind: "accepted",
+      view: {
+        state: fixture.state,
+        sequence: fixture.sequence,
+        is_busy: ["listening", "thinking", "speaking", "buffering"].includes(fixture.state),
+        connection_healthy: !["error", "disconnected"].includes(fixture.state),
+        can_choose: fixture.state === "prompt" &&
+          capabilities?.actions.includes("prompt.choose") === true,
+        can_dismiss: fixture.state === "prompt" &&
+          capabilities?.actions.includes("prompt.dismiss") === true,
+      },
+    });
   });
 });

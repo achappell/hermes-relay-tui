@@ -26,6 +26,21 @@ export interface DisplayPrompt {
   timeout_seconds: number | null;
 }
 
+export const displayActionNames = ["prompt.choose", "prompt.dismiss"] as const;
+export type DisplayActionName = (typeof displayActionNames)[number];
+
+export interface DisplayCapabilities {
+  actions: DisplayActionName[];
+  features: string[];
+}
+
+export interface DisplayAction {
+  type: "action";
+  schema: 1;
+  action_id: string;
+  choice: string;
+}
+
 export interface DisplaySnapshot {
   type: "snapshot";
   schema: 1;
@@ -35,6 +50,8 @@ export interface DisplaySnapshot {
   status_text: string | null;
   media: Record<string, unknown> | null;
   prompt: DisplayPrompt | null;
+  account?: string | null;
+  capabilities?: DisplayCapabilities;
 }
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
@@ -44,17 +61,18 @@ function parsePromptOption(raw: unknown): PromptOption | null {
   if (!isRecord(raw)) return null;
   const { id, label } = raw;
   if (typeof id !== "string" || !id) return null;
-  if (typeof label !== "string" || !label) return null;
+  if (id.length > 32) return null;
+  if (typeof label !== "string" || !label || label.length > 48) return null;
   return { id, label };
 }
 
 function parseDisplayPrompt(raw: unknown): DisplayPrompt | null {
   if (!isRecord(raw)) return null;
   const { kind, title, body, options, action_id, timeout_seconds } = raw;
-  if (typeof kind !== "string" || !kind) return null;
-  if (typeof title !== "string" || !title) return null;
-  if (typeof body !== "string") return null;
-  if (!Array.isArray(options)) return null;
+  if (typeof kind !== "string" || !kind || kind.length > 24) return null;
+  if (typeof title !== "string" || !title || title.length > 64) return null;
+  if (typeof body !== "string" || body.length > 192) return null;
+  if (!Array.isArray(options) || options.length === 0 || options.length > 4) return null;
   const parsedOptions: PromptOption[] = [];
   for (const opt of options) {
     const parsed = parsePromptOption(opt);
@@ -62,8 +80,16 @@ function parseDisplayPrompt(raw: unknown): DisplayPrompt | null {
     parsedOptions.push(parsed);
   }
   if (parsedOptions.length === 0) return null;
-  if (typeof action_id !== "string" || !action_id) return null;
-  if (timeout_seconds !== null && typeof timeout_seconds !== "number") return null;
+  if (typeof action_id !== "string" || !action_id || action_id.length > 64) return null;
+  if (timeout_seconds === undefined) return null;
+  if (
+    timeout_seconds !== null &&
+    (typeof timeout_seconds !== "number" ||
+      !Number.isSafeInteger(timeout_seconds) ||
+      timeout_seconds <= 0)
+  ) {
+    return null;
+  }
   return {
     kind,
     title,
@@ -74,12 +100,51 @@ function parseDisplayPrompt(raw: unknown): DisplayPrompt | null {
   };
 }
 
+function parseCapabilities(raw: unknown): DisplayCapabilities | null {
+  if (!isRecord(raw)) return null;
+  const { actions, features } = raw;
+  if (!Array.isArray(actions) || !Array.isArray(features)) return null;
+
+  const parsedActions: DisplayActionName[] = [];
+  for (const action of actions) {
+    if (
+      typeof action !== "string" ||
+      !displayActionNames.includes(action as DisplayActionName) ||
+      parsedActions.includes(action as DisplayActionName)
+    ) {
+      return null;
+    }
+    parsedActions.push(action as DisplayActionName);
+  }
+
+  const parsedFeatures: string[] = [];
+  for (const feature of features) {
+    if (typeof feature !== "string" || !feature || parsedFeatures.includes(feature)) {
+      return null;
+    }
+    parsedFeatures.push(feature);
+  }
+
+  return { actions: parsedActions, features: parsedFeatures };
+}
+
 export function parseSnapshot(raw: unknown): DisplaySnapshot | null {
   if (!isRecord(raw)) {
     return null;
   }
 
-  const { type, schema, sequence, state, response_text, status_text, media, prompt } = raw;
+  const {
+    type,
+    schema,
+    sequence,
+    state,
+    response_text,
+    status_text,
+    media,
+    prompt,
+    account,
+    capabilities,
+  } = raw;
 
   if (
     type !== "snapshot" ||
@@ -87,10 +152,12 @@ export function parseSnapshot(raw: unknown): DisplaySnapshot | null {
     typeof sequence !== "number" ||
     !Number.isSafeInteger(sequence) ||
     sequence < 0 ||
+    sequence > 0xffffffff ||
     !displayStates.includes(state as DisplayState) ||
     typeof response_text !== "string" ||
     (status_text !== null && typeof status_text !== "string") ||
-    (media !== null && !isRecord(media))
+    (media !== null && !isRecord(media)) ||
+    (account !== undefined && account !== null && typeof account !== "string")
   ) {
     return null;
   }
@@ -105,7 +172,14 @@ export function parseSnapshot(raw: unknown): DisplaySnapshot | null {
   if (state === "prompt" && parsedPrompt === null) return null;
   if (state !== "prompt" && parsedPrompt !== null) return null;
 
-  return {
+  let parsedCapabilities: DisplayCapabilities | undefined;
+  if (capabilities !== undefined) {
+    const parsed = parseCapabilities(capabilities);
+    if (parsed === null) return null;
+    parsedCapabilities = parsed;
+  }
+
+  const snapshot: DisplaySnapshot = {
     type,
     schema,
     sequence,
@@ -115,4 +189,25 @@ export function parseSnapshot(raw: unknown): DisplaySnapshot | null {
     media,
     prompt: parsedPrompt,
   };
+  if (account !== undefined) snapshot.account = account as string | null;
+  if (parsedCapabilities !== undefined) snapshot.capabilities = parsedCapabilities;
+  return snapshot;
+}
+
+export function parseAction(raw: unknown): DisplayAction | null {
+  if (!isRecord(raw)) return null;
+  const { type, schema, action_id, choice } = raw;
+  if (
+    type !== "action" ||
+    schema !== 1 ||
+    typeof action_id !== "string" ||
+    action_id.length === 0 ||
+    action_id.length > 64 ||
+    typeof choice !== "string" ||
+    choice.length === 0 ||
+    choice.length > 32
+  ) {
+    return null;
+  }
+  return { type, schema, action_id, choice };
 }

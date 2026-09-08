@@ -1,25 +1,13 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import "./styles.css";
-  import StateSurface from "./surfaces/StateSurface.svelte";
-  import PromptOverlay from "./surfaces/PromptOverlay.svelte";
-  import { StateChannel, type ConnectionState } from "./state/channel";
-  import type { DisplaySnapshot } from "./state/protocol";
+  import WasmCanvas from "./surfaces/WasmCanvas.svelte";
+  import { DisplayBridge, type DisplayAction } from "./state/bridge";
+  import { loadDisplayWasm, type WasmDisplayReducer } from "./state/wasm";
 
-  const initialSnapshot: DisplaySnapshot = {
-    type: "snapshot",
-    schema: 1,
-    sequence: 0,
-    state: "idle",
-    response_text: "",
-    status_text: null,
-    media: null,
-    prompt: null,
-  };
-
-  let snapshot = initialSnapshot;
-  let connectionState: ConnectionState = "connecting";
+  let displayReducer: WasmDisplayReducer | null = null;
   let protocolError: string | null = null;
+  let dispatchAction: (action: DisplayAction) => Promise<boolean> = async () => false;
 
   const stateChannelUrl = () => {
     const scheme = window.location.protocol === "https:" ? "wss:" : "ws:";
@@ -27,32 +15,62 @@
   };
 
   onMount(() => {
-    const channel = new StateChannel(
-      stateChannelUrl(),
-      (nextSnapshot) => {
-        snapshot = nextSnapshot;
-      },
-      (nextConnectionState) => {
-        connectionState = nextConnectionState;
-      },
-      (message) => {
-        protocolError = message;
-      },
-      undefined,
-      () => {
-        protocolError = null;
-      },
-    );
-    channel.start();
+    let disposed = false;
+    let bridge: DisplayBridge | null = null;
 
-    return () => channel.stop();
+    const start = async () => {
+      try {
+        const reducer = await loadDisplayWasm();
+        if (disposed) return;
+
+        displayReducer = reducer;
+        bridge = new DisplayBridge({
+          url: stateChannelUrl(),
+          reducer,
+          onView: () => {
+            protocolError = null;
+          },
+          onConnectionState: () => {},
+          onProtocolError: (message) => {
+            protocolError = message;
+          },
+          onValidSnapshot: () => {
+            protocolError = null;
+          },
+          onActionError: (error) => {
+            protocolError = error === "transport_error"
+              ? "Display action could not be sent"
+              : "That display action is no longer available";
+          },
+        });
+        dispatchAction = (action) => bridge?.dispatchAction(action) ?? Promise.resolve(false);
+        bridge.start();
+      } catch (error) {
+        if (!disposed) {
+          protocolError = error instanceof Error
+            ? error.message
+            : "Display WebAssembly is unavailable. Run scripts/build_display_wasm.sh";
+        }
+      }
+    };
+    void start();
+
+    return () => {
+      disposed = true;
+      bridge?.stop();
+    };
   });
-
-  $: account = (snapshot as any).account ?? null;
 </script>
 
-{#if snapshot.state === "prompt" && snapshot.prompt !== null}
-  <PromptOverlay prompt={snapshot.prompt} {account} />
+{#if displayReducer !== null}
+  <WasmCanvas
+    reducer={displayReducer}
+    {dispatchAction}
+    errorMessage={protocolError}
+    onRuntimeError={(message) => protocolError = message}
+  />
 {:else}
-  <StateSurface {snapshot} {connectionState} {protocolError} />
+  <main class="wasm-bootstrap-shell" data-state={protocolError ? "error" : "connecting"}>
+    <p data-bootstrap-message>{protocolError ?? "Starting the shared Hermes display…"}</p>
+  </main>
 {/if}

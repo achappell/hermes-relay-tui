@@ -10,9 +10,10 @@ from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Awaitable, Callable
 from urllib.parse import parse_qs, unquote, urlsplit
 
+from websockets.asyncio.server import Server, ServerConnection, serve
 from websockets.datastructures import Headers
 from websockets.exceptions import ConnectionClosed
-from websockets.legacy.server import WebSocketServer, WebSocketServerProtocol, serve
+from websockets.http11 import Request, Response
 
 from .state import DisplayStatePublisher
 
@@ -68,7 +69,7 @@ class DisplayServer:
         self._host = host
         self._port = port
         self._on_action = on_action
-        self._server: WebSocketServer | None = None
+        self._server: Server | None = None
         self._info: DisplayServerInfo | None = None
 
     async def start(self) -> DisplayServerInfo:
@@ -112,26 +113,57 @@ class DisplayServer:
         return resolved_path
 
     async def _serve_http_request(
-        self, request_path: str, headers: Headers
-    ) -> tuple[HTTPStatus, list[tuple[str, str]], bytes] | None:
-        path = urlsplit(request_path).path
+        self, _connection: ServerConnection, request: Request
+    ) -> Response | None:
+        path = urlsplit(request.path).path
+        headers = request.headers
         if path == "/state":
             if not self._origin_is_allowed(headers.get("Origin")):
-                return self._http_response(HTTPStatus.FORBIDDEN, b"Forbidden\n")
+                return self._web_response(
+                    self._http_response(HTTPStatus.FORBIDDEN, b"Forbidden\n")
+                )
+            if request.method != "GET":
+                return self._web_response(
+                    self._http_response(
+                        HTTPStatus.METHOD_NOT_ALLOWED, b"Method Not Allowed\n"
+                    )
+                )
             return None
         if path == "/action":
             if not self._origin_is_allowed(headers.get("Origin")):
-                return self._http_response(HTTPStatus.FORBIDDEN, b"Forbidden\n")
+                return self._web_response(
+                    self._http_response(HTTPStatus.FORBIDDEN, b"Forbidden\n")
+                )
             if headers.get("Upgrade", "").lower() == "websocket":
-                return self._http_response(HTTPStatus.BAD_REQUEST, b"Not a websocket endpoint\n")
-            return await self._handle_action_request(request_path)
+                return self._web_response(
+                    self._http_response(
+                        HTTPStatus.BAD_REQUEST, b"Not a websocket endpoint\n"
+                    )
+                )
+            if request.method != "POST":
+                return self._web_response(
+                    self._http_response(
+                        HTTPStatus.METHOD_NOT_ALLOWED, b"Method Not Allowed\n"
+                    )
+                )
+            return self._web_response(await self._handle_action_request(request.path))
         if headers.get("Upgrade", "").lower() == "websocket":
-            return self._http_response(HTTPStatus.NOT_FOUND, b"Not found\n")
+            return self._web_response(
+                self._http_response(HTTPStatus.NOT_FOUND, b"Not found\n")
+            )
+        if request.method != "GET":
+            return self._web_response(
+                self._http_response(
+                    HTTPStatus.METHOD_NOT_ALLOWED, b"Method Not Allowed\n"
+                )
+            )
 
         try:
-            static_path = self.resolve_static_path(request_path)
+            static_path = self.resolve_static_path(request.path)
         except ValueError:
-            return self._http_response(HTTPStatus.FORBIDDEN, b"Forbidden\n")
+            return self._web_response(
+                self._http_response(HTTPStatus.FORBIDDEN, b"Forbidden\n")
+            )
 
         if static_path.name == "":
             static_path /= "index.html"
@@ -139,13 +171,17 @@ class DisplayServer:
             static_path /= "index.html"
 
         if not static_path.is_file():
-            return self._http_response(HTTPStatus.NOT_FOUND, b"Not found\n")
+            return self._web_response(
+                self._http_response(HTTPStatus.NOT_FOUND, b"Not found\n")
+            )
 
         content_type, _encoding = mimetypes.guess_type(static_path.name)
-        return self._http_response(
-            HTTPStatus.OK,
-            static_path.read_bytes(),
-            content_type=content_type or "application/octet-stream",
+        return self._web_response(
+            self._http_response(
+                HTTPStatus.OK,
+                static_path.read_bytes(),
+                content_type=content_type or "application/octet-stream",
+            )
         )
 
     async def _handle_action_request(
@@ -202,7 +238,7 @@ class DisplayServer:
             and not parsed_origin.fragment
         )
 
-    async def _handle_state_connection(self, websocket: WebSocketServerProtocol) -> None:
+    async def _handle_state_connection(self, websocket: ServerConnection) -> None:
         subscription = self._publisher.subscribe()
         next_snapshot = asyncio.create_task(anext(subscription))
         closed = asyncio.create_task(websocket.wait_closed())
@@ -232,15 +268,10 @@ class DisplayServer:
         except ConnectionClosed:
             return
         finally:
-            if not next_snapshot.done():
-                next_snapshot.cancel()
-                await asyncio.gather(next_snapshot, return_exceptions=True)
-            if not closed.done():
-                closed.cancel()
-                await asyncio.gather(closed, return_exceptions=True)
-            if not incoming.done():
-                incoming.cancel()
-                await asyncio.gather(incoming, return_exceptions=True)
+            for task in (next_snapshot, closed, incoming):
+                if not task.done():
+                    task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
             await subscription.aclose()  # type: ignore[attr-defined]
 
     @staticmethod
@@ -271,3 +302,10 @@ class DisplayServer:
         status: HTTPStatus, body: bytes, *, content_type: str = "text/plain"
     ) -> tuple[HTTPStatus, list[tuple[str, str]], bytes]:
         return status, [("Content-Type", content_type)], body
+
+    @staticmethod
+    def _web_response(
+        response: tuple[HTTPStatus, list[tuple[str, str]], bytes]
+    ) -> Response:
+        status, headers, body = response
+        return Response(status, status.phrase, Headers(headers), body)

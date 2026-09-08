@@ -1,13 +1,18 @@
 # HOME-03 kiosk display smoke procedure
 
 The HOME-03 display demo is a local fake-state source. It does not connect to
-Hermes, use audio or hardware, or load photos or YouTube.
+Hermes, use audio or hardware, or load photos or YouTube. The visible browser
+surface is the compiled shared C/LVGL display, with prompt touch actions sent
+through the local `/action` adapter.
 
 ## Build the browser shell
 
 Run these commands from the repository root:
 
 ```bash
+source build/display-wasm/emsdk/emsdk_env.sh
+bash scripts/build_display_wasm.sh --check
+bash scripts/build_display_wasm.sh
 npm --prefix home_display/web install
 npm --prefix home_display/web run check
 npm --prefix home_display/web run build
@@ -29,6 +34,21 @@ Open the printed loopback URL in a browser. The demo repeats this sequence:
 Stop it with `Ctrl+C`. The browser should show its disconnected state after the
 host stops, and should reconnect and hydrate from the current snapshot after a
 restart.
+
+For a prompt-action check, serve a snapshot with `state: "prompt"`, one or more
+options, and `capabilities.actions: ["prompt.choose"]`. Tap the corresponding
+button on the canvas and verify the server receives the normalized
+`action_id`/`choice` pair. The shared LVGL layout is 1024x600; the host scales
+the backing canvas for device-pixel ratio and maps touches from its CSS bounds.
+
+## Re-verification evidence — 2026-09-07 (CDT)
+
+- `venv/bin/pytest` — 828 passed; one existing `websockets.legacy` deprecation warning.
+- `npm --prefix home_display/web test` — 120 passed; `npm --prefix home_display/web run check` — 0 errors and 0 warnings.
+- `source build/display-wasm/emsdk/emsdk_env.sh && bash scripts/build_display_wasm.sh` — regenerated the Emscripten 6.0.5 / LVGL 8.3.11 artifacts; the generated ABI smoke covered the framebuffer, fast pointer down/up, and `sethome/yes` action queue.
+- `npm --prefix home_display/web run build` — packaged the current canvas host and WASM artifacts under `home_display/static/`.
+- Chrome loopback smoke — loaded the packaged `display_core.wasm`, visibly rendered the LVGL header/panel, and advanced from `idle` to `listening` from the Python demo stream. A prompt server rendered the C/LVGL prompt and a canvas tap produced `ACTION sethome yes`.
+- `git diff --check` — passed. Voice/audio, physical ESP32 hardware, and iPad-specific review remain outside this slice and belong to HOME-16.
 
 ## Verification evidence — 2026-08-31 (CDT)
 
