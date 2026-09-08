@@ -1,16 +1,19 @@
-import { parseSnapshot, type DisplaySnapshot } from "./protocol";
+import { parseAudioEvent, parseSnapshot, type DisplayAudioEvent, type DisplaySnapshot } from "./protocol";
 
 export type ConnectionState = "connecting" | "connected" | "disconnected";
 export type SnapshotListener = (snapshot: DisplaySnapshot) => void;
 export type SocketFactory = (url: string) => WebSocketLike;
 export type ProtocolErrorListener = (message: string) => void;
 export type ValidSnapshotListener = (snapshot: DisplaySnapshot) => void;
+export type AudioEventListener = (event: DisplayAudioEvent) => void;
+export type AudioChunkListener = (chunk: ArrayBuffer) => void;
 
 export interface WebSocketLike {
   onopen: (() => void) | null;
-  onmessage: ((event: MessageEvent<string>) => void) | null;
+  onmessage: ((event: MessageEvent<unknown>) => void) | null;
   onerror: (() => void) | null;
   onclose: (() => void) | null;
+  send?: (data: string) => void;
   close(): void;
 }
 
@@ -24,6 +27,7 @@ export class StateChannel {
   private reconnectAttempt = 0;
   private lastSequence = -1;
   private hasHydratedSocket = false;
+  private socketOpen = false;
   private running = false;
 
   constructor(
@@ -33,6 +37,8 @@ export class StateChannel {
     private readonly onProtocolError: ProtocolErrorListener = () => {},
     private readonly socketFactory: SocketFactory = defaultSocketFactory,
     private readonly onValidSnapshot: ValidSnapshotListener = () => {},
+    private readonly onAudioEvent: AudioEventListener = () => {},
+    private readonly onAudioChunk: AudioChunkListener = () => {},
   ) {}
 
   start(): void {
@@ -46,6 +52,7 @@ export class StateChannel {
 
   stop(): void {
     this.running = false;
+    this.socketOpen = false;
     if (this.reconnectTimer !== null) {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
@@ -84,6 +91,7 @@ export class StateChannel {
         return;
       }
 
+      this.socketOpen = true;
       this.lastSequence = -1;
       this.reconnectAttempt = 0;
     };
@@ -101,12 +109,48 @@ export class StateChannel {
       }
 
       this.socket = null;
+      this.socketOpen = false;
       this.deliver(() => this.onConnectionState("disconnected"));
       this.scheduleReconnect();
     };
   }
 
+  sendVoiceTurn(text: string): boolean {
+    const normalized = text.trim();
+    if (!this.socketOpen || !this.socket || !normalized || normalized.length > 4000) {
+      return false;
+    }
+    if (typeof this.socket.send !== "function") {
+      return false;
+    }
+    try {
+      this.socket.send(JSON.stringify({ type: "voice_turn", schema: 1, text: normalized }));
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   private handleMessage(data: unknown): void {
+    if (data instanceof ArrayBuffer) {
+      this.deliver(() => this.onAudioChunk(data));
+      return;
+    }
+    if (ArrayBuffer.isView(data)) {
+      const view = new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
+      const copy = view.slice().buffer;
+      this.deliver(() => this.onAudioChunk(copy));
+      return;
+    }
+    if (typeof Blob !== "undefined" && data instanceof Blob) {
+      void data.arrayBuffer().then((buffer) => {
+        if (this.running) {
+          this.deliver(() => this.onAudioChunk(buffer));
+        }
+      }).catch(() => this.reportProtocolError());
+      return;
+    }
+
     // The browser WebSocket API delivers one complete message event even when
     // the protocol fragmented it on the wire. A partial/malformed application
     // payload must therefore be rejected atomically without replacing the
@@ -116,6 +160,12 @@ export class StateChannel {
       raw = typeof data === "string" ? JSON.parse(data) : null;
     } catch {
       this.reportProtocolError();
+      return;
+    }
+
+    const audioEvent = parseAudioEvent(raw);
+    if (audioEvent !== null) {
+      this.deliver(() => this.onAudioEvent(audioEvent));
       return;
     }
 

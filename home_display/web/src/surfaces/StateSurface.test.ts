@@ -19,7 +19,7 @@ const snapshot = (state: string, response_text = "", status_text: string | null 
 
 class FakeSocket implements WebSocketLike {
   onopen: (() => void) | null = null;
-  onmessage: ((event: MessageEvent<string>) => void) | null = null;
+  onmessage: ((event: MessageEvent<unknown>) => void) | null = null;
   onerror: (() => void) | null = null;
   onclose: (() => void) | null = null;
 
@@ -30,7 +30,7 @@ class FakeSocket implements WebSocketLike {
   }
 
   message(data: string): void {
-    this.onmessage?.({ data } as MessageEvent<string>);
+    this.onmessage?.({ data } as MessageEvent<unknown>);
   }
 
   closeFromServer(): void {

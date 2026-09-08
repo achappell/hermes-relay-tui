@@ -107,6 +107,7 @@ const ERROR_VALUE = 1 << 23;
 const STATE_SYMBOL = Symbol("$state");
 const COMPONENT_SYMBOL = Symbol("component");
 const LEGACY_PROPS = Symbol("legacy props");
+const LOADING_ATTR_SYMBOL = Symbol("");
 const ATTRIBUTES_CACHE = Symbol("attributes");
 const CLASS_CACHE = Symbol("class");
 const STYLE_CACHE = Symbol("style");
@@ -121,6 +122,7 @@ const STALE_REACTION = new class StaleReactionError extends Error {
 const PROPS_IS_RUNES = 1 << 1;
 const PROPS_IS_UPDATED = 1 << 2;
 const PROPS_IS_BINDABLE = 1 << 3;
+const TEMPLATE_FRAGMENT = 1;
 const TEMPLATE_USE_IMPORT_NODE = 1 << 1;
 const UNINITIALIZED = Symbol("uninitialized");
 const NAMESPACE_HTML = "http://www.w3.org/1999/xhtml";
@@ -2643,22 +2645,54 @@ function is_passive_event(name) {
 const event_symbol = Symbol("events");
 const all_registered_events = /* @__PURE__ */ new Set();
 const root_event_handles = /* @__PURE__ */ new Set();
+function create_event(event_name, dom, handler, options = {}) {
+  function target_handler(event2) {
+    if (!options.capture) {
+      handle_event_propagation.call(dom, event2);
+    }
+    if (!event2.cancelBubble) {
+      return without_reactive_context(() => {
+        return handler == null ? void 0 : handler.call(this, event2);
+      });
+    }
+  }
+  if (event_name.startsWith("pointer") || event_name.startsWith("touch") || event_name === "wheel") {
+    queue_micro_task(() => {
+      dom.addEventListener(event_name, target_handler, options);
+    });
+  } else {
+    dom.addEventListener(event_name, target_handler, options);
+  }
+  return target_handler;
+}
+function event(event_name, dom, handler, capture2, passive) {
+  var options = { capture: capture2, passive };
+  var target_handler = create_event(event_name, dom, handler, options);
+  if (dom === document.body || // @ts-ignore
+  dom === window || // @ts-ignore
+  dom === document || // Firefox has quirky behavior, it can happen that we still get "canplay" events when the element is already removed
+  dom instanceof HTMLMediaElement) {
+    teardown(() => {
+      dom.removeEventListener(event_name, target_handler, options);
+    });
+  }
+}
 let last_propagated_event = null;
 let last_propagated_event_clear_scheduled = false;
-function handle_event_propagation(event) {
+function handle_event_propagation(event2) {
   var _a2, _b2;
   var handler_element = this;
   var owner_document = (
     /** @type {Node} */
     handler_element.ownerDocument
   );
-  var event_name = event.type;
-  var path = ((_a2 = event.composedPath) == null ? void 0 : _a2.call(event)) || [];
+  var event_name = event2.type;
+  var path = ((_a2 = event2.composedPath) == null ? void 0 : _a2.call(event2)) || [];
   var current_target = (
     /** @type {null | Element} */
-    path[0] || event.target
+    path[0] || event2.target
   );
-  last_propagated_event = event;
+  last_propagated_event = event2;
   if (!last_propagated_event_clear_scheduled) {
     last_propagated_event_clear_scheduled = true;
     setTimeout(() => {
@@ -2667,12 +2701,12 @@ function handle_event_propagation(event) {
     });
   }
   var path_idx = 0;
-  var handled_at = last_propagated_event === event && event[event_symbol];
+  var handled_at = last_propagated_event === event2 && event2[event_symbol];
   if (handled_at) {
     var at_idx = path.indexOf(handled_at);
     if (at_idx !== -1 && (handler_element === document || handler_element === /** @type {any} */
     window)) {
-      event[event_symbol] = handler_element;
+      event2[event_symbol] = handler_element;
       return;
     }
     var handler_idx = path.indexOf(handler_element);
@@ -2684,9 +2718,9 @@ function handle_event_propagation(event) {
     }
   }
   current_target = /** @type {Element} */
-  path[path_idx] || event.target;
+  path[path_idx] || event2.target;
   if (current_target === handler_element) return;
-  define_property(event, "currentTarget", {
+  define_property(event2, "currentTarget", {
     configurable: true,
     get() {
       return current_target || owner_document;
@@ -2706,8 +2740,8 @@ function handle_event_propagation(event) {
         if (delegated != null && (!/** @type {any} */
         current_target.disabled || // DOM could've been updated already by the time this is reached, so we check this as well
         // -> the target could not have been disabled because it emits the event in the first place
-        event.target === current_target)) {
-          delegated.call(current_target, event);
+        event2.target === current_target)) {
+          delegated.call(current_target, event2);
         }
       } catch (error) {
         if (throw_error) {
@@ -2716,7 +2750,7 @@ function handle_event_propagation(event) {
           throw_error = error;
         }
       }
-      if (event.cancelBubble) break;
+      if (event2.cancelBubble) break;
       path_idx++;
       current_target = path_idx < path.length ? (
         /** @type {Element} */
@@ -2732,8 +2766,8 @@ function handle_event_propagation(event) {
       throw throw_error;
     }
   } finally {
-    event[event_symbol] = handler_element;
-    delete event.currentTarget;
+    event2[event_symbol] = handler_element;
+    delete event2.currentTarget;
     set_active_reaction(previous_reaction);
     set_active_effect(previous_effect);
   }
@@ -2769,20 +2803,31 @@ function assign_nodes(start, end) {
 }
 // @__NO_SIDE_EFFECTS__
 function from_html(content, flags2) {
+  var is_fragment = (flags2 & TEMPLATE_FRAGMENT) !== 0;
   var use_import_node = (flags2 & TEMPLATE_USE_IMPORT_NODE) !== 0;
   var node;
   var has_start = !content.startsWith("<!>");
   return () => {
     if (node === void 0) {
       node = create_fragment_from_html(has_start ? content : "<!>" + content);
-      node = /** @type {TemplateNode} */
+      if (!is_fragment) node = /** @type {TemplateNode} */
       /* @__PURE__ */ get_first_child(node);
     }
     var clone = (
       /** @type {TemplateNode} */
       use_import_node || is_firefox ? document.importNode(node, true) : node.cloneNode(true)
     );
-    {
+    if (is_fragment) {
+      var start = (
+        /** @type {TemplateNode} */
+        /* @__PURE__ */ get_first_child(clone)
+      );
+      var end = (
+        /** @type {TemplateNode} */
+        clone.lastChild
+      );
+      assign_nodes(start, end);
+    } else {
       assign_nodes(clone, clone);
     }
     return clone;
@@ -3542,6 +3587,9 @@ const IS_HTML = Symbol("is html");
 function set_attribute(element, attribute, value, skip_warning) {
   var attributes = get_attributes(element);
   if (attributes[attribute] === (attributes[attribute] = value)) return;
+  if (attribute === "loading") {
+    element[LOADING_ATTR_SYMBOL] = value;
+  }
   if (value == null) {
     element.removeAttribute(attribute);
   } else if (typeof value !== "string" && get_setters(element).has(attribute)) {
@@ -3871,32 +3919,32 @@ class CanvasDisplayHost {
         this.report(error);
       }
     });
-    __publicField(this, "handlePointerDown", (event) => {
+    __publicField(this, "handlePointerDown", (event2) => {
       var _a2, _b2;
-      event.preventDefault();
-      this.pointerId = event.pointerId;
-      (_b2 = (_a2 = this.canvas).setPointerCapture) == null ? void 0 : _b2.call(_a2, event.pointerId);
-      this.setPointer(event, true);
+      event2.preventDefault();
+      this.pointerId = event2.pointerId;
+      (_b2 = (_a2 = this.canvas).setPointerCapture) == null ? void 0 : _b2.call(_a2, event2.pointerId);
+      this.setPointer(event2, true);
     });
-    __publicField(this, "handlePointerMove", (event) => {
-      if (event.pointerId !== this.pointerId) return;
-      event.preventDefault();
-      this.setPointer(event, true);
+    __publicField(this, "handlePointerMove", (event2) => {
+      if (event2.pointerId !== this.pointerId) return;
+      event2.preventDefault();
+      this.setPointer(event2, true);
     });
-    __publicField(this, "handlePointerUp", (event) => {
+    __publicField(this, "handlePointerUp", (event2) => {
       var _a2, _b2;
-      if (event.pointerId !== this.pointerId) return;
-      event.preventDefault();
-      this.setPointer(event, false);
-      (_b2 = (_a2 = this.canvas).releasePointerCapture) == null ? void 0 : _b2.call(_a2, event.pointerId);
+      if (event2.pointerId !== this.pointerId) return;
+      event2.preventDefault();
+      this.setPointer(event2, false);
+      (_b2 = (_a2 = this.canvas).releasePointerCapture) == null ? void 0 : _b2.call(_a2, event2.pointerId);
       this.pointerId = null;
     });
-    __publicField(this, "handlePointerCancel", (event) => {
+    __publicField(this, "handlePointerCancel", (event2) => {
       var _a2, _b2;
-      if (event.pointerId !== this.pointerId) return;
-      event.preventDefault();
-      this.setPointer(event, false);
-      (_b2 = (_a2 = this.canvas).releasePointerCapture) == null ? void 0 : _b2.call(_a2, event.pointerId);
+      if (event2.pointerId !== this.pointerId) return;
+      event2.preventDefault();
+      this.setPointer(event2, false);
+      (_b2 = (_a2 = this.canvas).releasePointerCapture) == null ? void 0 : _b2.call(_a2, event2.pointerId);
       this.pointerId = null;
     });
     this.canvas = canvas;
@@ -3998,16 +4046,16 @@ class CanvasDisplayHost {
       this.context.putImageData(imageData, 0, 0);
     }
   }
-  setPointer(event, pressed) {
+  setPointer(event2, pressed) {
     const rect = this.canvas.getBoundingClientRect();
     if (rect.width <= 0 || rect.height <= 0) return;
     const x = clamp(
-      Math.round((event.clientX - rect.left) / rect.width * DISPLAY_WIDTH),
+      Math.round((event2.clientX - rect.left) / rect.width * DISPLAY_WIDTH),
       0,
       DISPLAY_WIDTH - 1
     );
     const y = clamp(
-      Math.round((event.clientY - rect.top) / rect.height * DISPLAY_HEIGHT),
+      Math.round((event2.clientY - rect.top) / rect.height * DISPLAY_HEIGHT),
       0,
       DISPLAY_HEIGHT - 1
     );
@@ -4023,7 +4071,7 @@ class CanvasDisplayHost {
   }
 }
 var root$1 = /* @__PURE__ */ from_html(`<div class="wasm-canvas-error" data-canvas-error="" role="alert"> </div>`);
-var root_1 = /* @__PURE__ */ from_html(`<main class="wasm-canvas-shell"><canvas class="wasm-display-canvas" data-display-canvas="" aria-label="Hermes home display"></canvas> <!></main>`);
+var root_1$1 = /* @__PURE__ */ from_html(`<main class="wasm-canvas-shell"><canvas class="wasm-display-canvas" data-display-canvas="" aria-label="Hermes home display"></canvas> <!></main>`);
 function WasmCanvas($$anchor, $$props) {
   push($$props, false);
   const visibleError = /* @__PURE__ */ mutable_source();
@@ -4055,7 +4103,7 @@ function WasmCanvas($$anchor, $$props) {
   });
   legacy_pre_effect_reset();
   init();
-  var main = root_1();
+  var main = root_1$1();
   var canvas_1 = child(main);
   bind_this(canvas_1, ($$value) => set(canvas, $$value), () => get(canvas));
   var node = sibling(canvas_1, 2);
@@ -4189,17 +4237,51 @@ function parseSnapshot(raw) {
   if (parsedCapabilities !== void 0) snapshot.capabilities = parsedCapabilities;
   return snapshot;
 }
+function parseTurnId(raw) {
+  return typeof raw === "string" && raw.length > 0 && raw.length <= 128 ? raw : null;
+}
+function parseAudioEvent(raw) {
+  if (!isRecord(raw) || raw.schema !== 1 || typeof raw.type !== "string") {
+    return null;
+  }
+  const turnId = parseTurnId(raw.turn_id);
+  if (turnId === null) return null;
+  if (raw.type === "audio_start") {
+    const { sample_rate, channels, sample_width } = raw;
+    if (typeof sample_rate !== "number" || !Number.isSafeInteger(sample_rate) || sample_rate <= 0 || typeof channels !== "number" || !Number.isSafeInteger(channels) || channels < 1 || channels > 8 || sample_width !== 2) {
+      return null;
+    }
+    return {
+      type: "audio_start",
+      schema: 1,
+      turn_id: turnId,
+      sample_rate,
+      channels,
+      sample_width: 2
+    };
+  }
+  if (raw.type === "audio_end") {
+    return { type: "audio_end", schema: 1, turn_id: turnId };
+  }
+  if (raw.type === "audio_abort") {
+    return typeof raw.reason === "string" && raw.reason.length > 0 ? { type: "audio_abort", schema: 1, turn_id: turnId, reason: raw.reason } : null;
+  }
+  return null;
+}
 const defaultSocketFactory = (url) => new WebSocket(url);
 const RECONNECT_DELAYS_MS = [250, 500, 1e3, 2e3, 4e3];
 class StateChannel {
   constructor(url, onSnapshot, onConnectionState, onProtocolError = () => {
   }, socketFactory = defaultSocketFactory, onValidSnapshot = () => {
+  }, onAudioEvent = () => {
+  }, onAudioChunk = () => {
   }) {
     __publicField(this, "socket", null);
     __publicField(this, "reconnectTimer", null);
     __publicField(this, "reconnectAttempt", 0);
     __publicField(this, "lastSequence", -1);
     __publicField(this, "hasHydratedSocket", false);
+    __publicField(this, "socketOpen", false);
     __publicField(this, "running", false);
     this.url = url;
     this.onSnapshot = onSnapshot;
@@ -4207,6 +4289,8 @@ class StateChannel {
     this.onProtocolError = onProtocolError;
     this.socketFactory = socketFactory;
     this.onValidSnapshot = onValidSnapshot;
+    this.onAudioEvent = onAudioEvent;
+    this.onAudioChunk = onAudioChunk;
   }
   start() {
     if (this.running) {
@@ -4217,6 +4301,7 @@ class StateChannel {
   }
   stop() {
     this.running = false;
+    this.socketOpen = false;
     if (this.reconnectTimer !== null) {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
@@ -4250,14 +4335,15 @@ class StateChannel {
       if (!this.isCurrent(socket)) {
         return;
       }
+      this.socketOpen = true;
       this.lastSequence = -1;
       this.reconnectAttempt = 0;
     };
-    socket.onmessage = (event) => {
+    socket.onmessage = (event2) => {
       if (!this.isCurrent(socket)) {
         return;
       }
-      this.handleMessage(event.data);
+      this.handleMessage(event2.data);
     };
     socket.onerror = () => {
     };
@@ -4266,16 +4352,55 @@ class StateChannel {
         return;
       }
       this.socket = null;
+      this.socketOpen = false;
       this.deliver(() => this.onConnectionState("disconnected"));
       this.scheduleReconnect();
     };
   }
+  sendVoiceTurn(text) {
+    const normalized = text.trim();
+    if (!this.socketOpen || !this.socket || !normalized || normalized.length > 4e3) {
+      return false;
+    }
+    if (typeof this.socket.send !== "function") {
+      return false;
+    }
+    try {
+      this.socket.send(JSON.stringify({ type: "voice_turn", schema: 1, text: normalized }));
+      return true;
+    } catch {
+      return false;
+    }
+  }
   handleMessage(data) {
+    if (data instanceof ArrayBuffer) {
+      this.deliver(() => this.onAudioChunk(data));
+      return;
+    }
+    if (ArrayBuffer.isView(data)) {
+      const view = new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
+      const copy = view.slice().buffer;
+      this.deliver(() => this.onAudioChunk(copy));
+      return;
+    }
+    if (typeof Blob !== "undefined" && data instanceof Blob) {
+      void data.arrayBuffer().then((buffer) => {
+        if (this.running) {
+          this.deliver(() => this.onAudioChunk(buffer));
+        }
+      }).catch(() => this.reportProtocolError());
+      return;
+    }
     let raw;
     try {
       raw = typeof data === "string" ? JSON.parse(data) : null;
     } catch {
       this.reportProtocolError();
+      return;
+    }
+    const audioEvent = parseAudioEvent(raw);
+    if (audioEvent !== null) {
+      this.deliver(() => this.onAudioEvent(audioEvent));
       return;
     }
     const snapshot = parseSnapshot(raw);
@@ -4320,7 +4445,7 @@ class StateChannel {
 }
 const busyStates = /* @__PURE__ */ new Set(["listening", "thinking", "speaking", "buffering"]);
 const allowedTransitions = {
-  idle: /* @__PURE__ */ new Set(["idle", "heard", "listening", "prompt"]),
+  idle: /* @__PURE__ */ new Set(["idle", "heard", "listening", "thinking", "prompt"]),
   heard: /* @__PURE__ */ new Set(["heard", "listening", "thinking", "idle", "prompt"]),
   listening: /* @__PURE__ */ new Set(["listening", "thinking", "heard", "idle"]),
   thinking: /* @__PURE__ */ new Set(["thinking", "speaking", "buffering", "prompt", "idle"]),
@@ -4383,6 +4508,18 @@ class SnapshotReducer {
 function createDisplayReducer() {
   return new SnapshotReducer();
 }
+function createInitialDisplayView() {
+  return toView({
+    type: "snapshot",
+    schema: 1,
+    sequence: 0,
+    state: "idle",
+    response_text: "",
+    status_text: null,
+    media: null,
+    prompt: null
+  });
+}
 const postDisplayAction = async (action) => {
   const query = new URLSearchParams({
     action_id: action.action_id,
@@ -4404,10 +4541,15 @@ class DisplayBridge {
     __publicField(this, "reducer");
     __publicField(this, "actionTransport");
     __publicField(this, "onActionError");
+    __publicField(this, "voiceTransport");
+    __publicField(this, "onVoiceError");
     __publicField(this, "channel");
     this.reducer = options.reducer ?? createDisplayReducer();
     this.actionTransport = options.actionTransport ?? postDisplayAction;
     this.onActionError = options.onActionError ?? (() => {
+    });
+    this.voiceTransport = options.voiceTransport ?? null;
+    this.onVoiceError = options.onVoiceError ?? (() => {
     });
     this.channel = new StateChannel(
       options.url,
@@ -4433,7 +4575,9 @@ class DisplayBridge {
       },
       options.onProtocolError,
       options.socketFactory,
-      options.onValidSnapshot
+      options.onValidSnapshot,
+      options.onAudioEvent,
+      options.onAudioChunk
     );
   }
   start() {
@@ -4455,6 +4599,25 @@ class DisplayBridge {
       this.deliver(() => this.onActionError("transport_error"));
       return false;
     }
+  }
+  async sendVoiceTurn(text) {
+    const normalized = text.trim();
+    if (!normalized || normalized.length > 4e3) {
+      this.deliver(() => this.onVoiceError("transport_error"));
+      return false;
+    }
+    try {
+      if (this.voiceTransport !== null) {
+        await this.voiceTransport(normalized);
+        return true;
+      }
+      if (this.channel.sendVoiceTurn(normalized)) {
+        return true;
+      }
+    } catch {
+    }
+    this.deliver(() => this.onVoiceError("transport_error"));
+    return false;
   }
   deliver(callback) {
     try {
@@ -4754,11 +4917,225 @@ async function loadDisplayWasm(factory = defaultDisplayWasmFactory) {
     throw new DisplayWasmLoadError(error);
   }
 }
-var root = /* @__PURE__ */ from_html(`<main class="wasm-bootstrap-shell"><p data-bootstrap-message=""> </p></main>`);
+function defaultRecognitionFactory() {
+  const windowWithSpeech = window;
+  const Constructor = windowWithSpeech.SpeechRecognition ?? windowWithSpeech.webkitSpeechRecognition;
+  if (!Constructor) {
+    throw new Error("Speech recognition is unavailable in this browser");
+  }
+  return new Constructor();
+}
+class BrowserVoiceController {
+  constructor(options) {
+    __publicField(this, "sendText");
+    __publicField(this, "onState");
+    __publicField(this, "onError");
+    __publicField(this, "recognitionFactory");
+    __publicField(this, "language");
+    __publicField(this, "recognition", null);
+    __publicField(this, "listening", false);
+    __publicField(this, "submitting", false);
+    this.sendText = options.sendText;
+    this.onState = options.onState ?? (() => {
+    });
+    this.onError = options.onError ?? (() => {
+    });
+    this.recognitionFactory = options.recognitionFactory ?? defaultRecognitionFactory;
+    this.language = options.language ?? "en-US";
+  }
+  async start() {
+    if (this.listening || this.submitting) return false;
+    try {
+      const recognition = this.recognitionFactory();
+      recognition.continuous = false;
+      recognition.interimResults = true;
+      recognition.lang = this.language;
+      recognition.onresult = (event2) => this.handleResult(event2);
+      recognition.onerror = () => this.fail();
+      recognition.onend = () => {
+        if (!this.submitting) {
+          this.listening = false;
+          this.emit("idle");
+        }
+      };
+      this.recognition = recognition;
+      this.listening = true;
+      this.emit("listening");
+      recognition.start();
+      return true;
+    } catch {
+      this.fail();
+      return false;
+    }
+  }
+  stop() {
+    if (!this.listening || this.recognition === null) return;
+    this.listening = false;
+    try {
+      this.recognition.stop();
+    } catch {
+    }
+    if (!this.submitting) this.emit("idle");
+  }
+  reset() {
+    this.listening = false;
+    this.submitting = false;
+    this.emit("idle");
+  }
+  handleResult(event2) {
+    var _a2, _b2, _c;
+    if (!this.listening) return;
+    const finalText = [];
+    for (let index = event2.resultIndex; index < event2.results.length; index += 1) {
+      const result = event2.results[index];
+      if (result == null ? void 0 : result.isFinal) {
+        const transcript = (_b2 = (_a2 = result[0]) == null ? void 0 : _a2.transcript) == null ? void 0 : _b2.trim();
+        if (transcript) finalText.push(transcript);
+      }
+    }
+    const text = finalText.join(" ").trim();
+    if (!text) return;
+    this.listening = false;
+    this.submitting = true;
+    this.emit("submitting");
+    try {
+      (_c = this.recognition) == null ? void 0 : _c.stop();
+    } catch {
+    }
+    Promise.resolve(this.sendText(text)).then((sent) => {
+      if (!sent) this.fail("Turn could not be sent");
+    }).catch(() => this.fail("Turn could not be sent"));
+  }
+  fail(message = "Microphone or speech recognition is unavailable") {
+    this.listening = false;
+    this.submitting = false;
+    this.emit("error");
+    this.onError(message);
+  }
+  emit(state2) {
+    this.onState(state2);
+  }
+}
+function defaultAudioContextFactory() {
+  const windowWithAudio = window;
+  const Constructor = windowWithAudio.AudioContext ?? windowWithAudio.webkitAudioContext;
+  if (!Constructor) {
+    throw new Error("Web Audio is unavailable in this browser");
+  }
+  return new Constructor();
+}
+class PcmAudioPlayer {
+  constructor(options = {}) {
+    __publicField(this, "audioContextFactory");
+    __publicField(this, "onError");
+    __publicField(this, "context", null);
+    __publicField(this, "activeTurnId", null);
+    __publicField(this, "sampleRate", 0);
+    __publicField(this, "channels", 0);
+    __publicField(this, "nextStartAt", 0);
+    __publicField(this, "sources", /* @__PURE__ */ new Set());
+    this.audioContextFactory = options.audioContextFactory ?? defaultAudioContextFactory;
+    this.onError = options.onError ?? (() => {
+    });
+  }
+  async resume() {
+    try {
+      const context = this.ensureContext();
+      if (context.state === "suspended") {
+        await context.resume();
+      }
+      return true;
+    } catch {
+      this.onError("Audio playback is unavailable in this browser");
+      return false;
+    }
+  }
+  start(event2) {
+    this.stop();
+    try {
+      const context = this.ensureContext();
+      this.activeTurnId = event2.turn_id;
+      this.sampleRate = event2.sample_rate;
+      this.channels = event2.channels;
+      this.nextStartAt = context.currentTime;
+    } catch {
+      this.onError("Audio playback is unavailable in this browser");
+    }
+  }
+  append(chunk) {
+    if (this.activeTurnId === null || this.context === null || this.channels <= 0) return;
+    const bytes = new Uint8Array(chunk);
+    const bytesPerFrame = this.channels * 2;
+    const frameCount = Math.floor(bytes.byteLength / bytesPerFrame);
+    if (frameCount === 0) return;
+    try {
+      const buffer = this.context.createBuffer(this.channels, frameCount, this.sampleRate);
+      for (let channel = 0; channel < this.channels; channel += 1) {
+        const samples = new Float32Array(frameCount);
+        for (let frame = 0; frame < frameCount; frame += 1) {
+          const offset = (frame * this.channels + channel) * 2;
+          const sample = bytes[offset] | bytes[offset + 1] << 8;
+          const signed = sample & 32768 ? sample - 65536 : sample;
+          samples[frame] = signed / 32768;
+        }
+        buffer.copyToChannel(samples, channel);
+      }
+      const source2 = this.context.createBufferSource();
+      source2.buffer = buffer;
+      source2.connect(this.context.destination);
+      const startAt = Math.max(this.nextStartAt, this.context.currentTime);
+      source2.start(startAt);
+      this.nextStartAt = startAt + buffer.duration;
+      this.sources.add(source2);
+      source2.onended = () => this.sources.delete(source2);
+    } catch {
+      this.onError("Audio playback could not start");
+      this.stop();
+    }
+  }
+  end(turnId) {
+    if (this.activeTurnId === turnId) {
+      this.activeTurnId = null;
+    }
+  }
+  abort(turnId) {
+    if (this.activeTurnId !== turnId) return;
+    this.stop();
+  }
+  stop() {
+    for (const source2 of this.sources) {
+      try {
+        source2.stop();
+      } catch {
+      }
+    }
+    this.sources.clear();
+    this.activeTurnId = null;
+    this.nextStartAt = 0;
+  }
+  ensureContext() {
+    if (this.context === null) {
+      this.context = this.audioContextFactory();
+    }
+    return this.context;
+  }
+}
+var root = /* @__PURE__ */ from_html(`<p data-voice-error="" role="alert"> </p>`);
+var root_1 = /* @__PURE__ */ from_html(`<p data-voice-status="">Listening…</p>`);
+var root_2 = /* @__PURE__ */ from_html(`<p data-voice-status="">Sending…</p>`);
+var root_3 = /* @__PURE__ */ from_html(`<section class="browser-voice-controls" aria-label="Browser voice"><button type="button" data-voice-button=""> </button> <!></section>`);
+var root_4 = /* @__PURE__ */ from_html(`<!> <!>`, 1);
+var root_5 = /* @__PURE__ */ from_html(`<main class="wasm-bootstrap-shell"><p data-bootstrap-message=""> </p></main>`);
 function App($$anchor, $$props) {
   push($$props, false);
+  const browserVoiceEnabled = /* @__PURE__ */ mutable_source();
   let displayReducer = /* @__PURE__ */ mutable_source(null);
   let protocolError = /* @__PURE__ */ mutable_source(null);
+  let displayView = /* @__PURE__ */ mutable_source(createInitialDisplayView());
+  let voiceState = /* @__PURE__ */ mutable_source("idle");
+  let voiceError = /* @__PURE__ */ mutable_source(null);
+  let voiceController = null;
+  let audioPlayer = null;
   let dispatchAction = /* @__PURE__ */ mutable_source(async () => false);
   const stateChannelUrl = () => {
     const scheme = window.location.protocol === "https:" ? "wss:" : "ws:";
@@ -4775,10 +5152,21 @@ function App($$anchor, $$props) {
         bridge = new DisplayBridge({
           url: stateChannelUrl(),
           reducer,
-          onView: () => {
+          onView: (view) => {
+            set(displayView, view);
             set(protocolError, null);
+            if (["heard", "listening", "thinking", "error", "disconnected"].includes(view.state)) {
+              audioPlayer == null ? void 0 : audioPlayer.stop();
+            }
+            if (view.state === "idle" && get(voiceState) === "submitting") {
+              voiceController == null ? void 0 : voiceController.reset();
+            }
           },
-          onConnectionState: () => {
+          onConnectionState: (state2) => {
+            if (state2 === "disconnected") {
+              audioPlayer == null ? void 0 : audioPlayer.stop();
+              voiceController == null ? void 0 : voiceController.reset();
+            }
           },
           onProtocolError: (message) => {
             set(protocolError, message);
@@ -4788,9 +5176,38 @@ function App($$anchor, $$props) {
           },
           onActionError: (error) => {
             set(protocolError, error === "transport_error" ? "Display action could not be sent" : "That display action is no longer available");
+          },
+          onAudioEvent: (event2) => {
+            if (event2.type === "audio_start") {
+              audioPlayer == null ? void 0 : audioPlayer.start(event2);
+            } else if (event2.type === "audio_end") {
+              audioPlayer == null ? void 0 : audioPlayer.end(event2.turn_id);
+            } else {
+              audioPlayer == null ? void 0 : audioPlayer.abort(event2.turn_id);
+            }
+          },
+          onAudioChunk: (chunk) => audioPlayer == null ? void 0 : audioPlayer.append(chunk),
+          onVoiceError: () => {
+            set(voiceError, "Turn could not be sent");
           }
         });
         set(dispatchAction, (action) => (bridge == null ? void 0 : bridge.dispatchAction(action)) ?? Promise.resolve(false));
+        audioPlayer = new PcmAudioPlayer({
+          onError: (message) => {
+            set(voiceError, message);
+            set(voiceState, "error");
+          }
+        });
+        voiceController = new BrowserVoiceController({
+          sendText: (text) => (bridge == null ? void 0 : bridge.sendVoiceTurn(text)) ?? false,
+          onState: (state2) => {
+            set(voiceState, state2);
+            if (state2 !== "error") set(voiceError, null);
+          },
+          onError: (message) => {
+            set(voiceError, message);
+          }
+        });
         bridge.start();
       } catch (error) {
         if (!disposed) {
@@ -4801,15 +5218,35 @@ function App($$anchor, $$props) {
     void start();
     return () => {
       disposed = true;
+      voiceController == null ? void 0 : voiceController.reset();
+      audioPlayer == null ? void 0 : audioPlayer.stop();
       bridge == null ? void 0 : bridge.stop();
     };
   });
+  async function toggleVoice() {
+    if (voiceController === null || get(voiceState) === "submitting") return;
+    if (get(voiceState) === "listening") {
+      voiceController.stop();
+      return;
+    }
+    if (get(displayView).is_busy) return;
+    set(voiceError, null);
+    if (audioPlayer !== null && !await audioPlayer.resume()) return;
+    await voiceController.start();
+  }
+  legacy_pre_effect(() => get(displayView), () => {
+    var _a2;
+    set(browserVoiceEnabled, ((_a2 = get(displayView).capabilities) == null ? void 0 : _a2.features.includes("browser_voice")) ?? false);
+  });
+  legacy_pre_effect_reset();
   init();
   var fragment = comment();
   var node = first_child(fragment);
   {
-    var consequent = ($$anchor2) => {
-      WasmCanvas($$anchor2, {
+    var consequent_4 = ($$anchor2) => {
+      var fragment_1 = root_4();
+      var node_1 = first_child(fragment_1);
+      WasmCanvas(node_1, {
         get reducer() {
           return get(displayReducer);
         },
@@ -4821,19 +5258,61 @@ function App($$anchor, $$props) {
         },
         onRuntimeError: (message) => set(protocolError, message)
       });
+      var node_2 = sibling(node_1, 2);
+      {
+        var consequent_3 = ($$anchor3) => {
+          var section = root_3();
+          var button = child(section);
+          var text_1 = only_child(button, true);
+          var node_3 = sibling(button, 2);
+          {
+            var consequent = ($$anchor4) => {
+              var p = root();
+              var text_2 = only_child(p, true);
+              template_effect(() => set_text(text_2, get(voiceError)));
+              append($$anchor4, p);
+            };
+            var consequent_1 = ($$anchor4) => {
+              var p_1 = root_1();
+              append($$anchor4, p_1);
+            };
+            var consequent_2 = ($$anchor4) => {
+              var p_2 = root_2();
+              append($$anchor4, p_2);
+            };
+            if_block(node_3, ($$render) => {
+              if (get(voiceError)) $$render(consequent);
+              else if (get(voiceState) === "listening") $$render(consequent_1, 1);
+              else if (get(voiceState) === "submitting") $$render(consequent_2, 2);
+            });
+          }
+          template_effect(() => {
+            set_attribute(section, "data-voice-state", get(voiceState));
+            set_attribute(button, "aria-pressed", get(voiceState) === "listening");
+            button.disabled = (get(voiceState), get(displayView), untrack(() => get(voiceState) === "submitting" || get(displayView).is_busy && get(voiceState) !== "listening"));
+            set_text(text_1, get(voiceState) === "listening" ? "Stop listening" : "Tap to talk");
+          });
+          event("click", button, toggleVoice);
+          append($$anchor3, section);
+        };
+        if_block(node_2, ($$render) => {
+          if (get(browserVoiceEnabled)) $$render(consequent_3);
+        });
+      }
+      append($$anchor2, fragment_1);
     };
     var alternate = ($$anchor2) => {
-      var main = root();
-      var p = child(main);
-      var text = only_child(p, true);
+      var main = root_5();
+      var p_3 = child(main);
+      var text_3 = only_child(p_3, true);
       template_effect(() => {
         set_attribute(main, "data-state", get(protocolError) ? "error" : "connecting");
-        set_text(text, get(protocolError) ?? "Starting the shared Hermes display…");
+        set_text(text_3, get(protocolError) ?? "Starting the shared Hermes display…");
       });
       append($$anchor2, main);
     };
     if_block(node, ($$render) => {
-      if (get(displayReducer) !== null) $$render(consequent);
+      if (get(displayReducer) !== null) $$render(consequent_4);
       else $$render(alternate, -1);
     });
   }

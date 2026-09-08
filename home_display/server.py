@@ -49,6 +49,7 @@ class DisplayServer:
         port: int = 0,
         allow_remote: bool = False,
         on_action: Callable[[str, str], Awaitable[None]] | None = None,
+        on_voice_turn: Callable[[str], Awaitable[None]] | None = None,
     ) -> None:
         """Create a display server.
 
@@ -56,6 +57,8 @@ class DisplayServer:
                      /action.  Receives (action_id, choice) where both are
                      strings supplied by the Svelte client via query params:
                        POST /action?action_id=sethome&choice=yes
+        on_voice_turn -- optional coroutine called when a same-origin browser
+                        sends a recognized turn over the state WebSocket.
         """
         try:
             host_address = ipaddress.ip_address(host)
@@ -69,8 +72,11 @@ class DisplayServer:
         self._host = host
         self._port = port
         self._on_action = on_action
+        self._on_voice_turn = on_voice_turn
         self._server: Server | None = None
         self._info: DisplayServerInfo | None = None
+        self._state_connections: set[ServerConnection] = set()
+        self._connection_locks: dict[ServerConnection, asyncio.Lock] = {}
 
     async def start(self) -> DisplayServerInfo:
         if self._server is not None:
@@ -92,8 +98,62 @@ class DisplayServer:
             return
         self._server.close()
         await self._server.wait_closed()
+        self._state_connections.clear()
+        self._connection_locks.clear()
         self._server = None
         self._info = None
+
+    async def send_audio_start(
+        self,
+        *,
+        turn_id: str,
+        sample_rate: int,
+        channels: int,
+        sample_width: int,
+    ) -> None:
+        """Broadcast a signed 16-bit PCM stream header to browser clients."""
+        self._validate_audio_format(
+            turn_id=turn_id,
+            sample_rate=sample_rate,
+            channels=channels,
+            sample_width=sample_width,
+        )
+        await self._broadcast_json(
+            {
+                "type": "audio_start",
+                "schema": 1,
+                "turn_id": turn_id,
+                "sample_rate": sample_rate,
+                "channels": channels,
+                "sample_width": sample_width,
+            }
+        )
+
+    async def send_audio_chunk(self, data: bytes) -> None:
+        """Broadcast one raw signed 16-bit PCM chunk to browser clients."""
+        if not isinstance(data, bytes):
+            raise TypeError("audio data must be bytes")
+        if data:
+            await self._broadcast(data)
+
+    async def send_audio_end(self, *, turn_id: str) -> None:
+        self._validate_turn_id(turn_id)
+        await self._broadcast_json(
+            {"type": "audio_end", "schema": 1, "turn_id": turn_id}
+        )
+
+    async def send_audio_abort(self, *, turn_id: str, reason: str) -> None:
+        self._validate_turn_id(turn_id)
+        if not isinstance(reason, str) or not reason:
+            raise ValueError("audio abort reason must be a non-empty string")
+        await self._broadcast_json(
+            {
+                "type": "audio_abort",
+                "schema": 1,
+                "turn_id": turn_id,
+                "reason": reason[:256],
+            }
+        )
 
     def resolve_static_path(self, request_path: str) -> Path:
         decoded_path = unquote(urlsplit(request_path).path)
@@ -239,6 +299,8 @@ class DisplayServer:
         )
 
     async def _handle_state_connection(self, websocket: ServerConnection) -> None:
+        self._state_connections.add(websocket)
+        self._connection_locks[websocket] = asyncio.Lock()
         subscription = self._publisher.subscribe()
         next_snapshot = asyncio.create_task(anext(subscription))
         closed = asyncio.create_task(websocket.wait_closed())
@@ -253,17 +315,23 @@ class DisplayServer:
 
                 if incoming in done:
                     try:
-                        action = self._parse_websocket_action(incoming.result())
+                        message = incoming.result()
+                        action = self._parse_websocket_action(message)
+                        voice_text = self._parse_websocket_voice_turn(message)
                     except ConnectionClosed:
                         return
                     if action is not None and self._on_action is not None:
                         loop = asyncio.get_event_loop()
                         loop.create_task(self._on_action(*action))
+                    if voice_text is not None and self._on_voice_turn is not None:
+                        loop = asyncio.get_event_loop()
+                        loop.create_task(self._on_voice_turn(voice_text))
                     incoming = asyncio.create_task(websocket.recv())
 
                 if next_snapshot in done:
                     snapshot = next_snapshot.result()
-                    await websocket.send(json.dumps(snapshot.to_dict()))
+                    if not await self._send_frame(websocket, json.dumps(snapshot.to_dict())):
+                        return
                     next_snapshot = asyncio.create_task(anext(subscription))
         except ConnectionClosed:
             return
@@ -273,6 +341,57 @@ class DisplayServer:
                     task.cancel()
                 await asyncio.gather(task, return_exceptions=True)
             await subscription.aclose()  # type: ignore[attr-defined]
+            self._forget_connection(websocket)
+
+    async def _broadcast_json(self, payload: dict[str, object]) -> None:
+        await self._broadcast(json.dumps(payload))
+
+    async def _broadcast(self, frame: str | bytes) -> None:
+        connections = tuple(self._state_connections)
+        if not connections:
+            return
+        await asyncio.gather(
+            *(self._send_frame(connection, frame) for connection in connections),
+            return_exceptions=True,
+        )
+
+    async def _send_frame(self, websocket: ServerConnection, frame: str | bytes) -> bool:
+        lock = self._connection_locks.get(websocket)
+        if lock is None:
+            return False
+        try:
+            async with lock:
+                await websocket.send(frame)
+        except (ConnectionClosed, OSError):
+            self._forget_connection(websocket)
+            return False
+        return True
+
+    def _forget_connection(self, websocket: ServerConnection) -> None:
+        self._state_connections.discard(websocket)
+        self._connection_locks.pop(websocket, None)
+
+    @staticmethod
+    def _validate_turn_id(turn_id: str) -> None:
+        if not isinstance(turn_id, str) or not 0 < len(turn_id) <= 128:
+            raise ValueError("turn_id must be a non-empty string of at most 128 characters")
+
+    @classmethod
+    def _validate_audio_format(
+        cls,
+        *,
+        turn_id: str,
+        sample_rate: int,
+        channels: int,
+        sample_width: int,
+    ) -> None:
+        cls._validate_turn_id(turn_id)
+        if type(sample_rate) is not int or sample_rate <= 0:
+            raise ValueError("sample_rate must be a positive integer")
+        if type(channels) is not int or not 0 < channels <= 8:
+            raise ValueError("channels must be between 1 and 8")
+        if sample_width != 2:
+            raise ValueError("browser audio requires signed 16-bit PCM")
 
     @staticmethod
     def _parse_websocket_action(message: str | bytes) -> tuple[str, str] | None:
@@ -296,6 +415,26 @@ class DisplayServer:
         ):
             return None
         return action_id, choice
+
+    @staticmethod
+    def _parse_websocket_voice_turn(message: str | bytes) -> str | None:
+        if not isinstance(message, (str, bytes)):
+            return None
+        try:
+            payload = json.loads(message)
+        except (TypeError, ValueError):
+            return None
+        if not isinstance(payload, dict):
+            return None
+        if payload.get("type") != "voice_turn" or payload.get("schema") != 1:
+            return None
+        text = payload.get("text")
+        if not isinstance(text, str):
+            return None
+        text = text.strip()
+        if not 0 < len(text) <= 4000:
+            return None
+        return text
 
     @staticmethod
     def _http_response(

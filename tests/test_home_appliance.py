@@ -9,8 +9,10 @@ state the hardware is not in.
 from __future__ import annotations
 
 import asyncio
+import io
 import threading
 import types
+import wave
 
 import pytest
 
@@ -176,12 +178,25 @@ class FakeServer:
     def __init__(self) -> None:
         self.info = types.SimpleNamespace(http_url="http://127.0.0.1:9/")
         self.closed = False
+        self.audio: list[tuple[str, object]] = []
 
     async def start(self):
         return self.info
 
     async def close(self) -> None:
         self.closed = True
+
+    async def send_audio_start(self, **payload) -> None:
+        self.audio.append(("start", payload))
+
+    async def send_audio_chunk(self, data: bytes) -> None:
+        self.audio.append(("chunk", data))
+
+    async def send_audio_end(self, **payload) -> None:
+        self.audio.append(("end", payload))
+
+    async def send_audio_abort(self, **payload) -> None:
+        self.audio.append(("abort", payload))
 
 
 def _args(**overrides):
@@ -192,6 +207,7 @@ def _args(**overrides):
         "mic_input_device": None,
         "wake_listen_timeout": 8.0,
         "wake_barge_in": False,
+        "browser_voice": False,
     }
     values.update(overrides)
     return types.SimpleNamespace(**values)
@@ -314,10 +330,12 @@ class RecordingPublisher:
     def __init__(self) -> None:
         self.history: list[tuple[str, str, str | None]] = []
         self.accounts: list[str | None] = []
+        self.capabilities: list[object] = []
 
     def publish(self, *, state, response_text="", status_text=None, media=None, account=None, **kwargs):
         self.history.append((state, response_text, status_text))
         self.accounts.append(account)
+        self.capabilities.append(kwargs.get("capabilities"))
 
     @property
     def sequence(self) -> list[str]:
@@ -350,6 +368,94 @@ async def test_wake_to_spoken_answer_walks_the_display_through_the_real_states()
     assert ordered[-1] == "idle"
     spoken = [entry for entry in publisher.history if entry[0] == "speaking"]
     assert spoken[-1][1] == "Sunny and warm."
+
+
+@pytest.mark.asyncio
+async def test_browser_voice_turn_uses_ops_session_and_streams_pcm_without_local_audio():
+    publisher = RecordingPublisher()
+    server = FakeServer()
+    player = FakePlayer()
+    script = [
+        {"type": "text_delta", "text": "Sunny and warm."},
+        {"type": "audio_start", "sample_rate": 24000, "channels": 1, "sample_width": 2},
+        {"type": "audio_chunk", "data": b"\x01\x02"},
+        {"type": "audio_end"},
+        {"type": "turn_end"},
+    ]
+    appliance = Appliance(
+        _args(browser_voice=True, wake_enabled=False),
+        session=FakeSession(script),
+        player=player,
+        recorder=FakeRecorder(),
+        earcons=FakeEarcons(),
+        server=server,
+        publisher=publisher,
+        build_hands_free=lambda *args, **kwargs: pytest.fail(
+            "browser voice must not build a local wake listener"
+        ),
+    )
+
+    task = asyncio.create_task(appliance.run())
+    try:
+        assert await _wait_for(lambda: appliance._connected)
+        await appliance._on_browser_voice_turn("  what is the weather?  ")
+        assert appliance._session.turns == ["what is the weather?"]
+        assert player.written == bytearray()
+        assert server.audio == [
+            ("start", {
+                "turn_id": server.audio[0][1]["turn_id"],
+                "sample_rate": 24000,
+                "channels": 1,
+                "sample_width": 2,
+            }),
+            ("chunk", b"\x01\x02"),
+            ("end", {"turn_id": server.audio[0][1]["turn_id"]}),
+        ]
+        assert publisher.capabilities[-1].features == ("browser_voice",)
+        assert publisher.history[-1][0] == "idle"
+    finally:
+        appliance._stopping.set()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+
+@pytest.mark.asyncio
+async def test_browser_voice_turn_plays_a_valid_wav_fallback_when_pcm_is_not_streamed():
+    wav = io.BytesIO()
+    with wave.open(wav, "wb") as output:
+        output.setnchannels(1)
+        output.setsampwidth(2)
+        output.setframerate(24000)
+        output.writeframes(b"\x01\x02")
+
+    publisher = RecordingPublisher()
+    server = FakeServer()
+    appliance = Appliance(
+        _args(browser_voice=True, wake_enabled=False),
+        session=FakeSession([
+            {"type": "text_delta", "text": "Fallback answer."},
+            {"type": "audio_file_start"},
+            {"type": "audio_file_chunk", "data": wav.getvalue()},
+            {"type": "audio_file_end"},
+            {"type": "turn_end"},
+        ]),
+        server=server,
+        publisher=publisher,
+    )
+
+    task = asyncio.create_task(appliance.run())
+    try:
+        assert await _wait_for(lambda: appliance._connected)
+        await appliance._on_browser_voice_turn("say it")
+        assert [kind for kind, _payload in server.audio] == ["start", "chunk", "end"]
+        assert server.audio[1][1] == b"\x01\x02"
+        assert publisher.history[-1][0] == "idle"
+    finally:
+        appliance._stopping.set()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
 
 
 @pytest.mark.asyncio

@@ -41,6 +41,30 @@ export interface DisplayAction {
   choice: string;
 }
 
+export interface DisplayAudioStart {
+  type: "audio_start";
+  schema: 1;
+  turn_id: string;
+  sample_rate: number;
+  channels: number;
+  sample_width: 2;
+}
+
+export interface DisplayAudioEnd {
+  type: "audio_end";
+  schema: 1;
+  turn_id: string;
+}
+
+export interface DisplayAudioAbort {
+  type: "audio_abort";
+  schema: 1;
+  turn_id: string;
+  reason: string;
+}
+
+export type DisplayAudioEvent = DisplayAudioStart | DisplayAudioEnd | DisplayAudioAbort;
+
 export interface DisplaySnapshot {
   type: "snapshot";
   schema: 1;
@@ -210,4 +234,53 @@ export function parseAction(raw: unknown): DisplayAction | null {
     return null;
   }
   return { type, schema, action_id, choice };
+}
+
+function parseTurnId(raw: unknown): string | null {
+  return typeof raw === "string" && raw.length > 0 && raw.length <= 128 ? raw : null;
+}
+
+export function parseAudioEvent(raw: unknown): DisplayAudioEvent | null {
+  if (!isRecord(raw) || raw.schema !== 1 || typeof raw.type !== "string") {
+    return null;
+  }
+
+  const turnId = parseTurnId(raw.turn_id);
+  if (turnId === null) return null;
+
+  if (raw.type === "audio_start") {
+    const { sample_rate, channels, sample_width } = raw;
+    if (
+      typeof sample_rate !== "number" ||
+      !Number.isSafeInteger(sample_rate) ||
+      sample_rate <= 0 ||
+      typeof channels !== "number" ||
+      !Number.isSafeInteger(channels) ||
+      channels < 1 ||
+      channels > 8 ||
+      sample_width !== 2
+    ) {
+      return null;
+    }
+    return {
+      type: "audio_start",
+      schema: 1,
+      turn_id: turnId,
+      sample_rate,
+      channels,
+      sample_width: 2,
+    };
+  }
+
+  if (raw.type === "audio_end") {
+    return { type: "audio_end", schema: 1, turn_id: turnId };
+  }
+
+  if (raw.type === "audio_abort") {
+    return typeof raw.reason === "string" && raw.reason.length > 0
+      ? { type: "audio_abort", schema: 1, turn_id: turnId, reason: raw.reason }
+      : null;
+  }
+
+  return null;
 }

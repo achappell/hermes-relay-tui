@@ -68,9 +68,11 @@ be compiled as native C or WebAssembly.
 
 - The first valid snapshot establishes state; later snapshots must advance
   `sequence` strictly or return `STALE` without mutation.
-- Normal conversation follows idle → heard → listening → thinking → speaking
-  → buffering/speaking → idle. Error and disconnected states are explicit
-  recovery paths rather than hidden transport side effects.
+- Normal hands-free conversation follows idle → heard → listening → thinking
+  → speaking → buffering/speaking → idle. Browser voice may begin at thinking
+  because capture happens outside the appliance's wake-word phases. Error and
+  disconnected states are explicit recovery paths rather than hidden transport
+  side effects.
 - The reducer derives `is_busy`, `connection_healthy`, `can_choose`, and
   `can_dismiss` for renderers and adapters.
 - Prompt choices require an active prompt, the matching `action_id`, an

@@ -39,7 +39,7 @@ const allowedTransitions: Record<
   DisplaySnapshot["state"],
   ReadonlySet<DisplaySnapshot["state"]>
 > = {
-  idle: new Set(["idle", "heard", "listening", "prompt"]),
+  idle: new Set(["idle", "heard", "listening", "thinking", "prompt"]),
   heard: new Set(["heard", "listening", "thinking", "idle", "prompt"]),
   listening: new Set(["listening", "thinking", "heard", "idle"]),
   thinking: new Set(["thinking", "speaking", "buffering", "prompt", "idle"]),

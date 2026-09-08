@@ -48,7 +48,13 @@ from timing import (
 )
 
 from .server import DisplayServer
-from .state import DisplayPrompt, DisplayState, DisplayStatePublisher, PromptOption
+from .state import (
+    DisplayCapabilities,
+    DisplayPrompt,
+    DisplayState,
+    DisplayStatePublisher,
+    PromptOption,
+)
 
 logger = logging.getLogger("hermes_relay_tui.appliance")
 
@@ -293,6 +299,7 @@ class Appliance:
         self._is_listening: bool | None = None
         self._stopping = threading.Event()
         self._turn_future = None
+        self._browser_turn_task: asyncio.Task[Any] | None = None
         self._follow_up_capturing = False
         self.info: Any = None
         self._shutting_down = False
@@ -325,7 +332,12 @@ class Appliance:
             self._response_text = response_text
         status = status_text if status_text is not None else STATUS_TEXT.get(state)
         account = self._active_profile.display_name if self._active_profile else None
-        payload = (state, self._response_text, status, account)
+        capabilities = (
+            DisplayCapabilities(features=("browser_voice",))
+            if getattr(self.args, "browser_voice", False)
+            else None
+        )
+        payload = (state, self._response_text, status, account, capabilities)
         if payload == self._published:
             return
         self._published = payload
@@ -333,7 +345,11 @@ class Appliance:
         def _apply() -> None:
             try:
                 self.publisher.publish(
-                    state=state, response_text=payload[1], status_text=status, account=account
+                    state=state,
+                    response_text=payload[1],
+                    status_text=status,
+                    account=account,
+                    capabilities=capabilities,
                 )
             except TypeError:
                 self.publisher.publish(
@@ -407,6 +423,183 @@ class Appliance:
         logger.debug(
             "appliance unhandled action action_id=%s choice=%s", action_id, choice
         )
+
+    async def _on_browser_voice_turn(self, text: str) -> None:
+        """Run one browser-recognized turn without opening local audio devices."""
+        normalized = text.strip()
+        if not normalized or len(normalized) > 4000:
+            return
+        if self._stopping.is_set() or not self._connected:
+            return
+        if self._browser_turn_task is not None and not self._browser_turn_task.done():
+            self._publish(
+                "error",
+                response_text="",
+                status_text="A response is already in progress",
+            )
+            return
+
+        self._browser_turn_task = asyncio.current_task()
+        try:
+            await self._run_browser_turn(normalized)
+        finally:
+            if self._browser_turn_task is asyncio.current_task():
+                self._browser_turn_task = None
+
+    async def _run_browser_turn(self, text: str) -> bool:
+        """Forward browser text to Hermes and stream response PCM to the kiosk."""
+        server = self._server
+        if server is None:
+            self._publish("error", response_text="", status_text="Display server unavailable")
+            return False
+
+        response = ""
+        audio_active = False
+        file_audio = bytearray()
+        file_format: tuple[int, int, int] | None = None
+        file_audio_active = False
+        completed = False
+        turn_id = "browser-turn"
+        self._publish("thinking", response_text="")
+
+        def publish_response(state: DisplayState = "thinking") -> None:
+            self._publish(state, response_text=display_text(response))
+
+        async def abort_audio(reason: str) -> None:
+            nonlocal audio_active
+            if audio_active:
+                with contextlib.suppress(Exception):
+                    await server.send_audio_abort(turn_id=turn_id, reason=reason)
+                audio_active = False
+
+        try:
+            events = self._session.send_turn(text, stt_source="browser")
+            turn_id = str(
+                getattr(self._session, "active_turn_id", None)
+                or f"browser-{getattr(self._session, 'turn_index', 0)}"
+            )
+            async for event in events:
+                kind = event.get("type")
+                if kind == "text_delta":
+                    response += str(event.get("text") or "")
+                    publish_response()
+                elif kind == "text_replace":
+                    response = str(event.get("text") or "")
+                    publish_response("speaking" if audio_active else "thinking")
+                elif kind == "message_complete":
+                    final_text = str(event.get("text") or "")
+                    if final_text and final_text != response:
+                        response = final_text
+                    publish_response("speaking" if audio_active else "thinking")
+                elif kind == "status":
+                    self._publish(
+                        "speaking" if audio_active else "thinking",
+                        response_text=display_text(response),
+                        status_text=str(event.get("text") or "Thinking"),
+                    )
+                elif kind == "audio_start":
+                    audio_format = (
+                        int(event.get("sample_rate", 0)),
+                        int(event.get("channels", 0)),
+                        int(event.get("sample_width", 0)),
+                    )
+                    await server.send_audio_start(
+                        turn_id=turn_id,
+                        sample_rate=audio_format[0],
+                        channels=audio_format[1],
+                        sample_width=audio_format[2],
+                    )
+                    audio_active = True
+                    publish_response("speaking")
+                elif kind == "audio_chunk":
+                    data = event.get("data")
+                    if audio_active and isinstance(data, bytes):
+                        await server.send_audio_chunk(data)
+                elif kind == "audio_end":
+                    if audio_active:
+                        await server.send_audio_end(turn_id=turn_id)
+                        audio_active = False
+                elif kind == "audio_file_start":
+                    file_audio.clear()
+                    metadata = tuple(
+                        event.get(field)
+                        for field in ("sample_rate", "channels", "sample_width")
+                    )
+                    file_format = (
+                        (int(metadata[0]), int(metadata[1]), int(metadata[2]))
+                        if all(value is not None for value in metadata)
+                        else None
+                    )
+                    file_audio_active = True
+                elif kind == "audio_file_chunk":
+                    data = event.get("data")
+                    if file_audio_active and isinstance(data, bytes):
+                        file_audio.extend(data)
+                elif kind == "audio_file_end":
+                    data = event.get("data")
+                    if isinstance(data, bytes):
+                        file_audio.extend(data)
+                    file_audio_active = False
+                    if audio_active:
+                        continue
+                    try:
+                        decoded, decoded_format = audio_module.read_wav(bytes(file_audio))
+                    except ValueError:
+                        if file_format is None:
+                            self._publish(
+                                "buffering",
+                                response_text=display_text(response),
+                            )
+                            continue
+                        decoded, decoded_format = bytes(file_audio), file_format
+                    await server.send_audio_start(
+                        turn_id=turn_id,
+                        sample_rate=decoded_format[0],
+                        channels=decoded_format[1],
+                        sample_width=decoded_format[2],
+                    )
+                    audio_active = True
+                    publish_response("speaking")
+                    await server.send_audio_chunk(decoded)
+                    await server.send_audio_end(turn_id=turn_id)
+                    audio_active = False
+                elif kind in ("audio_abort", "turn_interrupted"):
+                    await abort_audio(str(event.get("error") or event.get("reason") or kind))
+                    self._publish("idle", response_text="")
+                    return False
+                elif kind == "error":
+                    await abort_audio(str(event.get("error") or "Hermes error"))
+                    self._publish(
+                        "error",
+                        response_text="",
+                        status_text=str(event.get("error") or "Hermes error"),
+                    )
+                    return False
+                elif kind == "turn_end":
+                    if audio_active:
+                        await server.send_audio_end(turn_id=turn_id)
+                        audio_active = False
+                    self._publish("idle", response_text=display_text(response))
+                    completed = True
+                    break
+            if not completed:
+                await abort_audio("turn ended without a reply")
+                self._publish("error", response_text="", status_text="Turn ended without a reply")
+            return completed
+        except asyncio.CancelledError:
+            await abort_audio("turn cancelled")
+            raise
+        except Exception:
+            logger.debug("browser voice turn failed", exc_info=True)
+            await abort_audio("connection lost")
+            self._publish(
+                "disconnected",
+                response_text="",
+                status_text=STATUS_TEXT["disconnected"],
+            )
+            self._connected = False
+            self._request_reconnect()
+            return False
 
     def _set_listening(self) -> None:
         """Listen only when idle and connected — never during a turn.
@@ -1052,6 +1245,18 @@ class Appliance:
     def _build(self) -> None:
         if self._session is None:
             self._session = self._create_session_for_profile(self._active_profile)
+        if getattr(self.args, "browser_voice", False):
+            if self._server is None:
+                self._server = DisplayServer(
+                    self.publisher,
+                    Path(__file__).with_name("static"),
+                    host=getattr(self.args, "display_host", "127.0.0.1"),
+                    port=getattr(self.args, "display_port", 0),
+                    allow_remote=getattr(self.args, "display_remote", False),
+                    on_action=self._on_action,
+                    on_voice_turn=self._on_browser_voice_turn,
+                )
+            return
         if self._player is None:
             self._player = audio_module.PCMPlayer(
                 enabled=not getattr(self.args, "no_play", False),
@@ -1270,6 +1475,27 @@ class Appliance:
         self._build()
         self.info = await self._server.start()
 
+        if getattr(self.args, "browser_voice", False):
+            if self._on_ready is not None:
+                self._on_ready(self.info)
+            self._supervisor_task = asyncio.create_task(self._supervise())
+            try:
+                await self._supervisor_task
+            except asyncio.CancelledError:
+                current = asyncio.current_task()
+                if current is not None and getattr(current, "cancelling", lambda: 0)() > 0:
+                    raise
+            except KeyboardInterrupt:
+                pass
+            finally:
+                self._remove_signals(self._loop)
+                if self._supervisor_task is not None and not self._supervisor_task.done():
+                    self._supervisor_task.cancel()
+                    with contextlib.suppress(asyncio.CancelledError):
+                        await self._supervisor_task
+                await self.aclose()
+            return
+
         # Start the worker *before* opening the stream. The other order lets
         # frames pile into a bounded queue with nothing draining it, and the
         # entire warm-up is dropped audio — 96 frames on a first run.
@@ -1334,6 +1560,10 @@ class Appliance:
                 self._session.cancel_voice()
         if self._turn_future is not None:
             self._turn_future.cancel()
+        if self._browser_turn_task is not None and not self._browser_turn_task.done():
+            self._browser_turn_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._browser_turn_task
         if self._earcons is not None:
             abort = getattr(self._earcons, "abort", None)
             if callable(abort):
@@ -1389,6 +1619,11 @@ def build_arg_parser(argv: list[str] | None = None) -> argparse.ArgumentParser:
         "--display-remote",
         action="store_true",
         help="allow the display server to bind beyond loopback for a LAN appliance",
+    )
+    parser.add_argument(
+        "--browser-voice",
+        action="store_true",
+        help="let the browser own microphone capture and speaker playback",
     )
 
     # Only substitute the hands-free default when nobody has said otherwise.

@@ -121,6 +121,28 @@ def test_reducer_rejects_an_invalid_transition_without_mutating_state() -> None:
     assert result.returncode == 0, result.stderr
 
 
+def test_reducer_accepts_a_browser_turn_starting_at_thinking() -> None:
+    result = _compile_and_run(
+        r'''
+        #include <assert.h>
+        #include "display_rules.h"
+
+        int main(void) {
+            display_rules_reducer_t reducer;
+            display_rules_init(&reducer);
+            display_rules_snapshot_t idle = { .schema = 1, .sequence = 0, .state = DISPLAY_RULES_IDLE };
+            display_rules_snapshot_t thinking = { .schema = 1, .sequence = 1, .state = DISPLAY_RULES_THINKING };
+            assert(display_rules_apply_snapshot(&reducer, &idle) == DISPLAY_RULES_ACCEPTED);
+            assert(display_rules_apply_snapshot(&reducer, &thinking) == DISPLAY_RULES_ACCEPTED);
+            assert(display_rules_view(&reducer)->state == DISPLAY_RULES_THINKING);
+            assert(display_rules_view(&reducer)->is_busy);
+            return 0;
+        }
+        '''
+    )
+    assert result.returncode == 0, result.stderr
+
+
 def test_reducer_rejects_stale_snapshots_without_mutating_state() -> None:
     result = _compile_and_run(
         r'''

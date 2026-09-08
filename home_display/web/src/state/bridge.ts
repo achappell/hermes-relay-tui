@@ -1,5 +1,7 @@
 import {
   StateChannel,
+  type AudioChunkListener,
+  type AudioEventListener,
   type ConnectionState,
   type ProtocolErrorListener,
   type SocketFactory,
@@ -18,6 +20,7 @@ export type { WebSocketLike } from "./channel";
 
 export type ActionTransport = (action: DisplayAction) => Promise<void> | void;
 export type ActionDispatchError = ActionValidationResult | "transport_error";
+export type VoiceTransport = (text: string) => Promise<void> | void;
 
 export interface DisplayBridgeOptions {
   url: string;
@@ -28,6 +31,10 @@ export interface DisplayBridgeOptions {
   onProtocolError?: ProtocolErrorListener;
   onValidSnapshot?: (snapshot: DisplaySnapshot) => void;
   onActionError?: (error: ActionDispatchError) => void;
+  onAudioEvent?: AudioEventListener;
+  onAudioChunk?: AudioChunkListener;
+  voiceTransport?: VoiceTransport;
+  onVoiceError?: (error: "transport_error") => void;
   socketFactory?: SocketFactory;
 }
 
@@ -46,6 +53,8 @@ export class DisplayBridge {
   private readonly reducer: DisplayReducer;
   private readonly actionTransport: ActionTransport;
   private readonly onActionError: (error: ActionDispatchError) => void;
+  private readonly voiceTransport: VoiceTransport | null;
+  private readonly onVoiceError: (error: "transport_error") => void;
   private readonly channel: StateChannel;
 
   /**
@@ -58,6 +67,8 @@ export class DisplayBridge {
     this.reducer = options.reducer ?? createDisplayReducer();
     this.actionTransport = options.actionTransport ?? postDisplayAction;
     this.onActionError = options.onActionError ?? (() => {});
+    this.voiceTransport = options.voiceTransport ?? null;
+    this.onVoiceError = options.onVoiceError ?? (() => {});
 
     this.channel = new StateChannel(
       options.url,
@@ -80,6 +91,8 @@ export class DisplayBridge {
       options.onProtocolError,
       options.socketFactory,
       options.onValidSnapshot,
+      options.onAudioEvent,
+      options.onAudioChunk,
     );
   }
 
@@ -105,6 +118,28 @@ export class DisplayBridge {
       this.deliver(() => this.onActionError("transport_error"));
       return false;
     }
+  }
+
+  async sendVoiceTurn(text: string): Promise<boolean> {
+    const normalized = text.trim();
+    if (!normalized || normalized.length > 4000) {
+      this.deliver(() => this.onVoiceError("transport_error"));
+      return false;
+    }
+
+    try {
+      if (this.voiceTransport !== null) {
+        await this.voiceTransport(normalized);
+        return true;
+      }
+      if (this.channel.sendVoiceTurn(normalized)) {
+        return true;
+      }
+    } catch {
+      // The caller receives one safe transport error, never a socket detail.
+    }
+    this.deliver(() => this.onVoiceError("transport_error"));
+    return false;
   }
 
   private deliver(callback: () => void): void {

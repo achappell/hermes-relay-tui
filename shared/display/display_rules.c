@@ -39,6 +39,7 @@ static bool transition_allowed(display_rules_state_t current, display_rules_stat
         case DISPLAY_RULES_IDLE:
             return next == DISPLAY_RULES_HEARD ||
                    next == DISPLAY_RULES_LISTENING ||
+                   next == DISPLAY_RULES_THINKING ||
                    next == DISPLAY_RULES_PROMPT;
         case DISPLAY_RULES_HEARD:
             return next == DISPLAY_RULES_LISTENING ||
