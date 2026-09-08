@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Architecture Spine Validation — Hermes Relay Multi-Front-End</title>
+  <style>
+    :root { color-scheme: dark; --bg: #17171d; --panel: #22232c; --ink: #f1f0f5; --muted: #b6b5c3; --accent: #7ee8cf; --line: #3a3b48; }
+    body { max-width: 920px; margin: 0 auto; padding: 3rem 1.5rem; background: var(--bg); color: var(--ink); font: 16px/1.55 system-ui, sans-serif; }
+    h1, h2 { line-height: 1.15; }
+    h1 { color: var(--accent); }
+    h2 { margin-top: 2rem; border-bottom: 1px solid var(--line); padding-bottom: .4rem; }
+    .verdict { padding: 1rem 1.2rem; background: var(--panel); border-left: 4px solid var(--accent); border-radius: .35rem; }
+    table { width: 100%; border-collapse: collapse; background: var(--panel); }
+    th, td { padding: .65rem .8rem; border: 1px solid var(--line); text-align: left; vertical-align: top; }
+    th { color: var(--accent); }
+    code { color: #f5d58a; }
+    .muted { color: var(--muted); }
+  </style>
+</head>
+<body>
+  <h1>Architecture Spine Validation Report</h1>
+  <p class="muted">2026-09-08 · Validate · Hermes Relay Multi-Front-End initiative spine</p>
+
+  <div class="verdict"><strong>PASS.</strong> The spine is mechanically sound, the reviewer gate has no critical or high findings, and fresh repository checks remain consistent with its decisions.</div>
+
+  <h2>Fresh evidence</h2>
+  <table>
+    <thead><tr><th>Gate</th><th>Result</th></tr></thead>
+    <tbody>
+      <tr><td>Architecture lint</td><td><code>ok: true</code>; 0 findings</td></tr>
+      <tr><td>Full Python suite</td><td>833 passed; 1 pre-existing <code>websockets.legacy</code> deprecation warning</td></tr>
+      <tr><td>Browser suite</td><td>126 passed across 12 files</td></tr>
+      <tr><td>Svelte diagnostics</td><td>0 errors, 0 warnings</td></tr>
+      <tr><td>Vite production build</td><td>Passed</td></tr>
+      <tr><td><code>git diff --check</code></td><td>Passed</td></tr>
+    </tbody>
+  </table>
+
+  <h2>Reviewer gate</h2>
+  <ul>
+    <li><code>review-rubric.md</code>: PASS; reconnect sequence epochs clarified; no critical or high findings.</li>
+    <li><code>review-adversary.md</code>: PASS; no incompatible independent-unit pair remains.</li>
+    <li><code>review-technology.md</code>: PASS; observed or deliberately pinned brownfield baselines; exact ESP-IDF pin correctly deferred.</li>
+  </ul>
+
+  <h2>Assessment</h2>
+  <p>AD-1 through AD-10 remain enforceable and aligned with the repository. Core boundaries, Hermes protocol ownership, the versioned display contract, state ownership, room-local propagation, process topology, recovery, shutdown, secrets, dependency isolation, and cross-target conformance each have a named owner and a testable rule.</p>
+  <p>The BMad customization resolver could not create its managed <code>uv</code> environment under Python 3.14 because <code>openwakeword</code> depends on <code>tflite-runtime</code> without a matching <code>cp314</code> wheel. The standard-library architecture lint and the supported repository <code>venv</code> completed the verification gates; this is tooling noise, not an architecture failure.</p>
+
+  <h2>Recommendation</h2>
+  <p>No spine change is required. Move ARCH-01 from <code>Verify / In Progress</code> to <code>Done / Done</code>.</p>
+</body>
+</html>
