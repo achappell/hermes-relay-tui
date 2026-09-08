@@ -107,6 +107,10 @@ export class StateChannel {
   }
 
   private handleMessage(data: unknown): void {
+    // The browser WebSocket API delivers one complete message event even when
+    // the protocol fragmented it on the wire. A partial/malformed application
+    // payload must therefore be rejected atomically without replacing the
+    // last accepted snapshot.
     let raw: unknown;
     try {
       raw = typeof data === "string" ? JSON.parse(data) : null;

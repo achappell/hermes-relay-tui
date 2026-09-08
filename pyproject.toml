@@ -11,7 +11,7 @@ requires-python = ">=3.14,<3.15"
 authors = [{ name = "Amanda Chappell" }]
 dependencies = [
   "textual>=8.2",
-  "websockets>=12.0",
+  "websockets>=13.0",
   "python-dotenv>=1.0.1",
   "PyYAML>=6.0",
 ]

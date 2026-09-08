@@ -15,8 +15,8 @@ var _started, _prev, _next, _commit_callbacks, _discard_callbacks, _pending, _bl
   if (relList && relList.supports && relList.supports("modulepreload")) {
     return;
   }
-  for (const link2 of document.querySelectorAll('link[rel="modulepreload"]')) {
-    processPreload(link2);
+  for (const link of document.querySelectorAll('link[rel="modulepreload"]')) {
+    processPreload(link);
   }
   new MutationObserver((mutations) => {
     for (const mutation of mutations) {
@@ -29,22 +29,22 @@ var _started, _prev, _next, _commit_callbacks, _discard_callbacks, _pending, _bl
       }
     }
   }).observe(document, { childList: true, subtree: true });
-  function getFetchOpts(link2) {
+  function getFetchOpts(link) {
     const fetchOpts = {};
-    if (link2.integrity) fetchOpts.integrity = link2.integrity;
-    if (link2.referrerPolicy) fetchOpts.referrerPolicy = link2.referrerPolicy;
-    if (link2.crossOrigin === "use-credentials")
+    if (link.integrity) fetchOpts.integrity = link.integrity;
+    if (link.referrerPolicy) fetchOpts.referrerPolicy = link.referrerPolicy;
+    if (link.crossOrigin === "use-credentials")
       fetchOpts.credentials = "include";
-    else if (link2.crossOrigin === "anonymous") fetchOpts.credentials = "omit";
+    else if (link.crossOrigin === "anonymous") fetchOpts.credentials = "omit";
     else fetchOpts.credentials = "same-origin";
     return fetchOpts;
   }
-  function processPreload(link2) {
-    if (link2.ep)
+  function processPreload(link) {
+    if (link.ep)
       return;
-    link2.ep = true;
-    const fetchOpts = getFetchOpts(link2);
-    fetch(link2.href, fetchOpts);
+    link.ep = true;
+    const fetchOpts = getFetchOpts(link);
+    fetch(link.href, fetchOpts);
   }
 })();
 const DEV = false;
@@ -100,7 +100,6 @@ const EAGER_EFFECT = 1 << 17;
 const HEAD_EFFECT = 1 << 18;
 const EFFECT_PRESERVED = 1 << 19;
 const USER_EFFECT = 1 << 20;
-const EFFECT_OFFSCREEN = 1 << 25;
 const WAS_MARKED = 1 << 16;
 const REACTION_IS_UPDATING = 1 << 21;
 const ASYNC = 1 << 22;
@@ -108,7 +107,6 @@ const ERROR_VALUE = 1 << 23;
 const STATE_SYMBOL = Symbol("$state");
 const COMPONENT_SYMBOL = Symbol("component");
 const LEGACY_PROPS = Symbol("legacy props");
-const LOADING_ATTR_SYMBOL = Symbol("");
 const ATTRIBUTES_CACHE = Symbol("attributes");
 const CLASS_CACHE = Symbol("class");
 const STYLE_CACHE = Symbol("style");
@@ -120,9 +118,6 @@ const STALE_REACTION = new class StaleReactionError extends Error {
     __publicField(this, "message", "The reaction that called `getAbortSignal()` was re-run or destroyed");
   }
 }();
-const EACH_ITEM_REACTIVE = 1;
-const EACH_INDEX_REACTIVE = 1 << 1;
-const EACH_ITEM_IMMUTABLE = 1 << 4;
 const PROPS_IS_RUNES = 1 << 1;
 const PROPS_IS_UPDATED = 1 << 2;
 const PROPS_IS_BINDABLE = 1 << 3;
@@ -158,11 +153,6 @@ function async_derived_orphan() {
     throw new Error(`https://svelte.dev/e/async_derived_orphan`);
   }
 }
-function each_key_duplicate(a, b, value) {
-  {
-    throw new Error(`https://svelte.dev/e/each_key_duplicate`);
-  }
-}
 function effect_in_teardown(rune) {
   {
     throw new Error(`https://svelte.dev/e/effect_in_teardown`);
@@ -181,11 +171,6 @@ function effect_orphan(rune) {
 function effect_update_depth_exceeded() {
   {
     throw new Error(`https://svelte.dev/e/effect_update_depth_exceeded`);
-  }
-}
-function lifecycle_legacy_only(name) {
-  {
-    throw new Error(`https://svelte.dev/e/lifecycle_legacy_only`);
   }
 }
 function props_invalid_value(key) {
@@ -1428,13 +1413,6 @@ function mutable_source(initial_value, immutable = false, trackable = true) {
   }
   return s;
 }
-function mutate(source2, value) {
-  set(
-    source2,
-    untrack(() => get(source2))
-  );
-  return value;
-}
 function set(source2, value, should_proxy = false) {
   if (active_reaction !== null && // since we are untracking the function inside `$inspect.with` we need to add this check
   // to ensure we error if state is set inside an inspect effect
@@ -1808,9 +1786,6 @@ function sibling(node, count = 1, is_text = false) {
   {
     return next_sibling;
   }
-}
-function clear_text_content(node) {
-  node.textContent = "";
 }
 function should_defer_append() {
   return false;
@@ -2668,54 +2643,22 @@ function is_passive_event(name) {
 const event_symbol = Symbol("events");
 const all_registered_events = /* @__PURE__ */ new Set();
 const root_event_handles = /* @__PURE__ */ new Set();
-function create_event(event_name, dom, handler, options = {}) {
-  function target_handler(event2) {
-    if (!options.capture) {
-      handle_event_propagation.call(dom, event2);
-    }
-    if (!event2.cancelBubble) {
-      return without_reactive_context(() => {
-        return handler == null ? void 0 : handler.call(this, event2);
-      });
-    }
-  }
-  if (event_name.startsWith("pointer") || event_name.startsWith("touch") || event_name === "wheel") {
-    queue_micro_task(() => {
-      dom.addEventListener(event_name, target_handler, options);
-    });
-  } else {
-    dom.addEventListener(event_name, target_handler, options);
-  }
-  return target_handler;
-}
-function event(event_name, dom, handler, capture2, passive) {
-  var options = { capture: capture2, passive };
-  var target_handler = create_event(event_name, dom, handler, options);
-  if (dom === document.body || // @ts-ignore
-  dom === window || // @ts-ignore
-  dom === document || // Firefox has quirky behavior, it can happen that we still get "canplay" events when the element is already removed
-  dom instanceof HTMLMediaElement) {
-    teardown(() => {
-      dom.removeEventListener(event_name, target_handler, options);
-    });
-  }
-}
 let last_propagated_event = null;
 let last_propagated_event_clear_scheduled = false;
-function handle_event_propagation(event2) {
+function handle_event_propagation(event) {
   var _a2, _b2;
   var handler_element = this;
   var owner_document = (
     /** @type {Node} */
     handler_element.ownerDocument
   );
-  var event_name = event2.type;
-  var path = ((_a2 = event2.composedPath) == null ? void 0 : _a2.call(event2)) || [];
+  var event_name = event.type;
+  var path = ((_a2 = event.composedPath) == null ? void 0 : _a2.call(event)) || [];
   var current_target = (
     /** @type {null | Element} */
-    path[0] || event2.target
+    path[0] || event.target
   );
-  last_propagated_event = event2;
+  last_propagated_event = event;
   if (!last_propagated_event_clear_scheduled) {
     last_propagated_event_clear_scheduled = true;
     setTimeout(() => {
@@ -2724,12 +2667,12 @@ function handle_event_propagation(event2) {
     });
   }
   var path_idx = 0;
-  var handled_at = last_propagated_event === event2 && event2[event_symbol];
+  var handled_at = last_propagated_event === event && event[event_symbol];
   if (handled_at) {
     var at_idx = path.indexOf(handled_at);
     if (at_idx !== -1 && (handler_element === document || handler_element === /** @type {any} */
     window)) {
-      event2[event_symbol] = handler_element;
+      event[event_symbol] = handler_element;
       return;
     }
     var handler_idx = path.indexOf(handler_element);
@@ -2741,9 +2684,9 @@ function handle_event_propagation(event2) {
     }
   }
   current_target = /** @type {Element} */
-  path[path_idx] || event2.target;
+  path[path_idx] || event.target;
   if (current_target === handler_element) return;
-  define_property(event2, "currentTarget", {
+  define_property(event, "currentTarget", {
     configurable: true,
     get() {
       return current_target || owner_document;
@@ -2763,8 +2706,8 @@ function handle_event_propagation(event2) {
         if (delegated != null && (!/** @type {any} */
         current_target.disabled || // DOM could've been updated already by the time this is reached, so we check this as well
         // -> the target could not have been disabled because it emits the event in the first place
-        event2.target === current_target)) {
-          delegated.call(current_target, event2);
+        event.target === current_target)) {
+          delegated.call(current_target, event);
         }
       } catch (error) {
         if (throw_error) {
@@ -2773,7 +2716,7 @@ function handle_event_propagation(event2) {
           throw_error = error;
         }
       }
-      if (event2.cancelBubble) break;
+      if (event.cancelBubble) break;
       path_idx++;
       current_target = path_idx < path.length ? (
         /** @type {Element} */
@@ -2789,8 +2732,8 @@ function handle_event_propagation(event2) {
       throw throw_error;
     }
   } finally {
-    event2[event_symbol] = handler_element;
-    delete event2.currentTarget;
+    event[event_symbol] = handler_element;
+    delete event.currentTarget;
     set_active_reaction(previous_reaction);
     set_active_effect(previous_effect);
   }
@@ -3594,443 +3537,11 @@ function if_block(node, fn, elseif = false) {
     }
   }, flags2);
 }
-function pause_effects(state2, to_destroy, controlled_anchor) {
-  var transitions = [];
-  var length = to_destroy.length;
-  var group;
-  var remaining = to_destroy.length;
-  for (var i = 0; i < length; i++) {
-    let effect2 = to_destroy[i];
-    pause_effect(
-      effect2,
-      () => {
-        if (group) {
-          group.pending.delete(effect2);
-          group.done.add(effect2);
-          if (group.pending.size === 0) {
-            var groups = (
-              /** @type {Set<EachOutroGroup>} */
-              state2.outrogroups
-            );
-            destroy_effects(state2, array_from(group.done));
-            groups.delete(group);
-            if (groups.size === 0) {
-              state2.outrogroups = null;
-            }
-          }
-        } else {
-          remaining -= 1;
-        }
-      },
-      false
-    );
-  }
-  if (remaining === 0) {
-    var fast_path = transitions.length === 0 && controlled_anchor !== null && state2.pending.size === 0;
-    if (fast_path) {
-      var anchor = (
-        /** @type {Element} */
-        controlled_anchor
-      );
-      var parent_node = (
-        /** @type {Element} */
-        anchor.parentNode
-      );
-      clear_text_content(parent_node);
-      parent_node.append(anchor);
-      state2.items.clear();
-    }
-    destroy_effects(state2, to_destroy, !fast_path);
-  } else {
-    group = {
-      pending: new Set(to_destroy),
-      done: /* @__PURE__ */ new Set()
-    };
-    (state2.outrogroups ?? (state2.outrogroups = /* @__PURE__ */ new Set())).add(group);
-  }
-}
-function destroy_effects(state2, to_destroy, remove_dom = true) {
-  var preserved_effects;
-  if (state2.pending.size > 0) {
-    preserved_effects = /* @__PURE__ */ new Set();
-    for (const keys of state2.pending.values()) {
-      for (const key of keys) {
-        preserved_effects.add(
-          /** @type {EachItem} */
-          state2.items.get(key).e
-        );
-      }
-    }
-  }
-  for (var i = 0; i < to_destroy.length; i++) {
-    var e = to_destroy[i];
-    if (preserved_effects == null ? void 0 : preserved_effects.has(e)) {
-      e.f |= EFFECT_OFFSCREEN;
-      const fragment = document.createDocumentFragment();
-      move_effect(e, fragment);
-    } else {
-      destroy_effect(to_destroy[i], remove_dom);
-    }
-  }
-}
-var offscreen_anchor;
-function each(node, flags2, get_collection, get_key, render_fn2, fallback_fn = null) {
-  var anchor = node;
-  var items = /* @__PURE__ */ new Map();
-  {
-    var parent_node = (
-      /** @type {Element} */
-      node
-    );
-    anchor = parent_node.appendChild(create_text());
-  }
-  var fallback = null;
-  var each_array = /* @__PURE__ */ derived_safe_equal(() => {
-    var collection = get_collection();
-    return (
-      /** @type {V[]} */
-      is_array(collection) ? collection : collection == null ? [] : array_from(collection)
-    );
-  });
-  var array;
-  var pending = /* @__PURE__ */ new Map();
-  var first_run = true;
-  function commit(batch) {
-    if ((state2.effect.f & DESTROYED) !== 0) {
-      return;
-    }
-    state2.pending.delete(batch);
-    state2.fallback = fallback;
-    reconcile(state2, array, anchor, flags2, get_key);
-    if (fallback !== null) {
-      if (array.length === 0) {
-        if ((fallback.f & EFFECT_OFFSCREEN) === 0) {
-          resume_effect(fallback);
-        } else {
-          fallback.f ^= EFFECT_OFFSCREEN;
-          move(fallback, null, anchor);
-        }
-      } else {
-        pause_effect(fallback, () => {
-          fallback = null;
-        });
-      }
-    }
-  }
-  function discard(batch) {
-    state2.pending.delete(batch);
-  }
-  var effect2 = block(() => {
-    array = /** @type {V[]} */
-    get(each_array);
-    var length = array.length;
-    var keys = /* @__PURE__ */ new Set();
-    var batch = (
-      /** @type {Batch} */
-      current_batch
-    );
-    var defer = should_defer_append();
-    for (var index = 0; index < length; index += 1) {
-      var value = array[index];
-      var key = get_key(value, index);
-      var item = first_run ? null : items.get(key);
-      if (item) {
-        if (item.v) internal_set(item.v, value);
-        if (item.i) internal_set(item.i, index);
-        if (defer) {
-          batch.unskip_effect(item.e);
-        }
-      } else {
-        item = create_item(
-          items,
-          first_run ? anchor : offscreen_anchor ?? (offscreen_anchor = create_text()),
-          value,
-          key,
-          index,
-          render_fn2,
-          flags2,
-          get_collection
-        );
-        if (!first_run) {
-          item.e.f |= EFFECT_OFFSCREEN;
-        }
-        items.set(key, item);
-      }
-      keys.add(key);
-    }
-    if (length === 0 && fallback_fn && !fallback) {
-      if (first_run) {
-        fallback = branch(() => fallback_fn(anchor));
-      } else {
-        fallback = branch(() => fallback_fn(offscreen_anchor ?? (offscreen_anchor = create_text())));
-        fallback.f |= EFFECT_OFFSCREEN;
-      }
-    }
-    if (length > keys.size) {
-      {
-        each_key_duplicate();
-      }
-    }
-    if (!first_run) {
-      pending.set(batch, keys);
-      if (defer) {
-        for (const [key2, item2] of items) {
-          if (!keys.has(key2)) {
-            batch.skip_effect(item2.e);
-          }
-        }
-        batch.oncommit(commit);
-        batch.ondiscard(discard);
-      } else {
-        commit(batch);
-      }
-    }
-    get(each_array);
-  });
-  var state2 = { effect: effect2, items, pending, outrogroups: null, fallback };
-  first_run = false;
-}
-function skip_to_branch(effect2) {
-  while (effect2 !== null && (effect2.f & BRANCH_EFFECT) === 0) {
-    effect2 = effect2.next;
-  }
-  return effect2;
-}
-function reconcile(state2, array, anchor, flags2, get_key) {
-  var _a2;
-  var length = array.length;
-  var items = state2.items;
-  var current = skip_to_branch(state2.effect.first);
-  var seen;
-  var prev = null;
-  var matched = [];
-  var stashed = [];
-  var value;
-  var key;
-  var effect2;
-  var i;
-  for (i = 0; i < length; i += 1) {
-    value = array[i];
-    key = get_key(value, i);
-    effect2 = /** @type {EachItem} */
-    items.get(key).e;
-    if (state2.outrogroups !== null) {
-      for (const group of state2.outrogroups) {
-        group.pending.delete(effect2);
-        group.done.delete(effect2);
-      }
-    }
-    if ((effect2.f & INERT) !== 0) {
-      resume_effect(effect2);
-    }
-    if ((effect2.f & EFFECT_OFFSCREEN) !== 0) {
-      effect2.f ^= EFFECT_OFFSCREEN;
-      if (effect2 === current) {
-        move(effect2, null, anchor);
-      } else {
-        var next = prev ? prev.next : current;
-        if (effect2 === state2.effect.last) {
-          state2.effect.last = effect2.prev;
-        }
-        if (effect2.prev) effect2.prev.next = effect2.next;
-        if (effect2.next) effect2.next.prev = effect2.prev;
-        link(state2, prev, effect2);
-        link(state2, effect2, next);
-        move(effect2, next, anchor);
-        prev = effect2;
-        matched = [];
-        stashed = [];
-        current = skip_to_branch(prev.next);
-        continue;
-      }
-    }
-    if (effect2 !== current) {
-      if (seen !== void 0 && seen.has(effect2)) {
-        if (matched.length < stashed.length) {
-          var start = stashed[0];
-          var j;
-          prev = start.prev;
-          var a = matched[0];
-          var b = matched[matched.length - 1];
-          for (j = 0; j < matched.length; j += 1) {
-            move(matched[j], start, anchor);
-          }
-          for (j = 0; j < stashed.length; j += 1) {
-            seen.delete(stashed[j]);
-          }
-          link(state2, a.prev, b.next);
-          link(state2, prev, a);
-          link(state2, b, start);
-          current = start;
-          prev = b;
-          i -= 1;
-          matched = [];
-          stashed = [];
-        } else {
-          seen.delete(effect2);
-          move(effect2, current, anchor);
-          link(state2, effect2.prev, effect2.next);
-          link(state2, effect2, prev === null ? state2.effect.first : prev.next);
-          link(state2, prev, effect2);
-          prev = effect2;
-        }
-        continue;
-      }
-      matched = [];
-      stashed = [];
-      while (current !== null && current !== effect2) {
-        (seen ?? (seen = /* @__PURE__ */ new Set())).add(current);
-        stashed.push(current);
-        current = skip_to_branch(current.next);
-      }
-      if (current === null) {
-        continue;
-      }
-    }
-    if ((effect2.f & EFFECT_OFFSCREEN) === 0) {
-      matched.push(effect2);
-    }
-    prev = effect2;
-    current = skip_to_branch(effect2.next);
-  }
-  if (state2.outrogroups !== null) {
-    for (const group of state2.outrogroups) {
-      if (group.pending.size === 0) {
-        destroy_effects(state2, array_from(group.done));
-        (_a2 = state2.outrogroups) == null ? void 0 : _a2.delete(group);
-      }
-    }
-    if (state2.outrogroups.size === 0) {
-      state2.outrogroups = null;
-    }
-  }
-  if (current !== null || seen !== void 0) {
-    var to_destroy = [];
-    if (seen !== void 0) {
-      for (effect2 of seen) {
-        if ((effect2.f & INERT) === 0) {
-          to_destroy.push(effect2);
-        }
-      }
-    }
-    while (current !== null) {
-      if ((current.f & INERT) === 0 && current !== state2.fallback) {
-        to_destroy.push(current);
-      }
-      current = skip_to_branch(current.next);
-    }
-    var destroy_length = to_destroy.length;
-    if (destroy_length > 0) {
-      var controlled_anchor = length === 0 ? anchor : null;
-      pause_effects(state2, to_destroy, controlled_anchor);
-    }
-  }
-}
-function create_item(items, anchor, value, key, index, render_fn2, flags2, get_collection) {
-  var v = (flags2 & EACH_ITEM_REACTIVE) !== 0 ? (flags2 & EACH_ITEM_IMMUTABLE) === 0 ? /* @__PURE__ */ mutable_source(value, false, false) : source(value) : null;
-  var i = (flags2 & EACH_INDEX_REACTIVE) !== 0 ? source(index) : null;
-  return {
-    v,
-    i,
-    e: branch(() => {
-      render_fn2(anchor, v ?? value, i ?? index, get_collection);
-      return () => {
-        items.delete(key);
-      };
-    })
-  };
-}
-function move(effect2, next, anchor) {
-  if (!effect2.nodes) return;
-  var node = effect2.nodes.start;
-  var end = effect2.nodes.end;
-  var dest = next && (next.f & EFFECT_OFFSCREEN) === 0 ? (
-    /** @type {EffectNodes} */
-    next.nodes.start
-  ) : anchor;
-  while (node !== null) {
-    var next_node = (
-      /** @type {TemplateNode} */
-      /* @__PURE__ */ get_next_sibling(node)
-    );
-    dest.before(node);
-    if (node === end) {
-      return;
-    }
-    node = next_node;
-  }
-}
-function link(state2, prev, next) {
-  if (prev === null) {
-    state2.effect.first = next;
-  } else {
-    prev.next = next;
-  }
-  if (next === null) {
-    state2.effect.last = prev;
-  } else {
-    next.prev = prev;
-  }
-}
-const whitespace = [..." 	\n\r\f \v\uFEFF"];
-function to_class(value, hash, directives) {
-  var classname = value == null ? "" : "" + value;
-  if (hash) {
-    classname = classname ? classname + " " + hash : hash;
-  }
-  if (directives) {
-    for (var key of Object.keys(directives)) {
-      if (directives[key]) {
-        classname = classname ? classname + " " + key : key;
-      } else if (classname.length) {
-        var len = key.length;
-        var a = 0;
-        while ((a = classname.indexOf(key, a)) >= 0) {
-          var b = a + len;
-          if ((a === 0 || whitespace.includes(classname[a - 1])) && (b === classname.length || whitespace.includes(classname[b]))) {
-            classname = (a === 0 ? "" : classname.substring(0, a)) + classname.substring(b + 1);
-          } else {
-            a = b;
-          }
-        }
-      }
-    }
-  }
-  return classname === "" ? null : classname;
-}
-function set_class(dom, is_html, value, hash, prev_classes, next_classes) {
-  var prev = (
-    /** @type {any} */
-    dom[CLASS_CACHE]
-  );
-  if (prev !== value || prev === void 0) {
-    var next_class_name = to_class(value, hash, next_classes);
-    {
-      if (next_class_name == null) {
-        dom.removeAttribute("class");
-      } else {
-        dom.className = next_class_name;
-      }
-    }
-    dom[CLASS_CACHE] = value;
-  } else if (next_classes && prev_classes !== next_classes) {
-    for (var key in next_classes) {
-      var is_present = !!next_classes[key];
-      if (prev_classes == null || is_present !== !!prev_classes[key]) {
-        dom.classList.toggle(key, is_present);
-      }
-    }
-  }
-  return next_classes;
-}
 const IS_CUSTOM_ELEMENT = Symbol("is custom element");
 const IS_HTML = Symbol("is html");
 function set_attribute(element, attribute, value, skip_warning) {
   var attributes = get_attributes(element);
   if (attributes[attribute] === (attributes[attribute] = value)) return;
-  if (attribute === "loading") {
-    element[LOADING_ATTR_SYMBOL] = value;
-  }
   if (value == null) {
     element.removeAttribute(attribute);
   } else if (typeof value !== "string" && get_setters(element).has(attribute)) {
@@ -4297,21 +3808,6 @@ function onMount(fn) {
     });
   }
 }
-function onDestroy(fn) {
-  if (component_context === null) {
-    lifecycle_outside_component();
-  }
-  onMount(() => () => untrack(fn));
-}
-function afterUpdate(fn) {
-  if (component_context === null) {
-    lifecycle_outside_component();
-  }
-  if (component_context.l === null) {
-    lifecycle_legacy_only();
-  }
-  init_update_callbacks(component_context).a.push(fn);
-}
 function init_update_callbacks(context) {
   var l = (
     /** @type {ComponentContextLegacy} */
@@ -4324,240 +3820,258 @@ if (typeof window !== "undefined") {
   ((_b = window.__svelte ?? (window.__svelte = {})).v ?? (_b.v = /* @__PURE__ */ new Set())).add(PUBLIC_VERSION);
 }
 enable_legacy_mode_flag();
-var root$1 = /* @__PURE__ */ from_html(`<span class="working-dot" data-working-dot="" aria-hidden="true"></span>`);
-var root_1$1 = /* @__PURE__ */ from_html(`<p class="status-text"> <!></p>`);
-var root_2$1 = /* @__PURE__ */ from_html(`<main aria-live="polite"><div class="ambient-canvas" aria-hidden="true"></div> <section class="state-overlay"><p class="state-label"> </p> <!> <div data-response-viewport=""><p class="response-text" data-response-text=""> </p></div></section></main>`);
-function StateSurface($$anchor, $$props) {
-  push($$props, false);
-  const displayState = /* @__PURE__ */ mutable_source();
-  const status = /* @__PURE__ */ mutable_source();
-  const showResponse = /* @__PURE__ */ mutable_source();
-  const working = /* @__PURE__ */ mutable_source();
-  let snapshot = prop($$props, "snapshot", 8);
-  let connectionState = prop($$props, "connectionState", 8);
-  let protocolError = prop($$props, "protocolError", 8, null);
-  const labels = {
-    idle: "Ready",
-    heard: "Heard you",
-    listening: "Listening",
-    thinking: "Thinking",
-    speaking: "Speaking",
-    buffering: "Buffering",
-    error: "Error",
-    disconnected: "Disconnected",
-    prompt: "Prompt"
-  };
-  const fallbackStatus = {
-    buffering: "Still working — please wait",
-    error: "Something needs attention — try again",
-    disconnected: "Display disconnected — check the host connection"
-  };
-  let responseViewport = /* @__PURE__ */ mutable_source();
-  let showingResponse = false;
-  let previousResponse = "";
-  let lastTargetScroll = 0;
-  function prefersReducedMotion() {
-    if (typeof window === "undefined" || typeof window.matchMedia !== "function") {
-      return false;
-    }
-    return window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-  }
-  function resetResponseScroll() {
-    if (get(responseViewport)) {
-      if (typeof get(responseViewport).scrollTo === "function") {
-        get(responseViewport).scrollTo({ top: 0, behavior: "instant" });
-      } else {
-        mutate(responseViewport, get(responseViewport).scrollTop = 0);
-      }
-      lastTargetScroll = 0;
-    }
-  }
-  function keepResponseInView() {
-    if (!get(showResponse) || !get(responseViewport)) return;
-    const maxScroll = get(responseViewport).scrollHeight - get(responseViewport).clientHeight;
-    if (maxScroll <= 0) {
-      if (get(responseViewport).scrollTop !== 0) {
-        resetResponseScroll();
-      }
-      lastTargetScroll = 0;
-      return;
-    }
-    if (maxScroll !== lastTargetScroll) {
-      lastTargetScroll = maxScroll;
-      const behavior = prefersReducedMotion() ? "instant" : "smooth";
-      if (typeof get(responseViewport).scrollTo === "function") {
-        get(responseViewport).scrollTo({ top: maxScroll, behavior });
-      } else {
-        mutate(responseViewport, get(responseViewport).scrollTop = maxScroll);
-      }
-    }
-  }
-  afterUpdate(() => {
-    if (!get(showResponse)) {
-      resetResponseScroll();
-      showingResponse = false;
-      previousResponse = "";
-      return;
-    }
-    const newResponse = !showingResponse || snapshot().response_text.length < previousResponse.length || !snapshot().response_text.startsWith(previousResponse);
-    if (newResponse) {
-      resetResponseScroll();
-    }
-    showingResponse = true;
-    previousResponse = snapshot().response_text;
-    keepResponseInView();
-  });
-  onDestroy(resetResponseScroll);
-  legacy_pre_effect(
-    () => (deep_read_state(protocolError()), deep_read_state(connectionState()), deep_read_state(snapshot())),
-    () => {
-      set(displayState, protocolError() !== null ? "error" : connectionState() === "connected" ? snapshot().state : "disconnected");
-    }
-  );
-  legacy_pre_effect(
-    () => (deep_read_state(protocolError()), deep_read_state(snapshot()), get(displayState)),
-    () => {
-      set(status, protocolError() ?? snapshot().status_text ?? fallbackStatus[get(displayState)] ?? null);
-    }
-  );
-  legacy_pre_effect(
-    () => (deep_read_state(protocolError()), get(displayState), deep_read_state(snapshot())),
-    () => {
-      set(showResponse, protocolError() === null && get(displayState) === "speaking" && snapshot().response_text.length > 0);
-    }
-  );
-  legacy_pre_effect(() => get(displayState), () => {
-    set(working, get(displayState) === "thinking" || get(displayState) === "buffering");
-  });
-  legacy_pre_effect_reset();
-  init();
-  var main = root_2$1();
-  let classes;
-  var section = sibling(child(main), 2);
-  var p = child(section);
-  var text = only_child(p, true);
-  var node = sibling(p, 2);
-  {
-    var consequent_1 = ($$anchor2) => {
-      var p_1 = root_1$1();
-      var text_1 = child(p_1);
-      var node_1 = sibling(text_1);
-      {
-        var consequent = ($$anchor3) => {
-          var span = root$1();
-          append($$anchor3, span);
-        };
-        if_block(node_1, ($$render) => {
-          if (get(working)) $$render(consequent);
-        });
-      }
-      template_effect(() => set_text(text_1, get(status)));
-      append($$anchor2, p_1);
-    };
-    if_block(node, ($$render) => {
-      if (get(status)) $$render(consequent_1);
-    });
-  }
-  var div = sibling(node, 2);
-  let classes_1;
-  var p_2 = child(div);
-  var text_2 = only_child(p_2, true);
-  bind_this(div, ($$value) => set(responseViewport, $$value), () => get(responseViewport));
-  template_effect(() => {
-    classes = set_class(main, 1, "state-surface", null, classes, { "has-response": get(showResponse) });
-    set_attribute(main, "data-state", get(displayState));
-    set_attribute(section, "aria-label", (get(displayState), untrack(() => labels[get(displayState)])));
-    set_text(text, (get(displayState), untrack(() => labels[get(displayState)])));
-    classes_1 = set_class(div, 1, "response-viewport", null, classes_1, { visible: get(showResponse) });
-    set_text(text_2, (get(showResponse), deep_read_state(snapshot()), untrack(() => get(showResponse) ? snapshot().response_text : "")));
-  });
-  append($$anchor, main);
-  pop();
+const DISPLAY_WIDTH = 1024;
+const DISPLAY_HEIGHT = 600;
+const defaultImageDataFactory = (data, width, height) => new ImageData(data, width, height);
+function asError(error) {
+  return error instanceof Error ? error : new Error("Display canvas runtime failed");
 }
-var root = /* @__PURE__ */ from_html(`<div class="prompt-account svelte-glm292"> </div>`);
-var root_1 = /* @__PURE__ */ from_html(`<button> </button>`);
-var root_2 = /* @__PURE__ */ from_html(`<div class="prompt-overlay svelte-glm292" role="dialog" aria-modal="true" aria-labelledby="prompt-title"><div class="ambient-canvas svelte-glm292" aria-hidden="true"></div> <div class="prompt-card svelte-glm292"><!> <h1 class="prompt-title svelte-glm292" id="prompt-title"> </h1> <p class="prompt-body svelte-glm292"> </p> <div class="prompt-actions svelte-glm292"></div></div></div>`);
-function PromptOverlay($$anchor, $$props) {
-  push($$props, false);
-  let prompt = prop($$props, "prompt", 8);
-  let account = prop($$props, "account", 8, null);
-  let dismissed = /* @__PURE__ */ mutable_source(false);
-  let timeoutId = /* @__PURE__ */ mutable_source(null);
-  function sendAction(actionId, choice) {
-    if (get(dismissed)) return;
-    set(dismissed, true);
-    if (get(timeoutId) !== null) {
-      clearTimeout(get(timeoutId));
-      set(timeoutId, null);
+function clamp(value, minimum, maximum) {
+  return Math.min(Math.max(value, minimum), maximum);
+}
+class CanvasDisplayHost {
+  constructor(canvas, reducer, options) {
+    __publicField(this, "context");
+    __publicField(this, "imageDataFactory");
+    __publicField(this, "requestFrame");
+    __publicField(this, "cancelFrame");
+    __publicField(this, "now");
+    __publicField(this, "stagingCanvas", null);
+    __publicField(this, "stagingContext", null);
+    __publicField(this, "frameHandle", null);
+    __publicField(this, "lastTimestamp", null);
+    __publicField(this, "running", false);
+    __publicField(this, "pointerId", null);
+    __publicField(this, "renderFrame", (timestamp) => {
+      if (!this.running) return;
+      const elapsed = this.lastTimestamp === null ? 0 : clamp(Math.round(timestamp - this.lastTimestamp), 0, 250);
+      this.lastTimestamp = timestamp;
+      try {
+        this.reducer.tick(elapsed);
+        this.drawFrame();
+        const action = this.reducer.pollAction();
+        if (action !== null) {
+          const result = this.options.onAction(action);
+          if (result !== null && typeof result === "object" && "then" in result) {
+            void Promise.resolve(result).catch((error) => this.report(error));
+          }
+        }
+      } catch (error) {
+        this.stop();
+        this.report(error);
+        return;
+      }
+      this.frameHandle = this.requestFrame(this.renderFrame);
+    });
+    __publicField(this, "handleResize", () => {
+      try {
+        this.resizeCanvas();
+      } catch (error) {
+        this.stop();
+        this.report(error);
+      }
+    });
+    __publicField(this, "handlePointerDown", (event) => {
+      var _a2, _b2;
+      event.preventDefault();
+      this.pointerId = event.pointerId;
+      (_b2 = (_a2 = this.canvas).setPointerCapture) == null ? void 0 : _b2.call(_a2, event.pointerId);
+      this.setPointer(event, true);
+    });
+    __publicField(this, "handlePointerMove", (event) => {
+      if (event.pointerId !== this.pointerId) return;
+      event.preventDefault();
+      this.setPointer(event, true);
+    });
+    __publicField(this, "handlePointerUp", (event) => {
+      var _a2, _b2;
+      if (event.pointerId !== this.pointerId) return;
+      event.preventDefault();
+      this.setPointer(event, false);
+      (_b2 = (_a2 = this.canvas).releasePointerCapture) == null ? void 0 : _b2.call(_a2, event.pointerId);
+      this.pointerId = null;
+    });
+    __publicField(this, "handlePointerCancel", (event) => {
+      var _a2, _b2;
+      if (event.pointerId !== this.pointerId) return;
+      event.preventDefault();
+      this.setPointer(event, false);
+      (_b2 = (_a2 = this.canvas).releasePointerCapture) == null ? void 0 : _b2.call(_a2, event.pointerId);
+      this.pointerId = null;
+    });
+    this.canvas = canvas;
+    this.reducer = reducer;
+    this.options = options;
+    const context = canvas.getContext("2d");
+    if (context === null) {
+      throw new Error("Display canvas cannot create a 2D rendering context");
     }
-    const url = `/action?action_id=${encodeURIComponent(actionId)}&choice=${encodeURIComponent(choice)}`;
-    fetch(url, { method: "POST" }).catch(() => {
+    this.context = context;
+    this.imageDataFactory = options.imageDataFactory ?? defaultImageDataFactory;
+    this.now = options.now ?? (() => performance.now());
+    this.requestFrame = options.requestAnimationFrame ?? ((callback) => {
+      if (typeof window === "undefined") {
+        throw new Error("Display canvas animation is unavailable outside a browser");
+      }
+      return window.requestAnimationFrame(callback);
+    });
+    this.cancelFrame = options.cancelAnimationFrame ?? ((handle) => {
+      if (typeof window !== "undefined") window.cancelAnimationFrame(handle);
     });
   }
-  function handleOption(option) {
-    sendAction(prompt().action_id, option.id);
+  start() {
+    if (this.running) return;
+    this.resizeCanvas();
+    this.canvas.addEventListener("pointerdown", this.handlePointerDown);
+    this.canvas.addEventListener("pointermove", this.handlePointerMove);
+    this.canvas.addEventListener("pointerup", this.handlePointerUp);
+    this.canvas.addEventListener("pointercancel", this.handlePointerCancel);
+    window.addEventListener("resize", this.handleResize);
+    this.running = true;
+    this.lastTimestamp = this.now();
+    this.frameHandle = this.requestFrame(this.renderFrame);
   }
-  legacy_pre_effect(
-    () => (get(timeoutId), deep_read_state(prompt()), get(dismissed)),
-    () => {
-      var _a2;
-      if (get(timeoutId) !== null) {
-        clearTimeout(get(timeoutId));
-        set(timeoutId, null);
-      }
-      if (prompt().timeout_seconds !== null && prompt().timeout_seconds > 0 && !get(dismissed)) {
-        const defaultChoice = ((_a2 = prompt().options[0]) == null ? void 0 : _a2.id) ?? "no";
-        set(timeoutId, setTimeout(
-          () => {
-            sendAction(prompt().action_id, defaultChoice);
-          },
-          prompt().timeout_seconds * 1e3
-        ));
+  stop() {
+    if (!this.running) return;
+    this.running = false;
+    if (this.frameHandle !== null) {
+      this.cancelFrame(this.frameHandle);
+      this.frameHandle = null;
+    }
+    this.canvas.removeEventListener("pointerdown", this.handlePointerDown);
+    this.canvas.removeEventListener("pointermove", this.handlePointerMove);
+    this.canvas.removeEventListener("pointerup", this.handlePointerUp);
+    this.canvas.removeEventListener("pointercancel", this.handlePointerCancel);
+    window.removeEventListener("resize", this.handleResize);
+    this.pointerId = null;
+  }
+  resizeCanvas() {
+    var _a2, _b2;
+    const rawPixelRatio = ((_b2 = (_a2 = this.options).getDevicePixelRatio) == null ? void 0 : _b2.call(_a2)) ?? window.devicePixelRatio ?? 1;
+    const pixelRatio = clamp(Number.isFinite(rawPixelRatio) ? rawPixelRatio : 1, 1, 3);
+    this.canvas.width = Math.round(DISPLAY_WIDTH * pixelRatio);
+    this.canvas.height = Math.round(DISPLAY_HEIGHT * pixelRatio);
+    this.canvas.style.aspectRatio = `${DISPLAY_WIDTH} / ${DISPLAY_HEIGHT}`;
+    this.canvas.style.display = "block";
+    this.canvas.style.height = "auto";
+    this.canvas.style.imageRendering = "auto";
+    this.canvas.style.touchAction = "none";
+    this.canvas.style.width = "100%";
+    this.context.imageSmoothingEnabled = false;
+    if (pixelRatio > 1) {
+      if (this.stagingCanvas === null) {
+        const createCanvas = this.options.createStagingCanvas ?? ((width, height) => {
+          const stagingCanvas = document.createElement("canvas");
+          stagingCanvas.width = width;
+          stagingCanvas.height = height;
+          return stagingCanvas;
+        });
+        this.stagingCanvas = createCanvas(DISPLAY_WIDTH, DISPLAY_HEIGHT);
+        this.stagingCanvas.width = DISPLAY_WIDTH;
+        this.stagingCanvas.height = DISPLAY_HEIGHT;
+        this.stagingContext = this.stagingCanvas.getContext("2d");
+        if (this.stagingContext === null) {
+          throw new Error("Display canvas cannot create its high-DPI staging context");
+        }
+        this.stagingContext.imageSmoothingEnabled = false;
       }
     }
-  );
+  }
+  drawFrame() {
+    const frame = this.reducer.framebuffer();
+    if (frame.width !== DISPLAY_WIDTH || frame.height !== DISPLAY_HEIGHT) {
+      throw new Error(`Display WebAssembly framebuffer must be ${DISPLAY_WIDTH}x${DISPLAY_HEIGHT}`);
+    }
+    const rgba = new Uint8ClampedArray(frame.data.length);
+    for (let offset = 0; offset < frame.data.length; offset += 4) {
+      rgba[offset] = frame.data[offset + 2];
+      rgba[offset + 1] = frame.data[offset + 1];
+      rgba[offset + 2] = frame.data[offset];
+      rgba[offset + 3] = frame.data[offset + 3];
+    }
+    const imageData = this.imageDataFactory(rgba, frame.width, frame.height);
+    if (this.stagingCanvas !== null && this.stagingContext !== null) {
+      this.stagingContext.putImageData(imageData, 0, 0);
+      this.context.clearRect(0, 0, this.canvas.width, this.canvas.height);
+      this.context.drawImage(this.stagingCanvas, 0, 0, this.canvas.width, this.canvas.height);
+    } else {
+      this.context.putImageData(imageData, 0, 0);
+    }
+  }
+  setPointer(event, pressed) {
+    const rect = this.canvas.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) return;
+    const x = clamp(
+      Math.round((event.clientX - rect.left) / rect.width * DISPLAY_WIDTH),
+      0,
+      DISPLAY_WIDTH - 1
+    );
+    const y = clamp(
+      Math.round((event.clientY - rect.top) / rect.height * DISPLAY_HEIGHT),
+      0,
+      DISPLAY_HEIGHT - 1
+    );
+    try {
+      this.reducer.setPointer(x, y, pressed);
+    } catch (error) {
+      this.report(error);
+    }
+  }
+  report(error) {
+    var _a2, _b2;
+    (_b2 = (_a2 = this.options).onError) == null ? void 0 : _b2.call(_a2, asError(error));
+  }
+}
+var root$1 = /* @__PURE__ */ from_html(`<div class="wasm-canvas-error" data-canvas-error="" role="alert"> </div>`);
+var root_1 = /* @__PURE__ */ from_html(`<main class="wasm-canvas-shell"><canvas class="wasm-display-canvas" data-display-canvas="" aria-label="Hermes home display"></canvas> <!></main>`);
+function WasmCanvas($$anchor, $$props) {
+  push($$props, false);
+  const visibleError = /* @__PURE__ */ mutable_source();
+  let reducer = prop($$props, "reducer", 8);
+  let dispatchAction = prop($$props, "dispatchAction", 8, async () => false);
+  let errorMessage = prop($$props, "errorMessage", 8, null);
+  let onRuntimeError = prop($$props, "onRuntimeError", 8, () => {
+  });
+  let canvas = /* @__PURE__ */ mutable_source();
+  let hostError = /* @__PURE__ */ mutable_source(null);
+  onMount(() => {
+    try {
+      const host = new CanvasDisplayHost(get(canvas), reducer(), {
+        onAction: dispatchAction(),
+        onError: (error) => {
+          set(hostError, error.message);
+          onRuntimeError()(error.message);
+        }
+      });
+      host.start();
+      return () => host.stop();
+    } catch (error) {
+      set(hostError, error instanceof Error ? error.message : "Display canvas failed to start");
+      onRuntimeError()(get(hostError));
+    }
+  });
+  legacy_pre_effect(() => (get(hostError), deep_read_state(errorMessage())), () => {
+    set(visibleError, get(hostError) ?? errorMessage());
+  });
   legacy_pre_effect_reset();
   init();
-  var div = root_2();
-  var div_1 = sibling(child(div), 2);
-  var node = child(div_1);
+  var main = root_1();
+  var canvas_1 = child(main);
+  bind_this(canvas_1, ($$value) => set(canvas, $$value), () => get(canvas));
+  var node = sibling(canvas_1, 2);
   {
     var consequent = ($$anchor2) => {
-      var div_2 = root();
-      var text = only_child(div_2, true);
-      template_effect(() => set_text(text, account()));
-      append($$anchor2, div_2);
+      var div = root$1();
+      var text = only_child(div, true);
+      template_effect(() => set_text(text, get(visibleError)));
+      append($$anchor2, div);
     };
     if_block(node, ($$render) => {
-      if (account()) $$render(consequent);
+      if (get(visibleError)) $$render(consequent);
     });
   }
-  var h1 = sibling(node, 2);
-  var text_1 = only_child(h1, true);
-  var p = sibling(h1, 2);
-  var text_2 = only_child(p, true);
-  var div_3 = sibling(p, 2);
-  each(
-    div_3,
-    5,
-    () => (deep_read_state(prompt()), untrack(() => prompt().options)),
-    (option) => option.id,
-    ($$anchor2, option) => {
-      var button = root_1();
-      var text_3 = only_child(button, true);
-      template_effect(() => {
-        set_class(button, 1, `prompt-btn prompt-btn--${(get(option), untrack(() => get(option).id)) ?? ""}`, "svelte-glm292");
-        set_text(text_3, (get(option), untrack(() => get(option).label)));
-      });
-      event("click", button, () => handleOption(get(option)));
-      append($$anchor2, button);
-    }
-  );
-  template_effect(() => {
-    set_text(text_1, (deep_read_state(prompt()), untrack(() => prompt().title)));
-    set_text(text_2, (deep_read_state(prompt()), untrack(() => prompt().body)));
-  });
-  append($$anchor, div);
+  template_effect(() => set_attribute(main, "data-state", get(visibleError) ? "error" : "ready"));
+  append($$anchor, main);
   pop();
 }
 const displayStates = [
@@ -4571,21 +4085,23 @@ const displayStates = [
   "disconnected",
   "prompt"
 ];
+const displayActionNames = ["prompt.choose", "prompt.dismiss"];
 const isRecord = (value) => typeof value === "object" && value !== null && !Array.isArray(value);
 function parsePromptOption(raw) {
   if (!isRecord(raw)) return null;
   const { id, label } = raw;
   if (typeof id !== "string" || !id) return null;
-  if (typeof label !== "string" || !label) return null;
+  if (id.length > 32) return null;
+  if (typeof label !== "string" || !label || label.length > 48) return null;
   return { id, label };
 }
 function parseDisplayPrompt(raw) {
   if (!isRecord(raw)) return null;
   const { kind, title, body, options, action_id, timeout_seconds } = raw;
-  if (typeof kind !== "string" || !kind) return null;
-  if (typeof title !== "string" || !title) return null;
-  if (typeof body !== "string") return null;
-  if (!Array.isArray(options)) return null;
+  if (typeof kind !== "string" || !kind || kind.length > 24) return null;
+  if (typeof title !== "string" || !title || title.length > 64) return null;
+  if (typeof body !== "string" || body.length > 192) return null;
+  if (!Array.isArray(options) || options.length === 0 || options.length > 4) return null;
   const parsedOptions = [];
   for (const opt of options) {
     const parsed = parsePromptOption(opt);
@@ -4593,8 +4109,11 @@ function parseDisplayPrompt(raw) {
     parsedOptions.push(parsed);
   }
   if (parsedOptions.length === 0) return null;
-  if (typeof action_id !== "string" || !action_id) return null;
-  if (timeout_seconds !== null && typeof timeout_seconds !== "number") return null;
+  if (typeof action_id !== "string" || !action_id || action_id.length > 64) return null;
+  if (timeout_seconds === void 0) return null;
+  if (timeout_seconds !== null && (typeof timeout_seconds !== "number" || !Number.isSafeInteger(timeout_seconds) || timeout_seconds <= 0)) {
+    return null;
+  }
   return {
     kind,
     title,
@@ -4604,12 +4123,43 @@ function parseDisplayPrompt(raw) {
     timeout_seconds
   };
 }
+function parseCapabilities(raw) {
+  if (!isRecord(raw)) return null;
+  const { actions, features } = raw;
+  if (!Array.isArray(actions) || !Array.isArray(features)) return null;
+  const parsedActions = [];
+  for (const action of actions) {
+    if (typeof action !== "string" || !displayActionNames.includes(action) || parsedActions.includes(action)) {
+      return null;
+    }
+    parsedActions.push(action);
+  }
+  const parsedFeatures = [];
+  for (const feature of features) {
+    if (typeof feature !== "string" || !feature || parsedFeatures.includes(feature)) {
+      return null;
+    }
+    parsedFeatures.push(feature);
+  }
+  return { actions: parsedActions, features: parsedFeatures };
+}
 function parseSnapshot(raw) {
   if (!isRecord(raw)) {
     return null;
   }
-  const { type, schema, sequence, state: state2, response_text, status_text, media, prompt } = raw;
-  if (type !== "snapshot" || schema !== 1 || typeof sequence !== "number" || !Number.isSafeInteger(sequence) || sequence < 0 || !displayStates.includes(state2) || typeof response_text !== "string" || status_text !== null && typeof status_text !== "string" || media !== null && !isRecord(media)) {
+  const {
+    type,
+    schema,
+    sequence,
+    state: state2,
+    response_text,
+    status_text,
+    media,
+    prompt,
+    account,
+    capabilities
+  } = raw;
+  if (type !== "snapshot" || schema !== 1 || typeof sequence !== "number" || !Number.isSafeInteger(sequence) || sequence < 0 || sequence > 4294967295 || !displayStates.includes(state2) || typeof response_text !== "string" || status_text !== null && typeof status_text !== "string" || media !== null && !isRecord(media) || account !== void 0 && account !== null && typeof account !== "string") {
     return null;
   }
   let parsedPrompt = null;
@@ -4619,7 +4169,13 @@ function parseSnapshot(raw) {
   }
   if (state2 === "prompt" && parsedPrompt === null) return null;
   if (state2 !== "prompt" && parsedPrompt !== null) return null;
-  return {
+  let parsedCapabilities;
+  if (capabilities !== void 0) {
+    const parsed = parseCapabilities(capabilities);
+    if (parsed === null) return null;
+    parsedCapabilities = parsed;
+  }
+  const snapshot = {
     type,
     schema,
     sequence,
@@ -4629,6 +4185,9 @@ function parseSnapshot(raw) {
     media,
     prompt: parsedPrompt
   };
+  if (account !== void 0) snapshot.account = account;
+  if (parsedCapabilities !== void 0) snapshot.capabilities = parsedCapabilities;
+  return snapshot;
 }
 const defaultSocketFactory = (url) => new WebSocket(url);
 const RECONNECT_DELAYS_MS = [250, 500, 1e3, 2e3, 4e3];
@@ -4694,11 +4253,11 @@ class StateChannel {
       this.lastSequence = -1;
       this.reconnectAttempt = 0;
     };
-    socket.onmessage = (event2) => {
+    socket.onmessage = (event) => {
       if (!this.isCurrent(socket)) {
         return;
       }
-      this.handleMessage(event2.data);
+      this.handleMessage(event.data);
     };
     socket.onerror = () => {
     };
@@ -4759,79 +4318,522 @@ class StateChannel {
     }
   }
 }
+const busyStates = /* @__PURE__ */ new Set(["listening", "thinking", "speaking", "buffering"]);
+const allowedTransitions = {
+  idle: /* @__PURE__ */ new Set(["idle", "heard", "listening", "prompt"]),
+  heard: /* @__PURE__ */ new Set(["heard", "listening", "thinking", "idle", "prompt"]),
+  listening: /* @__PURE__ */ new Set(["listening", "thinking", "heard", "idle"]),
+  thinking: /* @__PURE__ */ new Set(["thinking", "speaking", "buffering", "prompt", "idle"]),
+  speaking: /* @__PURE__ */ new Set(["speaking", "buffering", "prompt", "idle"]),
+  buffering: /* @__PURE__ */ new Set(["buffering", "speaking", "thinking", "prompt", "idle"]),
+  error: /* @__PURE__ */ new Set(["error", "idle"]),
+  disconnected: /* @__PURE__ */ new Set(["disconnected", "idle", "heard", "listening"]),
+  prompt: /* @__PURE__ */ new Set(["prompt", "idle", "thinking"])
+};
+function connectionHealthy(state2) {
+  return state2 !== "error" && state2 !== "disconnected";
+}
+function canPerformAction(snapshot, actionName) {
+  var _a2;
+  return ((_a2 = snapshot.capabilities) == null ? void 0 : _a2.actions.includes(actionName)) ?? false;
+}
+function toView(snapshot) {
+  return {
+    ...snapshot,
+    is_busy: busyStates.has(snapshot.state),
+    connection_healthy: connectionHealthy(snapshot.state),
+    can_choose: snapshot.prompt !== null && canPerformAction(snapshot, "prompt.choose"),
+    can_dismiss: snapshot.prompt !== null && canPerformAction(snapshot, "prompt.dismiss")
+  };
+}
+class SnapshotReducer {
+  constructor() {
+    __publicField(this, "current", null);
+  }
+  reset() {
+    this.current = null;
+  }
+  applySnapshot(snapshot) {
+    if (this.current !== null && snapshot.sequence <= this.current.sequence) {
+      return { kind: "stale" };
+    }
+    if (this.current !== null && snapshot.state !== "error" && snapshot.state !== "disconnected" && !allowedTransitions[this.current.state].has(snapshot.state)) {
+      return { kind: "invalid_transition" };
+    }
+    const view = toView(snapshot);
+    this.current = view;
+    return { kind: "accepted", view };
+  }
+  validateAction(action) {
+    if (action.type !== "action" || action.schema !== 1 || typeof action.action_id !== "string" || action.action_id.length === 0 || action.action_id.length > 64 || typeof action.choice !== "string" || action.choice.length === 0 || action.choice.length > 32) {
+      return "invalid_argument";
+    }
+    if (this.current === null || this.current.state !== "prompt" || this.current.prompt === null) {
+      return "prompt_not_active";
+    }
+    if (!this.current.can_choose) {
+      return "action_not_allowed";
+    }
+    if (this.current.prompt.action_id !== action.action_id) {
+      return "action_id_mismatch";
+    }
+    return this.current.prompt.options.some((option) => option.id === action.choice) ? "accepted" : "unknown_choice";
+  }
+}
+function createDisplayReducer() {
+  return new SnapshotReducer();
+}
+const postDisplayAction = async (action) => {
+  const query = new URLSearchParams({
+    action_id: action.action_id,
+    choice: action.choice
+  });
+  const response = await fetch(`/action?${query.toString()}`, { method: "POST" });
+  if (!response.ok) {
+    throw new Error(`display action failed with HTTP ${response.status}`);
+  }
+};
+class DisplayBridge {
+  /**
+   * Keep browser transport and action encoding at the edge. The reducer is an
+   * injected port so a generated WebAssembly implementation can replace the
+   * current browser reducer implementation without changing the kiosk
+   * lifecycle or surfaces.
+   */
+  constructor(options) {
+    __publicField(this, "reducer");
+    __publicField(this, "actionTransport");
+    __publicField(this, "onActionError");
+    __publicField(this, "channel");
+    this.reducer = options.reducer ?? createDisplayReducer();
+    this.actionTransport = options.actionTransport ?? postDisplayAction;
+    this.onActionError = options.onActionError ?? (() => {
+    });
+    this.channel = new StateChannel(
+      options.url,
+      (snapshot) => {
+        const result = this.reducer.applySnapshot(snapshot);
+        if (result.kind === "accepted") {
+          this.deliver(() => options.onView(result.view));
+        } else if (result.kind === "invalid_transition" || result.kind === "invalid_snapshot") {
+          this.deliver(() => {
+            var _a2;
+            return (_a2 = options.onProtocolError) == null ? void 0 : _a2.call(options, "display data unavailable");
+          });
+        }
+      },
+      (state2) => {
+        var _a2, _b2;
+        if (state2 === "connecting") {
+          this.reducer.reset();
+        } else if (state2 === "disconnected") {
+          (_b2 = (_a2 = this.reducer).setConnectionState) == null ? void 0 : _b2.call(_a2, "disconnected");
+        }
+        this.deliver(() => options.onConnectionState(state2));
+      },
+      options.onProtocolError,
+      options.socketFactory,
+      options.onValidSnapshot
+    );
+  }
+  start() {
+    this.channel.start();
+  }
+  stop() {
+    this.channel.stop();
+  }
+  async dispatchAction(action) {
+    const validation = this.reducer.validateAction(action);
+    if (validation !== "accepted") {
+      this.deliver(() => this.onActionError(validation));
+      return false;
+    }
+    try {
+      await this.actionTransport(action);
+      return true;
+    } catch {
+      this.deliver(() => this.onActionError("transport_error"));
+      return false;
+    }
+  }
+  deliver(callback) {
+    try {
+      callback();
+    } catch {
+    }
+  }
+}
+const DISPLAY_WASM_MODULE_PATH = "/wasm/display_core.js";
+class DisplayWasmError extends Error {
+  constructor(message) {
+    super(message);
+    this.name = "DisplayWasmError";
+  }
+}
+class DisplayWasmLoadError extends DisplayWasmError {
+  constructor(cause) {
+    const detail = cause instanceof Error && cause.message ? ` ${cause.message}` : "";
+    super(
+      `Display WebAssembly is unavailable. Run scripts/build_display_wasm.sh before starting the kiosk.${detail}`
+    );
+    __publicField(this, "cause");
+    this.name = "DisplayWasmLoadError";
+    this.cause = cause;
+  }
+}
+const ABI_VERSION = 2;
+const ACCEPTED = 0;
+const STALE = 1;
+const INVALID_ARGUMENT = 2;
+const INVALID_SNAPSHOT = 3;
+const INVALID_TRANSITION = 4;
+const PROMPT_NOT_ACTIVE = 5;
+const ACTION_NOT_ALLOWED = 6;
+const ACTION_ID_MISMATCH = 7;
+const UNKNOWN_CHOICE = 8;
+const snapshotArguments = [
+  "number",
+  "string",
+  "string",
+  "string",
+  "string",
+  "string",
+  "string",
+  "string",
+  "string",
+  "number",
+  "number",
+  "number",
+  "number",
+  "string",
+  "string",
+  "string",
+  "string",
+  "string",
+  "string",
+  "string",
+  "string"
+];
+function cwrap(module, name, argumentTypes) {
+  const wrapped = module.cwrap(name, "number", argumentTypes);
+  if (typeof wrapped !== "function") {
+    throw new DisplayWasmError(`Display WebAssembly export is missing: ${name}`);
+  }
+  return wrapped;
+}
+function cwrapString(module, name, argumentTypes) {
+  const wrapped = module.cwrap(name, "string", argumentTypes);
+  if (typeof wrapped !== "function") {
+    throw new DisplayWasmError(`Display WebAssembly export is missing: ${name}`);
+  }
+  return wrapped;
+}
+function actionValidation(result) {
+  switch (result) {
+    case ACCEPTED:
+      return "accepted";
+    case INVALID_ARGUMENT:
+      return "invalid_argument";
+    case PROMPT_NOT_ACTIVE:
+      return "prompt_not_active";
+    case ACTION_NOT_ALLOWED:
+      return "action_not_allowed";
+    case ACTION_ID_MISMATCH:
+      return "action_id_mismatch";
+    case UNKNOWN_CHOICE:
+      return "unknown_choice";
+    default:
+      return "invalid_argument";
+  }
+}
+function validActionShape(action) {
+  return action.type === "action" && action.schema === 1 && typeof action.action_id === "string" && action.action_id.length > 0 && action.action_id.length <= 64 && typeof action.choice === "string" && action.choice.length > 0 && action.choice.length <= 32;
+}
+class WasmDisplayReducer {
+  constructor(module) {
+    __publicField(this, "module");
+    __publicField(this, "resetC");
+    __publicField(this, "applySnapshotC");
+    __publicField(this, "validateChoiceC");
+    __publicField(this, "validateDismissC");
+    __publicField(this, "setConnectionStateC");
+    __publicField(this, "setPointerC");
+    __publicField(this, "actionPendingC");
+    __publicField(this, "actionIdC");
+    __publicField(this, "actionChoiceC");
+    __publicField(this, "actionClearC");
+    __publicField(this, "viewStateC");
+    __publicField(this, "viewSequenceC");
+    __publicField(this, "viewIsBusyC");
+    __publicField(this, "viewConnectionHealthyC");
+    __publicField(this, "viewCanChooseC");
+    __publicField(this, "viewCanDismissC");
+    __publicField(this, "framebufferC");
+    __publicField(this, "framebufferWidthC");
+    __publicField(this, "framebufferHeightC");
+    __publicField(this, "tickC");
+    __publicField(this, "current", null);
+    this.module = module;
+    const abiVersion = cwrap(module, "display_wasm_abi_version", [])();
+    if (abiVersion !== ABI_VERSION) {
+      throw new DisplayWasmError(
+        `Unsupported display WebAssembly ABI ${abiVersion}; expected ${ABI_VERSION}`
+      );
+    }
+    const init2 = cwrap(module, "display_wasm_init", []);
+    if (init2() !== ACCEPTED) {
+      throw new DisplayWasmError("Display WebAssembly reducer failed to initialize");
+    }
+    this.resetC = cwrap(module, "display_wasm_reset", []);
+    this.applySnapshotC = cwrap(module, "display_wasm_apply_snapshot", snapshotArguments);
+    this.validateChoiceC = cwrap(module, "display_wasm_validate_choice", ["string", "string"]);
+    this.validateDismissC = cwrap(module, "display_wasm_validate_dismiss", []);
+    this.setConnectionStateC = cwrap(module, "display_wasm_set_connection_state", ["number"]);
+    this.setPointerC = cwrap(module, "display_wasm_set_pointer", ["number", "number", "number"]);
+    this.actionPendingC = cwrap(module, "display_wasm_action_pending", []);
+    this.actionIdC = cwrapString(module, "display_wasm_action_id", []);
+    this.actionChoiceC = cwrapString(module, "display_wasm_action_choice", []);
+    this.actionClearC = cwrap(module, "display_wasm_action_clear", []);
+    this.viewStateC = cwrap(module, "display_wasm_view_state", []);
+    this.viewSequenceC = cwrap(module, "display_wasm_view_sequence", []);
+    this.viewIsBusyC = cwrap(module, "display_wasm_view_is_busy", []);
+    this.viewConnectionHealthyC = cwrap(module, "display_wasm_view_connection_healthy", []);
+    this.viewCanChooseC = cwrap(module, "display_wasm_view_can_choose", []);
+    this.viewCanDismissC = cwrap(module, "display_wasm_view_can_dismiss", []);
+    this.framebufferC = cwrap(module, "display_wasm_framebuffer", []);
+    this.framebufferWidthC = cwrap(module, "display_wasm_framebuffer_width", []);
+    this.framebufferHeightC = cwrap(module, "display_wasm_framebuffer_height", []);
+    this.tickC = cwrap(module, "display_wasm_tick", ["number"]);
+  }
+  reset() {
+    if (this.resetC() !== ACCEPTED) {
+      throw new DisplayWasmError("Display WebAssembly reducer failed to reset");
+    }
+    this.current = null;
+  }
+  applySnapshot(snapshot) {
+    var _a2, _b2;
+    const prompt = snapshot.prompt;
+    const options = [0, 1, 2, 3].flatMap((index) => {
+      var _a3, _b3;
+      return [
+        ((_a3 = prompt == null ? void 0 : prompt.options[index]) == null ? void 0 : _a3.id) ?? "",
+        ((_b3 = prompt == null ? void 0 : prompt.options[index]) == null ? void 0 : _b3.label) ?? ""
+      ];
+    });
+    const result = this.applySnapshotC(
+      snapshot.sequence,
+      snapshot.state,
+      snapshot.response_text,
+      snapshot.status_text ?? "",
+      snapshot.account ?? "",
+      (prompt == null ? void 0 : prompt.kind) ?? "",
+      (prompt == null ? void 0 : prompt.title) ?? "",
+      (prompt == null ? void 0 : prompt.body) ?? "",
+      (prompt == null ? void 0 : prompt.action_id) ?? "",
+      (prompt == null ? void 0 : prompt.timeout_seconds) ?? -1,
+      prompt !== null && ((_a2 = snapshot.capabilities) == null ? void 0 : _a2.actions.includes("prompt.choose")) ? 1 : 0,
+      prompt !== null && ((_b2 = snapshot.capabilities) == null ? void 0 : _b2.actions.includes("prompt.dismiss")) ? 1 : 0,
+      (prompt == null ? void 0 : prompt.options.length) ?? 0,
+      ...options
+    );
+    switch (result) {
+      case ACCEPTED: {
+        const view = {
+          ...snapshot,
+          is_busy: this.viewIsBusyC() !== 0,
+          connection_healthy: this.viewConnectionHealthyC() !== 0,
+          can_choose: this.viewCanChooseC() !== 0,
+          can_dismiss: this.viewCanDismissC() !== 0
+        };
+        this.current = view;
+        return { kind: "accepted", view };
+      }
+      case STALE:
+        return { kind: "stale" };
+      case INVALID_TRANSITION:
+        return { kind: "invalid_transition" };
+      case INVALID_ARGUMENT:
+      case INVALID_SNAPSHOT:
+      default:
+        return { kind: "invalid_snapshot" };
+    }
+  }
+  validateAction(action) {
+    if (!validActionShape(action)) return "invalid_argument";
+    return actionValidation(this.validateChoiceC(action.action_id, action.choice));
+  }
+  validateDismiss() {
+    return actionValidation(this.validateDismissC());
+  }
+  setConnectionState(state2) {
+    const stateValue = { connected: 0, disconnected: 1, error: 2 }[state2];
+    if (this.setConnectionStateC(stateValue) !== ACCEPTED) {
+      throw new DisplayWasmError(`Display WebAssembly rejected connection state: ${state2}`);
+    }
+  }
+  setPointer(x, y, pressed) {
+    if (this.setPointerC(x, y, pressed ? 1 : 0) !== ACCEPTED) {
+      throw new DisplayWasmError("Display WebAssembly rejected pointer input");
+    }
+  }
+  pollAction() {
+    if (this.actionPendingC() === 0) return null;
+    const actionId = this.actionIdC();
+    const choice = this.actionChoiceC();
+    if (this.actionClearC() !== ACCEPTED) {
+      throw new DisplayWasmError("Display WebAssembly failed to clear the pending action");
+    }
+    if (actionId.length === 0 || choice.length === 0) return null;
+    return {
+      type: "action",
+      schema: 1,
+      action_id: actionId,
+      choice
+    };
+  }
+  framebuffer() {
+    const width = this.framebufferWidthC();
+    const height = this.framebufferHeightC();
+    const pointer = this.framebufferC();
+    const byteLength = width * height * 4;
+    if (!Number.isInteger(width) || width <= 0 || !Number.isInteger(height) || height <= 0 || !Number.isInteger(pointer) || pointer < 0 || !Number.isSafeInteger(byteLength) || pointer + byteLength > this.module.HEAPU8.length) {
+      throw new DisplayWasmError("Display WebAssembly returned an invalid framebuffer");
+    }
+    return {
+      data: this.module.HEAPU8.subarray(pointer, pointer + byteLength),
+      width,
+      height
+    };
+  }
+  tick(elapsedMs) {
+    if (!Number.isInteger(elapsedMs) || elapsedMs < 0 || elapsedMs > 4294967295) {
+      throw new DisplayWasmError("Display WebAssembly received an invalid tick interval");
+    }
+    if (this.tickC(elapsedMs) !== ACCEPTED) {
+      throw new DisplayWasmError("Display WebAssembly failed to advance LVGL");
+    }
+  }
+  viewState() {
+    const state2 = this.viewStateC();
+    const states = [
+      "idle",
+      "heard",
+      "listening",
+      "thinking",
+      "speaking",
+      "buffering",
+      "error",
+      "disconnected",
+      "prompt"
+    ];
+    return state2 >= 1 && state2 <= states.length ? states[state2 - 1] : null;
+  }
+  viewSequence() {
+    return this.viewSequenceC();
+  }
+  currentView() {
+    return this.current;
+  }
+}
+async function defaultDisplayWasmFactory() {
+  const imported = await import(
+    /* @vite-ignore */
+    DISPLAY_WASM_MODULE_PATH
+  );
+  if (typeof imported.default !== "function") {
+    throw new DisplayWasmError("display_core.js does not export an Emscripten module factory");
+  }
+  return imported.default();
+}
+async function loadDisplayWasm(factory = defaultDisplayWasmFactory) {
+  try {
+    return new WasmDisplayReducer(await factory());
+  } catch (error) {
+    if (error instanceof DisplayWasmLoadError) throw error;
+    throw new DisplayWasmLoadError(error);
+  }
+}
+var root = /* @__PURE__ */ from_html(`<main class="wasm-bootstrap-shell"><p data-bootstrap-message=""> </p></main>`);
 function App($$anchor, $$props) {
   push($$props, false);
-  const account = /* @__PURE__ */ mutable_source();
-  const initialSnapshot = {
-    type: "snapshot",
-    schema: 1,
-    sequence: 0,
-    state: "idle",
-    response_text: "",
-    status_text: null,
-    media: null,
-    prompt: null
-  };
-  let snapshot = /* @__PURE__ */ mutable_source(initialSnapshot);
-  let connectionState = /* @__PURE__ */ mutable_source("connecting");
+  let displayReducer = /* @__PURE__ */ mutable_source(null);
   let protocolError = /* @__PURE__ */ mutable_source(null);
+  let dispatchAction = /* @__PURE__ */ mutable_source(async () => false);
   const stateChannelUrl = () => {
     const scheme = window.location.protocol === "https:" ? "wss:" : "ws:";
     return `${scheme}//${window.location.host}/state`;
   };
   onMount(() => {
-    const channel = new StateChannel(
-      stateChannelUrl(),
-      (nextSnapshot) => {
-        set(snapshot, nextSnapshot);
-      },
-      (nextConnectionState) => {
-        set(connectionState, nextConnectionState);
-      },
-      (message) => {
-        set(protocolError, message);
-      },
-      void 0,
-      () => {
-        set(protocolError, null);
+    let disposed = false;
+    let bridge = null;
+    const start = async () => {
+      try {
+        const reducer = await loadDisplayWasm();
+        if (disposed) return;
+        set(displayReducer, reducer);
+        bridge = new DisplayBridge({
+          url: stateChannelUrl(),
+          reducer,
+          onView: () => {
+            set(protocolError, null);
+          },
+          onConnectionState: () => {
+          },
+          onProtocolError: (message) => {
+            set(protocolError, message);
+          },
+          onValidSnapshot: () => {
+            set(protocolError, null);
+          },
+          onActionError: (error) => {
+            set(protocolError, error === "transport_error" ? "Display action could not be sent" : "That display action is no longer available");
+          }
+        });
+        set(dispatchAction, (action) => (bridge == null ? void 0 : bridge.dispatchAction(action)) ?? Promise.resolve(false));
+        bridge.start();
+      } catch (error) {
+        if (!disposed) {
+          set(protocolError, error instanceof Error ? error.message : "Display WebAssembly is unavailable. Run scripts/build_display_wasm.sh");
+        }
       }
-    );
-    channel.start();
-    return () => channel.stop();
+    };
+    void start();
+    return () => {
+      disposed = true;
+      bridge == null ? void 0 : bridge.stop();
+    };
   });
-  legacy_pre_effect(() => get(snapshot), () => {
-    set(account, get(snapshot).account ?? null);
-  });
-  legacy_pre_effect_reset();
   init();
   var fragment = comment();
   var node = first_child(fragment);
   {
     var consequent = ($$anchor2) => {
-      PromptOverlay($$anchor2, {
-        get prompt() {
-          return get(snapshot), untrack(() => get(snapshot).prompt);
+      WasmCanvas($$anchor2, {
+        get reducer() {
+          return get(displayReducer);
         },
-        get account() {
-          return get(account);
-        }
+        get dispatchAction() {
+          return get(dispatchAction);
+        },
+        get errorMessage() {
+          return get(protocolError);
+        },
+        onRuntimeError: (message) => set(protocolError, message)
       });
     };
     var alternate = ($$anchor2) => {
-      StateSurface($$anchor2, {
-        get snapshot() {
-          return get(snapshot);
-        },
-        get connectionState() {
-          return get(connectionState);
-        },
-        get protocolError() {
-          return get(protocolError);
-        }
+      var main = root();
+      var p = child(main);
+      var text = only_child(p, true);
+      template_effect(() => {
+        set_attribute(main, "data-state", get(protocolError) ? "error" : "connecting");
+        set_text(text, get(protocolError) ?? "Starting the shared Hermes display…");
       });
+      append($$anchor2, main);
     };
     if_block(node, ($$render) => {
-      if (get(snapshot), untrack(() => get(snapshot).state === "prompt" && get(snapshot).prompt !== null)) $$render(consequent);
+      if (get(displayReducer) !== null) $$render(consequent);
       else $$render(alternate, -1);
     });
   }

@@ -1,11 +1,14 @@
 <script lang="ts">
-  import type { DisplayPrompt, PromptOption } from "../state/protocol";
+  import type { DisplayAction, DisplayPrompt, PromptOption } from "../state/protocol";
 
   export let prompt: DisplayPrompt;
   /** The account name shown at the top, passed through from the snapshot. */
   export let account: string | null = null;
+  /** The bridge-owned domain action handler. Standalone use keeps HTTP compatibility. */
+  export let onAction: ((action: DisplayAction) => Promise<boolean> | boolean | void) | null = null;
 
   let dismissed = false;
+  let submitting = false;
   let timeoutId: ReturnType<typeof setTimeout> | null = null;
 
   // Auto-dismiss: choose the first option after timeout_seconds.
@@ -17,26 +20,50 @@
     if (prompt.timeout_seconds !== null && prompt.timeout_seconds > 0 && !dismissed) {
       const defaultChoice = prompt.options[0]?.id ?? "no";
       timeoutId = setTimeout(() => {
-        sendAction(prompt.action_id, defaultChoice);
+        void sendAction(prompt.action_id, defaultChoice);
       }, prompt.timeout_seconds * 1000);
     }
   }
 
-  function sendAction(actionId: string, choice: string) {
-    if (dismissed) return;
+  async function sendAction(actionId: string, choice: string): Promise<void> {
+    if (dismissed || submitting) return;
+    submitting = true;
+
+    const action: DisplayAction = {
+      type: "action",
+      schema: 1,
+      action_id: actionId,
+      choice,
+    };
+    let accepted = true;
+    try {
+      if (onAction !== null) {
+        accepted = (await onAction(action)) !== false;
+      } else {
+        const url =
+          `/action?action_id=${encodeURIComponent(actionId)}&choice=${encodeURIComponent(choice)}`;
+        const response = await fetch(url, { method: "POST" });
+        accepted = response.ok;
+      }
+    } catch {
+      accepted = false;
+    }
+
+    if (!accepted) {
+      submitting = false;
+      return;
+    }
+
     dismissed = true;
+    submitting = false;
     if (timeoutId !== null) {
       clearTimeout(timeoutId);
       timeoutId = null;
     }
-    const url = `/action?action_id=${encodeURIComponent(actionId)}&choice=${encodeURIComponent(choice)}`;
-    fetch(url, { method: "POST" }).catch(() => {
-      // Fire-and-forget; the server schedules the action asynchronously.
-    });
   }
 
   function handleOption(option: PromptOption) {
-    sendAction(prompt.action_id, option.id);
+    void sendAction(prompt.action_id, option.id);
   }
 </script>
 

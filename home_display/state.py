@@ -19,6 +19,7 @@ DisplayState = Literal[
     "prompt",
 ]
 _STATES = frozenset(DisplayState.__args__)
+DisplayActionName = Literal["prompt.choose", "prompt.dismiss"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -95,6 +96,34 @@ class DisplayPrompt:
 
 
 @dataclass(frozen=True, slots=True)
+class DisplayCapabilities:
+    """Optional actions and features advertised by a display snapshot."""
+
+    actions: tuple[DisplayActionName, ...] = ()
+    features: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        allowed_actions = {"prompt.choose", "prompt.dismiss"}
+        if any(
+            not isinstance(action, str) or action not in allowed_actions
+            for action in self.actions
+        ):
+            raise ValueError("capabilities.actions contains an unknown action")
+        if len(set(self.actions)) != len(self.actions):
+            raise ValueError("capabilities.actions must be unique")
+        if any(not isinstance(feature, str) or not feature for feature in self.features):
+            raise ValueError("capabilities.features must contain non-empty strings")
+        if len(set(self.features)) != len(self.features):
+            raise ValueError("capabilities.features must be unique")
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "actions": list(self.actions),
+            "features": list(self.features),
+        }
+
+
+@dataclass(frozen=True, slots=True)
 class DisplaySnapshot:
     schema: int = 1
     sequence: int = 0
@@ -104,6 +133,7 @@ class DisplaySnapshot:
     media: dict[str, object] | None = None
     account: str | None = None
     prompt: DisplayPrompt | None = None
+    capabilities: DisplayCapabilities | None = None
 
     def __post_init__(self) -> None:
         if type(self.schema) is not int or self.schema != 1:
@@ -129,10 +159,18 @@ class DisplaySnapshot:
                 raise ValueError("media must be JSON serializable") from error
         if self.prompt is not None and not isinstance(self.prompt, DisplayPrompt):
             raise TypeError("prompt must be a DisplayPrompt or None")
+        if self.capabilities is not None and not isinstance(self.capabilities, DisplayCapabilities):
+            raise TypeError("capabilities must be a DisplayCapabilities or None")
         if self.state == "prompt" and self.prompt is None:
             raise ValueError("prompt must be set when state is 'prompt'")
         if self.state != "prompt" and self.prompt is not None:
             raise ValueError("prompt must only be set when state is 'prompt'")
+        if self.prompt is not None and self.capabilities is None:
+            object.__setattr__(
+                self,
+                "capabilities",
+                DisplayCapabilities(actions=("prompt.choose",), features=("prompt_overlay",)),
+            )
 
     def to_dict(self) -> dict[str, object]:
         data: dict[str, object] = {
@@ -147,6 +185,8 @@ class DisplaySnapshot:
         }
         if self.account is not None:
             data["account"] = self.account
+        if self.capabilities is not None:
+            data["capabilities"] = self.capabilities.to_dict()
         return data
 
 
@@ -168,6 +208,7 @@ class DisplayStatePublisher:
         media: dict[str, object] | None = None,
         account: str | None = None,
         prompt: DisplayPrompt | None = None,
+        capabilities: DisplayCapabilities | None = None,
     ) -> DisplaySnapshot:
         snapshot = DisplaySnapshot(
             sequence=self._snapshot.sequence + 1,
@@ -177,6 +218,7 @@ class DisplayStatePublisher:
             media=media,
             account=account,
             prompt=prompt,
+            capabilities=capabilities,
         )
         self._snapshot = snapshot
         for queue in tuple(self._subscribers):
@@ -196,5 +238,3 @@ class DisplayStatePublisher:
 
     def subscribe(self) -> AsyncIterator[DisplaySnapshot]:
         return self._subscribe(asyncio.Queue(maxsize=1))
-
-

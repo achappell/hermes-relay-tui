@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { parseSnapshot } from "./protocol";
+import { parseAction, parseSnapshot } from "./protocol";
 
 const snapshot = {
   type: "snapshot",
@@ -42,6 +42,25 @@ describe("parseSnapshot", () => {
     expect(parseSnapshot(promptSnapshot)).toEqual(promptSnapshot);
   });
 
+  it("preserves account and validates shared capability fields", () => {
+    const parsed = parseSnapshot({
+      ...snapshot,
+      account: "Spark",
+      capabilities: {
+        actions: ["prompt.choose"],
+        features: ["prompt_overlay"],
+      },
+    });
+
+    expect(parsed).toMatchObject({
+      account: "Spark",
+      capabilities: {
+        actions: ["prompt.choose"],
+        features: ["prompt_overlay"],
+      },
+    });
+  });
+
   it("rejects prompt state with null prompt", () => {
     expect(parseSnapshot({ ...snapshot, state: "prompt", prompt: null })).toBeNull();
   });
@@ -69,9 +88,56 @@ describe("parseSnapshot", () => {
     ["a non-string response", { ...snapshot, response_text: 1 }],
     ["a non-string status", { ...snapshot, status_text: 1 }],
     ["a non-object media", { ...snapshot, media: "image" }],
+    ["an oversized sequence", { ...snapshot, sequence: 0x1_0000_0000 }],
     ["a missing type", { ...snapshot, type: undefined }],
   ])("rejects %s", (_description, raw) => {
     expect(parseSnapshot(raw)).toBeNull();
   });
+
+  it("rejects prompt fields that exceed embedded contract bounds", () => {
+    const prompt = {
+      kind: "notice",
+      title: "Setup needed",
+      body: "Body",
+      options: [{ id: "ok", label: "OK" }],
+      action_id: "act1",
+      timeout_seconds: null,
+    };
+
+    expect(parseSnapshot({
+      ...snapshot,
+      state: "prompt",
+      prompt: { ...prompt, title: "x".repeat(65) },
+    })).toBeNull();
+    expect(parseSnapshot({
+      ...snapshot,
+      state: "prompt",
+      prompt: { ...prompt, options: [{ id: "ok", label: "x".repeat(49) }] },
+    })).toBeNull();
+  });
 });
 
+describe("parseAction", () => {
+  it("accepts the normalized prompt choice payload", () => {
+    expect(parseAction({
+      type: "action",
+      schema: 1,
+      action_id: "sethome",
+      choice: "yes",
+    })).toEqual({
+      type: "action",
+      schema: 1,
+      action_id: "sethome",
+      choice: "yes",
+    });
+  });
+
+  it.each([
+    { type: "action", schema: 2, action_id: "sethome", choice: "yes" },
+    { type: "action", schema: 1, action_id: "", choice: "yes" },
+    { type: "action", schema: 1, action_id: "sethome", choice: "" },
+    { type: "action", schema: 1, action_id: "sethome", choice: 1 },
+  ])("rejects malformed action %#", (raw) => {
+    expect(parseAction(raw)).toBeNull();
+  });
+});

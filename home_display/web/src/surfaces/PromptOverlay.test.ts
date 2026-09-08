@@ -3,7 +3,7 @@ import "@testing-library/jest-dom/vitest";
 import { cleanup, fireEvent, render, screen } from "@testing-library/svelte";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import PromptOverlay from "./PromptOverlay.svelte";
-import type { DisplayPrompt } from "../state/protocol";
+import type { DisplayAction, DisplayPrompt } from "../state/protocol";
 
 const samplePrompt: DisplayPrompt = {
   kind: "notice",
@@ -70,6 +70,35 @@ describe("PromptOverlay", () => {
       "/action?action_id=sethome&choice=no",
       { method: "POST" }
     );
+  });
+
+  it("emits a normalized domain action through the bridge handler", async () => {
+    const onAction = vi.fn(async (_action: DisplayAction) => true);
+    render(PromptOverlay, {
+      props: { prompt: samplePrompt, onAction },
+    });
+
+    await fireEvent.click(screen.getByText("Set home"));
+
+    expect(onAction).toHaveBeenCalledWith({
+      type: "action",
+      schema: 1,
+      action_id: "sethome",
+      choice: "yes",
+    });
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("keeps the prompt open when the bridge rejects an action", async () => {
+    const onAction = vi.fn(async (_action: DisplayAction) => false);
+    render(PromptOverlay, {
+      props: { prompt: samplePrompt, onAction },
+    });
+
+    await fireEvent.click(screen.getByText("Set home"));
+
+    expect(screen.getByRole("dialog")).toBeInTheDocument();
+    expect(onAction).toHaveBeenCalledOnce();
   });
 
   it("auto-dismisses with default choice after timeout", () => {

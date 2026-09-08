@@ -3,7 +3,7 @@ import json
 
 import pytest
 
-from home_display.state import DisplaySnapshot, DisplayStatePublisher
+from home_display.state import DisplayPrompt, DisplaySnapshot, DisplayStatePublisher, PromptOption
 
 
 def test_initial_snapshot_is_idle_and_json_safe():
@@ -65,3 +65,20 @@ def test_heard_is_a_valid_display_state():
     snapshot = DisplaySnapshot(state="heard")
     assert snapshot.state == "heard"
     assert snapshot.to_dict()["state"] == "heard"
+
+
+def test_prompt_snapshot_advertises_the_browser_choice_capability():
+    prompt = DisplayPrompt(
+        kind="confirm",
+        title="Set home?",
+        body="Use this display as home?",
+        options=(PromptOption(id="yes", label="Yes"),),
+        action_id="sethome",
+    )
+
+    snapshot = DisplayStatePublisher().publish(state="prompt", prompt=prompt)
+
+    assert snapshot.to_dict()["capabilities"] == {
+        "actions": ["prompt.choose"],
+        "features": ["prompt_overlay"],
+    }

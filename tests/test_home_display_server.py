@@ -1,6 +1,6 @@
 import asyncio
 import json
-from urllib.request import urlopen
+from urllib.request import Request, urlopen
 
 import pytest
 from websockets.exceptions import InvalidHandshake
@@ -61,6 +61,24 @@ async def test_server_dispatches_normalized_websocket_actions(tmp_path):
             }))
             await asyncio.sleep(0.01)
         assert calls == [("sethome", "yes")]
+    finally:
+        await server.close()
+
+
+@pytest.mark.asyncio
+async def test_server_accepts_browser_http_action_posts(tmp_path):
+    (tmp_path / "index.html").write_text("ok", encoding="utf-8")
+    server = DisplayServer(DisplayStatePublisher(), tmp_path)
+    info = await server.start()
+    try:
+        request = Request(
+            f"{info.http_url}action?action_id=sethome&choice=yes",
+            method="POST",
+            headers={"Origin": info.http_url},
+        )
+        response = await asyncio.to_thread(lambda: urlopen(request))
+        assert response.status == 200
+        assert response.read() == b"{}\n"
     finally:
         await server.close()
 
