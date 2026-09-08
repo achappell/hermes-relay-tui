@@ -95,6 +95,16 @@ describe("display reducer", () => {
     });
   });
 
+  it("accepts a browser turn that starts in thinking", () => {
+    const reducer = createDisplayReducer();
+    reducer.applySnapshot(snapshot(1, "idle"));
+
+    expect(reducer.applySnapshot(snapshot(2, "thinking"))).toMatchObject({
+      kind: "accepted",
+      view: { state: "thinking", is_busy: true },
+    });
+  });
+
   it("accepts explicit error and disconnected states from any current state", () => {
     const reducer = createDisplayReducer();
     reducer.applySnapshot(snapshot(1, "speaking"));

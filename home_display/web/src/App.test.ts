@@ -82,6 +82,32 @@ describe("App", () => {
     expect(bridge?.stop).toHaveBeenCalledOnce();
   });
 
+  it("shows a browser voice control when the display advertises browser voice", async () => {
+    const { container, unmount } = render(App);
+    await tick();
+    const options = bridges.options.at(-1);
+
+    options?.onView({
+      type: "snapshot",
+      schema: 1,
+      sequence: 1,
+      state: "idle",
+      response_text: "",
+      status_text: null,
+      media: null,
+      prompt: null,
+      capabilities: { actions: [], features: ["browser_voice"] },
+      is_busy: false,
+      connection_healthy: true,
+      can_choose: false,
+      can_dismiss: false,
+    });
+    await tick();
+
+    expect(container.querySelector("[data-voice-button]")).toHaveTextContent("Tap to talk");
+    unmount();
+  });
+
   it("clears a protocol error when a valid snapshot arrives", async () => {
     const { container, unmount } = render(App);
     await tick();

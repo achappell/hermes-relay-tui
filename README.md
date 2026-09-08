@@ -591,6 +591,20 @@ is how the real loop gets validated — including
 `scripts/fake_relay.py`, a stand-in server that lets the whole appliance be
 tested with no Hermes at all.
 
+For an iPad kiosk, pass `--browser-voice` with the remote display options. The
+served page owns microphone permission, push-to-talk recognition, and speaker
+playback; ops receives only the recognized turn text and does not open a local
+audio device. The browser reconnects to the same-origin state channel after an
+ops/container restart:
+
+```bash
+hermes-relay-home --browser-voice --display-host 192.168.1.20 --display-remote --display-port 8765
+```
+
+Replace `192.168.1.20` with the ops machine's LAN address; the browser must
+open the same address so the display server's same-origin check accepts the
+WebSocket and action requests.
+
 **A plain install does not include this.** `pip install hermes-relay-tui` and
 `brew install hermes-relay-tui` give you the typed client and the
 `hermes-relay-home` entry point, but no microphone, speech-to-text, or wake-word

@@ -66,6 +66,70 @@ async def test_server_dispatches_normalized_websocket_actions(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_server_dispatches_browser_voice_turn_text(tmp_path):
+    (tmp_path / "index.html").write_text("ok", encoding="utf-8")
+    calls: list[str] = []
+
+    async def on_voice_turn(text: str) -> None:
+        calls.append(text)
+
+    server = DisplayServer(
+        DisplayStatePublisher(),
+        tmp_path,
+        on_voice_turn=on_voice_turn,
+    )
+    info = await server.start()
+    try:
+        async with connect(info.websocket_url, origin=info.http_url) as socket:
+            await socket.recv()
+            await socket.send(json.dumps({
+                "type": "voice_turn",
+                "schema": 1,
+                "text": "  what is the weather?  ",
+            }))
+            await asyncio.sleep(0.01)
+        assert calls == ["what is the weather?"]
+    finally:
+        await server.close()
+
+
+@pytest.mark.asyncio
+async def test_server_streams_signed_pcm_to_connected_browser(tmp_path):
+    (tmp_path / "index.html").write_text("ok", encoding="utf-8")
+    server = DisplayServer(DisplayStatePublisher(), tmp_path)
+    info = await server.start()
+    try:
+        async with connect(info.websocket_url, origin=info.http_url) as socket:
+            await socket.recv()
+            await server.send_audio_start(
+                turn_id="turn-1",
+                sample_rate=24000,
+                channels=1,
+                sample_width=2,
+            )
+            assert json.loads(await socket.recv()) == {
+                "type": "audio_start",
+                "schema": 1,
+                "turn_id": "turn-1",
+                "sample_rate": 24000,
+                "channels": 1,
+                "sample_width": 2,
+            }
+
+            await server.send_audio_chunk(b"\x01\x02")
+            assert await socket.recv() == b"\x01\x02"
+
+            await server.send_audio_end(turn_id="turn-1")
+            assert json.loads(await socket.recv()) == {
+                "type": "audio_end",
+                "schema": 1,
+                "turn_id": "turn-1",
+            }
+    finally:
+        await server.close()
+
+
+@pytest.mark.asyncio
 async def test_server_accepts_browser_http_action_posts(tmp_path):
     (tmp_path / "index.html").write_text("ok", encoding="utf-8")
     server = DisplayServer(DisplayStatePublisher(), tmp_path)

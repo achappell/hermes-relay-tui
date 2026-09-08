@@ -10,21 +10,26 @@ import {
 } from "./bridge";
 import { createDisplayReducer } from "./reducer";
 import type { ActionValidationResult, SnapshotReduction } from "./reducer";
-import type { DisplaySnapshot } from "./protocol";
+import type { DisplayAudioEvent, DisplaySnapshot } from "./protocol";
 
 class FakeSocket implements WebSocketLike {
   onopen: (() => void) | null = null;
-  onmessage: ((event: MessageEvent<string>) => void) | null = null;
+  onmessage: ((event: MessageEvent<unknown>) => void) | null = null;
   onerror: (() => void) | null = null;
   onclose: (() => void) | null = null;
+  sent: string[] = [];
 
   close(): void {}
+
+  send(data: string): void {
+    this.sent.push(data);
+  }
 
   open(): void {
     this.onopen?.();
   }
 
-  message(data: string): void {
+  message(data: string | ArrayBuffer): void {
     this.onmessage?.({ data } as MessageEvent<string>);
   }
 
@@ -110,6 +115,60 @@ describe("DisplayBridge", () => {
     expect(reducer.validateAction).toHaveBeenCalledWith(action);
     expect(actionTransport).toHaveBeenCalledWith(action);
 
+    bridge.stop();
+  });
+
+  it("sends browser voice text and routes streamed PCM frames", async () => {
+    const socket = new FakeSocket();
+    const audioEvents: DisplayAudioEvent[] = [];
+    const audioChunks: ArrayBuffer[] = [];
+    const bridge = new DisplayBridge({
+      url: "ws://display.test/state",
+      onView: () => {},
+      onConnectionState: () => {},
+      onAudioEvent: (event) => audioEvents.push(event),
+      onAudioChunk: (chunk) => audioChunks.push(chunk),
+      socketFactory: () => socket,
+    });
+
+    bridge.start();
+    socket.open();
+    socket.message(JSON.stringify({
+      ...snapshot,
+      state: "idle",
+      sequence: 1,
+      prompt: null,
+      capabilities: undefined,
+    }));
+
+    await expect(bridge.sendVoiceTurn("what is the weather?")).resolves.toBe(true);
+    expect(JSON.parse(socket.sent[0])).toEqual({
+      type: "voice_turn",
+      schema: 1,
+      text: "what is the weather?",
+    });
+
+    socket.message(JSON.stringify({
+      type: "audio_start",
+      schema: 1,
+      turn_id: "turn-1",
+      sample_rate: 24000,
+      channels: 1,
+      sample_width: 2,
+    }));
+    const pcm = new Uint8Array([1, 2, 3, 4]).buffer;
+    socket.message(pcm);
+
+    expect(audioEvents).toEqual([{
+      type: "audio_start",
+      schema: 1,
+      turn_id: "turn-1",
+      sample_rate: 24000,
+      channels: 1,
+      sample_width: 2,
+    }]);
+    expect(audioChunks).toHaveLength(1);
+    expect(Array.from(new Uint8Array(audioChunks[0]))).toEqual([1, 2, 3, 4]);
     bridge.stop();
   });
 
