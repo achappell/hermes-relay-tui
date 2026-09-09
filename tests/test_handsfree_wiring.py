@@ -26,6 +26,10 @@ class FakeSession:
     def __init__(self, transcript="hello"):
         self.turns = []
         self._transcript = transcript
+        self.connected = True
+
+    def is_connected(self):
+        return self.connected
 
     def capture_voice(self):
         return self._transcript

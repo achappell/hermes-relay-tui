@@ -1,0 +1,124 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Direction 03 — Quiet Gallery</title>
+  <style>
+    /* Palette: #F4F1E9 gallery, #202329 charcoal, #C8F0D7 sage, #F2B5A7 blush, #AAB8FF periwinkle, #C8B896 sand. */
+    :root {
+      color-scheme: light;
+      --gallery: #F4F1E9;
+      --charcoal: #202329;
+      --sage: #C8F0D7;
+      --blush: #F2B5A7;
+      --periwinkle: #AAB8FF;
+      --sand: #C8B896;
+      --muted: #747776;
+      --hairline: rgba(32,35,41,.16);
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; min-height: 100vh; padding: 36px 22px 52px; color: var(--charcoal); background: #D8D5CD; font-family: ui-sans-serif, system-ui, -apple-system, sans-serif; }
+    .direction { max-width: 1160px; margin: 0 auto; }
+    .notes { max-width: 790px; margin: 0 auto 24px; }
+    .notes h1 { margin: 0 0 8px; font-size: clamp(24px, 4vw, 38px); font-weight: 750; letter-spacing: -.05em; }
+    .notes p { margin: 6px 0; color: #4D514F; line-height: 1.5; font-size: 15px; }
+    .browser { overflow: hidden; border: 1px solid rgba(32,35,41,.2); border-radius: 18px; background: var(--gallery); box-shadow: 0 22px 68px rgba(32,35,41,.2); }
+    .chrome { display: flex; align-items: center; gap: 8px; height: 38px; padding: 0 15px; border-bottom: 1px solid var(--hairline); background: #ECE9E0; }
+    .dot { width: 8px; height: 8px; border-radius: 50%; background: #B6B2A7; }
+    .dot:first-child { background: var(--blush); }
+    .chrome-label { margin-left: 10px; color: #777B78; font-size: 11px; letter-spacing: .13em; text-transform: uppercase; }
+    .screen { position: relative; min-height: min(58vw, 675px); aspect-ratio: 1024 / 600; overflow: hidden; padding: 5.6% 7%; background: var(--gallery); isolation: isolate; }
+    .ambient-card { position: absolute; z-index: -2; top: 9%; right: 5%; width: 43%; height: 75%; overflow: hidden; border-radius: 42% 18% 30% 22%; background: linear-gradient(150deg, #DDE5D6, #CBD8E5 52%, #EAD9D0); opacity: .67; transform: rotate(5deg); }
+    .ambient-card::before { position: absolute; top: 12%; left: 13%; width: 33%; height: 43%; border-radius: 50%; background: var(--sage); box-shadow: 90px 100px 0 var(--blush), 130px -25px 0 var(--periwinkle); content: ""; opacity: .75; }
+    .ambient-card::after { position: absolute; right: 14%; bottom: 15%; width: 42%; height: 20%; border-radius: 50%; background: rgba(255,255,255,.55); content: ""; filter: blur(8px); }
+    .ambient-word { position: absolute; right: 9%; bottom: 9%; color: rgba(32,35,41,.42); font-size: 10px; letter-spacing: .18em; text-transform: uppercase; }
+    .topline { display: flex; align-items: flex-start; justify-content: space-between; gap: 20px; }
+    .profile-block { display: flex; align-items: flex-start; gap: 17px; }
+    .profile-mark { position: relative; display: grid; width: 58px; height: 58px; place-items: center; border: 1px solid var(--charcoal); border-radius: 50%; background: var(--sage); font-family: ui-serif, Georgia, serif; font-size: 28px; }
+    .profile-mark::after { position: absolute; right: -5px; bottom: -3px; width: 13px; height: 13px; border-radius: 50%; background: var(--blush); content: ""; }
+    .kicker { color: var(--muted); font-size: 11px; letter-spacing: .17em; text-transform: uppercase; }
+    .profile-name { margin-top: 3px; font-family: ui-serif, Georgia, serif; font-size: clamp(25px, 3vw, 35px); letter-spacing: -.06em; }
+    .state-tag { padding: 9px 13px; border-bottom: 1px solid var(--charcoal); color: var(--charcoal); font-size: 12px; letter-spacing: .12em; text-transform: uppercase; }
+    .layout { display: grid; grid-template-columns: 23% minmax(0, 1fr); gap: 8%; align-items: center; height: 71%; }
+    .phase-list { align-self: center; border-left: 1px solid var(--hairline); padding-left: 20px; }
+    .phase { margin: 20px 0; color: #989B96; font-size: clamp(12px, 1.45vw, 16px); letter-spacing: .06em; text-transform: uppercase; }
+    .phase:first-child { margin-top: 0; }
+    .phase:last-child { margin-bottom: 0; }
+    .phase b { display: block; margin-bottom: 4px; color: #B4B6B0; font-family: ui-serif, Georgia, serif; font-size: 12px; font-weight: 400; }
+    .phase.done { color: #5B866D; }
+    .phase.done b { color: #7FAD90; }
+    .phase.current { color: var(--charcoal); font-weight: 750; }
+    .phase.current b { color: var(--charcoal); }
+    .voice-stage { position: relative; display: flex; flex-direction: column; align-items: flex-start; justify-content: center; min-width: 0; }
+    .trace { position: relative; display: flex; align-items: center; justify-content: center; width: min(37vw, 370px); aspect-ratio: 1.6; margin-left: 5%; }
+    .trace::before, .trace::after { position: absolute; width: 70%; height: 42%; border: 1px solid rgba(170,184,255,.85); border-radius: 50%; content: ""; animation: drift 5s ease-in-out infinite; }
+    .trace::after { width: 52%; height: 62%; border-color: rgba(242,181,167,.85); animation-delay: -2.2s; transform: rotate(31deg); }
+    .trace-line { display: flex; align-items: center; gap: 7px; z-index: 1; }
+    .trace-line i { width: 5px; height: 18px; border-radius: 99px; background: var(--charcoal); animation: trace 1.2s ease-in-out infinite alternate; }
+    .trace-line i:nth-child(2) { height: 34px; animation-delay: -260ms; }
+    .trace-line i:nth-child(3) { height: 53px; animation-delay: -480ms; }
+    .trace-line i:nth-child(4) { height: 27px; animation-delay: -720ms; }
+    .trace-line i:nth-child(5) { height: 42px; animation-delay: -140ms; }
+    .trace-line i:nth-child(6) { height: 20px; animation-delay: -620ms; }
+    .state-title { margin-top: 2%; font-family: ui-serif, Georgia, serif; font-size: clamp(46px, 7.5vw, 86px); font-weight: 400; letter-spacing: -.1em; line-height: .88; }
+    .state-caption { max-width: 360px; margin-top: 15px; color: var(--muted); font-size: clamp(14px, 1.7vw, 18px); line-height: 1.4; }
+    .variant { align-self: stretch; display: flex; align-items: center; justify-content: space-between; gap: 14px; margin-top: 23px; padding-top: 13px; border-top: 1px solid var(--hairline); color: var(--muted); font-size: 12px; letter-spacing: .11em; text-transform: uppercase; }
+    .variant strong { color: var(--charcoal); font-weight: 750; }
+    .footer { position: absolute; right: 7%; bottom: 5.8%; left: 7%; display: flex; justify-content: space-between; color: var(--muted); font-size: 11px; letter-spacing: .12em; text-transform: uppercase; }
+    @keyframes drift { 0%, 100% { transform: translate(0,0) rotate(-9deg); opacity: .55; } 50% { transform: translate(8px,-5px) rotate(9deg); opacity: 1; } }
+    @keyframes trace { to { transform: scaleY(.36); opacity: .6; } }
+    @media (max-width: 720px) {
+      body { padding: 22px 12px 36px; }
+      .screen { min-height: 610px; aspect-ratio: auto; padding: 25px 22px; }
+      .state-tag { font-size: 10px; }
+      .layout { grid-template-columns: 1fr; height: auto; gap: 18px; margin-top: 30px; }
+      .phase-list { display: flex; justify-content: space-between; gap: 9px; border-left: 0; border-bottom: 1px solid var(--hairline); padding: 0 0 14px; }
+      .phase { margin: 0; font-size: 10px; }
+      .phase b { font-size: 10px; }
+      .trace { width: min(82vw, 370px); margin-left: 0; }
+      .voice-stage { align-items: center; }
+      .state-caption { text-align: center; }
+      .variant { width: 100%; }
+      .footer { position: static; margin-top: 35px; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; }
+    }
+  </style>
+</head>
+<body>
+  <main class="direction">
+    <section class="notes" aria-label="Design direction rationale">
+      <h1>03 / Quiet Gallery</h1>
+      <p>A sparse, calm direction that lets ambient imagery remain present without competing with the conversation. A restrained serif display word, hairline phase markers, and slow elliptical motion make speaking feel alive while preserving a quiet household surface.</p>
+      <p><strong>Hero:</strong> room display moving through Connecting → Listening → Speaking, with the Listening variant held in the phase rail and Missy identified above the response.</p>
+    </section>
+    <section class="browser" aria-label="Room display visual direction">
+      <div class="chrome"><span class="dot"></span><span class="dot"></span><span class="dot"></span><span class="chrome-label">room display / active turn</span></div>
+      <div class="screen">
+        <div class="ambient-card" aria-label="Idle ambient background"></div>
+        <div class="ambient-word">ambient / background</div>
+        <header class="topline">
+          <div class="profile-block"><div class="profile-mark" aria-hidden="true">M</div><div><div class="kicker">Hermes profile</div><div class="profile-name">Missy</div></div></div>
+          <div class="state-tag">Room display · private</div>
+        </header>
+        <div class="layout">
+          <nav class="phase-list" aria-label="Turn phases">
+            <div class="phase done"><b>01</b>Connecting</div>
+            <div class="phase done"><b>02</b>Listening</div>
+            <div class="phase current"><b>03</b>Speaking</div>
+          </nav>
+          <section class="voice-stage" aria-label="Speaking state">
+            <div class="trace" aria-label="Voice-synchronized response animation"><div class="trace-line" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i><i></i></div></div>
+            <div class="state-title">Speaking</div>
+            <div class="state-caption">The voice has a visible presence. The room stays otherwise quiet.</div>
+            <div class="variant"><span>State variant</span><strong>Listening · sound cue</strong></div>
+          </section>
+        </div>
+        <footer class="footer"><span>ambient remains behind the turn</span><span>follow-up after speaking</span></footer>
+      </div>
+    </section>
+  </main>
+</body>
+</html>

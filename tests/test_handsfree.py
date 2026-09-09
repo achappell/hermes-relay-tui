@@ -5,8 +5,12 @@ import handsfree
 
 
 class FakeSession:
-    def __init__(self):
+    def __init__(self, *, connected=True):
         self.turns = []
+        self.connected = connected
+
+    def is_connected(self):
+        return self.connected
 
     def send_turn(self, text, *, stt_source="local"):
         self.turns.append((text, stt_source))
@@ -45,6 +49,95 @@ def test_a_detection_produces_exactly_one_capture_and_one_turn():
 
     assert len(captures) == 1
     assert session.turns == [("what is the weather", "local")]
+    assert coordinator.state == handsfree.IDLE
+
+
+def test_a_disconnected_session_refuses_wake_before_acknowledgement_or_capture():
+    session = FakeSession(connected=False)
+    events = []
+    captures = []
+    coordinator = handsfree.HandsFreeCoordinator(
+        session,
+        capture=lambda: captures.append(True) or "should not be captured",
+        send=lambda text: session.send_turn(text),
+        acknowledge=lambda: events.append("acknowledge"),
+    )
+
+    assert coordinator.on_wake() is False
+
+    assert events == []
+    assert captures == []
+    assert session.turns == []
+    assert coordinator.state == handsfree.IDLE
+
+
+def test_connection_loss_during_acknowledgement_does_not_open_capture():
+    session = FakeSession()
+    ready = [True]
+    captures = []
+
+    def acknowledge():
+        ready[0] = False
+
+    coordinator = handsfree.HandsFreeCoordinator(
+        session,
+        capture=lambda: captures.append(True) or "should not be captured",
+        send=lambda text: session.send_turn(text),
+        acknowledge=acknowledge,
+        is_ready=lambda: ready[0],
+    )
+
+    assert coordinator.on_wake() is False
+
+    assert captures == []
+    assert session.turns == []
+    assert coordinator.state == handsfree.IDLE
+
+
+def test_connection_loss_before_follow_up_does_not_open_the_follow_up_window():
+    session = FakeSession()
+    ready = [True]
+    follow_up_captures = []
+
+    def send(_text):
+        ready[0] = False
+        return True
+
+    coordinator = handsfree.HandsFreeCoordinator(
+        session,
+        capture=lambda: "first turn",
+        send=send,
+        follow_up_capture=lambda: follow_up_captures.append(True) or "again",
+        is_ready=lambda: ready[0],
+    )
+
+    assert coordinator.on_wake() is True
+
+    assert follow_up_captures == []
+    assert coordinator.state == handsfree.IDLE
+
+
+def test_routed_profile_can_replace_the_coordinators_original_session():
+    old_session = FakeSession()
+    new_session = FakeSession()
+    current_session = [old_session]
+    turns = []
+
+    def route(_phrase):
+        current_session[0] = new_session
+        return True
+
+    coordinator = handsfree.HandsFreeCoordinator(
+        old_session,
+        capture=lambda: "routed turn",
+        send=lambda text: turns.append(text),
+        route_wake=route,
+        is_ready=lambda: current_session[0].is_connected(),
+    )
+
+    assert coordinator.on_wake("hey jensen") is True
+
+    assert turns == ["routed turn"]
     assert coordinator.state == handsfree.IDLE
 
 
@@ -575,7 +668,7 @@ def test_follow_up_uses_its_own_listening_deadline():
         return ""
 
     coordinator = handsfree.HandsFreeCoordinator(
-        object(), capture=lambda: "hello", send=lambda text: None,
+        FakeSession(), capture=lambda: "hello", send=lambda text: None,
         follow_up_capture=capture_follow_up, listen_timeout=8.0,
         follow_up_listen_timeout=12.0, now=lambda: clock[0],
         on_state_change=states.append,
@@ -587,7 +680,7 @@ def test_follow_up_uses_its_own_listening_deadline():
 def test_explicit_unsuccessful_send_does_not_invite_follow_up():
     captures = []
     coordinator = handsfree.HandsFreeCoordinator(
-        object(), capture=lambda: "hello", send=lambda text: False,
+        FakeSession(), capture=lambda: "hello", send=lambda text: False,
         follow_up_capture=lambda: captures.append(True) or "again",
     )
     coordinator.on_wake()

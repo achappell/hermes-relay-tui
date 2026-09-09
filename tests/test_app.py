@@ -281,6 +281,70 @@ async def test_disconnected_surface_is_explicit_and_recoverable():
         )
 
 
+async def test_voice_initiation_keeps_microphone_closed_when_authorization_fails():
+    session = FlakyConnectSession(99)
+    app = HermesStreamingApp(args=make_args(), session_factory=lambda: session)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+
+        await app._capture_voice_turn()
+
+        assert session.capture_calls == 0
+        assert session.sent_turns == []
+        assert app.connection_state == app_module.CONNECTION_DISCONNECTED
+        assert "microphone remains closed" in transcript_of(app)
+
+
+async def test_voice_initiation_reconnects_before_opening_microphone():
+    session = FlakyConnectSession(1)
+    app = HermesStreamingApp(args=make_args(), session_factory=lambda: session)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+
+        await app._capture_voice_turn()
+
+        assert session.connect_calls == 2
+        assert session.capture_calls == 1
+        assert session.sent_turns == [("spoken words", "local-faster-whisper")]
+
+
+async def test_voice_capture_waits_for_hello_ack_before_opening_microphone():
+    events = []
+
+    class SlowHandshakeSession(FakeSession):
+        def __init__(self):
+            super().__init__(connected=False)
+            self.release = asyncio.Event()
+
+        async def connect(self):
+            self.connect_calls += 1
+            events.append("hello-start")
+            await self.release.wait()
+            self.connected = True
+            events.append("hello-ack")
+            return self.hello
+
+        def capture_voice(self, *, wait_timeout=None):
+            events.append("capture")
+            return super().capture_voice(wait_timeout=wait_timeout)
+
+    session = SlowHandshakeSession()
+    app = HermesStreamingApp(args=make_args(), session_factory=lambda: session)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        capture = asyncio.create_task(app._capture_voice_turn())
+        await asyncio.sleep(0.05)
+
+        assert events == ["hello-start"]
+        assert session.capture_calls == 0
+
+        session.release.set()
+        await asyncio.wait_for(capture, 1)
+
+        assert events == ["hello-start", "hello-ack", "capture"]
+        assert session.sent_turns == [("spoken words", "local-faster-whisper")]
+
+
 async def test_composer_hint_confirms_draft_and_survives_terminal_resize():
     app = HermesStreamingApp(args=make_args(), session_factory=lambda: FakeSession())
     async with app.run_test() as pilot:
@@ -2405,6 +2469,24 @@ async def test_turn_is_refused_when_the_session_is_not_connected():
         assert not app._turn_in_flight
 
 
+async def test_pre_wire_not_ready_failure_is_queued_as_not_sent():
+    class RacySession(FakeSession):
+        def send_turn(self, text, *, stt_source="local"):
+            raise app_module.SessionNotReadyError("Not connected to relay")
+
+    session = RacySession()
+    app = HermesStreamingApp(args=make_args(), session_factory=lambda: session)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+
+        await app._run_turn("hi")
+
+        assert app._queued_prompts == ["hi"]
+        assert app._last_prompt_status == app_module.PROMPT_NOT_SENT
+        assert "prompt kept in queue" in transcript_of(app)
+        assert not app._turn_in_flight
+
+
 async def test_a_failing_stream_reports_the_error_and_clears_the_flag():
     session = FakeSession()
 
@@ -2790,6 +2872,7 @@ async def test_session_close_exits_the_connect_context_manager():
     fake_cm = FakeConnectContextManager()
     session._connect_cm = fake_cm
     session.ws = "fake-ws"
+    session._hello_verified = True
     assert session.is_connected()
 
     await session.close()

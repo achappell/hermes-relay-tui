@@ -1,0 +1,256 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Hermes UX key screen — iOS device setup</title>
+  <style>
+    /*
+      Governing UX spine sections:
+      DESIGN.md — Brand & Style; Colors; Typography; Layout & Spacing; Components;
+      Do's and Don'ts.
+      EXPERIENCE.md — Information Architecture; Component Patterns (Device Discovery,
+      Device Setup, Device Details); State Patterns; Recovery and explicit actions;
+      Accessibility Floor; UJ-2.
+    */
+    :root {
+      color-scheme: dark;
+      --base: #0B101B;
+      --console: #101725;
+      --panel: #0D1320;
+      --raised: #182338;
+      --ink: #EAF7FF;
+      --secondary: #B3C0D2;
+      --muted: #91A0B5;
+      --border: #2A3850;
+      --emphasis: #7189AA;
+      --live: #62E6C7;
+      --live-on: #08241D;
+      --attention: #FFCF5C;
+      --attention-on: #201A08;
+      --identity: #7C8CFF;
+      --unavailable: #FF7D9C;
+      --unavailable-on: #260A12;
+      --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      --sans: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-width: 320px;
+      padding: 36px 24px 56px;
+      background: var(--base);
+      color: var(--ink);
+      font-family: var(--sans);
+    }
+    .page { max-width: 1240px; margin: 0 auto; }
+    .masthead { max-width: 760px; margin: 0 auto 30px; }
+    .eyebrow, .label, .setup-step, .meta, .phone-chrome, .button-note {
+      font-family: var(--mono);
+      font-size: 12px;
+      font-weight: 700;
+      letter-spacing: .11em;
+      line-height: 1.3;
+      text-transform: uppercase;
+    }
+    .eyebrow { color: var(--identity); }
+    h1 { margin: 8px 0 10px; font-size: clamp(32px, 5vw, 56px); font-weight: 850; letter-spacing: -.06em; line-height: .98; }
+    .masthead p { margin: 0; color: var(--secondary); font-size: 18px; line-height: 1.45; }
+    .setup-board { display: grid; grid-template-columns: minmax(0, 1fr) minmax(330px, 420px); gap: 32px; align-items: start; }
+    .flow-notes { display: flex; flex-direction: column; gap: 14px; padding-top: 14px; }
+    .flow-notes > h2 { margin: 0 0 4px; font-size: 24px; letter-spacing: -.04em; }
+    .flow-notes > p { max-width: 540px; margin: 0 0 8px; color: var(--secondary); font-size: 16px; line-height: 1.45; }
+    .flow-card { padding: 18px; border: 1px solid var(--border); background: var(--panel); }
+    .flow-card strong { display: block; margin-top: 7px; font-size: 19px; letter-spacing: -.03em; }
+    .flow-card p { margin: 8px 0 0; color: var(--secondary); font-size: 14px; line-height: 1.42; }
+    .flow-card.current { border-color: var(--identity); box-shadow: 0 0 25px rgba(124, 140, 255, .08); }
+    .flow-card.current .label { color: var(--identity); }
+    .flow-card.complete { border-color: rgba(98, 230, 199, .62); }
+    .flow-card.complete .label { color: var(--live); }
+    .flow-card.pending { border-color: var(--attention); }
+    .flow-card.pending .label { color: var(--attention); }
+    .phone-stage { display: flex; flex-direction: column; align-items: center; gap: 12px; }
+    .phone-caption { align-self: stretch; margin: 0 0 2px; color: var(--muted); font-family: var(--mono); font-size: 11px; font-weight: 700; letter-spacing: .12em; text-align: center; text-transform: uppercase; }
+    .phone {
+      position: relative;
+      width: min(100%, 420px);
+      min-height: 850px;
+      overflow: hidden;
+      padding: 18px 16px 22px;
+      border: 5px solid #252E43;
+      border-radius: 44px;
+      background: #080D17;
+      box-shadow: 0 30px 80px rgba(0, 0, 0, .52), inset 0 0 0 1px #59657A;
+    }
+    .phone::before {
+      position: absolute;
+      top: 9px;
+      left: 50%;
+      width: 112px;
+      height: 25px;
+      border-radius: 20px;
+      background: #05070C;
+      content: "";
+      transform: translateX(-50%);
+    }
+    .phone-body { position: relative; z-index: 1; }
+    .statusbar { display: flex; justify-content: space-between; padding: 2px 10px 25px; color: var(--ink); font-size: 12px; font-weight: 700; }
+    .status-icons { display: flex; gap: 7px; color: var(--secondary); font-size: 11px; }
+    .ios-nav { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 0 4px 17px; }
+    .back { color: var(--identity); font-size: 27px; font-weight: 300; line-height: 1; }
+    .ios-nav h2 { margin: 0; font-size: 18px; font-weight: 800; letter-spacing: -.03em; }
+    .nav-spacer { width: 24px; }
+    .device-hero { padding: 18px; border: 1px solid var(--identity); border-radius: 12px; background: rgba(24, 35, 56, .78); }
+    .device-hero-top { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+    .device-name { margin-top: 6px; font-size: 23px; font-weight: 850; letter-spacing: -.05em; }
+    .device-type { margin-top: 5px; color: var(--secondary); font-size: 13px; }
+    .badge { display: inline-flex; align-items: center; gap: 6px; padding: 6px 8px; border-radius: 999px; font-family: var(--mono); font-size: 10px; font-weight: 800; letter-spacing: .07em; text-transform: uppercase; }
+    .badge.live { color: var(--live); background: var(--live-on); }
+    .badge.live::before { width: 6px; height: 6px; border-radius: 50%; background: var(--live); content: ""; }
+    .badge.attention { color: var(--attention-on); background: var(--attention); }
+    .setup-rail { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 5px; margin: 20px 0; }
+    .setup-step { position: relative; min-width: 0; padding-top: 18px; color: #7B89A0; font-size: 8px; letter-spacing: .03em; text-align: center; }
+    .setup-step::before { position: absolute; top: 0; left: 50%; width: 10px; height: 10px; border: 1px solid #63718A; border-radius: 50%; background: var(--panel); content: ""; transform: translateX(-50%); }
+    .setup-step::after { position: absolute; top: 4px; left: calc(50% + 7px); width: calc(100% - 9px); border-top: 1px solid var(--border); content: ""; }
+    .setup-step:last-child::after { display: none; }
+    .setup-step.complete { color: var(--live); }
+    .setup-step.complete::before { border-color: var(--live); background: var(--live); box-shadow: 0 0 9px rgba(98, 230, 199, .5); }
+    .setup-step.complete::after { border-color: rgba(98, 230, 199, .55); }
+    .setup-step.current { color: var(--attention); }
+    .setup-step.current::before { border-color: var(--attention); box-shadow: 0 0 0 4px rgba(255, 207, 92, .1); }
+    .setup-step.locked { color: #64728B; }
+    .section-title { margin: 23px 0 10px; font-size: 21px; font-weight: 800; letter-spacing: -.04em; }
+    .field-card { padding: 14px; border: 1px solid var(--border); border-radius: 8px; background: var(--panel); }
+    .field-card + .field-card { margin-top: 9px; }
+    .field-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+    .field-row strong { color: var(--ink); font-size: 17px; letter-spacing: -.02em; }
+    .field-row .value { color: var(--ink); font-size: 16px; font-weight: 650; }
+    .field-card p { margin: 6px 0 0; color: var(--secondary); font-size: 13px; line-height: 1.38; }
+    .field-card .label { color: var(--muted); font-size: 9px; }
+    .check { color: var(--live); font-size: 17px; font-weight: 800; }
+    .inert-note { display: flex; align-items: flex-start; gap: 9px; margin: 15px 0; padding: 11px 12px; border-left: 2px solid var(--attention); background: rgba(32, 26, 8, .72); color: var(--secondary); font-size: 12px; line-height: 1.4; }
+    .inert-note strong { color: var(--attention); }
+    .primary-button { display: flex; align-items: center; justify-content: center; min-height: 46px; width: 100%; border: 0; border-radius: 7px; background: var(--identity); color: var(--base); font-family: var(--sans); font-size: 16px; font-weight: 800; }
+    .button-note { margin-top: 10px; color: var(--muted); font-size: 9px; text-align: center; }
+    .device-list { margin-top: 20px; border: 1px solid var(--border); border-radius: 9px; background: var(--panel); }
+    .device-list-title { padding: 12px 14px; border-bottom: 1px solid var(--border); color: var(--muted); font-family: var(--mono); font-size: 10px; font-weight: 700; letter-spacing: .1em; text-transform: uppercase; }
+    .device-row { display: flex; align-items: center; gap: 12px; padding: 13px 14px; }
+    .device-row + .device-row { border-top: 1px solid var(--border); }
+    .device-glyph { display: grid; place-items: center; width: 34px; height: 34px; border: 1px solid var(--emphasis); border-radius: 8px; color: var(--identity); font-family: var(--mono); font-size: 12px; font-weight: 800; }
+    .device-row strong { display: block; font-size: 14px; }
+    .device-row span { display: block; margin-top: 3px; color: var(--secondary); font-size: 12px; }
+    .row-status { margin-left: auto; color: var(--attention); font-family: var(--mono); font-size: 9px; font-weight: 800; letter-spacing: .06em; text-align: right; text-transform: uppercase; }
+    .pending-phone { border-color: #5E354B; }
+    .pending-phone .device-hero { border-color: var(--attention); background: rgba(32, 26, 8, .48); }
+    .pending-phone .setup-step.current { color: var(--unavailable); }
+    .pending-phone .setup-step.current::before { border-color: var(--unavailable); box-shadow: 0 0 0 4px rgba(255, 125, 156, .11); }
+    .failure-banner { display: flex; gap: 10px; padding: 14px; border: 1px solid var(--unavailable); border-radius: 9px; background: rgba(38, 10, 18, .78); }
+    .failure-symbol { flex: 0 0 auto; color: var(--unavailable); font-size: 20px; font-weight: 800; }
+    .failure-banner strong { display: block; color: var(--ink); font-size: 16px; }
+    .failure-banner p { margin: 5px 0 0; color: var(--secondary); font-size: 13px; line-height: 1.38; }
+    .pending-phone .primary-button { background: transparent; border: 1px solid var(--identity); color: var(--ink); }
+    .phone-footnote { margin: 0; color: var(--muted); font-size: 12px; line-height: 1.4; text-align: center; }
+    .screen-pair { display: grid; grid-template-columns: repeat(2, minmax(280px, 1fr)); gap: 26px; align-items: start; }
+    .screen-pair .phone-stage { min-width: 0; }
+    .screen-pair .phone { width: 100%; min-height: 0; }
+    @media (max-width: 1050px) {
+      .setup-board { grid-template-columns: 1fr; }
+      .flow-notes { order: 2; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); }
+      .flow-notes > h2, .flow-notes > p { grid-column: 1 / -1; }
+    }
+    @media (max-width: 720px) {
+      body { padding: 24px 12px 38px; }
+      .screen-pair { grid-template-columns: 1fr; }
+      .flow-notes { display: flex; }
+      .phone { border-radius: 34px; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after { animation: none !important; transition: none !important; }
+    }
+  </style>
+</head>
+<body>
+  <main class="page">
+    <header class="masthead">
+      <div class="eyebrow">UX key screen 02 / iOS settings</div>
+      <h1>Bring one Puck into one Room</h1>
+      <p>Discovery is not approval. The ordered setup path stays visible from Discover through Ready, while a failed or pending publish remains plainly not ready.</p>
+    </header>
+
+    <section class="setup-board" aria-label="iOS Device setup states">
+      <div class="screen-pair">
+        <article class="phone-stage">
+          <p class="phone-caption">Guided setup / Room and Wake Mappings</p>
+          <div class="phone" role="region" aria-label="iOS setup showing a discovered Kitchen Puck connected and ready for Room and Wake Mapping setup">
+            <div class="phone-body">
+              <div class="statusbar"><span>9:41</span><span class="status-icons">▮▮▮ &nbsp; Wi‑Fi &nbsp; ◼</span></div>
+              <nav class="ios-nav" aria-label="iOS navigation"><span class="back" aria-hidden="true">‹</span><h2>Add Device</h2><span class="nav-spacer" aria-hidden="true"></span></nav>
+              <section class="device-hero">
+                <div class="device-hero-top">
+                  <div><div class="label">Selected device</div><div class="device-name">Kitchen Puck</div><div class="device-type">Puck · new household Device</div></div>
+                  <span class="badge live">Connected</span>
+                </div>
+              </section>
+              <div class="setup-rail" aria-label="Setup sequence">
+                <div class="setup-step complete">Discover</div>
+                <div class="setup-step complete">Connect</div>
+                <div class="setup-step current">Room</div>
+                <div class="setup-step locked">Wake Mappings</div>
+                <div class="setup-step locked">Ready</div>
+              </div>
+              <section aria-labelledby="room-title">
+                <h3 id="room-title" class="section-title">Choose a Room</h3>
+                <div class="field-card"><div class="field-row"><div><div class="label">Room</div><div class="value">Kitchen</div></div><span class="check">✓</span></div><p>Active Turn text stays local to this Room.</p></div>
+              </section>
+              <section aria-labelledby="mapping-title">
+                <h3 id="mapping-title" class="section-title">Wake Mappings</h3>
+                <div class="field-card"><div class="field-row"><div><div class="label">Wake phrase → Hermes Profile</div><div class="value">“Hey Missy” → Missy</div></div><span class="check">✓</span></div><p>Unique on this Device. The Profile is fixed before capture.</p></div>
+              </section>
+              <div class="inert-note"><span aria-hidden="true">◆</span><span><strong>Not Ready yet.</strong> The Puck remains inert until Room and Wake Mappings are saved and verified.</span></div>
+              <button class="primary-button" type="button">Save &amp; continue</button>
+              <div class="button-note">Next: Wake Mappings → Ready</div>
+            </div>
+          </div>
+        </article>
+
+        <article class="phone-stage">
+          <p class="phone-caption">Pending failure / no silent activation</p>
+          <div class="phone pending-phone" role="region" aria-label="iOS setup failure showing connection not verified and a Kitchen Puck that is not ready">
+            <div class="phone-body">
+              <div class="statusbar"><span>9:42</span><span class="status-icons">▮▮▮ &nbsp; Wi‑Fi &nbsp; ◼</span></div>
+              <nav class="ios-nav" aria-label="iOS navigation"><span class="back" aria-hidden="true">‹</span><h2>Add Device</h2><span class="nav-spacer" aria-hidden="true"></span></nav>
+              <section class="device-hero">
+                <div class="device-hero-top">
+                  <div><div class="label">Selected device</div><div class="device-name">Kitchen Puck</div><div class="device-type">Puck · discovered 1 min ago</div></div>
+                  <span class="badge attention">Pending</span>
+                </div>
+              </section>
+              <div class="setup-rail" aria-label="Setup sequence">
+                <div class="setup-step complete">Discover</div>
+                <div class="setup-step current">Connect</div>
+                <div class="setup-step locked">Room</div>
+                <div class="setup-step locked">Wake Mappings</div>
+                <div class="setup-step locked">Ready</div>
+              </div>
+              <div class="failure-banner" role="status"><div class="failure-symbol" aria-hidden="true">!</div><div><strong>Connection not verified</strong><p>The Puck has not been approved or configured. No capture or Hermes access is enabled.</p></div></div>
+              <h3 class="section-title">Connect this device</h3>
+              <div class="field-card"><div class="field-row"><div><div class="label">Last attempt</div><div class="value">9:42 PM · still pending</div></div></div><p>Keep the Puck nearby while iOS verifies the connection.</p></div>
+              <div class="inert-note"><span aria-hidden="true">◆</span><span><strong>Not Ready.</strong> A list update is not approval. Setup must complete before the Puck can wake, capture, or submit a turn.</span></div>
+              <button class="primary-button" type="button">Retry connection</button>
+              <div class="button-note">Retry connects; it does not enable the Device by itself</div>
+            </div>
+          </div>
+        </article>
+      </div>
+
+      <aside class="flow-notes" aria-label="Setup contract">
+        <h2>Every handoff is visible</h2>
+        <p>The Puck and iOS agree step by step. There is no silent jump from a discovery row to a household doorway.</p>
+        <div class="flow-card complete"><div class="label">Discover</div><strong>Found, not approved</strong><p>“Kitchen Puck” appears as a discovered Device and remains inert.</p></div>
+        <div class="flow-card current"><div class="label">Connect → Room</div><strong>Connection success earns the next step</strong><p>iOS proceeds into Room assignment, then collects one or more unique Wake Mappings.</p></div>
+        <div class="flow-card pending"><div class="label">Ready</div><strong>Only verified setup becomes active</strong><p>Pending or offline configuration stays labeled pending. Re-enrollment remains explicit after revocation.</p></div>
+      </aside>
+    </section>
+  </main>
+</body>
+</html>

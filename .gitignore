@@ -9,5 +9,7 @@ __pycache__/
 .superpowers/
 .DS_Store
 .hermes/
+# BMAD workflow snapshots are generated locally and are not project artifacts.
+_bmad/render/
 *.wav
 .pytest_cache/

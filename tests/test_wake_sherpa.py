@@ -124,7 +124,9 @@ def test_wake_listener_notifies_zero_arg_callback_without_error():
 
 
 def test_handsfree_coordinator_records_last_wake_phrase():
-    session = SimpleNamespace(send_turn=MagicMock(), capture_voice=MagicMock())
+    session = SimpleNamespace(
+        send_turn=MagicMock(), capture_voice=MagicMock(), is_connected=lambda: True
+    )
     coordinator = handsfree.HandsFreeCoordinator(
         session,
         capture=lambda: "testing phrase",
@@ -172,7 +174,9 @@ def test_load_sherpa_engine_defaults_to_hey_hermes():
 
 
 def test_build_hands_free_selects_sherpa_when_configured():
-    session = SimpleNamespace(send_turn=MagicMock(), capture_voice=MagicMock())
+    session = SimpleNamespace(
+        send_turn=MagicMock(), capture_voice=MagicMock(), is_connected=lambda: True
+    )
     args = SimpleNamespace(
         wake_enabled=True,
         wake_engine="sherpa",
@@ -192,7 +196,9 @@ def test_build_hands_free_selects_sherpa_when_configured():
 
 
 def test_build_hands_free_selects_sherpa_when_phrases_provided():
-    session = SimpleNamespace(send_turn=MagicMock(), capture_voice=MagicMock())
+    session = SimpleNamespace(
+        send_turn=MagicMock(), capture_voice=MagicMock(), is_connected=lambda: True
+    )
     args = SimpleNamespace(
         wake_enabled=True,
         wake_engine="openwakeword",
