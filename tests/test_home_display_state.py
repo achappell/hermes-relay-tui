@@ -3,7 +3,13 @@ import json
 
 import pytest
 
-from home_display.state import DisplayPrompt, DisplaySnapshot, DisplayStatePublisher, PromptOption
+from home_display.state import (
+    DisplayCapabilities,
+    DisplayPrompt,
+    DisplaySnapshot,
+    DisplayStatePublisher,
+    PromptOption,
+)
 
 
 def test_initial_snapshot_is_idle_and_json_safe():
@@ -82,3 +88,25 @@ def test_prompt_snapshot_advertises_the_browser_choice_capability():
         "actions": ["prompt.choose"],
         "features": ["prompt_overlay"],
     }
+
+
+def test_hands_free_capabilities_serialize_only_non_secret_configuration():
+    capabilities = DisplayCapabilities(
+        features=("browser_voice", "browser_hands_free"),
+        wake_phrases=("hey hermes", "hello hermes"),
+        wake_listen_seconds=8.0,
+        wake_followup_seconds=6.0,
+    )
+
+    assert capabilities.to_dict() == {
+        "actions": [],
+        "features": ["browser_voice", "browser_hands_free"],
+        "wake_phrases": ["hey hermes", "hello hermes"],
+        "wake_listen_seconds": 8.0,
+        "wake_followup_seconds": 6.0,
+    }
+
+
+def test_capabilities_reject_more_than_the_browser_wake_phrase_bound():
+    with pytest.raises(ValueError, match="at most 8"):
+        DisplayCapabilities(wake_phrases=tuple(f"phrase {index}" for index in range(9)))

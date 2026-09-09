@@ -32,6 +32,9 @@ export type DisplayActionName = (typeof displayActionNames)[number];
 export interface DisplayCapabilities {
   actions: DisplayActionName[];
   features: string[];
+  wake_phrases?: string[];
+  wake_listen_seconds?: number;
+  wake_followup_seconds?: number;
 }
 
 export interface DisplayAction {
@@ -149,7 +152,42 @@ function parseCapabilities(raw: unknown): DisplayCapabilities | null {
     parsedFeatures.push(feature);
   }
 
-  return { actions: parsedActions, features: parsedFeatures };
+  let wakePhrases: string[] | undefined;
+  if (raw.wake_phrases !== undefined) {
+    if (!Array.isArray(raw.wake_phrases) || raw.wake_phrases.length > 8) return null;
+    wakePhrases = [];
+    for (const phrase of raw.wake_phrases) {
+      if (
+        typeof phrase !== "string" ||
+        !phrase.trim() ||
+        phrase.length > 128 ||
+        wakePhrases.some((existing) => existing === phrase)
+      ) {
+        return null;
+      }
+      wakePhrases.push(phrase);
+    }
+  }
+
+  const parseSeconds = (value: unknown): number | null | undefined => {
+    if (value === undefined) return undefined;
+    if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) return null;
+    return value;
+  };
+  const wakeListenSeconds = parseSeconds(raw.wake_listen_seconds);
+  const wakeFollowupSeconds = parseSeconds(raw.wake_followup_seconds);
+  if (wakeListenSeconds === null || wakeFollowupSeconds === null) return null;
+
+  const capabilities: DisplayCapabilities = {
+    actions: parsedActions,
+    features: parsedFeatures,
+  };
+  if (wakePhrases !== undefined) capabilities.wake_phrases = wakePhrases;
+  if (wakeListenSeconds !== undefined) capabilities.wake_listen_seconds = wakeListenSeconds;
+  if (wakeFollowupSeconds !== undefined) {
+    capabilities.wake_followup_seconds = wakeFollowupSeconds;
+  }
+  return capabilities;
 }
 
 export function parseSnapshot(raw: unknown): DisplaySnapshot | null {

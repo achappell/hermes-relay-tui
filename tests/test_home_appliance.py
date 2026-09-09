@@ -13,6 +13,7 @@ import io
 import threading
 import types
 import wave
+from dataclasses import replace
 
 import pytest
 
@@ -206,6 +207,7 @@ def _args(**overrides):
         "audio_output_device": None,
         "mic_input_device": None,
         "wake_listen_timeout": 8.0,
+        "wake_followup_seconds": 6.0,
         "wake_barge_in": False,
         "browser_voice": False,
     }
@@ -413,13 +415,66 @@ async def test_browser_voice_turn_uses_ops_session_and_streams_pcm_without_local
             ("chunk", b"\x01\x02"),
             ("end", {"turn_id": server.audio[0][1]["turn_id"]}),
         ]
-        assert publisher.capabilities[-1].features == ("browser_voice",)
+        assert publisher.capabilities[-1].features == ("browser_voice", "browser_hands_free")
+        assert publisher.capabilities[-1].wake_phrases == ("hey hermes",)
+        assert publisher.capabilities[-1].wake_listen_seconds == 8.0
+        assert publisher.capabilities[-1].wake_followup_seconds == 6.0
         assert publisher.history[-1][0] == "idle"
     finally:
         appliance._stopping.set()
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await task
+
+
+@pytest.mark.asyncio
+async def test_browser_hands_free_capability_is_safe_for_invalid_profile_metadata():
+    publisher = RecordingPublisher()
+    appliance = Appliance(
+        _args(
+            browser_voice=True,
+            wake_listen_timeout=0,
+            wake_followup_seconds=float("nan"),
+        ),
+        session=FakeSession(),
+        publisher=publisher,
+        server=FakeServer(),
+    )
+
+    appliance._connected = True
+    appliance._publish("idle")
+    capabilities = publisher.capabilities[-1]
+    assert capabilities.features == ("browser_voice", "browser_hands_free")
+    assert capabilities.wake_listen_seconds == 8.0
+    assert capabilities.wake_followup_seconds == 8.0
+
+    appliance._active_profile = replace(
+        appliance._active_profile,
+        wake_phrases=tuple(f"phrase {index}" for index in range(9)),
+    )
+    appliance._publish("thinking")
+    assert publisher.capabilities[-1].features == ("browser_voice",)
+
+    appliance._connected = False
+    appliance._publish("disconnected")
+    assert publisher.capabilities[-1] is None
+
+
+@pytest.mark.asyncio
+async def test_interrupted_browser_turn_does_not_return_to_follow_up_ready():
+    publisher = RecordingPublisher()
+    appliance = Appliance(
+        _args(browser_voice=True),
+        session=FakeSession([{"type": "turn_interrupted"}]),
+        publisher=publisher,
+        server=FakeServer(),
+    )
+    appliance._connected = True
+
+    assert await appliance._run_browser_turn("interrupt this") is False
+    assert publisher.history[-1][0] == "error"
+    assert publisher.history[-1][2] == "Response interrupted"
+    assert publisher.capabilities[-1] is None
 
 
 @pytest.mark.asyncio

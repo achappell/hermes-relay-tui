@@ -48,7 +48,7 @@ the backing canvas for device-pixel ratio and maps touches from its CSS bounds.
 - `source build/display-wasm/emsdk/emsdk_env.sh && bash scripts/build_display_wasm.sh` — regenerated the Emscripten 6.0.5 / LVGL 8.3.11 artifacts; the generated ABI smoke covered the framebuffer, fast pointer down/up, and `sethome/yes` action queue.
 - `npm --prefix home_display/web run build` — packaged the current canvas host and WASM artifacts under `home_display/static/`.
 - Chrome loopback smoke — loaded the packaged `display_core.wasm`, visibly rendered the LVGL header/panel, and advanced from `idle` to `listening` from the Python demo stream. A prompt server rendered the C/LVGL prompt and a canvas tap produced `ACTION sethome yes`.
-- `git diff --check` — passed. Voice/audio, physical ESP32 hardware, and iPad-specific review remain outside this slice and belong to HOME-16.
+- `git diff --check` — passed. This historical HOME-03 run did not cover voice/audio or the physical iPad gate; the browser voice path is now covered by the WEB-EPIC-1 smoke procedure, while physical validation remains pending.
 
 ## Verification evidence — 2026-08-31 (CDT)
 

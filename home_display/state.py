@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import copy
 import json
+import math
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from typing import Literal
@@ -20,6 +21,8 @@ DisplayState = Literal[
 ]
 _STATES = frozenset(DisplayState.__args__)
 DisplayActionName = Literal["prompt.choose", "prompt.dismiss"]
+MAX_DISPLAY_WAKE_PHRASES = 8
+MAX_DISPLAY_WAKE_PHRASE_LENGTH = 128
 
 
 @dataclass(frozen=True, slots=True)
@@ -101,6 +104,9 @@ class DisplayCapabilities:
 
     actions: tuple[DisplayActionName, ...] = ()
     features: tuple[str, ...] = ()
+    wake_phrases: tuple[str, ...] = ()
+    wake_listen_seconds: float | None = None
+    wake_followup_seconds: float | None = None
 
     def __post_init__(self) -> None:
         allowed_actions = {"prompt.choose", "prompt.dismiss"}
@@ -115,12 +121,43 @@ class DisplayCapabilities:
             raise ValueError("capabilities.features must contain non-empty strings")
         if len(set(self.features)) != len(self.features):
             raise ValueError("capabilities.features must be unique")
+        if any(
+            not isinstance(phrase, str)
+            or not phrase.strip()
+            or len(phrase) > MAX_DISPLAY_WAKE_PHRASE_LENGTH
+            for phrase in self.wake_phrases
+        ):
+            raise ValueError("capabilities.wake_phrases must contain bounded phrases")
+        if len(self.wake_phrases) > MAX_DISPLAY_WAKE_PHRASES:
+            raise ValueError(
+                f"capabilities.wake_phrases must contain at most {MAX_DISPLAY_WAKE_PHRASES} phrases"
+            )
+        if len(set(self.wake_phrases)) != len(self.wake_phrases):
+            raise ValueError("capabilities.wake_phrases must be unique")
+        for name, seconds in (
+            ("wake_listen_seconds", self.wake_listen_seconds),
+            ("wake_followup_seconds", self.wake_followup_seconds),
+        ):
+            if seconds is not None and (
+                isinstance(seconds, bool)
+                or not isinstance(seconds, (int, float))
+                or not math.isfinite(seconds)
+                or seconds <= 0
+            ):
+                raise ValueError(f"capabilities.{name} must be positive and finite")
 
     def to_dict(self) -> dict[str, object]:
-        return {
+        data: dict[str, object] = {
             "actions": list(self.actions),
             "features": list(self.features),
         }
+        if self.wake_phrases:
+            data["wake_phrases"] = list(self.wake_phrases)
+        if self.wake_listen_seconds is not None:
+            data["wake_listen_seconds"] = self.wake_listen_seconds
+        if self.wake_followup_seconds is not None:
+            data["wake_followup_seconds"] = self.wake_followup_seconds
+        return data
 
 
 @dataclass(frozen=True, slots=True)

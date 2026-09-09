@@ -15,8 +15,8 @@ var _started, _prev, _next, _commit_callbacks, _discard_callbacks, _pending, _bl
   if (relList && relList.supports && relList.supports("modulepreload")) {
     return;
   }
-  for (const link of document.querySelectorAll('link[rel="modulepreload"]')) {
-    processPreload(link);
+  for (const link2 of document.querySelectorAll('link[rel="modulepreload"]')) {
+    processPreload(link2);
   }
   new MutationObserver((mutations) => {
     for (const mutation of mutations) {
@@ -29,22 +29,22 @@ var _started, _prev, _next, _commit_callbacks, _discard_callbacks, _pending, _bl
       }
     }
   }).observe(document, { childList: true, subtree: true });
-  function getFetchOpts(link) {
+  function getFetchOpts(link2) {
     const fetchOpts = {};
-    if (link.integrity) fetchOpts.integrity = link.integrity;
-    if (link.referrerPolicy) fetchOpts.referrerPolicy = link.referrerPolicy;
-    if (link.crossOrigin === "use-credentials")
+    if (link2.integrity) fetchOpts.integrity = link2.integrity;
+    if (link2.referrerPolicy) fetchOpts.referrerPolicy = link2.referrerPolicy;
+    if (link2.crossOrigin === "use-credentials")
       fetchOpts.credentials = "include";
-    else if (link.crossOrigin === "anonymous") fetchOpts.credentials = "omit";
+    else if (link2.crossOrigin === "anonymous") fetchOpts.credentials = "omit";
     else fetchOpts.credentials = "same-origin";
     return fetchOpts;
   }
-  function processPreload(link) {
-    if (link.ep)
+  function processPreload(link2) {
+    if (link2.ep)
       return;
-    link.ep = true;
-    const fetchOpts = getFetchOpts(link);
-    fetch(link.href, fetchOpts);
+    link2.ep = true;
+    const fetchOpts = getFetchOpts(link2);
+    fetch(link2.href, fetchOpts);
   }
 })();
 const DEV = false;
@@ -100,6 +100,7 @@ const EAGER_EFFECT = 1 << 17;
 const HEAD_EFFECT = 1 << 18;
 const EFFECT_PRESERVED = 1 << 19;
 const USER_EFFECT = 1 << 20;
+const EFFECT_OFFSCREEN = 1 << 25;
 const WAS_MARKED = 1 << 16;
 const REACTION_IS_UPDATING = 1 << 21;
 const ASYNC = 1 << 22;
@@ -119,6 +120,9 @@ const STALE_REACTION = new class StaleReactionError extends Error {
     __publicField(this, "message", "The reaction that called `getAbortSignal()` was re-run or destroyed");
   }
 }();
+const EACH_ITEM_REACTIVE = 1;
+const EACH_INDEX_REACTIVE = 1 << 1;
+const EACH_ITEM_IMMUTABLE = 1 << 4;
 const PROPS_IS_RUNES = 1 << 1;
 const PROPS_IS_UPDATED = 1 << 2;
 const PROPS_IS_BINDABLE = 1 << 3;
@@ -155,6 +159,11 @@ function async_derived_orphan() {
     throw new Error(`https://svelte.dev/e/async_derived_orphan`);
   }
 }
+function each_key_duplicate(a, b, value) {
+  {
+    throw new Error(`https://svelte.dev/e/each_key_duplicate`);
+  }
+}
 function effect_in_teardown(rune) {
   {
     throw new Error(`https://svelte.dev/e/effect_in_teardown`);
@@ -173,6 +182,11 @@ function effect_orphan(rune) {
 function effect_update_depth_exceeded() {
   {
     throw new Error(`https://svelte.dev/e/effect_update_depth_exceeded`);
+  }
+}
+function lifecycle_legacy_only(name) {
+  {
+    throw new Error(`https://svelte.dev/e/lifecycle_legacy_only`);
   }
 }
 function props_invalid_value(key) {
@@ -1415,6 +1429,13 @@ function mutable_source(initial_value, immutable = false, trackable = true) {
   }
   return s;
 }
+function mutate(source2, value) {
+  set(
+    source2,
+    untrack(() => get(source2))
+  );
+  return value;
+}
 function set(source2, value, should_proxy = false) {
   if (active_reaction !== null && // since we are untracking the function inside `$inspect.with` we need to add this check
   // to ensure we error if state is set inside an inspect effect
@@ -1788,6 +1809,9 @@ function sibling(node, count = 1, is_text = false) {
   {
     return next_sibling;
   }
+}
+function clear_text_content(node) {
+  node.textContent = "";
 }
 function should_defer_append() {
   return false;
@@ -2413,13 +2437,13 @@ function update_dependencies(reaction) {
 function remove_reaction(signal, dependency) {
   let reactions = dependency.reactions;
   if (reactions !== null) {
-    var index = index_of.call(reactions, signal);
-    if (index !== -1) {
+    var index2 = index_of.call(reactions, signal);
+    if (index2 !== -1) {
       var new_length = reactions.length - 1;
       if (new_length === 0) {
         reactions = dependency.reactions = null;
       } else {
-        reactions[index] = reactions[new_length];
+        reactions[index2] = reactions[new_length];
         reactions.pop();
       }
     }
@@ -3582,6 +3606,435 @@ function if_block(node, fn, elseif = false) {
     }
   }, flags2);
 }
+function index(_, i) {
+  return i;
+}
+function pause_effects(state2, to_destroy, controlled_anchor) {
+  var transitions = [];
+  var length = to_destroy.length;
+  var group;
+  var remaining = to_destroy.length;
+  for (var i = 0; i < length; i++) {
+    let effect2 = to_destroy[i];
+    pause_effect(
+      effect2,
+      () => {
+        if (group) {
+          group.pending.delete(effect2);
+          group.done.add(effect2);
+          if (group.pending.size === 0) {
+            var groups = (
+              /** @type {Set<EachOutroGroup>} */
+              state2.outrogroups
+            );
+            destroy_effects(state2, array_from(group.done));
+            groups.delete(group);
+            if (groups.size === 0) {
+              state2.outrogroups = null;
+            }
+          }
+        } else {
+          remaining -= 1;
+        }
+      },
+      false
+    );
+  }
+  if (remaining === 0) {
+    var fast_path = transitions.length === 0 && controlled_anchor !== null && state2.pending.size === 0;
+    if (fast_path) {
+      var anchor = (
+        /** @type {Element} */
+        controlled_anchor
+      );
+      var parent_node = (
+        /** @type {Element} */
+        anchor.parentNode
+      );
+      clear_text_content(parent_node);
+      parent_node.append(anchor);
+      state2.items.clear();
+    }
+    destroy_effects(state2, to_destroy, !fast_path);
+  } else {
+    group = {
+      pending: new Set(to_destroy),
+      done: /* @__PURE__ */ new Set()
+    };
+    (state2.outrogroups ?? (state2.outrogroups = /* @__PURE__ */ new Set())).add(group);
+  }
+}
+function destroy_effects(state2, to_destroy, remove_dom = true) {
+  var preserved_effects;
+  if (state2.pending.size > 0) {
+    preserved_effects = /* @__PURE__ */ new Set();
+    for (const keys of state2.pending.values()) {
+      for (const key of keys) {
+        preserved_effects.add(
+          /** @type {EachItem} */
+          state2.items.get(key).e
+        );
+      }
+    }
+  }
+  for (var i = 0; i < to_destroy.length; i++) {
+    var e = to_destroy[i];
+    if (preserved_effects == null ? void 0 : preserved_effects.has(e)) {
+      e.f |= EFFECT_OFFSCREEN;
+      const fragment = document.createDocumentFragment();
+      move_effect(e, fragment);
+    } else {
+      destroy_effect(to_destroy[i], remove_dom);
+    }
+  }
+}
+var offscreen_anchor;
+function each(node, flags2, get_collection, get_key, render_fn2, fallback_fn = null) {
+  var anchor = node;
+  var items = /* @__PURE__ */ new Map();
+  {
+    var parent_node = (
+      /** @type {Element} */
+      node
+    );
+    anchor = parent_node.appendChild(create_text());
+  }
+  var fallback = null;
+  var each_array = /* @__PURE__ */ derived_safe_equal(() => {
+    var collection = get_collection();
+    return (
+      /** @type {V[]} */
+      is_array(collection) ? collection : collection == null ? [] : array_from(collection)
+    );
+  });
+  var array;
+  var pending = /* @__PURE__ */ new Map();
+  var first_run = true;
+  function commit(batch) {
+    if ((state2.effect.f & DESTROYED) !== 0) {
+      return;
+    }
+    state2.pending.delete(batch);
+    state2.fallback = fallback;
+    reconcile(state2, array, anchor, flags2, get_key);
+    if (fallback !== null) {
+      if (array.length === 0) {
+        if ((fallback.f & EFFECT_OFFSCREEN) === 0) {
+          resume_effect(fallback);
+        } else {
+          fallback.f ^= EFFECT_OFFSCREEN;
+          move(fallback, null, anchor);
+        }
+      } else {
+        pause_effect(fallback, () => {
+          fallback = null;
+        });
+      }
+    }
+  }
+  function discard(batch) {
+    state2.pending.delete(batch);
+  }
+  var effect2 = block(() => {
+    array = /** @type {V[]} */
+    get(each_array);
+    var length = array.length;
+    var keys = /* @__PURE__ */ new Set();
+    var batch = (
+      /** @type {Batch} */
+      current_batch
+    );
+    var defer = should_defer_append();
+    for (var index2 = 0; index2 < length; index2 += 1) {
+      var value = array[index2];
+      var key = get_key(value, index2);
+      var item = first_run ? null : items.get(key);
+      if (item) {
+        if (item.v) internal_set(item.v, value);
+        if (item.i) internal_set(item.i, index2);
+        if (defer) {
+          batch.unskip_effect(item.e);
+        }
+      } else {
+        item = create_item(
+          items,
+          first_run ? anchor : offscreen_anchor ?? (offscreen_anchor = create_text()),
+          value,
+          key,
+          index2,
+          render_fn2,
+          flags2,
+          get_collection
+        );
+        if (!first_run) {
+          item.e.f |= EFFECT_OFFSCREEN;
+        }
+        items.set(key, item);
+      }
+      keys.add(key);
+    }
+    if (length === 0 && fallback_fn && !fallback) {
+      if (first_run) {
+        fallback = branch(() => fallback_fn(anchor));
+      } else {
+        fallback = branch(() => fallback_fn(offscreen_anchor ?? (offscreen_anchor = create_text())));
+        fallback.f |= EFFECT_OFFSCREEN;
+      }
+    }
+    if (length > keys.size) {
+      {
+        each_key_duplicate();
+      }
+    }
+    if (!first_run) {
+      pending.set(batch, keys);
+      if (defer) {
+        for (const [key2, item2] of items) {
+          if (!keys.has(key2)) {
+            batch.skip_effect(item2.e);
+          }
+        }
+        batch.oncommit(commit);
+        batch.ondiscard(discard);
+      } else {
+        commit(batch);
+      }
+    }
+    get(each_array);
+  });
+  var state2 = { effect: effect2, items, pending, outrogroups: null, fallback };
+  first_run = false;
+}
+function skip_to_branch(effect2) {
+  while (effect2 !== null && (effect2.f & BRANCH_EFFECT) === 0) {
+    effect2 = effect2.next;
+  }
+  return effect2;
+}
+function reconcile(state2, array, anchor, flags2, get_key) {
+  var _a2;
+  var length = array.length;
+  var items = state2.items;
+  var current = skip_to_branch(state2.effect.first);
+  var seen;
+  var prev = null;
+  var matched = [];
+  var stashed = [];
+  var value;
+  var key;
+  var effect2;
+  var i;
+  for (i = 0; i < length; i += 1) {
+    value = array[i];
+    key = get_key(value, i);
+    effect2 = /** @type {EachItem} */
+    items.get(key).e;
+    if (state2.outrogroups !== null) {
+      for (const group of state2.outrogroups) {
+        group.pending.delete(effect2);
+        group.done.delete(effect2);
+      }
+    }
+    if ((effect2.f & INERT) !== 0) {
+      resume_effect(effect2);
+    }
+    if ((effect2.f & EFFECT_OFFSCREEN) !== 0) {
+      effect2.f ^= EFFECT_OFFSCREEN;
+      if (effect2 === current) {
+        move(effect2, null, anchor);
+      } else {
+        var next = prev ? prev.next : current;
+        if (effect2 === state2.effect.last) {
+          state2.effect.last = effect2.prev;
+        }
+        if (effect2.prev) effect2.prev.next = effect2.next;
+        if (effect2.next) effect2.next.prev = effect2.prev;
+        link(state2, prev, effect2);
+        link(state2, effect2, next);
+        move(effect2, next, anchor);
+        prev = effect2;
+        matched = [];
+        stashed = [];
+        current = skip_to_branch(prev.next);
+        continue;
+      }
+    }
+    if (effect2 !== current) {
+      if (seen !== void 0 && seen.has(effect2)) {
+        if (matched.length < stashed.length) {
+          var start = stashed[0];
+          var j;
+          prev = start.prev;
+          var a = matched[0];
+          var b = matched[matched.length - 1];
+          for (j = 0; j < matched.length; j += 1) {
+            move(matched[j], start, anchor);
+          }
+          for (j = 0; j < stashed.length; j += 1) {
+            seen.delete(stashed[j]);
+          }
+          link(state2, a.prev, b.next);
+          link(state2, prev, a);
+          link(state2, b, start);
+          current = start;
+          prev = b;
+          i -= 1;
+          matched = [];
+          stashed = [];
+        } else {
+          seen.delete(effect2);
+          move(effect2, current, anchor);
+          link(state2, effect2.prev, effect2.next);
+          link(state2, effect2, prev === null ? state2.effect.first : prev.next);
+          link(state2, prev, effect2);
+          prev = effect2;
+        }
+        continue;
+      }
+      matched = [];
+      stashed = [];
+      while (current !== null && current !== effect2) {
+        (seen ?? (seen = /* @__PURE__ */ new Set())).add(current);
+        stashed.push(current);
+        current = skip_to_branch(current.next);
+      }
+      if (current === null) {
+        continue;
+      }
+    }
+    if ((effect2.f & EFFECT_OFFSCREEN) === 0) {
+      matched.push(effect2);
+    }
+    prev = effect2;
+    current = skip_to_branch(effect2.next);
+  }
+  if (state2.outrogroups !== null) {
+    for (const group of state2.outrogroups) {
+      if (group.pending.size === 0) {
+        destroy_effects(state2, array_from(group.done));
+        (_a2 = state2.outrogroups) == null ? void 0 : _a2.delete(group);
+      }
+    }
+    if (state2.outrogroups.size === 0) {
+      state2.outrogroups = null;
+    }
+  }
+  if (current !== null || seen !== void 0) {
+    var to_destroy = [];
+    if (seen !== void 0) {
+      for (effect2 of seen) {
+        if ((effect2.f & INERT) === 0) {
+          to_destroy.push(effect2);
+        }
+      }
+    }
+    while (current !== null) {
+      if ((current.f & INERT) === 0 && current !== state2.fallback) {
+        to_destroy.push(current);
+      }
+      current = skip_to_branch(current.next);
+    }
+    var destroy_length = to_destroy.length;
+    if (destroy_length > 0) {
+      var controlled_anchor = length === 0 ? anchor : null;
+      pause_effects(state2, to_destroy, controlled_anchor);
+    }
+  }
+}
+function create_item(items, anchor, value, key, index2, render_fn2, flags2, get_collection) {
+  var v = (flags2 & EACH_ITEM_REACTIVE) !== 0 ? (flags2 & EACH_ITEM_IMMUTABLE) === 0 ? /* @__PURE__ */ mutable_source(value, false, false) : source(value) : null;
+  var i = (flags2 & EACH_INDEX_REACTIVE) !== 0 ? source(index2) : null;
+  return {
+    v,
+    i,
+    e: branch(() => {
+      render_fn2(anchor, v ?? value, i ?? index2, get_collection);
+      return () => {
+        items.delete(key);
+      };
+    })
+  };
+}
+function move(effect2, next, anchor) {
+  if (!effect2.nodes) return;
+  var node = effect2.nodes.start;
+  var end = effect2.nodes.end;
+  var dest = next && (next.f & EFFECT_OFFSCREEN) === 0 ? (
+    /** @type {EffectNodes} */
+    next.nodes.start
+  ) : anchor;
+  while (node !== null) {
+    var next_node = (
+      /** @type {TemplateNode} */
+      /* @__PURE__ */ get_next_sibling(node)
+    );
+    dest.before(node);
+    if (node === end) {
+      return;
+    }
+    node = next_node;
+  }
+}
+function link(state2, prev, next) {
+  if (prev === null) {
+    state2.effect.first = next;
+  } else {
+    prev.next = next;
+  }
+  if (next === null) {
+    state2.effect.last = prev;
+  } else {
+    next.prev = prev;
+  }
+}
+const whitespace = [..." 	\n\r\f \v\uFEFF"];
+function to_class(value, hash, directives) {
+  var classname = value == null ? "" : "" + value;
+  if (directives) {
+    for (var key of Object.keys(directives)) {
+      if (directives[key]) {
+        classname = classname ? classname + " " + key : key;
+      } else if (classname.length) {
+        var len = key.length;
+        var a = 0;
+        while ((a = classname.indexOf(key, a)) >= 0) {
+          var b = a + len;
+          if ((a === 0 || whitespace.includes(classname[a - 1])) && (b === classname.length || whitespace.includes(classname[b]))) {
+            classname = (a === 0 ? "" : classname.substring(0, a)) + classname.substring(b + 1);
+          } else {
+            a = b;
+          }
+        }
+      }
+    }
+  }
+  return classname === "" ? null : classname;
+}
+function set_class(dom, is_html, value, hash, prev_classes, next_classes) {
+  var prev = (
+    /** @type {any} */
+    dom[CLASS_CACHE]
+  );
+  if (prev !== value || prev === void 0) {
+    var next_class_name = to_class(value, hash, next_classes);
+    {
+      if (next_class_name == null) {
+        dom.removeAttribute("class");
+      } else {
+        dom.className = next_class_name;
+      }
+    }
+    dom[CLASS_CACHE] = value;
+  } else if (next_classes && prev_classes !== next_classes) {
+    for (var key in next_classes) {
+      var is_present = !!next_classes[key];
+      if (prev_classes == null || is_present !== !!prev_classes[key]) {
+        dom.classList.toggle(key, is_present);
+      }
+    }
+  }
+  return next_classes;
+}
 const IS_CUSTOM_ELEMENT = Symbol("is custom element");
 const IS_HTML = Symbol("is html");
 function set_attribute(element, attribute, value, skip_warning) {
@@ -3856,6 +4309,21 @@ function onMount(fn) {
     });
   }
 }
+function onDestroy(fn) {
+  if (component_context === null) {
+    lifecycle_outside_component();
+  }
+  onMount(() => () => untrack(fn));
+}
+function afterUpdate(fn) {
+  if (component_context === null) {
+    lifecycle_outside_component();
+  }
+  if (component_context.l === null) {
+    lifecycle_legacy_only();
+  }
+  init_update_callbacks(component_context).a.push(fn);
+}
 function init_update_callbacks(context) {
   var l = (
     /** @type {ComponentContextLegacy} */
@@ -3868,6 +4336,212 @@ if (typeof window !== "undefined") {
   ((_b = window.__svelte ?? (window.__svelte = {})).v ?? (_b.v = /* @__PURE__ */ new Set())).add(PUBLIC_VERSION);
 }
 enable_legacy_mode_flag();
+var root$2 = /* @__PURE__ */ from_html(`<p class="account-label"> </p>`);
+var root_1$2 = /* @__PURE__ */ from_html(`<span class="working-dot" data-working-dot="" aria-hidden="true"></span>`);
+var root_2$1 = /* @__PURE__ */ from_html(`<p class="status-text"> <!></p>`);
+var root_3$1 = /* @__PURE__ */ from_html(`<li> </li>`);
+var root_4$1 = /* @__PURE__ */ from_html(`<section class="prompt-summary"><h2> </h2> <p> </p> <ul></ul></section>`);
+var root_5$1 = /* @__PURE__ */ from_html(`<main aria-atomic="true"><div class="ambient-canvas" aria-hidden="true"></div> <section class="state-overlay"><p class="state-label"> </p> <!> <!> <div data-response-viewport=""><p class="response-text" data-response-text=""> </p></div> <!></section></main>`);
+function StateSurface($$anchor, $$props) {
+  push($$props, false);
+  const displayState = /* @__PURE__ */ mutable_source();
+  const status = /* @__PURE__ */ mutable_source();
+  const showResponse = /* @__PURE__ */ mutable_source();
+  const working = /* @__PURE__ */ mutable_source();
+  let snapshot = prop($$props, "snapshot", 8);
+  let connectionState = prop($$props, "connectionState", 8);
+  let protocolError = prop($$props, "protocolError", 8, null);
+  let accessibleOnly = prop($$props, "accessibleOnly", 8, false);
+  const labels = {
+    idle: "Ready",
+    heard: "Heard you",
+    listening: "Listening",
+    thinking: "Thinking",
+    speaking: "Speaking",
+    buffering: "Buffering",
+    error: "Error",
+    disconnected: "Disconnected",
+    prompt: "Prompt"
+  };
+  const fallbackStatus = {
+    buffering: "Still working — please wait",
+    error: "Something needs attention — try again",
+    disconnected: "Display disconnected — check the host connection"
+  };
+  let liveMode = /* @__PURE__ */ mutable_source();
+  let responseViewport = /* @__PURE__ */ mutable_source();
+  let showingResponse = false;
+  let previousResponse = "";
+  let lastTargetScroll = 0;
+  function prefersReducedMotion() {
+    if (typeof window === "undefined" || typeof window.matchMedia !== "function") {
+      return false;
+    }
+    return window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  }
+  function resetResponseScroll() {
+    if (get(responseViewport)) {
+      if (typeof get(responseViewport).scrollTo === "function") {
+        get(responseViewport).scrollTo({ top: 0, behavior: "instant" });
+      } else {
+        mutate(responseViewport, get(responseViewport).scrollTop = 0);
+      }
+      lastTargetScroll = 0;
+    }
+  }
+  function keepResponseInView() {
+    if (!get(showResponse) || !get(responseViewport)) return;
+    const maxScroll = get(responseViewport).scrollHeight - get(responseViewport).clientHeight;
+    if (maxScroll <= 0) {
+      if (get(responseViewport).scrollTop !== 0) {
+        resetResponseScroll();
+      }
+      lastTargetScroll = 0;
+      return;
+    }
+    if (maxScroll !== lastTargetScroll) {
+      lastTargetScroll = maxScroll;
+      const behavior = prefersReducedMotion() ? "instant" : "smooth";
+      if (typeof get(responseViewport).scrollTo === "function") {
+        get(responseViewport).scrollTo({ top: maxScroll, behavior });
+      } else {
+        mutate(responseViewport, get(responseViewport).scrollTop = maxScroll);
+      }
+    }
+  }
+  afterUpdate(() => {
+    if (!get(showResponse)) {
+      resetResponseScroll();
+      showingResponse = false;
+      previousResponse = "";
+      return;
+    }
+    const newResponse = !showingResponse || snapshot().response_text.length < previousResponse.length || !snapshot().response_text.startsWith(previousResponse);
+    if (newResponse) {
+      resetResponseScroll();
+    }
+    showingResponse = true;
+    previousResponse = snapshot().response_text;
+    keepResponseInView();
+  });
+  onDestroy(resetResponseScroll);
+  legacy_pre_effect(
+    () => (deep_read_state(protocolError()), deep_read_state(connectionState()), deep_read_state(snapshot())),
+    () => {
+      set(displayState, protocolError() !== null ? "error" : connectionState() === "connected" ? snapshot().state : "disconnected");
+    }
+  );
+  legacy_pre_effect(
+    () => (deep_read_state(protocolError()), deep_read_state(snapshot()), get(displayState)),
+    () => {
+      set(status, protocolError() ?? snapshot().status_text ?? fallbackStatus[get(displayState)] ?? null);
+    }
+  );
+  legacy_pre_effect(
+    () => (deep_read_state(protocolError()), deep_read_state(snapshot()), get(displayState)),
+    () => {
+      set(showResponse, protocolError() === null && snapshot().response_text.length > 0 && (get(displayState) === "speaking" || get(displayState) === "idle"));
+    }
+  );
+  legacy_pre_effect(() => get(displayState), () => {
+    set(liveMode, get(displayState) === "speaking" ? "off" : "polite");
+  });
+  legacy_pre_effect(() => get(displayState), () => {
+    set(working, get(displayState) === "thinking" || get(displayState) === "buffering");
+  });
+  legacy_pre_effect_reset();
+  init();
+  var main = root_5$1();
+  let classes;
+  var section = sibling(child(main), 2);
+  var p = child(section);
+  var text = only_child(p, true);
+  var node = sibling(p, 2);
+  {
+    var consequent = ($$anchor2) => {
+      var p_1 = root$2();
+      var text_1 = only_child(p_1);
+      template_effect(() => set_text(text_1, `Profile: ${(deep_read_state(snapshot()), untrack(() => snapshot().account)) ?? ""}`));
+      append($$anchor2, p_1);
+    };
+    if_block(node, ($$render) => {
+      if (deep_read_state(snapshot()), untrack(() => snapshot().account)) $$render(consequent);
+    });
+  }
+  var node_1 = sibling(node, 2);
+  {
+    var consequent_2 = ($$anchor2) => {
+      var p_2 = root_2$1();
+      var text_2 = child(p_2);
+      var node_2 = sibling(text_2);
+      {
+        var consequent_1 = ($$anchor3) => {
+          var span = root_1$2();
+          append($$anchor3, span);
+        };
+        if_block(node_2, ($$render) => {
+          if (get(working)) $$render(consequent_1);
+        });
+      }
+      template_effect(() => set_text(text_2, get(status)));
+      append($$anchor2, p_2);
+    };
+    if_block(node_1, ($$render) => {
+      if (get(status)) $$render(consequent_2);
+    });
+  }
+  var div = sibling(node_1, 2);
+  let classes_1;
+  var p_3 = child(div);
+  var text_3 = only_child(p_3, true);
+  bind_this(div, ($$value) => set(responseViewport, $$value), () => get(responseViewport));
+  var node_3 = sibling(div, 2);
+  {
+    var consequent_3 = ($$anchor2) => {
+      var section_1 = root_4$1();
+      var h2 = child(section_1);
+      var text_4 = only_child(h2, true);
+      var p_4 = sibling(h2, 2);
+      var text_5 = only_child(p_4, true);
+      var ul = sibling(p_4, 2);
+      each(
+        ul,
+        5,
+        () => (deep_read_state(snapshot()), untrack(() => snapshot().prompt.options)),
+        index,
+        ($$anchor3, option) => {
+          var li = root_3$1();
+          var text_6 = only_child(li, true);
+          template_effect(() => set_text(text_6, (get(option), untrack(() => get(option).label))));
+          append($$anchor3, li);
+        }
+      );
+      template_effect(() => {
+        set_attribute(section_1, "aria-label", (deep_read_state(snapshot()), untrack(() => snapshot().prompt.title)));
+        set_text(text_4, (deep_read_state(snapshot()), untrack(() => snapshot().prompt.title)));
+        set_text(text_5, (deep_read_state(snapshot()), untrack(() => snapshot().prompt.body)));
+      });
+      append($$anchor2, section_1);
+    };
+    if_block(node_3, ($$render) => {
+      if (get(displayState), deep_read_state(snapshot()), untrack(() => get(displayState) === "prompt" && snapshot().prompt)) $$render(consequent_3);
+    });
+  }
+  template_effect(() => {
+    classes = set_class(main, 1, "state-surface", null, classes, {
+      "has-response": get(showResponse),
+      "accessible-only": accessibleOnly()
+    });
+    set_attribute(main, "data-state", get(displayState));
+    set_attribute(main, "aria-live", get(liveMode));
+    set_attribute(section, "aria-label", (get(displayState), untrack(() => labels[get(displayState)])));
+    set_text(text, (get(displayState), untrack(() => labels[get(displayState)])));
+    classes_1 = set_class(div, 1, "response-viewport", null, classes_1, { visible: get(showResponse) });
+    set_text(text_3, (get(showResponse), deep_read_state(snapshot()), untrack(() => get(showResponse) ? snapshot().response_text : "")));
+  });
+  append($$anchor, main);
+  pop();
+}
 const DISPLAY_WIDTH = 1024;
 const DISPLAY_HEIGHT = 600;
 const defaultImageDataFactory = (data, width, height) => new ImageData(data, width, height);
@@ -4071,7 +4745,7 @@ class CanvasDisplayHost {
   }
 }
 var root$1 = /* @__PURE__ */ from_html(`<div class="wasm-canvas-error" data-canvas-error="" role="alert"> </div>`);
-var root_1$1 = /* @__PURE__ */ from_html(`<main class="wasm-canvas-shell"><canvas class="wasm-display-canvas" data-display-canvas="" aria-label="Hermes home display"></canvas> <!></main>`);
+var root_1$1 = /* @__PURE__ */ from_html(`<main class="wasm-canvas-shell"><canvas class="wasm-display-canvas" data-display-canvas="" aria-label="Hermes home display" aria-hidden="true"></canvas> <!></main>`);
 function WasmCanvas($$anchor, $$props) {
   push($$props, false);
   const visibleError = /* @__PURE__ */ mutable_source();
@@ -4189,7 +4863,35 @@ function parseCapabilities(raw) {
     }
     parsedFeatures.push(feature);
   }
-  return { actions: parsedActions, features: parsedFeatures };
+  let wakePhrases;
+  if (raw.wake_phrases !== void 0) {
+    if (!Array.isArray(raw.wake_phrases) || raw.wake_phrases.length > 8) return null;
+    wakePhrases = [];
+    for (const phrase of raw.wake_phrases) {
+      if (typeof phrase !== "string" || !phrase.trim() || phrase.length > 128 || wakePhrases.some((existing) => existing === phrase)) {
+        return null;
+      }
+      wakePhrases.push(phrase);
+    }
+  }
+  const parseSeconds = (value) => {
+    if (value === void 0) return void 0;
+    if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) return null;
+    return value;
+  };
+  const wakeListenSeconds = parseSeconds(raw.wake_listen_seconds);
+  const wakeFollowupSeconds = parseSeconds(raw.wake_followup_seconds);
+  if (wakeListenSeconds === null || wakeFollowupSeconds === null) return null;
+  const capabilities = {
+    actions: parsedActions,
+    features: parsedFeatures
+  };
+  if (wakePhrases !== void 0) capabilities.wake_phrases = wakePhrases;
+  if (wakeListenSeconds !== void 0) capabilities.wake_listen_seconds = wakeListenSeconds;
+  if (wakeFollowupSeconds !== void 0) {
+    capabilities.wake_followup_seconds = wakeFollowupSeconds;
+  }
+  return capabilities;
 }
 function parseSnapshot(raw) {
   if (!isRecord(raw)) {
@@ -4359,7 +5061,7 @@ class StateChannel {
   }
   sendVoiceTurn(text) {
     const normalized = text.trim();
-    if (!this.socketOpen || !this.socket || !normalized || normalized.length > 4e3) {
+    if (!this.socketOpen || !this.hasHydratedSocket || !this.socket || !normalized || normalized.length > 4e3) {
       return false;
     }
     if (typeof this.socket.send !== "function") {
@@ -4777,11 +5479,11 @@ class WasmDisplayReducer {
   applySnapshot(snapshot) {
     var _a2, _b2;
     const prompt = snapshot.prompt;
-    const options = [0, 1, 2, 3].flatMap((index) => {
+    const options = [0, 1, 2, 3].flatMap((index2) => {
       var _a3, _b3;
       return [
-        ((_a3 = prompt == null ? void 0 : prompt.options[index]) == null ? void 0 : _a3.id) ?? "",
-        ((_b3 = prompt == null ? void 0 : prompt.options[index]) == null ? void 0 : _b3.label) ?? ""
+        ((_a3 = prompt == null ? void 0 : prompt.options[index2]) == null ? void 0 : _a3.id) ?? "",
+        ((_b3 = prompt == null ? void 0 : prompt.options[index2]) == null ? void 0 : _b3.label) ?? ""
       ];
     });
     const result = this.applySnapshotC(
@@ -4953,6 +5655,7 @@ class BrowserVoiceController {
       recognition.onresult = (event2) => this.handleResult(event2);
       recognition.onerror = () => this.fail();
       recognition.onend = () => {
+        if (this.recognition === recognition) this.recognition = null;
         if (!this.submitting) {
           this.listening = false;
           this.emit("idle");
@@ -4971,23 +5674,21 @@ class BrowserVoiceController {
   stop() {
     if (!this.listening || this.recognition === null) return;
     this.listening = false;
-    try {
-      this.recognition.stop();
-    } catch {
-    }
+    this.stopRecognition();
     if (!this.submitting) this.emit("idle");
   }
   reset() {
+    this.stopRecognition();
     this.listening = false;
     this.submitting = false;
     this.emit("idle");
   }
   handleResult(event2) {
-    var _a2, _b2, _c;
+    var _a2, _b2;
     if (!this.listening) return;
     const finalText = [];
-    for (let index = event2.resultIndex; index < event2.results.length; index += 1) {
-      const result = event2.results[index];
+    for (let index2 = event2.resultIndex; index2 < event2.results.length; index2 += 1) {
+      const result = event2.results[index2];
       if (result == null ? void 0 : result.isFinal) {
         const transcript = (_b2 = (_a2 = result[0]) == null ? void 0 : _a2.transcript) == null ? void 0 : _b2.trim();
         if (transcript) finalText.push(transcript);
@@ -4998,23 +5699,380 @@ class BrowserVoiceController {
     this.listening = false;
     this.submitting = true;
     this.emit("submitting");
+    this.stopRecognition();
+    let sendResult;
     try {
-      (_c = this.recognition) == null ? void 0 : _c.stop();
+      sendResult = this.sendText(text);
     } catch {
+      this.fail("Turn could not be sent");
+      return;
     }
-    Promise.resolve(this.sendText(text)).then((sent) => {
+    Promise.resolve(sendResult).then((sent) => {
       if (!sent) this.fail("Turn could not be sent");
     }).catch(() => this.fail("Turn could not be sent"));
   }
   fail(message = "Microphone or speech recognition is unavailable") {
+    this.stopRecognition();
     this.listening = false;
     this.submitting = false;
     this.emit("error");
     this.onError(message);
   }
+  stopRecognition() {
+    const recognition = this.recognition;
+    this.recognition = null;
+    if (recognition === null) return;
+    recognition.onresult = null;
+    recognition.onerror = null;
+    recognition.onend = null;
+    try {
+      recognition.stop();
+    } catch {
+    }
+  }
   emit(state2) {
     this.onState(state2);
   }
+}
+const DEFAULT_HANDS_FREE_SECONDS = 8;
+const MAX_HANDS_FREE_TIMER_SECONDS = 2147483647e-3;
+function normaliseSpeech(text) {
+  return text.trim().replace(/\s+/g, " ");
+}
+function isLocalStopCommand(text) {
+  return normaliseSpeech(text).replace(/[.,!?;:…]+$/g, "").trim().toLocaleLowerCase() === "stop";
+}
+function wakeRemainder(text, wakePhrases) {
+  const source2 = normaliseSpeech(text);
+  const lowerSource = source2.toLocaleLowerCase();
+  const phrases = wakePhrases.map(normaliseSpeech).filter(Boolean).sort((left, right) => right.length - left.length);
+  for (const phrase of phrases) {
+    const lowerPhrase = phrase.toLocaleLowerCase();
+    if (lowerSource !== lowerPhrase && !lowerSource.startsWith(lowerPhrase)) continue;
+    const next = lowerSource[lowerPhrase.length];
+    if (next !== void 0 && !/^[\s,.:;!?;…-]$/.test(next)) continue;
+    return normaliseSpeech(source2.slice(lowerPhrase.length).replace(/^[\s,.:;!?…-]+/, ""));
+  }
+  return null;
+}
+function finalRecognitionText(event2) {
+  var _a2;
+  const parts = [];
+  for (let index2 = event2.resultIndex; index2 < event2.results.length; index2 += 1) {
+    const result = event2.results[index2];
+    if (!(result == null ? void 0 : result.isFinal)) continue;
+    const transcript = (_a2 = result[0]) == null ? void 0 : _a2.transcript;
+    if (transcript) parts.push(transcript);
+  }
+  return normaliseSpeech(parts.join(" "));
+}
+class BrowserHandsFreeController {
+  constructor(options) {
+    __publicField(this, "sendText");
+    __publicField(this, "wakePhrases");
+    __publicField(this, "wakeListenSeconds");
+    __publicField(this, "followUpSeconds");
+    __publicField(this, "onState");
+    __publicField(this, "onError");
+    __publicField(this, "recognitionFactory");
+    __publicField(this, "language");
+    __publicField(this, "phase", "off");
+    __publicField(this, "armed", false);
+    __publicField(this, "generation", 0);
+    __publicField(this, "recognition", null);
+    __publicField(this, "captureTimer", null);
+    __publicField(this, "heardTimer", null);
+    __publicField(this, "restartTimer", null);
+    __publicField(this, "followUpEligible", false);
+    __publicField(this, "turnInFlight", false);
+    this.sendText = options.sendText;
+    this.wakePhrases = options.wakePhrases.map(normaliseSpeech).filter(Boolean);
+    this.wakeListenSeconds = positiveSeconds(options.wakeListenSeconds);
+    this.followUpSeconds = positiveSeconds(options.followUpSeconds);
+    this.onState = options.onState ?? (() => {
+    });
+    this.onError = options.onError ?? (() => {
+    });
+    this.recognitionFactory = options.recognitionFactory ?? defaultRecognitionFactory;
+    this.language = options.language ?? "en-US";
+  }
+  configure(options) {
+    const wakePhrases = options.wakePhrases.map(normaliseSpeech).filter(Boolean);
+    const wakeListenSeconds = positiveSeconds(options.wakeListenSeconds);
+    const followUpSeconds = positiveSeconds(options.followUpSeconds);
+    if (this.armed) {
+      const phrasesChanged = wakePhrases.length !== this.wakePhrases.length || wakePhrases.some((phrase, index2) => phrase !== this.wakePhrases[index2]);
+      if (phrasesChanged || wakeListenSeconds !== this.wakeListenSeconds || followUpSeconds !== this.followUpSeconds) {
+        this.abort("Display configuration changed — hands-free is off");
+      }
+      return;
+    }
+    this.wakePhrases = wakePhrases;
+    this.wakeListenSeconds = wakeListenSeconds;
+    this.followUpSeconds = followUpSeconds;
+  }
+  get isArmed() {
+    return this.armed;
+  }
+  get state() {
+    return this.stateForPhase();
+  }
+  async arm() {
+    if (this.armed) return true;
+    if (this.wakePhrases.length === 0) {
+      this.fail("No wake phrase is configured for this display");
+      return false;
+    }
+    this.generation += 1;
+    const generation = this.generation;
+    this.armed = true;
+    this.phase = "wake_ready";
+    this.followUpEligible = false;
+    this.turnInFlight = false;
+    this.emit("arming");
+    if (!this.startRecognition(generation)) {
+      this.fail("Microphone or speech recognition is unavailable");
+      return false;
+    }
+    this.emit("wake_ready");
+    return true;
+  }
+  disarm() {
+    this.generation += 1;
+    this.armed = false;
+    this.phase = "off";
+    this.followUpEligible = false;
+    this.turnInFlight = false;
+    this.clearTimers();
+    this.stopRecognition();
+    this.emit("off");
+  }
+  abort(message = "Display disconnected — hands-free is off") {
+    if (!this.armed && this.phase === "off") return;
+    this.fail(message);
+  }
+  /** Called by the display after the current response has really finished. */
+  turnFinished() {
+    if (!this.armed || !this.turnInFlight || this.phase !== "submitting") return;
+    const generation = this.generation;
+    this.turnInFlight = false;
+    this.clearCaptureTimer();
+    if (this.followUpEligible) {
+      this.followUpEligible = false;
+      this.beginFollowUp(generation);
+      return;
+    }
+    this.enterWakeReady(generation);
+  }
+  stateForPhase() {
+    switch (this.phase) {
+      case "wake_ready":
+        return "wake_ready";
+      case "heard":
+        return "heard";
+      case "initial_capture":
+        return "listening";
+      case "follow_up":
+        return "follow_up";
+      case "submitting":
+        return "submitting";
+      default:
+        return "off";
+    }
+  }
+  startRecognition(generation) {
+    if (!this.isCurrent(generation) || this.recognition !== null) return true;
+    let recognition;
+    try {
+      recognition = this.recognitionFactory();
+      recognition.continuous = true;
+      recognition.interimResults = true;
+      recognition.lang = this.language;
+    } catch {
+      return false;
+    }
+    recognition.onresult = (event2) => this.handleResult(event2, generation);
+    recognition.onerror = (event2) => {
+      var _a2;
+      if (!this.isCurrent(generation) || this.recognition !== recognition) return;
+      const code = (_a2 = event2.error) == null ? void 0 : _a2.toLocaleLowerCase();
+      if (code === "no-speech" || code === "aborted") {
+        this.scheduleRecognitionRestart(generation);
+        return;
+      }
+      this.fail("Microphone or speech recognition is unavailable");
+    };
+    recognition.onend = () => {
+      if (!this.isCurrent(generation) || this.recognition !== recognition) return;
+      this.recognition = null;
+      if (this.phase === "submitting") return;
+      this.scheduleRecognitionRestart(generation);
+    };
+    this.recognition = recognition;
+    try {
+      recognition.start();
+      return true;
+    } catch {
+      this.recognition = null;
+      return false;
+    }
+  }
+  scheduleRecognitionRestart(generation) {
+    if (!this.isCurrent(generation) || this.recognition !== null || this.restartTimer !== null || this.phase === "submitting") {
+      return;
+    }
+    this.restartTimer = setTimeout(() => {
+      this.restartTimer = null;
+      if (!this.isCurrent(generation) || this.recognition !== null) return;
+      if (!this.startRecognition(generation)) {
+        this.fail("Microphone or speech recognition is unavailable");
+      }
+    }, 50);
+  }
+  handleResult(event2, generation) {
+    if (!this.isCurrent(generation) || this.phase === "submitting") return;
+    const text = finalRecognitionText(event2);
+    if (!text) return;
+    if (this.phase === "wake_ready") {
+      const remainder = wakeRemainder(text, this.wakePhrases);
+      if (remainder === null) return;
+      if (!remainder || isLocalStopCommand(remainder)) {
+        if (remainder) this.finishCapture(generation);
+        else this.beginInitialCapture(generation);
+        return;
+      }
+      this.submit(remainder, generation);
+      return;
+    }
+    if (this.phase !== "heard" && this.phase !== "initial_capture" && this.phase !== "follow_up") return;
+    if (isLocalStopCommand(text)) {
+      this.finishCapture(generation);
+      return;
+    }
+    this.submit(text, generation);
+  }
+  beginInitialCapture(generation) {
+    if (!this.isCurrent(generation)) return;
+    this.phase = "heard";
+    this.emit("heard");
+    this.startCaptureTimer(generation, this.wakeListenSeconds);
+    this.clearHeardTimer();
+    this.heardTimer = setTimeout(() => {
+      this.heardTimer = null;
+      if (!this.isCurrent(generation) || this.phase !== "heard") return;
+      this.phase = "initial_capture";
+      this.emit("listening");
+    }, 150);
+  }
+  beginFollowUp(generation) {
+    if (!this.isCurrent(generation)) return;
+    this.phase = "follow_up";
+    this.emit("follow_up");
+    this.startCaptureTimer(generation, this.followUpSeconds);
+    if (!this.startRecognition(generation)) {
+      this.scheduleRecognitionRestart(generation);
+    }
+  }
+  enterWakeReady(generation, deferRecognition = false) {
+    if (!this.isCurrent(generation)) return;
+    this.phase = "wake_ready";
+    this.clearHeardTimer();
+    this.emit("wake_ready");
+    if (deferRecognition || !this.startRecognition(generation)) {
+      this.scheduleRecognitionRestart(generation);
+    }
+  }
+  finishCapture(generation) {
+    if (!this.isCurrent(generation)) return;
+    this.clearCaptureTimer();
+    this.stopRecognition();
+    this.enterWakeReady(generation, true);
+  }
+  startCaptureTimer(generation, seconds) {
+    this.clearCaptureTimer();
+    this.captureTimer = setTimeout(() => {
+      this.captureTimer = null;
+      if (!this.isCurrent(generation)) return;
+      this.stopRecognition();
+      this.enterWakeReady(generation, true);
+    }, Math.min(seconds, MAX_HANDS_FREE_TIMER_SECONDS) * 1e3);
+  }
+  submit(text, generation) {
+    if (!this.isCurrent(generation)) return;
+    const isFollowUp = this.phase === "follow_up";
+    this.clearCaptureTimer();
+    this.clearHeardTimer();
+    this.stopRecognition();
+    this.phase = "submitting";
+    this.followUpEligible = !isFollowUp;
+    this.turnInFlight = true;
+    this.emit("submitting");
+    let sendResult;
+    try {
+      sendResult = this.sendText(text);
+    } catch {
+      this.fail("Turn could not be sent");
+      return;
+    }
+    Promise.resolve(sendResult).then((sent) => {
+      if (!this.isCurrent(generation) || sent) return;
+      this.fail("Turn could not be sent");
+    }).catch(() => {
+      if (this.isCurrent(generation)) this.fail("Turn could not be sent");
+    });
+  }
+  fail(message) {
+    this.generation += 1;
+    this.armed = false;
+    this.phase = "off";
+    this.followUpEligible = false;
+    this.turnInFlight = false;
+    this.clearTimers();
+    this.stopRecognition();
+    this.emit("error");
+    this.onError(message);
+  }
+  clearCaptureTimer() {
+    if (this.captureTimer !== null) {
+      clearTimeout(this.captureTimer);
+      this.captureTimer = null;
+    }
+  }
+  clearHeardTimer() {
+    if (this.heardTimer !== null) {
+      clearTimeout(this.heardTimer);
+      this.heardTimer = null;
+    }
+  }
+  clearTimers() {
+    this.clearCaptureTimer();
+    this.clearHeardTimer();
+    if (this.restartTimer !== null) {
+      clearTimeout(this.restartTimer);
+      this.restartTimer = null;
+    }
+  }
+  stopRecognition() {
+    const recognition = this.recognition;
+    this.recognition = null;
+    if (recognition === null) return;
+    recognition.onresult = null;
+    recognition.onerror = null;
+    recognition.onend = null;
+    try {
+      recognition.stop();
+    } catch {
+    }
+  }
+  isCurrent(generation) {
+    return this.armed && this.generation === generation;
+  }
+  emit(state2) {
+    this.onState(state2);
+  }
+}
+function positiveSeconds(value) {
+  return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : DEFAULT_HANDS_FREE_SECONDS;
 }
 function defaultAudioContextFactory() {
   const windowWithAudio = window;
@@ -5028,8 +6086,10 @@ class PcmAudioPlayer {
   constructor(options = {}) {
     __publicField(this, "audioContextFactory");
     __publicField(this, "onError");
+    __publicField(this, "onPlaybackFinished");
     __publicField(this, "context", null);
     __publicField(this, "activeTurnId", null);
+    __publicField(this, "endedTurnId", null);
     __publicField(this, "sampleRate", 0);
     __publicField(this, "channels", 0);
     __publicField(this, "nextStartAt", 0);
@@ -5037,6 +6097,11 @@ class PcmAudioPlayer {
     this.audioContextFactory = options.audioContextFactory ?? defaultAudioContextFactory;
     this.onError = options.onError ?? (() => {
     });
+    this.onPlaybackFinished = options.onPlaybackFinished ?? (() => {
+    });
+  }
+  get hasPendingPlayback() {
+    return this.sources.size > 0;
   }
   async resume() {
     try {
@@ -5087,7 +6152,10 @@ class PcmAudioPlayer {
       source2.start(startAt);
       this.nextStartAt = startAt + buffer.duration;
       this.sources.add(source2);
-      source2.onended = () => this.sources.delete(source2);
+      source2.onended = () => {
+        this.sources.delete(source2);
+        this.notifyPlaybackFinished();
+      };
     } catch {
       this.onError("Audio playback could not start");
       this.stop();
@@ -5096,6 +6164,8 @@ class PcmAudioPlayer {
   end(turnId) {
     if (this.activeTurnId === turnId) {
       this.activeTurnId = null;
+      this.endedTurnId = turnId;
+      this.notifyPlaybackFinished();
     }
   }
   abort(turnId) {
@@ -5111,7 +6181,17 @@ class PcmAudioPlayer {
     }
     this.sources.clear();
     this.activeTurnId = null;
+    this.endedTurnId = null;
     this.nextStartAt = 0;
+  }
+  notifyPlaybackFinished() {
+    if (this.endedTurnId === null || this.sources.size > 0) return;
+    const turnId = this.endedTurnId;
+    this.endedTurnId = null;
+    try {
+      this.onPlaybackFinished(turnId);
+    } catch {
+    }
   }
   ensureContext() {
     if (this.context === null) {
@@ -5120,23 +6200,44 @@ class PcmAudioPlayer {
     return this.context;
   }
 }
-var root = /* @__PURE__ */ from_html(`<p data-voice-error="" role="alert"> </p>`);
-var root_1 = /* @__PURE__ */ from_html(`<p data-voice-status="">Listening…</p>`);
-var root_2 = /* @__PURE__ */ from_html(`<p data-voice-status="">Sending…</p>`);
-var root_3 = /* @__PURE__ */ from_html(`<section class="browser-voice-controls" aria-label="Browser voice"><button type="button" data-voice-button=""> </button> <!></section>`);
-var root_4 = /* @__PURE__ */ from_html(`<!> <!>`, 1);
-var root_5 = /* @__PURE__ */ from_html(`<main class="wasm-bootstrap-shell"><p data-bootstrap-message=""> </p></main>`);
+var root = /* @__PURE__ */ from_html(`<button type="button" data-handsfree-button=""> </button>`);
+var root_1 = /* @__PURE__ */ from_html(`<p data-voice-error="" role="alert"> </p>`);
+var root_2 = /* @__PURE__ */ from_html(`<p data-voice-status="">Listening…</p>`);
+var root_3 = /* @__PURE__ */ from_html(`<p data-voice-status="">Sending…</p>`);
+var root_4 = /* @__PURE__ */ from_html(`<p data-handsfree-error="" role="alert"> </p>`);
+var root_5 = /* @__PURE__ */ from_html(`<p data-handsfree-status=""> </p>`);
+var root_6 = /* @__PURE__ */ from_html(`<p data-handsfree-status="">Heard you</p>`);
+var root_7 = /* @__PURE__ */ from_html(`<p data-handsfree-status="">Listening…</p>`);
+var root_8 = /* @__PURE__ */ from_html(`<p data-handsfree-status="">Listening for a follow-up…</p>`);
+var root_9 = /* @__PURE__ */ from_html(`<p data-handsfree-status="">Sending…</p>`);
+var root_10 = /* @__PURE__ */ from_html(`<section class="browser-voice-controls" aria-label="Browser voice"><button type="button" data-voice-button=""> </button> <!> <!> <!></section>`);
+var root_11 = /* @__PURE__ */ from_html(`<!> <!> <!>`, 1);
+var root_12 = /* @__PURE__ */ from_html(`<main class="wasm-bootstrap-shell"><p data-bootstrap-message=""> </p></main>`);
 function App($$anchor, $$props) {
   push($$props, false);
   const browserVoiceEnabled = /* @__PURE__ */ mutable_source();
+  const browserHandsFreeEnabled = /* @__PURE__ */ mutable_source();
+  const handsFreeArmed = /* @__PURE__ */ mutable_source();
+  const displayReady = /* @__PURE__ */ mutable_source();
+  const wakePhraseLabel = /* @__PURE__ */ mutable_source();
   let displayReducer = /* @__PURE__ */ mutable_source(null);
   let protocolError = /* @__PURE__ */ mutable_source(null);
   let displayView = /* @__PURE__ */ mutable_source(createInitialDisplayView());
+  let connectionState = /* @__PURE__ */ mutable_source("connecting");
   let voiceState = /* @__PURE__ */ mutable_source("idle");
   let voiceError = /* @__PURE__ */ mutable_source(null);
+  let handsFreeState = /* @__PURE__ */ mutable_source("off");
+  let handsFreeError = /* @__PURE__ */ mutable_source(null);
   let voiceController = null;
+  let handsFreeController = null;
   let audioPlayer = null;
   let dispatchAction = /* @__PURE__ */ mutable_source(async () => false);
+  let responseHasAudio = false;
+  let playbackFinished = false;
+  let pendingAudioTurnId = null;
+  function isDisplayReady() {
+    return get(protocolError) === null && get(connectionState) === "connected" && get(displayView).state === "idle" && get(displayView).connection_healthy && !get(displayView).is_busy;
+  }
   const stateChannelUrl = () => {
     const scheme = window.location.protocol === "https:" ? "wss:" : "ws:";
     return `${scheme}//${window.location.host}/state`;
@@ -5153,23 +6254,54 @@ function App($$anchor, $$props) {
           url: stateChannelUrl(),
           reducer,
           onView: (view) => {
+            var _a2, _b2, _c;
             set(displayView, view);
             set(protocolError, null);
+            handsFreeController == null ? void 0 : handsFreeController.configure({
+              wakePhrases: ((_a2 = view.capabilities) == null ? void 0 : _a2.wake_phrases) ?? [],
+              wakeListenSeconds: (_b2 = view.capabilities) == null ? void 0 : _b2.wake_listen_seconds,
+              followUpSeconds: (_c = view.capabilities) == null ? void 0 : _c.wake_followup_seconds
+            });
+            if (view.state === "prompt" || view.state !== "idle" && view.state !== "error" && view.state !== "disconnected" && (handsFreeController == null ? void 0 : handsFreeController.state) !== "submitting") {
+              handsFreeController == null ? void 0 : handsFreeController.abort("Display is busy — hands-free is off");
+            }
             if (["heard", "listening", "thinking", "error", "disconnected"].includes(view.state)) {
               audioPlayer == null ? void 0 : audioPlayer.stop();
+              responseHasAudio = false;
+              playbackFinished = false;
+              pendingAudioTurnId = null;
             }
-            if (view.state === "idle" && get(voiceState) === "submitting") {
+            if (view.state === "error") {
               voiceController == null ? void 0 : voiceController.reset();
+              handsFreeController == null ? void 0 : handsFreeController.abort(view.status_text ?? "Turn could not be completed");
+            } else if (view.state === "disconnected") {
+              handsFreeController == null ? void 0 : handsFreeController.abort("Display disconnected — hands-free is off");
+            } else if (view.state === "idle") {
+              if (get(voiceState) === "submitting") voiceController == null ? void 0 : voiceController.reset();
+              maybeCompleteHandsFreeTurn();
             }
           },
           onConnectionState: (state2) => {
+            set(connectionState, state2);
             if (state2 === "disconnected") {
               audioPlayer == null ? void 0 : audioPlayer.stop();
+              responseHasAudio = false;
+              playbackFinished = false;
+              pendingAudioTurnId = null;
               voiceController == null ? void 0 : voiceController.reset();
+              handsFreeController == null ? void 0 : handsFreeController.abort("Display disconnected — hands-free is off");
+            } else if (state2 === "connecting") {
+              handsFreeController == null ? void 0 : handsFreeController.abort("Display disconnected — hands-free is off");
             }
           },
           onProtocolError: (message) => {
             set(protocolError, message);
+            audioPlayer == null ? void 0 : audioPlayer.stop();
+            responseHasAudio = false;
+            playbackFinished = false;
+            pendingAudioTurnId = null;
+            voiceController == null ? void 0 : voiceController.reset();
+            handsFreeController == null ? void 0 : handsFreeController.abort("Display data unavailable — hands-free is off");
           },
           onValidSnapshot: () => {
             set(protocolError, null);
@@ -5179,16 +6311,28 @@ function App($$anchor, $$props) {
           },
           onAudioEvent: (event2) => {
             if (event2.type === "audio_start") {
+              responseHasAudio = true;
+              playbackFinished = false;
+              pendingAudioTurnId = event2.turn_id;
               audioPlayer == null ? void 0 : audioPlayer.start(event2);
             } else if (event2.type === "audio_end") {
               audioPlayer == null ? void 0 : audioPlayer.end(event2.turn_id);
+              if (pendingAudioTurnId === event2.turn_id && !(audioPlayer == null ? void 0 : audioPlayer.hasPendingPlayback)) {
+                playbackFinished = true;
+              }
+              maybeCompleteHandsFreeTurn();
             } else {
               audioPlayer == null ? void 0 : audioPlayer.abort(event2.turn_id);
+              if (pendingAudioTurnId === event2.turn_id) {
+                playbackFinished = true;
+                handsFreeController == null ? void 0 : handsFreeController.abort("Response interrupted — hands-free is off");
+              }
             }
           },
           onAudioChunk: (chunk) => audioPlayer == null ? void 0 : audioPlayer.append(chunk),
           onVoiceError: () => {
             set(voiceError, "Turn could not be sent");
+            set(voiceState, "error");
           }
         });
         set(dispatchAction, (action) => (bridge == null ? void 0 : bridge.dispatchAction(action)) ?? Promise.resolve(false));
@@ -5196,6 +6340,11 @@ function App($$anchor, $$props) {
           onError: (message) => {
             set(voiceError, message);
             set(voiceState, "error");
+          },
+          onPlaybackFinished: (turnId) => {
+            if (pendingAudioTurnId !== turnId) return;
+            playbackFinished = true;
+            maybeCompleteHandsFreeTurn();
           }
         });
         voiceController = new BrowserVoiceController({
@@ -5206,6 +6355,17 @@ function App($$anchor, $$props) {
           },
           onError: (message) => {
             set(voiceError, message);
+          }
+        });
+        handsFreeController = new BrowserHandsFreeController({
+          sendText: (text) => (bridge == null ? void 0 : bridge.sendVoiceTurn(text)) ?? false,
+          wakePhrases: [],
+          onState: (state2) => {
+            set(handsFreeState, state2);
+            if (state2 !== "error") set(handsFreeError, null);
+          },
+          onError: (message) => {
+            set(handsFreeError, message);
           }
         });
         bridge.start();
@@ -5219,32 +6379,72 @@ function App($$anchor, $$props) {
     return () => {
       disposed = true;
       voiceController == null ? void 0 : voiceController.reset();
+      handsFreeController == null ? void 0 : handsFreeController.disarm();
       audioPlayer == null ? void 0 : audioPlayer.stop();
       bridge == null ? void 0 : bridge.stop();
     };
   });
   async function toggleVoice() {
-    if (voiceController === null || get(voiceState) === "submitting") return;
+    if (voiceController === null || get(voiceState) === "submitting" || get(handsFreeArmed)) return;
     if (get(voiceState) === "listening") {
       voiceController.stop();
       return;
     }
-    if (get(displayView).is_busy) return;
+    if (!get(displayReady) || !get(browserVoiceEnabled)) return;
     set(voiceError, null);
     if (audioPlayer !== null && !await audioPlayer.resume()) return;
+    if (!isDisplayReady() || (handsFreeController == null ? void 0 : handsFreeController.isArmed)) return;
     await voiceController.start();
+  }
+  async function toggleHandsFree() {
+    if (handsFreeController === null) return;
+    if (get(handsFreeArmed)) {
+      handsFreeController.disarm();
+      return;
+    }
+    if (!get(displayReady) || !get(browserHandsFreeEnabled)) return;
+    set(handsFreeError, null);
+    if (audioPlayer !== null && !await audioPlayer.resume()) return;
+    if (!isDisplayReady() || !get(browserHandsFreeEnabled)) return;
+    await handsFreeController.arm();
+  }
+  function maybeCompleteHandsFreeTurn() {
+    if (get(displayView).state !== "idle" || get(connectionState) !== "connected" || responseHasAudio && !playbackFinished) {
+      return;
+    }
+    responseHasAudio = false;
+    playbackFinished = false;
+    pendingAudioTurnId = null;
+    handsFreeController == null ? void 0 : handsFreeController.turnFinished();
   }
   legacy_pre_effect(() => get(displayView), () => {
     var _a2;
     set(browserVoiceEnabled, ((_a2 = get(displayView).capabilities) == null ? void 0 : _a2.features.includes("browser_voice")) ?? false);
+  });
+  legacy_pre_effect(() => get(displayView), () => {
+    var _a2;
+    set(browserHandsFreeEnabled, ((_a2 = get(displayView).capabilities) == null ? void 0 : _a2.features.includes("browser_hands_free")) ?? false);
+  });
+  legacy_pre_effect(() => get(handsFreeState), () => {
+    set(handsFreeArmed, get(handsFreeState) !== "off" && get(handsFreeState) !== "error");
+  });
+  legacy_pre_effect(
+    () => (get(protocolError), get(connectionState), get(displayView)),
+    () => {
+      set(displayReady, get(protocolError) === null && get(connectionState) === "connected" && get(displayView).state === "idle" && get(displayView).connection_healthy && !get(displayView).is_busy);
+    }
+  );
+  legacy_pre_effect(() => get(displayView), () => {
+    var _a2, _b2;
+    set(wakePhraseLabel, ((_b2 = (_a2 = get(displayView).capabilities) == null ? void 0 : _a2.wake_phrases) == null ? void 0 : _b2.join(" or ")) ?? "the wake phrase");
   });
   legacy_pre_effect_reset();
   init();
   var fragment = comment();
   var node = first_child(fragment);
   {
-    var consequent_4 = ($$anchor2) => {
-      var fragment_1 = root_4();
+    var consequent_11 = ($$anchor2) => {
+      var fragment_1 = root_11();
       var node_1 = first_child(fragment_1);
       WasmCanvas(node_1, {
         get reducer() {
@@ -5259,60 +6459,129 @@ function App($$anchor, $$props) {
         onRuntimeError: (message) => set(protocolError, message)
       });
       var node_2 = sibling(node_1, 2);
+      StateSurface(node_2, {
+        get snapshot() {
+          return get(displayView);
+        },
+        get connectionState() {
+          return get(connectionState);
+        },
+        get protocolError() {
+          return get(protocolError);
+        },
+        accessibleOnly: true
+      });
+      var node_3 = sibling(node_2, 2);
       {
-        var consequent_3 = ($$anchor3) => {
-          var section = root_3();
+        var consequent_10 = ($$anchor3) => {
+          var section = root_10();
           var button = child(section);
           var text_1 = only_child(button, true);
-          var node_3 = sibling(button, 2);
+          var node_4 = sibling(button, 2);
           {
             var consequent = ($$anchor4) => {
-              var p = root();
-              var text_2 = only_child(p, true);
-              template_effect(() => set_text(text_2, get(voiceError)));
+              var button_1 = root();
+              var text_2 = only_child(button_1, true);
+              template_effect(() => {
+                set_attribute(button_1, "aria-pressed", get(handsFreeArmed));
+                button_1.disabled = !get(handsFreeArmed) && !get(displayReady);
+                set_text(text_2, get(handsFreeArmed) ? "Disable hands-free" : "Enable hands-free");
+              });
+              event("click", button_1, toggleHandsFree);
+              append($$anchor4, button_1);
+            };
+            if_block(node_4, ($$render) => {
+              if (get(browserHandsFreeEnabled)) $$render(consequent);
+            });
+          }
+          var node_5 = sibling(node_4, 2);
+          {
+            var consequent_1 = ($$anchor4) => {
+              var p = root_1();
+              var text_3 = only_child(p, true);
+              template_effect(() => set_text(text_3, get(voiceError)));
               append($$anchor4, p);
             };
-            var consequent_1 = ($$anchor4) => {
-              var p_1 = root_1();
+            var consequent_2 = ($$anchor4) => {
+              var p_1 = root_2();
               append($$anchor4, p_1);
             };
-            var consequent_2 = ($$anchor4) => {
-              var p_2 = root_2();
+            var consequent_3 = ($$anchor4) => {
+              var p_2 = root_3();
               append($$anchor4, p_2);
             };
-            if_block(node_3, ($$render) => {
-              if (get(voiceError)) $$render(consequent);
-              else if (get(voiceState) === "listening") $$render(consequent_1, 1);
-              else if (get(voiceState) === "submitting") $$render(consequent_2, 2);
+            if_block(node_5, ($$render) => {
+              if (get(voiceError)) $$render(consequent_1);
+              else if (get(voiceState) === "listening") $$render(consequent_2, 1);
+              else if (get(voiceState) === "submitting") $$render(consequent_3, 2);
+            });
+          }
+          var node_6 = sibling(node_5, 2);
+          {
+            var consequent_4 = ($$anchor4) => {
+              var p_3 = root_4();
+              var text_4 = only_child(p_3, true);
+              template_effect(() => set_text(text_4, get(handsFreeError)));
+              append($$anchor4, p_3);
+            };
+            var consequent_5 = ($$anchor4) => {
+              var p_4 = root_5();
+              var text_5 = only_child(p_4);
+              template_effect(() => set_text(text_5, `Say ${get(wakePhraseLabel) ?? ""}`));
+              append($$anchor4, p_4);
+            };
+            var consequent_6 = ($$anchor4) => {
+              var p_5 = root_6();
+              append($$anchor4, p_5);
+            };
+            var consequent_7 = ($$anchor4) => {
+              var p_6 = root_7();
+              append($$anchor4, p_6);
+            };
+            var consequent_8 = ($$anchor4) => {
+              var p_7 = root_8();
+              append($$anchor4, p_7);
+            };
+            var consequent_9 = ($$anchor4) => {
+              var p_8 = root_9();
+              append($$anchor4, p_8);
+            };
+            if_block(node_6, ($$render) => {
+              if (get(handsFreeError)) $$render(consequent_4);
+              else if (get(handsFreeState) === "wake_ready") $$render(consequent_5, 1);
+              else if (get(handsFreeState) === "heard") $$render(consequent_6, 2);
+              else if (get(handsFreeState) === "listening") $$render(consequent_7, 3);
+              else if (get(handsFreeState) === "follow_up") $$render(consequent_8, 4);
+              else if (get(handsFreeState) === "submitting") $$render(consequent_9, 5);
             });
           }
           template_effect(() => {
             set_attribute(section, "data-voice-state", get(voiceState));
             set_attribute(button, "aria-pressed", get(voiceState) === "listening");
-            button.disabled = (get(voiceState), get(displayView), untrack(() => get(voiceState) === "submitting" || get(displayView).is_busy && get(voiceState) !== "listening"));
+            button.disabled = !get(displayReady) || get(voiceState) === "submitting" || get(handsFreeArmed);
             set_text(text_1, get(voiceState) === "listening" ? "Stop listening" : "Tap to talk");
           });
           event("click", button, toggleVoice);
           append($$anchor3, section);
         };
-        if_block(node_2, ($$render) => {
-          if (get(browserVoiceEnabled)) $$render(consequent_3);
+        if_block(node_3, ($$render) => {
+          if (get(browserVoiceEnabled)) $$render(consequent_10);
         });
       }
       append($$anchor2, fragment_1);
     };
     var alternate = ($$anchor2) => {
-      var main = root_5();
-      var p_3 = child(main);
-      var text_3 = only_child(p_3, true);
+      var main = root_12();
+      var p_9 = child(main);
+      var text_6 = only_child(p_9, true);
       template_effect(() => {
         set_attribute(main, "data-state", get(protocolError) ? "error" : "connecting");
-        set_text(text_3, get(protocolError) ?? "Starting the shared Hermes display…");
+        set_text(text_6, get(protocolError) ?? "Starting the shared Hermes display…");
       });
       append($$anchor2, main);
     };
     if_block(node, ($$render) => {
-      if (get(displayReducer) !== null) $$render(consequent_4);
+      if (get(displayReducer) !== null) $$render(consequent_11);
       else $$render(alternate, -1);
     });
   }

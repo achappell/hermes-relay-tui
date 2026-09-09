@@ -58,6 +58,51 @@ It prints a loopback URL. Open it in a browser — that is the kitchen display.
 
 Stop with `Ctrl+C`.
 
+## iPad Safari browser hands-free smoke
+
+This is the web equivalent of the household loop. It must be run in a Safari
+browser tab on the target iPad, with Guided Access enabled; a desktop browser
+run does not satisfy the iPad gate.
+
+Build and launch the browser-enabled appliance:
+
+```bash
+npm --prefix home_display/web run build
+venv/bin/python -m home_display.appliance --browser-voice \
+    --display-host 192.168.1.20 --display-remote --display-port 8765
+```
+
+Open the printed URL in Safari. Replace the address with the ops machine's LAN
+address when necessary, and keep the same origin for the page and WebSocket.
+When the display is connected and idle:
+
+1. Tap **Enable hands-free** once and grant Safari microphone/speech permission.
+   Confirm the control says it is listening for the configured profile wake
+   phrase. Ambient speech must not create a turn.
+2. Say only the wake phrase. Confirm the page acknowledges it, then returns to
+   wake-ready after the bounded initial window without sending a blank turn.
+3. Say the wake phrase followed by a question. Confirm Hermes receives exactly
+   the question, never the wake phrase. Let the streamed answer finish and
+   confirm recognition stays paused while the answer is thinking, buffering,
+   and speaking.
+4. During the one follow-up window, ask a second question without the wake
+   phrase. Confirm exactly one more turn. Stay silent until the default
+   eight-second window closes; no third capture or turn may occur.
+5. Repeat the initial and follow-up captures with exactly `stop` (including
+   ordinary terminal punctuation). Both must close silently: no Hermes turn,
+   capture-complete signal, or replay.
+6. Stop the relay during an armed idle period and during a response. Confirm
+   hands-free turns off, no uncertain text is replayed after reconnect, and the
+   **Enable hands-free** control remains available only after a fresh connected,
+   idle state and an explicit tap.
+
+Record the iPadOS and Safari versions, LAN origin, permission result, wake
+phrase, initial/follow-up counts, both stop cases, the disconnect/recovery
+result, and any recognition or playback interruption. If Safari cannot grant
+permission or the recognition session stops unexpectedly, leave the item in
+`Verify` and record that physical failure rather than treating desktop
+success as proof.
+
 ## Testing without Hermes
 
 "Does the appliance work" and "is Hermes up" are two questions, and answering

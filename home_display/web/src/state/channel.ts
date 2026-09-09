@@ -117,7 +117,13 @@ export class StateChannel {
 
   sendVoiceTurn(text: string): boolean {
     const normalized = text.trim();
-    if (!this.socketOpen || !this.socket || !normalized || normalized.length > 4000) {
+    if (
+      !this.socketOpen ||
+      !this.hasHydratedSocket ||
+      !this.socket ||
+      !normalized ||
+      normalized.length > 4000
+    ) {
       return false;
     }
     if (typeof this.socket.send !== "function") {

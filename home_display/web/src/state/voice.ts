@@ -82,6 +82,7 @@ export class BrowserVoiceController {
       recognition.onresult = (event) => this.handleResult(event);
       recognition.onerror = () => this.fail();
       recognition.onend = () => {
+        if (this.recognition === recognition) this.recognition = null;
         if (!this.submitting) {
           this.listening = false;
           this.emit("idle");
@@ -101,15 +102,12 @@ export class BrowserVoiceController {
   stop(): void {
     if (!this.listening || this.recognition === null) return;
     this.listening = false;
-    try {
-      this.recognition.stop();
-    } catch {
-      // A browser can report a late stop after it has already ended capture.
-    }
+    this.stopRecognition();
     if (!this.submitting) this.emit("idle");
   }
 
   reset(): void {
+    this.stopRecognition();
     this.listening = false;
     this.submitting = false;
     this.emit("idle");
@@ -132,27 +130,476 @@ export class BrowserVoiceController {
     this.listening = false;
     this.submitting = true;
     this.emit("submitting");
-    try {
-      this.recognition?.stop();
-    } catch {
-      // The final result may arrive after the browser has already stopped.
-    }
+    this.stopRecognition();
 
-    Promise.resolve(this.sendText(text)).then((sent) => {
+    let sendResult: Promise<boolean> | boolean;
+    try {
+      sendResult = this.sendText(text);
+    } catch {
+      this.fail("Turn could not be sent");
+      return;
+    }
+    Promise.resolve(sendResult).then((sent) => {
       if (!sent) this.fail("Turn could not be sent");
     }).catch(() => this.fail("Turn could not be sent"));
   }
 
   private fail(message = "Microphone or speech recognition is unavailable"): void {
+    this.stopRecognition();
     this.listening = false;
     this.submitting = false;
     this.emit("error");
     this.onError(message);
   }
 
+  private stopRecognition(): void {
+    const recognition = this.recognition;
+    this.recognition = null;
+    if (recognition === null) return;
+    recognition.onresult = null;
+    recognition.onerror = null;
+    recognition.onend = null;
+    try {
+      recognition.stop();
+    } catch {
+      // A browser can report a late stop after it has already ended capture.
+    }
+  }
+
   private emit(state: VoiceState): void {
     this.onState(state);
   }
+}
+
+export type HandsFreeState =
+  | "off"
+  | "arming"
+  | "wake_ready"
+  | "heard"
+  | "listening"
+  | "follow_up"
+  | "submitting"
+  | "error";
+
+export interface BrowserHandsFreeControllerOptions {
+  sendText: VoiceTextSender;
+  wakePhrases: string[];
+  wakeListenSeconds?: number;
+  followUpSeconds?: number;
+  onState?: (state: HandsFreeState) => void;
+  onError?: (message: string) => void;
+  recognitionFactory?: SpeechRecognitionFactory;
+  language?: string;
+}
+
+type HandsFreePhase =
+  | "off"
+  | "wake_ready"
+  | "heard"
+  | "initial_capture"
+  | "follow_up"
+  | "submitting";
+
+const DEFAULT_HANDS_FREE_SECONDS = 8;
+const MAX_HANDS_FREE_TIMER_SECONDS = 2_147_483.647;
+
+function normaliseSpeech(text: string): string {
+  return text.trim().replace(/\s+/g, " ");
+}
+
+export function isLocalStopCommand(text: string): boolean {
+  return normaliseSpeech(text)
+    .replace(/[.,!?;:…]+$/g, "")
+    .trim()
+    .toLocaleLowerCase() === "stop";
+}
+
+function wakeRemainder(text: string, wakePhrases: string[]): string | null {
+  const source = normaliseSpeech(text);
+  const lowerSource = source.toLocaleLowerCase();
+  const phrases = wakePhrases
+    .map(normaliseSpeech)
+    .filter(Boolean)
+    .sort((left, right) => right.length - left.length);
+
+  for (const phrase of phrases) {
+    const lowerPhrase = phrase.toLocaleLowerCase();
+    if (lowerSource !== lowerPhrase && !lowerSource.startsWith(lowerPhrase)) continue;
+
+    const next = lowerSource[lowerPhrase.length];
+    if (next !== undefined && !/^[\s,.:;!?;…-]$/.test(next)) continue;
+    return normaliseSpeech(source.slice(lowerPhrase.length).replace(/^[\s,.:;!?…-]+/, ""));
+  }
+  return null;
+}
+
+function finalRecognitionText(event: SpeechRecognitionResultEventLike): string {
+  const parts: string[] = [];
+  for (let index = event.resultIndex; index < event.results.length; index += 1) {
+    const result = event.results[index];
+    if (!result?.isFinal) continue;
+    const transcript = result[0]?.transcript;
+    if (transcript) parts.push(transcript);
+  }
+  return normaliseSpeech(parts.join(" "));
+}
+
+/**
+ * Browser-native hands-free orchestration. Recognition is a local wake and
+ * capture sensor; only the final question crosses the existing text bridge.
+ */
+export class BrowserHandsFreeController {
+  private readonly sendText: VoiceTextSender;
+  private wakePhrases: string[];
+  private wakeListenSeconds: number;
+  private followUpSeconds: number;
+  private readonly onState: (state: HandsFreeState) => void;
+  private readonly onError: (message: string) => void;
+  private readonly recognitionFactory: SpeechRecognitionFactory;
+  private readonly language: string;
+  private phase: HandsFreePhase = "off";
+  private armed = false;
+  private generation = 0;
+  private recognition: SpeechRecognitionLike | null = null;
+  private captureTimer: ReturnType<typeof setTimeout> | null = null;
+  private heardTimer: ReturnType<typeof setTimeout> | null = null;
+  private restartTimer: ReturnType<typeof setTimeout> | null = null;
+  private followUpEligible = false;
+  private turnInFlight = false;
+
+  constructor(options: BrowserHandsFreeControllerOptions) {
+    this.sendText = options.sendText;
+    this.wakePhrases = options.wakePhrases.map(normaliseSpeech).filter(Boolean);
+    this.wakeListenSeconds = positiveSeconds(options.wakeListenSeconds);
+    this.followUpSeconds = positiveSeconds(options.followUpSeconds);
+    this.onState = options.onState ?? (() => {});
+    this.onError = options.onError ?? (() => {});
+    this.recognitionFactory = options.recognitionFactory ?? defaultRecognitionFactory;
+    this.language = options.language ?? "en-US";
+  }
+
+  configure(options: Pick<
+    BrowserHandsFreeControllerOptions,
+    "wakePhrases" | "wakeListenSeconds" | "followUpSeconds"
+  >): void {
+    const wakePhrases = options.wakePhrases.map(normaliseSpeech).filter(Boolean);
+    const wakeListenSeconds = positiveSeconds(options.wakeListenSeconds);
+    const followUpSeconds = positiveSeconds(options.followUpSeconds);
+    if (this.armed) {
+      const phrasesChanged = wakePhrases.length !== this.wakePhrases.length
+        || wakePhrases.some((phrase, index) => phrase !== this.wakePhrases[index]);
+      if (
+        phrasesChanged ||
+        wakeListenSeconds !== this.wakeListenSeconds ||
+        followUpSeconds !== this.followUpSeconds
+      ) {
+        this.abort("Display configuration changed — hands-free is off");
+      }
+      return;
+    }
+    this.wakePhrases = wakePhrases;
+    this.wakeListenSeconds = wakeListenSeconds;
+    this.followUpSeconds = followUpSeconds;
+  }
+
+  get isArmed(): boolean {
+    return this.armed;
+  }
+
+  get state(): HandsFreeState {
+    return this.stateForPhase();
+  }
+
+  async arm(): Promise<boolean> {
+    if (this.armed) return true;
+    if (this.wakePhrases.length === 0) {
+      this.fail("No wake phrase is configured for this display");
+      return false;
+    }
+
+    this.generation += 1;
+    const generation = this.generation;
+    this.armed = true;
+    this.phase = "wake_ready";
+    this.followUpEligible = false;
+    this.turnInFlight = false;
+    this.emit("arming");
+
+    if (!this.startRecognition(generation)) {
+      this.fail("Microphone or speech recognition is unavailable");
+      return false;
+    }
+    this.emit("wake_ready");
+    return true;
+  }
+
+  disarm(): void {
+    this.generation += 1;
+    this.armed = false;
+    this.phase = "off";
+    this.followUpEligible = false;
+    this.turnInFlight = false;
+    this.clearTimers();
+    this.stopRecognition();
+    this.emit("off");
+  }
+
+  abort(message = "Display disconnected — hands-free is off"): void {
+    if (!this.armed && this.phase === "off") return;
+    this.fail(message);
+  }
+
+  /** Called by the display after the current response has really finished. */
+  turnFinished(): void {
+    if (!this.armed || !this.turnInFlight || this.phase !== "submitting") return;
+    const generation = this.generation;
+    this.turnInFlight = false;
+    this.clearCaptureTimer();
+    if (this.followUpEligible) {
+      this.followUpEligible = false;
+      this.beginFollowUp(generation);
+      return;
+    }
+    this.enterWakeReady(generation);
+  }
+
+  private stateForPhase(): HandsFreeState {
+    switch (this.phase) {
+      case "wake_ready": return "wake_ready";
+      case "heard": return "heard";
+      case "initial_capture": return "listening";
+      case "follow_up": return "follow_up";
+      case "submitting": return "submitting";
+      default: return "off";
+    }
+  }
+
+  private startRecognition(generation: number): boolean {
+    if (!this.isCurrent(generation) || this.recognition !== null) return true;
+
+    let recognition: SpeechRecognitionLike;
+    try {
+      recognition = this.recognitionFactory();
+      recognition.continuous = true;
+      recognition.interimResults = true;
+      recognition.lang = this.language;
+    } catch {
+      return false;
+    }
+
+    recognition.onresult = (event) => this.handleResult(event, generation);
+    recognition.onerror = (event) => {
+      if (!this.isCurrent(generation) || this.recognition !== recognition) return;
+      const code = event.error?.toLocaleLowerCase();
+      if (code === "no-speech" || code === "aborted") {
+        this.scheduleRecognitionRestart(generation);
+        return;
+      }
+      this.fail("Microphone or speech recognition is unavailable");
+    };
+    recognition.onend = () => {
+      if (!this.isCurrent(generation) || this.recognition !== recognition) return;
+      this.recognition = null;
+      if (this.phase === "submitting") return;
+      this.scheduleRecognitionRestart(generation);
+    };
+    this.recognition = recognition;
+
+    try {
+      recognition.start();
+      return true;
+    } catch {
+      this.recognition = null;
+      return false;
+    }
+  }
+
+  private scheduleRecognitionRestart(generation: number): void {
+    if (
+      !this.isCurrent(generation) ||
+      this.recognition !== null ||
+      this.restartTimer !== null ||
+      this.phase === "submitting"
+    ) {
+      return;
+    }
+    this.restartTimer = setTimeout(() => {
+      this.restartTimer = null;
+      if (!this.isCurrent(generation) || this.recognition !== null) return;
+      if (!this.startRecognition(generation)) {
+        this.fail("Microphone or speech recognition is unavailable");
+      }
+    }, 50);
+  }
+
+  private handleResult(event: SpeechRecognitionResultEventLike, generation: number): void {
+    if (!this.isCurrent(generation) || this.phase === "submitting") return;
+    const text = finalRecognitionText(event);
+    if (!text) return;
+
+    if (this.phase === "wake_ready") {
+      const remainder = wakeRemainder(text, this.wakePhrases);
+      if (remainder === null) return;
+      if (!remainder || isLocalStopCommand(remainder)) {
+        if (remainder) this.finishCapture(generation);
+        else this.beginInitialCapture(generation);
+        return;
+      }
+      this.submit(remainder, generation);
+      return;
+    }
+
+    if (
+      this.phase !== "heard" &&
+      this.phase !== "initial_capture" &&
+      this.phase !== "follow_up"
+    ) return;
+    if (isLocalStopCommand(text)) {
+      this.finishCapture(generation);
+      return;
+    }
+    this.submit(text, generation);
+  }
+
+  private beginInitialCapture(generation: number): void {
+    if (!this.isCurrent(generation)) return;
+    this.phase = "heard";
+    this.emit("heard");
+    this.startCaptureTimer(generation, this.wakeListenSeconds);
+    this.clearHeardTimer();
+    this.heardTimer = setTimeout(() => {
+      this.heardTimer = null;
+      if (!this.isCurrent(generation) || this.phase !== "heard") return;
+      this.phase = "initial_capture";
+      this.emit("listening");
+    }, 150);
+  }
+
+  private beginFollowUp(generation: number): void {
+    if (!this.isCurrent(generation)) return;
+    this.phase = "follow_up";
+    this.emit("follow_up");
+    this.startCaptureTimer(generation, this.followUpSeconds);
+    if (!this.startRecognition(generation)) {
+      this.scheduleRecognitionRestart(generation);
+    }
+  }
+
+  private enterWakeReady(generation: number, deferRecognition = false): void {
+    if (!this.isCurrent(generation)) return;
+    this.phase = "wake_ready";
+    this.clearHeardTimer();
+    this.emit("wake_ready");
+    if (deferRecognition || !this.startRecognition(generation)) {
+      this.scheduleRecognitionRestart(generation);
+    }
+  }
+
+  private finishCapture(generation: number): void {
+    if (!this.isCurrent(generation)) return;
+    this.clearCaptureTimer();
+    this.stopRecognition();
+    this.enterWakeReady(generation, true);
+  }
+
+  private startCaptureTimer(generation: number, seconds: number): void {
+    this.clearCaptureTimer();
+    this.captureTimer = setTimeout(() => {
+      this.captureTimer = null;
+      if (!this.isCurrent(generation)) return;
+      this.stopRecognition();
+      this.enterWakeReady(generation, true);
+    }, Math.min(seconds, MAX_HANDS_FREE_TIMER_SECONDS) * 1000);
+  }
+
+  private submit(text: string, generation: number): void {
+    if (!this.isCurrent(generation)) return;
+    const isFollowUp = this.phase === "follow_up";
+    this.clearCaptureTimer();
+    this.clearHeardTimer();
+    this.stopRecognition();
+    this.phase = "submitting";
+    this.followUpEligible = !isFollowUp;
+    this.turnInFlight = true;
+    this.emit("submitting");
+
+    let sendResult: Promise<boolean> | boolean;
+    try {
+      sendResult = this.sendText(text);
+    } catch {
+      this.fail("Turn could not be sent");
+      return;
+    }
+    Promise.resolve(sendResult).then((sent) => {
+      if (!this.isCurrent(generation) || sent) return;
+      this.fail("Turn could not be sent");
+    }).catch(() => {
+      if (this.isCurrent(generation)) this.fail("Turn could not be sent");
+    });
+  }
+
+  private fail(message: string): void {
+    this.generation += 1;
+    this.armed = false;
+    this.phase = "off";
+    this.followUpEligible = false;
+    this.turnInFlight = false;
+    this.clearTimers();
+    this.stopRecognition();
+    this.emit("error");
+    this.onError(message);
+  }
+
+  private clearCaptureTimer(): void {
+    if (this.captureTimer !== null) {
+      clearTimeout(this.captureTimer);
+      this.captureTimer = null;
+    }
+  }
+
+  private clearHeardTimer(): void {
+    if (this.heardTimer !== null) {
+      clearTimeout(this.heardTimer);
+      this.heardTimer = null;
+    }
+  }
+
+  private clearTimers(): void {
+    this.clearCaptureTimer();
+    this.clearHeardTimer();
+    if (this.restartTimer !== null) {
+      clearTimeout(this.restartTimer);
+      this.restartTimer = null;
+    }
+  }
+
+  private stopRecognition(): void {
+    const recognition = this.recognition;
+    this.recognition = null;
+    if (recognition === null) return;
+    recognition.onresult = null;
+    recognition.onerror = null;
+    recognition.onend = null;
+    try {
+      recognition.stop();
+    } catch {
+      // A browser may report a late stop after an automatic end.
+    }
+  }
+
+  private isCurrent(generation: number): boolean {
+    return this.armed && this.generation === generation;
+  }
+
+  private emit(state: HandsFreeState): void {
+    this.onState(state);
+  }
+}
+
+function positiveSeconds(value: number | undefined): number {
+  return typeof value === "number" && Number.isFinite(value) && value > 0
+    ? value
+    : DEFAULT_HANDS_FREE_SECONDS;
 }
 
 export interface AudioBufferLike {
@@ -186,6 +633,7 @@ export type AudioContextFactory = () => AudioContextLike;
 export interface PcmAudioPlayerOptions {
   audioContextFactory?: AudioContextFactory;
   onError?: (message: string) => void;
+  onPlaybackFinished?: (turnId: string) => void;
 }
 
 type AudioContextConstructor = new () => AudioContextLike;
@@ -205,8 +653,10 @@ function defaultAudioContextFactory(): AudioContextLike {
 export class PcmAudioPlayer {
   private readonly audioContextFactory: AudioContextFactory;
   private readonly onError: (message: string) => void;
+  private readonly onPlaybackFinished: (turnId: string) => void;
   private context: AudioContextLike | null = null;
   private activeTurnId: string | null = null;
+  private endedTurnId: string | null = null;
   private sampleRate = 0;
   private channels = 0;
   private nextStartAt = 0;
@@ -215,6 +665,11 @@ export class PcmAudioPlayer {
   constructor(options: PcmAudioPlayerOptions = {}) {
     this.audioContextFactory = options.audioContextFactory ?? defaultAudioContextFactory;
     this.onError = options.onError ?? (() => {});
+    this.onPlaybackFinished = options.onPlaybackFinished ?? (() => {});
+  }
+
+  get hasPendingPlayback(): boolean {
+    return this.sources.size > 0;
   }
 
   async resume(): Promise<boolean> {
@@ -271,7 +726,10 @@ export class PcmAudioPlayer {
       source.start(startAt);
       this.nextStartAt = startAt + buffer.duration;
       this.sources.add(source);
-      source.onended = () => this.sources.delete(source);
+      source.onended = () => {
+        this.sources.delete(source);
+        this.notifyPlaybackFinished();
+      };
     } catch {
       this.onError("Audio playback could not start");
       this.stop();
@@ -281,6 +739,8 @@ export class PcmAudioPlayer {
   end(turnId: string): void {
     if (this.activeTurnId === turnId) {
       this.activeTurnId = null;
+      this.endedTurnId = turnId;
+      this.notifyPlaybackFinished();
     }
   }
 
@@ -299,7 +759,19 @@ export class PcmAudioPlayer {
     }
     this.sources.clear();
     this.activeTurnId = null;
+    this.endedTurnId = null;
     this.nextStartAt = 0;
+  }
+
+  private notifyPlaybackFinished(): void {
+    if (this.endedTurnId === null || this.sources.size > 0) return;
+    const turnId = this.endedTurnId;
+    this.endedTurnId = null;
+    try {
+      this.onPlaybackFinished(turnId);
+    } catch {
+      // A surface callback must not escape an audio event.
+    }
   }
 
   private ensureContext(): AudioContextLike {
