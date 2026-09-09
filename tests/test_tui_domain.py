@@ -294,6 +294,42 @@ def test_session_reset_discards_turn_local_state_without_losing_connection() -> 
     assert stale.reason == "stale_session_event"
 
 
+def test_late_audio_from_an_old_session_cannot_mutate_a_fresh_turn() -> None:
+    domain = connected_domain()
+    assert domain.reset_session("session-a").accepted
+    assert domain.begin_turn("turn-a", generation=1).accepted
+    assert domain.apply_event(
+        {"type": "audio_start", "turn_id": "turn-a", "session_id": "session-a"},
+        generation=1,
+    ).accepted
+
+    assert domain.reset_session("session-b").accepted
+    assert domain.begin_turn("turn-b", generation=2).accepted
+    before = domain.state
+
+    stale = domain.apply_event(
+        {"type": "audio_start", "turn_id": "turn-b", "session_id": "session-a"},
+        generation=2,
+    )
+
+    assert stale.accepted is False
+    assert stale.reason == "stale_session_event"
+    assert domain.state == before
+
+    assert domain.apply_event(
+        {"type": "audio_start", "turn_id": "turn-b", "session_id": "session-b"},
+        generation=2,
+    ).accepted
+    assert domain.state.audio_active is True
+    late = domain.apply_event(
+        {"type": "audio_chunk", "turn_id": "turn-a", "session_id": "session-a"},
+        generation=1,
+    )
+    assert late.accepted is False
+    assert late.reason == "stale_turn_event"
+    assert domain.state.audio_active is True
+
+
 def test_shared_prompt_action_fixture_is_the_tui_choice_projection() -> None:
     fixture_root = Path(__file__).parents[1] / "shared" / "display" / "fixtures"
     snapshot = json.loads((fixture_root / "snapshots" / "prompt.json").read_text())

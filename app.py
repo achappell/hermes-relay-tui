@@ -618,6 +618,7 @@ class HermesStreamingApp(App):
             output_device=getattr(args, "audio_output_device", None),
         )
         self._needs_reconnect = False
+        self._reconnect_in_flight = False
         self._last_prompt: Optional[str] = None
         self._last_prompt_status: Optional[str] = None
         self.connection_state = CONNECTION_DISCONNECTED
@@ -1048,7 +1049,9 @@ class HermesStreamingApp(App):
             # down; there is no transcript to refresh in either case.
             pass
 
-    async def _connect(self, *, force: bool = False) -> bool:
+    async def _connect(
+        self, *, force: bool = False, hydrate_history: bool = True
+    ) -> bool:
         """Establish a session with bounded exponential-backoff retries."""
         async with self._connection_lock:
             if self.wake_armed and not self.session.is_connected():
@@ -1130,7 +1133,7 @@ class HermesStreamingApp(App):
                     conn_details.append(f"relay v{self.session.confirmed_server_version}")
                 detail_suffix = f" ({', '.join(conn_details)})" if conn_details else ""
                 self._append_block(f"Connected to {session_id}{detail_suffix}.")
-                if getattr(self.session, "initial_history", None):
+                if hydrate_history and getattr(self.session, "initial_history", None):
                     self._hydrate_transcript(self.session.initial_history)
                 if (
                     not reconnecting
@@ -1148,6 +1151,106 @@ class HermesStreamingApp(App):
             )
             self._append_block(RETRY_HINT)
             return False
+
+    async def _handle_reconnect_command(self, args: str) -> None:
+        """Recover the transport with a fresh session and no prompt replay."""
+        if args.strip():
+            self._append_block("usage: /reconnect")
+            return
+        if self._reconnect_in_flight:
+            self._append_block("reconnect is already in progress")
+            return
+        if self._profile_switch_is_busy():
+            self._append_block(
+                "[busy] Cannot reconnect while a turn, prompt, or voice capture is active."
+            )
+            return
+
+        self._reconnect_in_flight = True
+        try:
+            if self.wake_armed:
+                self._disarm_wake(
+                    "wake mode off — reconnect released the microphone. "
+                    "Run /wake on after reconnect."
+                )
+
+            async with self._connection_lock:
+                old_session = self.session
+                self._needs_reconnect = True
+                self._set_connection_state(CONNECTION_DISCONNECTED)
+                self._set_voice_state(VOICE_DISCONNECTED)
+                self._append_block(
+                    "reconnect requested — starting a fresh Hermes session."
+                )
+                if old_session is not None:
+                    await self._close_session_for_reconnect(old_session)
+
+                try:
+                    self.session = self._new_session(self.args)
+                except Exception as exc:
+                    diagnostic_logger.debug(
+                        "app.reconnect.new_session_failed type=%s",
+                        type(exc).__name__,
+                    )
+                    self._append_block(f"[error] reconnect session setup failed: {exc}")
+                    self._append_block(
+                        "reconnect failed; no prompt was sent and queued prompts remain pending."
+                    )
+                    return
+
+                if self._audio_input_touched:
+                    setter = getattr(self.session, "set_input_device", None)
+                    try:
+                        if callable(setter):
+                            result = setter(self.audio_input_device)
+                            if inspect.isawaitable(result):
+                                await result
+                        else:
+                            setattr(self.session, "input_device", self.audio_input_device)
+                    except Exception as exc:
+                        diagnostic_logger.debug(
+                            "app.reconnect.audio_input_restore_failed type=%s",
+                            type(exc).__name__,
+                        )
+                        self._append_block(
+                            f"[warning] audio input selection was not restored: {exc}"
+                        )
+
+            # The handshake remains bounded and observable through the normal
+            # connection ladder. A recovered session must not hydrate or drain
+            # anything from the uncertain turn while the old transcript stays
+            # visible to the user.
+            connected = await self._connect(force=True, hydrate_history=False)
+            if connected:
+                self._append_block(
+                    "reconnected; no prompt was sent and queued prompts remain pending."
+                )
+            else:
+                self._append_block(
+                    "reconnect failed; no prompt was sent and queued prompts remain pending."
+                )
+        finally:
+            self._reconnect_in_flight = False
+
+    async def _close_session_for_reconnect(self, session: SessionProtocol) -> None:
+        """Bound old-session cleanup so a dead transport cannot trap recovery."""
+        close_task = asyncio.create_task(session.close())
+        self._track_cleanup_task(close_task)
+        try:
+            await asyncio.wait_for(
+                asyncio.shield(close_task),
+                SHUTDOWN_TASK_TIMEOUT,
+            )
+        except asyncio.TimeoutError:
+            diagnostic_logger.warning("app.reconnect.old_session_close_timeout")
+            self._append_block(
+                "[warning] previous session cleanup timed out; continuing with a fresh session."
+            )
+        except Exception as exc:
+            diagnostic_logger.debug(
+                "app.reconnect.old_session_close_failed type=%s",
+                type(exc).__name__,
+            )
 
     async def on_unmount(self) -> None:
         # Release the device before anything else. A quit that leaves the
@@ -2131,6 +2234,8 @@ class HermesStreamingApp(App):
             self._handle_logs_command(invocation.args)
         elif command.name == "usage":
             self._handle_relay_unavailable(command.name, invocation.args)
+        elif command.name == "reconnect":
+            await self._handle_reconnect_command(invocation.args)
         elif command.name == "retry":
             await self._handle_retry_command(invocation.args)
         elif command.name == "undo":
@@ -3205,6 +3310,14 @@ class HermesStreamingApp(App):
     # --- the turn loop --------------------------------------------------------
 
     async def _run_turn(self, text: str, *, stt_source: str = "local") -> bool:
+        if self._reconnect_in_flight:
+            self._last_prompt = text
+            self._last_prompt_status = PROMPT_NOT_SENT
+            self._enqueue_prompt(text)
+            self._append_block(
+                f"queued until reconnect completes: {self._queue_preview(text)}"
+            )
+            return False
         if self._turn_in_flight:
             # Keep one websocket reader while preserving text submitted during
             # a response. The active turn drains this FIFO after it completes.

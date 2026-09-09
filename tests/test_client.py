@@ -514,6 +514,76 @@ async def test_send_turn_checks_top_level_turn_id_with_nested_payload():
     ]
 
 
+async def test_send_turn_ignores_json_frames_for_a_different_session():
+    ws = FakeWebSocket(
+        [
+            json.dumps(
+                {
+                    "type": "text_delta",
+                    "session_id": "old-session",
+                    "turn_id": "turn-1",
+                    "text": "stale text",
+                }
+            ),
+            json.dumps(
+                {
+                    "type": "message.delta",
+                    "session_id": "old-session",
+                    "payload": {"text": "stale nested text"},
+                }
+            ),
+            json.dumps(
+                {
+                    "type": "message.delta",
+                    "session_id": "current-session",
+                    "payload": {
+                        "session_id": "old-session",
+                        "text": "stale nested session text",
+                    },
+                }
+            ),
+            json.dumps(
+                {
+                    "type": "audio_start",
+                    "session_id": "old-session",
+                    "sample_rate": 24000,
+                }
+            ),
+            json.dumps(
+                {
+                    "type": "text_delta",
+                    "session_id": "current-session",
+                    "turn_id": "turn-1",
+                    "text": "fresh",
+                }
+            ),
+            json.dumps(
+                {
+                    "type": "turn_end",
+                    "session_id": "current-session",
+                    "turn_id": "turn-1",
+                }
+            ),
+        ]
+    )
+
+    events = [
+        event
+        async for event in send_turn(
+            ws,
+            session_id="current-session",
+            text="hi",
+            stt_source="local",
+            turn_id="turn-1",
+        )
+    ]
+
+    assert events == [
+        {"type": "text_delta", "text": "fresh"},
+        {"type": "turn_end", "turn_id": "turn-1"},
+    ]
+
+
 async def test_send_turn_restarts_the_line_when_the_preview_rewinds():
     # A preview that isn't an extension of what was already shown can't be
     # diffed, so the whole thing is re-emitted on a fresh line.
@@ -1078,4 +1148,3 @@ async def test_send_session_switch_returns_history_and_metadata():
     sent = json.loads(ws.sent[0])
     assert sent["type"] == "session_switch"
     assert sent["session_id"] == "s-old"
-

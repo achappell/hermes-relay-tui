@@ -350,6 +350,23 @@ async def send_turn(
         event_payload = payload.get("payload")
         if not isinstance(event_payload, dict):
             event_payload = payload
+        advertised_session_ids = {
+            str(candidate)
+            for candidate in (
+                event_payload.get("session_id"),
+                payload.get("session_id") if event_payload is not payload else None,
+            )
+            if candidate not in (None, "")
+        }
+        if any(candidate != str(session_id) for candidate in advertised_session_ids):
+            logger.debug(
+                "frame.stale index=%d kind=%s expected_session_id=%s frame_session_ids=%s",
+                frame_index,
+                kind or "missing",
+                session_id,
+                ",".join(sorted(advertised_session_ids)),
+            )
+            continue
         frame_turn_id = event_payload.get("turn_id")
         if frame_turn_id is None and event_payload is not payload:
             frame_turn_id = payload.get("turn_id")

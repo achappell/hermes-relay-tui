@@ -44,7 +44,9 @@ def test_steer_is_not_a_registered_command():
     assert invocation.args == "answer the second question"
 
 
-@pytest.mark.parametrize("name", ["save", "copy", "logs", "usage", "retry", "undo", "compress"])
+@pytest.mark.parametrize(
+    "name", ["save", "copy", "logs", "usage", "reconnect", "retry", "undo", "compress"]
+)
 def test_daily04_commands_are_discoverable(name):
     invocation = parse_slash_command(f"/{name}")
 

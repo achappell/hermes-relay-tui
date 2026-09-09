@@ -1455,6 +1455,24 @@ async def test_reconnect_disarms_wake_mode_before_opening_a_new_session():
         assert "wake mode off — connection lost" in transcript_text(app)
 
 
+async def test_explicit_reconnect_does_not_rearm_configured_wake_mode():
+    app, fakes, _ = make_app(wake_enabled=True)
+
+    async with app.run_test() as pilot:
+        for _ in range(100):
+            await pilot.pause()
+            if app.wake_armed:
+                break
+        assert app.wake_armed is True
+        assert fakes.builds == 1
+
+        await app._handle_reconnect_command("")
+
+        assert app.wake_armed is False
+        assert fakes.builds == 1
+        assert "Run /wake on after reconnect" in transcript_text(app)
+
+
 # ---- the launch flag is honored ---------------------------------------
 
 
