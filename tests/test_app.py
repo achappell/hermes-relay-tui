@@ -1458,12 +1458,12 @@ async def test_composer_remains_submitable_while_a_turn_is_responding():
         composer = app.query_one("#composer", Composer)
         composer.text = "first"
         first_press = asyncio.create_task(pilot.press("enter"))
-        await asyncio.sleep(0.05)
+        await pilot.pause()
         assert app._turn_in_flight
 
         composer.text = "second"
         second_press = asyncio.create_task(pilot.press("enter"))
-        await asyncio.sleep(0.05)
+        await pilot.pause()
 
         assert composer.text == ""
         assert app._queued_prompts == ["second"]
