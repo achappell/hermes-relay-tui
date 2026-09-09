@@ -16,6 +16,7 @@
 #pragma once
 
 #include "esp_heap_caps.h"
+#include "esphome/core/application.h"
 #include "esphome/core/hal.h"
 #include "esphome/core/log.h"
 #include "esphome/components/http_request/http_request.h"
@@ -112,18 +113,69 @@ inline void upload_and_restart(esphome::http_request::HttpRequestComponent *clie
     std::string body(reinterpret_cast<const char *>(buffer + offset), len);
     std::string full_url = url + "?seq=" + std::to_string(sample_index) + "&chunk=" + std::to_string(chunk) +
                             "&total=" + std::to_string(total_chunks) + "&ms=" + std::to_string(millis());
+    // Diagnostic (story 3 follow-up session 13): ESPHome's IDF http_request
+    // backend creates a *fresh* esp_http_client_handle_t on every single
+    // post() call and cleans it up in end() -- confirmed by reading
+    // http_request_idf.cpp -- so the ESP_FAIL wedging is not a leaked/reused
+    // client handle at this layer. Logging internal-RAM heap (current free
+    // and the all-time-low watermark) proved a real pattern: every FAILED
+    // call costs several KB of internal RAM that does not reliably come back
+    // (min_ever cascades down across a run of failures -- e.g.
+    // 200996 -> 194436 -> 188064 -> ... -- while successful calls show no
+    // such trend, recovering back to baseline). This is very likely a
+    // lingering/delayed-release resource inside ESP-IDF's own connect-failure
+    // path (a half-torn-down TCP socket, not something visible or patchable
+    // from this component), not a leak in this file's own code. Left as a
+    // permanent diagnostic since it's what caught this.
+    uint32_t heap_before = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
     auto response = client->post(full_url, body);
+    uint32_t heap_after = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
     bool chunk_ok = response != nullptr && response->status_code >= 200 && response->status_code < 300;
     if (!chunk_ok) {
-      ESP_LOGW(TAG, "Upload %u chunk %u failed (status %d)", (unsigned) sample_index, (unsigned) chunk,
-               response ? response->status_code : -1);
+      ESP_LOGW(TAG, "Upload %u chunk %u failed (status %d) -- internal heap before=%u after=%u min_ever=%u",
+               (unsigned) sample_index, (unsigned) chunk, response ? response->status_code : -1,
+               (unsigned) heap_before, (unsigned) heap_after, (unsigned) heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL));
       ok = false;
       consecutive_failures++;
     } else {
+      ESP_LOGD(TAG, "Upload %u chunk %u ok -- internal heap before=%u after=%u", (unsigned) sample_index,
+               (unsigned) chunk, (unsigned) heap_before, (unsigned) heap_after);
       consecutive_failures = 0;
     }
     if (response != nullptr) {
       response->end();
+    }
+
+    // Circuit breaker (session 13): the failed-call heap cost above isn't
+    // bounded by anything in this file, and a real burst was measured
+    // spiraling from a ~224KB baseline down through ~161KB in well under a
+    // minute of intermittent failures. Left unchecked this heads toward an
+    // uncontrolled out-of-memory crash somewhere else in the firmware (WiFi,
+    // TLS, the wake-word engine) at an unpredictable moment. A clean reboot
+    // -- which fully reclaims whatever ESP-IDF is holding onto -- is a far
+    // better failure mode than that: it costs one lost capture window and
+    // a ~10s reconnect, not an unbounded crash-loop risk. The next capture
+    // cycle starts fresh with full heap.
+    //
+    // Checked against the all-time-low watermark (heap_caps_get_minimum_
+    // free_size), not the post-call heap_after snapshot: a first attempt at
+    // this checked heap_after and never fired, because heap partially
+    // recovers within a few hundred ms of a failed call finishing -- by the
+    // time heap_after was read, a transient dip to 86508 bytes had already
+    // bounced back up past the threshold. The watermark catches the real
+    // danger point (a transient dip is exactly when something else
+    // allocating would crash) and, being monotonic for the process
+    // lifetime, only trips once -- which is the right behavior here: reboot
+    // once things have ever gotten this low, not just when they currently
+    // are. Threshold (96KB) is well above where this board has been
+    // observed to actually crash, so this fires as an early warning.
+    static const uint32_t LOW_HEAP_REBOOT_THRESHOLD = 96000;
+    uint32_t heap_watermark = heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL);
+    if (heap_watermark < LOW_HEAP_REBOOT_THRESHOLD) {
+      ESP_LOGE(TAG, "Internal heap watermark critically low (%u bytes) after a run of failed uploads -- rebooting "
+                     "to reclaim ESP-IDF-held resources before an uncontrolled crash",
+               (unsigned) heap_watermark);
+      esphome::App.safe_reboot();
     }
     // A run of failures usually means the HTTP client has wedged (seen as
     // persistent ESP_FAIL after a burst of successful uploads). Bail out of

@@ -12,7 +12,50 @@ context:
   - firmware/respeaker-lite/README.md
 ---
 
-## RESUME HERE (2026-09-09, end of session 12)
+## RESUME HERE (2026-09-09, end of session 13)
+
+**Update from session 13:** found and fixed the real danger in the upload
+wedge (session 12 only ruled out one non-fix). Instrumented internal-RAM
+heap around every upload chunk and got hard numbers: every FAILED chunk
+costs several KB of internal RAM that does not reliably come back, and a
+live burst was measured spiraling from a ~224KB baseline down to a
+transient low of 86KB in under 4 minutes of intermittent real failures.
+Recovery only happens after a *successful* call, never between two
+failures, which points at a lingering/delayed-release resource inside
+ESP-IDF's own connect-failure path (most likely a half-torn-down TCP
+socket) rather than a leak in this repo's code — confirmed separately that
+ESPHome's IDF `http_request` backend already creates a fresh
+`esp_http_client_handle_t` per call and cleans it up in `end()`, so the
+story's older "leaked/reused shared handle" theory is ruled out at that
+layer.
+
+Root-causing further into ESP-IDF's own internals was out of reach this
+session (and arguably out of this component's scope even if reached), so
+instead added a **circuit breaker**: `pcm_capture.h` now watches
+`heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL)` (the all-time-low
+watermark, not the post-call snapshot — a first attempt checking the
+snapshot never fired, because heap partially recovers within ms of a
+failed call finishing) and calls `App.safe_reboot()` once it drops below
+96KB. **Verified live, twice:** the breaker fired at a real watermark of
+88076 bytes, logged clearly, and produced a clean software reset
+(`rst:0xc RTC_SW_CPU_RST` — not a crash marker), came back through
+`setup()`, and heap was fully reclaimed to ~220KB. No crash-loop, no Safe
+Mode trip. This converts what was an unbounded runaway-toward-crash into a
+bounded, logged, ~10s-cost recovery.
+
+Upload reliability itself is still not "fixed" — chunks still fail and get
+lost — but the process can no longer spiral into an uncontrolled crash
+while doing so. The next real step for reliability itself (not yet
+attempted): investigate whether reducing request concurrency/rate further,
+or an explicit `esp_http_client`-level fix upstream, closes the gap; for
+now, the bounded-abandon + circuit-breaker combination is a safe place to
+run unattended data collection from.
+
+**Also: confirm the physical device is genuinely idle (not driven by
+another session) before reflashing — see session 12's note below, still
+current guidance.**
+
+## RESUME HERE (2026-09-09, end of session 12, superseded above)
 
 **Update from session 12:** step 1 below (retry-with-backoff) was tried and
 reverted — proven ineffective with live hardware evidence, not just
@@ -453,6 +496,23 @@ detection check remains.**
 - **Reverted to the original single-attempt-per-chunk, abandon-after-2-consecutive-failures logic.** Recompiled, reflashed, confirmed clean boot (no crash markers) afterward.
 - **Net result: rules out app-level retry as a fix for this specific bug**, narrowing session 11's "root-cause or work around" framing — a real fix needs to act on the client/connection itself (forced close-and-reconnect of the `esp_http_client` handle, or a periodic component-level reset) rather than retrying the same call. Not attempted this session.
 - **Also discovered (important process note, not a firmware finding):** a separate, still-running Claude Code session (different session directory, orphaned background `receiver.py` process, PID unrelated to this session) had been actively collecting real training-data captures on this same physical device since ~11:18, with samples as recent as 11:56 in its own `wake_data/` directory. This session's compile/flash cycle at ~11:57 interrupted that in-progress capture run before this was noticed. Confirmed with the human that the other session was no longer active before continuing. **Flag for future sessions: confirm no other session is actively driving the physical device (check `lsof -iTCP:8765` or equivalent, and for other `esphome logs`/upload processes) before reflashing** — this hardware is a single, shared, stateful resource that a concurrent session can be mid-experiment against.
+- **Also discovered (important process note, separate from the above): all of sessions 4-12's real progress had been developed as uncommitted working-tree state on `feat/epic-1-story-3-follow-up-stop` in the main repo checkout — an unrelated branch/story about voice stop functionality — instead of on this story's own `puck-01/3-onboard-wake-detection` branch/worktree.** Nothing had been committed or PR'd in 12 sessions; the work was one `git clean`/branch-switch away from being lost. Ported everything (respeaker-lite.yaml, README.md, pcm_capture.h, the vendored `components/`, `wake_models/okay_nabu.*`, this story file) into this worktree after diffing to confirm the main-checkout versions were a strict superset of what was already committed here (only removed line: the story's own `status:` field, correctly, since it was never actually done). Verified `esphome compile` succeeds in this worktree before committing (`e134e1f`). The stray copies in the main checkout were then discarded (`git checkout --` / `rm -rf`) with the human's explicit sign-off, since they were now safely duplicated here. **Going forward, all Puck firmware work belongs in this worktree, on this branch — not in the main checkout.**
+
+### Follow-up session 13: heap-leak root cause found for the upload wedge; circuit breaker added and verified live
+
+**Went after the real question left open by session 12: not "does retry help" (already ruled out) but "what is the wedge actually doing to the device, and is it dangerous." Found a concrete, measured answer and fixed the dangerous part.**
+
+- **Ruled out the "leaked/reused shared client handle" theory at the ESPHome layer by reading `http_request_idf.cpp` directly.** `HttpRequestIDF::perform()` calls `esp_http_client_init()` fresh on every single `post()` call and `esp_http_client_cleanup()` in `end()` (via `HttpContainerIDF::end()`). There is no persistent client instance being reused across chunks at this layer — whatever the wedge is, it's deeper than ESPHome's own component code.
+- **Added heap instrumentation** to `pcm_capture.h`: logs `heap_caps_get_free_size(MALLOC_CAP_INTERNAL)` before and after every chunk POST, plus `heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL)` (the process-lifetime low watermark) on every failure.
+- **Found a real, measured pattern, not a guess:** successful calls show no persistent trend (heap dips transiently during the call, always recovers to baseline ~216-222KB by the next call). **Failed calls do not recover the same way** — the "before" of the next failed call matches the "after" of the previous one almost exactly when failures run back-to-back, and only recovers once a call actually succeeds. A real live burst was measured spiraling: baseline ~224KB → after ~15 real failures, watermark down to 161KB; a later, longer burst went from ~224KB down through a transient 86508-byte low over about 4 minutes of intermittent real (not "not connected") failures.
+- **Diagnosis: very likely a lingering/delayed-release resource inside ESP-IDF's own connect-failure path** (most plausibly a half-torn-down TCP socket that the OS/lwIP only reclaims after its own internal timeout, not something `esp_http_client_cleanup()` controls) — not a leak in this repo's own code, since the pattern is absent on the success path and ESPHome's side is already confirmed to clean up correctly. Going further into ESP-IDF's own transport-layer internals to find and patch the exact spot was judged out of reach (and arguably out of scope for this component even if reached) for this session.
+- **Built a circuit breaker instead of chasing the root cause further:** `pcm_capture.h` now checks `heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL)` after every chunk and calls `App.safe_reboot()` once it drops below a 96KB threshold.
+  - **First version checked `heap_after` (the post-call snapshot) and never fired** — a real transient dip to 86508 bytes was observed but had already partially recovered by the time `heap_after` was read a moment later, since recovery happens fast once the triggering call itself completes. Switched to the all-time-low watermark, which catches the real danger moment (the transient dip itself, when something else allocating concurrently would be at risk) and is appropriately monotonic — it only trips once per boot, which is correct here: reboot once things have ever gotten this low, don't wait for "currently this low."
+  - **Verified live, with the corrected version:** ran a real burst until the watermark crossed the threshold. Breaker fired at a genuine 88076-byte watermark, logged clearly (`Internal heap watermark critically low... rebooting to reclaim ESP-IDF-held resources`), and called `App.safe_reboot()`. Serial log confirmed a clean software reset (`rst:0xc (RTC_SW_CPU_RST)` — not a `Guru Meditation`/`abort()`/backtrace crash marker), a normal boot back through `setup()`, and heap fully reclaimed to ~220KB. No crash-loop, no ESPHome Safe Mode trip, no repeat of the two crash-loop patterns from earlier sessions' raw-PCM-capture attempts.
+- **Net result:** upload reliability itself is still not fixed — chunks still fail and get lost, same ~loss rate as before — but the failure mode changed from "unbounded heap depletion toward an unpredictable crash somewhere else in the firmware" to "a bounded, logged, ~10-second reboot-and-resume." This makes it safe to run the training-data pipeline unattended for longer stretches than before.
+- **Also, separately: ported 9 sessions of uncommitted work from the wrong branch/worktree into this one and committed it here for the first time** (see the note appended to session 12's log above) — this session's own heap-instrumentation and circuit-breaker work was done correctly, in this worktree, from the start.
+- **Left in a stable, verified state:** device flashed with the circuit breaker in place, confirmed surviving a real trigger-and-recover cycle, WiFi reconnecting normally afterward. All prior diagnostics (per-channel amplitude, mww state, raw probability, feature vector, tensor shape, PCM capture) remain in place, unchanged.
+- **Concrete next steps, not attempted this session:** (1) upload reliability itself is still open — the circuit breaker makes the failure mode safe, it doesn't reduce how often chunks fail; further investigation would need to go into ESP-IDF's own `esp_http_client`/transport-layer source to find the actual lingering-resource cause, which is a materially deeper and more speculative undertaking than this session's instrumentation-and-mitigation approach. (2) the actual playback-and-capture orchestration script (session 11/12's step 2) — still not attempted. (3) dataset collection at scale and the `microWakeWord` training run itself — both still fully open.
 
 ### Follow-up session 11: training-data pipeline built and partially proven; real reliability bug remains
 
