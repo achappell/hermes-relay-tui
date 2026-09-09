@@ -12,7 +12,62 @@ context:
   - firmware/respeaker-lite/README.md
 ---
 
-## RESUME HERE (2026-09-09, end of session 13)
+## RESUME HERE (2026-09-09, end of session 14)
+
+**Update from session 14:** attempted the natural next step on upload
+reliability -- reuse one `esp_http_client` connection across all 16 chunks
+of a sample (via `esp_http_client_perform()`, which ESP-IDF's own docs
+confirm supports connection reuse across sequential calls on the same
+handle) instead of a fresh TCP connect/teardown per chunk, directly
+targeting session 13's TIME_WAIT-style-churn hypothesis. Also added
+`firmware/respeaker-lite/tools/receiver.py` (a proper, committed,
+HTTP/1.1-keep-alive-capable receiver, replacing the "ephemeral, lives in
+/tmp, redo it every session" tooling from before).
+
+**Result: a real, dangerous regression, caught and reverted, not shipped.**
+Bypassing ESPHome's `http_request` component to call `esp_http_client_perform()`
+directly dropped a protection that component provides internally
+(`watchdog::WatchdogManager` + explicit `feed_wdt()` calls around every
+HTTP stage) -- first live test produced a *worse* failure mode than
+session 13's heap spiral: task-watchdog panics (`task_wdt: Aborting`)
+roughly every 30-90 seconds. A first fix (wrapping the `perform()` call in
+the same `WatchdogManager` RAII pattern, 16000ms matching
+`http_request`'s own derivation) stopped the watchdog panics, but the very
+next live test produced something worse still: **the device went
+completely silent on serial with no crash, no watchdog trip, and no
+further log output at all** -- consistent with a genuine deadlock/hang in
+the connection-reuse path, not yet root-caused. Recovered the physical
+device via `esptool.py --after hard_reset chip_id` (the device does not
+have `run_at_exit` behavior otherwise -- see later story dependencies).
+
+**Reverted `pcm_capture.h` and `respeaker-lite.yaml` to the exact
+session-13 committed state (`git checkout HEAD --`)** rather than
+continuing to debug a proven-hang-risk approach live against the one
+physical device. Recompiled, reflashed, and confirmed a clean, stable boot
+with no crash/hang markers over a 30s window. `tools/receiver.py` was kept
+(harmless, backward-compatible dev tooling regardless of which upload
+approach is used).
+
+**Net result: connection reuse across chunks is a real, still-open idea
+for fixing upload reliability, but this session's specific implementation
+is unsafe and must not be reused as-is.** Any future attempt needs, at
+minimum: watchdog feeding proven correct *before* the first live test (not
+after a first crash), and a bounded, provably-terminating retry/backoff
+around any reused-connection reconnect attempt -- the hang is most likely
+in ESP-IDF's own reconnect-on-a-stale-kept-alive-connection path inside
+`esp_http_client_perform()`, given it appeared only after a keep-alive
+receiver was introduced and the client began attempting to reuse
+connections. Root-causing that hang was not attempted this session (the
+device was recovered and reverted instead of used for further live
+debugging of an already-demonstrated-dangerous state).
+
+**Current state of the actual training pipeline: unchanged from session
+13's end** -- single-attempt-per-chunk via ESPHome's `http_request`
+component, bounded abandonment, and the verified heap-watermark circuit
+breaker. Safe to run unattended. Upload reliability itself (~40% chunk
+loss) remains open.
+
+## RESUME HERE (2026-09-09, end of session 13, superseded above)
 
 **Update from session 13:** found and fixed the real danger in the upload
 wedge (session 12 only ruled out one non-fix). Instrumented internal-RAM
@@ -513,6 +568,19 @@ detection check remains.**
 - **Also, separately: ported 9 sessions of uncommitted work from the wrong branch/worktree into this one and committed it here for the first time** (see the note appended to session 12's log above) — this session's own heap-instrumentation and circuit-breaker work was done correctly, in this worktree, from the start.
 - **Left in a stable, verified state:** device flashed with the circuit breaker in place, confirmed surviving a real trigger-and-recover cycle, WiFi reconnecting normally afterward. All prior diagnostics (per-channel amplitude, mww state, raw probability, feature vector, tensor shape, PCM capture) remain in place, unchanged.
 - **Concrete next steps, not attempted this session:** (1) upload reliability itself is still open — the circuit breaker makes the failure mode safe, it doesn't reduce how often chunks fail; further investigation would need to go into ESP-IDF's own `esp_http_client`/transport-layer source to find the actual lingering-resource cause, which is a materially deeper and more speculative undertaking than this session's instrumentation-and-mitigation approach. (2) the actual playback-and-capture orchestration script (session 11/12's step 2) — still not attempted. (3) dataset collection at scale and the `microWakeWord` training run itself — both still fully open.
+
+### Follow-up session 14: connection-reuse attempt for upload reliability — caused a real hang, reverted
+
+**Went after session 13's own next-step (1): reduce upload chunk-failure rate, not just make failures safe. Real regression, caught before being left in a shippable state.**
+
+- **Approach:** bypass ESPHome's `http_request` component/YAML entirely and manage one `esp_http_client_handle_t` directly in `pcm_capture.h`, reused via `esp_http_client_perform()` across every chunk of every sample for the life of the device, per ESP-IDF's own documented support for connection reuse across sequential calls on the same handle. Directly targets session 13's diagnosis (repeated fresh TCP connect/teardown cycles, one per 16KB chunk, most plausibly leaving sockets in TIME_WAIT and starving the device of internal RAM). Also added `firmware/respeaker-lite/tools/receiver.py`, a proper committed receiver with `protocol_version = "HTTP/1.1"` (keep-alive) — the client-side reuse is pointless if the server closes the connection after every request, which Python's `http.server` does by default under HTTP/1.0.
+- **First live test: real regression, worse than what it was trying to fix.** Task-watchdog panics (`task_wdt: Aborting`, printing a CPU backtrace) roughly every 30-90 seconds, each followed by a reset. Root cause: ESPHome's `http_request_idf.cpp` wraps every stage of a request (`open`, `write`, `fetch_headers`) in a `watchdog::WatchdogManager` RAII guard plus explicit `feed_wdt()` calls specifically to prevent this; calling `esp_http_client_perform()` directly, bypassing that component, silently dropped all of that protection.
+- **Fix attempted:** wrapped the `esp_http_client_perform()` call in the same `esphome::watchdog::WatchdogManager` pattern, with a 16000ms timeout matching `http_request`'s own derivation (`timeout * 3 stages + 1000ms margin`, from `http_request/__init__.py`'s `default_watchdog_timeout`). This did stop the watchdog panics.
+- **Second live test: something worse.** The device went **completely silent on serial** — no crash marker, no watchdog trip, no further log lines of any kind for the rest of the observation window (checked with fresh `esphome logs` re-attaches up to 30s later, still nothing). This is consistent with a genuine deadlock/hang somewhere in the reused-connection reconnect path inside `esp_http_client_perform()` (most likely trying to reconnect over a stale/half-dead kept-alive connection and blocking on something the watchdog widening doesn't cover, e.g. a lower-level lock), but this was not root-caused — the device was recovered instead of used for further live debugging of an already-demonstrated-dangerous state.
+- **Recovered the physical device** via `esptool.py --port /dev/cu.usbmodem101 --after hard_reset chip_id` (confirmed the device was still enumerated/reachable at the USB level, just not producing application-level serial output; a plain hard reset via the RTS pin was sufficient — no need to hold BOOT or do a full erase).
+- **Reverted, did not ship:** `git checkout HEAD -- firmware/respeaker-lite/pcm_capture.h firmware/respeaker-lite/respeaker-lite.yaml`, restoring the exact session-13 committed state byte-for-byte. Recompiled, reflashed, and confirmed a clean boot with zero crash/hang markers over a 30-second observation window. Kept `tools/receiver.py` — it's harmless and backward-compatible with the reverted fresh-connection-per-chunk approach too (HTTP/1.1 keep-alive on the server side doesn't require the client to actually reuse anything).
+- **Net result:** connection reuse across chunks remains a real, plausible fix for the underlying reliability problem — the theory itself wasn't disproven, only this session's specific implementation was shown unsafe. **Do not repeat this approach as tried here** (bypassing `http_request`'s wrapper and calling raw `esp_http_client_perform()` in a loop reusing one handle) without first: (a) proving watchdog feeding is correct *before* the first live test, not discovering the gap via a live crash, and (b) understanding and bounding whatever `esp_http_client_perform()` does internally when reconnecting a stale kept-alive connection, since that path is the leading suspect for the hang and was not inspected this session.
+- **Current state, unchanged from session 13's end:** `pcm_capture.h` uses ESPHome's `http_request` component, single-attempt-per-chunk, bounded abandonment, and the verified heap-watermark circuit breaker. Device confirmed stable on this exact configuration at the end of this session.
 
 ### Follow-up session 11: training-data pipeline built and partially proven; real reliability bug remains
 
