@@ -95,6 +95,35 @@ is currently load-bearing in the published package name, the Homebrew tap
 (`achappell/homebrew-hermes-relay`), and the release workflow — see
 `DIST-02`.
 
+## BMad project workflow
+
+This repository uses BMad for product discovery, architecture, UX, story
+specification, implementation planning, and review. BMad artifacts are part of
+the engineering record, but they do not replace the GitHub Project as the task
+queue or source of truth for priority and workflow state.
+
+- Tracked planning artifacts live under `_bmad-output/planning-artifacts/`.
+  Use the PRD, architecture, UX, epic, and specification documents as design
+  evidence; check the board when their status conflicts with the board.
+- Tracked implementation artifacts live under
+  `_bmad-output/implementation-artifacts/`. Keep active story specifications,
+  task lists, validation notes, and sprint-status evidence aligned with the
+  implementation when the BMad workflow calls for them.
+- Run the BMad build workflow for substantive feature or story work. Follow
+  its clarify, plan, implement, review, and presentation gates; do not jump
+  from a board title straight to code when the workflow requires a ready
+  specification.
+- The BMad framework under `_bmad/` and local tool integrations under
+  `.agents/`, `.claude/`, and `.opencode/` are tooling, not product scope by
+  themselves. Rendered workflow/cache output is transient. Include these
+  directories in a commit only when their repository-wide adoption is
+  intentional and reviewed; never sweep them into a feature commit merely
+  because they appear as untracked files.
+- Before a BMad implementation, use a clean, appropriately named feature
+  branch or worktree. Preserve unrelated local tooling and generated files;
+  review the exact staged paths before committing. Never commit bearer tokens,
+  profile `.env` files, audio captures, or machine-specific credentials.
+
 ## GitHub Project task management — check this first
 
 Before answering "what's next" or starting any work, inspect the
