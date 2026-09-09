@@ -213,7 +213,10 @@ inline void upload_and_restart(esphome::http_request::HttpRequestComponent *clie
 // captures are safe before ever going back to continuous.
 static const size_t DUMP_CHUNK_BYTES = 200;
 static const size_t DUMP_MAX_CHUNKS = 1280;  // full ~256KB/2s capture
-static const uint32_t MAX_DUMPS = 3;  // session 16 step 4: bounded repeat, not indefinite
+// Verified at 15 (session 16 step 5): 15/15 full captures completed clean,
+// zero crash markers, chunk-corruption rate held flat (~0.05%, no worse
+// than smaller runs). Still bounded, not indefinite -- see story doc.
+static const uint32_t MAX_DUMPS = 15;
 
 inline void dump_over_serial() {
   static uint32_t dumps_done = 0;

@@ -12,6 +12,37 @@ context:
   - firmware/respeaker-lite/README.md
 ---
 
+## RESUME HERE (2026-09-09, end of session 16, fourth update)
+
+**Fourth update, same session: scaled the bounded repeat from 3 to 15
+captures. Clean across the board -- this answers the "does corruption
+rate grow with more captures" question the third update left open.**
+
+- Raised `MAX_DUMPS` from 3 to 15, flashed, then ran the real
+  `tools/collect_serial_dumps.py` against a fresh boot for the whole
+  series (~6.5 minutes: 15 x (2s capture + ~20s dump)).
+- **Result: 15/15 full 256000-byte captures saved, zero crash markers
+  anywhere in the run's full log** (`esphome logs` output the tool wraps
+  internally -- checked explicitly for abort/panic/task_wdt/Unsuccessful
+  boot, found none), device still logging `mww_diag`/`mww_prob` normally
+  15s after the tool exited.
+- **Chunk-corruption rate across the whole run: 9 zero-filled chunks out
+  of 19200 total (15 x 1280) -- about 0.05%,** not worse than (if
+  anything slightly better than) the smaller earlier runs this session.
+  One capture (seq=10) also came out 96 bytes short of the expected
+  256000 -- most likely a corrupted `PCMDUMP begin` header line itself
+  (which carries the declared total_bytes), the same class of occasional
+  serial-line noise as the individual chunk failures, not a new failure
+  mode. **No evidence the corruption rate grows with a longer bounded
+  run.**
+- **Net: the transport is now proven safe and stable at 15 consecutive
+  full-size captures in one boot.** Genuinely open questions remaining:
+  indefinite (no upper bound) operation specifically, and whether
+  anything changes over dozens/hundreds of captures rather than 15. Given
+  today's device has now been reflashed 5 times, further live scaling
+  should wait for a fresh session (router anti-flood caution, on record
+  since session 11).
+
 ## RESUME HERE (2026-09-09, end of session 16, third update)
 
 **Third update, same session: proved bounded, re-armed repeat capture
