@@ -250,10 +250,12 @@ interval:
           ESP_LOGI("mww_diag", "mww is_running: %s, vad_state: %s",
                    id(mww).is_running() ? "true" : "false",
                    id(mww).get_vad_state() ? "true" : "false");
-  # Training-data capture: uploads each completed ~2s rolling window over
-  # WiFi and immediately re-arms the next one. Runs from the main loop,
-  # never the real-time audio callback. See pcm_capture.h.
+  # Training-data capture (session 16): serial-dump safety test, NOT the
+  # WiFi upload path (pcm_capture::upload_and_restart, still defined in
+  # pcm_capture.h but not called here). Polls a cheap already-dumped guard
+  # every 200ms and fires exactly once, no re-arm -- see pcm_capture.h's
+  # dump_over_serial() for why this is deliberately small and one-shot.
   - interval: 200ms
     then:
       - lambda: |-
-          pcm_capture::upload_and_restart(id(http_client), "http://192.168.0.35:8765/upload");
+          pcm_capture::dump_over_serial();

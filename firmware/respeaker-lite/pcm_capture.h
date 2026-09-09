@@ -16,6 +16,7 @@
 #pragma once
 
 #include "esp_heap_caps.h"
+#include "esphome/core/alloc_helpers.h"
 #include "esphome/core/application.h"
 #include "esphome/core/hal.h"
 #include "esphome/core/log.h"
@@ -199,6 +200,51 @@ inline void upload_and_restart(esphome::http_request::HttpRequestComponent *clie
 
   sample_index++;
   start();
+}
+
+// Serial-dump path (story 3, session 16 -- see story doc for the full
+// history). A prior version dumped the *full* ~256KB capture (~1280 chunks)
+// continuously, immediately re-arming after every 2s window; it hung the
+// device on first live test with no crash marker, not root-caused. This
+// version is deliberately much smaller as a first safety test: it dumps
+// once, caps output to DUMP_MAX_CHUNKS (a small fraction of one capture),
+// and never re-arms. Only once this is confirmed to survive on real
+// hardware should the cap be raised toward a full single capture, and only
+// after that should continuous/repeating operation be reconsidered at all.
+static const size_t DUMP_CHUNK_BYTES = 200;
+static const size_t DUMP_MAX_CHUNKS = 25;  // ~5KB / ~20ms of audio -- proof of life only
+
+inline void dump_over_serial() {
+  static bool already_dumped = false;
+  if (already_dumped || !capture_done || buffer == nullptr) {
+    return;
+  }
+  already_dumped = true;
+
+  size_t full_chunks = (write_pos + DUMP_CHUNK_BYTES - 1) / DUMP_CHUNK_BYTES;
+  size_t total_chunks = std::min(full_chunks, DUMP_MAX_CHUNKS);
+  size_t total_bytes = std::min(write_pos, total_chunks * DUMP_CHUNK_BYTES);
+
+  ESP_LOGI(TAG, "PCMDUMP begin seq=%u total_bytes=%u total_chunks=%u", (unsigned) sample_index,
+           (unsigned) total_bytes, (unsigned) total_chunks);
+  for (size_t chunk = 0; chunk < total_chunks; ++chunk) {
+    size_t offset = chunk * DUMP_CHUNK_BYTES;
+    size_t len = std::min(DUMP_CHUNK_BYTES, write_pos - offset);
+    std::string b64 = esphome::base64_encode(buffer + offset, len);
+    ESP_LOGI(TAG, "PCMDUMP seq=%u chunk=%u total=%u b64=%s", (unsigned) sample_index, (unsigned) chunk,
+             (unsigned) total_chunks, b64.c_str());
+    // Deliberate breathing room -- session 15 speculated the hang may have
+    // been the host-side reader unable to drain fast enough at high serial
+    // volume. This dump is small enough that this delay barely matters for
+    // total time, but keep it for consistency with what will be tried at
+    // larger scale later.
+    vTaskDelay(pdMS_TO_TICKS(10));
+  }
+  ESP_LOGI(TAG, "PCMDUMP end seq=%u", (unsigned) sample_index);
+  sample_index++;
+  // Deliberately do NOT call start() again here -- single bounded capture
+  // only. Confirm the device survives this before ever considering
+  // re-arming for continuous operation.
 }
 
 }  // namespace pcm_capture

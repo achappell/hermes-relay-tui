@@ -12,6 +12,64 @@ context:
   - firmware/respeaker-lite/README.md
 ---
 
+## RESUME HERE (2026-09-09, end of session 16)
+
+**Update from session 16: the bounded serial-dump safety test session 15
+recommended was run, and it succeeded cleanly -- serial-dump transport is
+no longer an open hang risk at small scale, but is not yet proven at full
+capture size.**
+
+- **Before touching anything**, checked for other active sessions on the
+  shared device: no serial port holders (`lsof`/`ps` clean), and a stale
+  `/tmp/simple_receiver.py` from session 15 was still listening on
+  `:8765` but idle 17+ minutes with connection-reset errors in its log --
+  killed as harmless leftover debris, not an active session.
+- **Rewrote `pcm_capture::dump_over_serial()`** (was fully reverted out of
+  the committed firmware after session 15's hang) as a deliberately small,
+  single-shot test: capped to `DUMP_MAX_CHUNKS = 25` (~5KB / ~20ms of
+  audio, not the full ~256KB/1280-chunk capture that hung the device
+  last time), guarded by a static `already_dumped` flag so it fires
+  exactly once and never re-arms `start()` afterward. Wired into
+  `respeaker-lite.yaml`'s existing 200ms poll interval in place of
+  `upload_and_restart` (WiFi path untouched in `pcm_capture.h`, just not
+  called from the yaml right now).
+- **Compiled clean, flashed over USB, and forced a fresh reset
+  (`esptool.py --after hard_reset chip_id`) while `esphome logs` was
+  already attached**, specifically to catch the full boot sequence
+  including the dump (the first flash+attach missed it -- on_boot fires
+  before `esphome logs` finishes attaching, a recurring theme in this
+  story).
+- **Result: `PCMDUMP begin seq=0 total_bytes=5000 total_chunks=25` through
+  `PCMDUMP end seq=0` in ~400ms, then the device kept logging
+  `mww_diag`/`mww_prob`/`mic_diag` continuously for 30+ more seconds with
+  no crash, no watchdog trip, no silence.** Reassembled all 25 chunks
+  host-side (ad hoc script, same parsing logic as `tools/
+  collect_serial_dumps.py`): zero gaps, exact expected byte count (5000),
+  clean base64 decode throughout.
+- **Deliberately did not scale up to the full 1280-chunk dump this
+  session.** The small dump proves the serial-dump *mechanism itself*
+  (chunked ESP_LOGI + base64, single-shot, no re-arm) doesn't hang the
+  device, which was the open question after session 15. It does not yet
+  prove the *volume* that hung session 15's attempt is safe -- that
+  requires a separate test, and this session already did one reflash
+  cycle; per session 11's documented router anti-flood throttle from
+  repeated reflashing, stacking more reflash cycles in the same session
+  was judged not worth the risk for an already-successful checkpoint.
+- **Concrete next step, not attempted this session:** raise
+  `DUMP_MAX_CHUNKS` incrementally (e.g. a few hundred, then the full 1280)
+  across separate sessions/reflashes rather than all at once, confirming
+  survival at each step, until a full single 2s capture dumps cleanly.
+  Only after a full single dump is proven safe should continuous/
+  re-arming operation (the original goal, for actually collecting a
+  training dataset) be reconsidered -- and even then, watch for the same
+  host-side-reader-can't-drain-fast-enough risk session 15 flagged as
+  unconfirmed, now less likely at 25 chunks/dump but still open at 1280.
+  `tools/collect_serial_dumps.py` (host-side parser) remains untested
+  against live firmware output but its parsing logic was just validated
+  ad hoc against this session's real device output, so it should work
+  unchanged once given a firmware build that emits the `PCMDUMP` lines
+  it expects (in-progress on this branch).
+
 ## RESUME HERE (2026-09-09, end of session 15)
 
 **Update from session 15: pivoted to actually collecting training data and
