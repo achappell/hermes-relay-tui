@@ -229,6 +229,7 @@ def _build(appliance_state: dict):
         acknowledge=None,
         capture_finished=None,
         route_wake=None,
+        is_ready=None,
         **kwargs,
     ):
         listener = FakeListener()
@@ -246,6 +247,7 @@ def _build(appliance_state: dict):
             stop_playback=stop_playback,
             on_state_change=on_state_change,
             route_wake=route_wake,
+            is_ready=is_ready,
             now=appliance_state.get("clock", None) or (lambda: 0.0),
         )
         appliance_state["listener"] = listener

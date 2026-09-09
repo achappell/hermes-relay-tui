@@ -323,6 +323,13 @@ async def test_appliance_routes_wake_phrase_to_matching_profile():
         assert session_amanda.closes == 1
         assert session_jensen.connects == 1
 
+        # The coordinator was built with Amanda's session. A routed wake must
+        # still use the appliance's current Jensen session after the switch.
+        assert await asyncio.to_thread(
+            state["coordinator"].on_wake, "hey skippy"
+        ) is True
+        assert session_jensen.turns == ["what is the weather"]
+
         # Display channel received Jensen's account label
         assert "Jensen" in publisher.accounts
     finally:

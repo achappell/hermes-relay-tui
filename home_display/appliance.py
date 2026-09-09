@@ -672,20 +672,31 @@ class Appliance:
 
     # ---- turn ----------------------------------------------------------
 
+    def _session_is_ready(self) -> bool:
+        if not self._connected or self._session is None:
+            return False
+        try:
+            return bool(self._session.is_connected())
+        except Exception:
+            logger.debug("appliance session readiness check failed", exc_info=True)
+            return False
+
     def _capture_voice(self) -> str:
-        if self._stopping.is_set() or not self._connected:
+        if self._stopping.is_set() or not self._session_is_ready():
             return ""
         return self._session.capture_voice()
 
     def _capture_follow_up(self) -> str:
-        if self._stopping.is_set() or not self._connected:
+        if self._stopping.is_set() or not self._session_is_ready():
             return ""
         self._follow_up_capturing = True
         try:
+            if not self._session_is_ready():
+                return ""
             transcript = self._session.capture_voice(
                 wait_timeout=float(getattr(self.args, "wake_followup_seconds", 8.0))
             )
-            if self._stopping.is_set() or not self._connected:
+            if self._stopping.is_set() or not self._session_is_ready():
                 return ""
             return transcript
         finally:
@@ -702,12 +713,16 @@ class Appliance:
         loop = self._loop
         if loop is None:
             raise RuntimeError("the appliance loop is not running")
-        if self._stopping.is_set() or not self._connected:
+        if self._stopping.is_set() or not self._session_is_ready():
             return False
         future = asyncio.run_coroutine_threadsafe(self._run_turn(text), loop)
         self._turn_future = future
         try:
-            return future.result() and not self._stopping.is_set() and self._connected
+            return (
+                future.result()
+                and not self._stopping.is_set()
+                and self._session_is_ready()
+            )
         finally:
             self._turn_future = None
 
@@ -1294,9 +1309,14 @@ class Appliance:
                 p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values()
             ):
                 kwargs["route_wake"] = self._route_wake
+            if "is_ready" in params or any(
+                p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values()
+            ):
+                kwargs["is_ready"] = self._session_is_ready
         except (ValueError, TypeError):
             kwargs["capture"] = self._capture_voice
             kwargs["route_wake"] = self._route_wake
+            kwargs["is_ready"] = self._session_is_ready
 
         hands_free_args = self.args
         if getattr(self.args, "wake_phrases", None) is None:
