@@ -12,6 +12,77 @@ context:
   - firmware/respeaker-lite/README.md
 ---
 
+## RESUME HERE (2026-09-09, end of session 16, fifth update -- step 2 done)
+
+**Fifth update, same session: actually collected a real, correlated,
+labeled training dataset over the serial path -- the "step 2" this story
+has never completed across sessions 11-16. No firmware reflash needed;
+reused the already-flashed 15-capture firmware from the fourth update.**
+
+- **First attempt failed silently and taught a real lesson about backgrounding
+  processes across Bash tool calls in this harness:** launching
+  `collect_serial_dumps.py` via `(cmd &)` in the same compound shell
+  command as a later `esptool` reset and a second `(cmd &)` for
+  `collect_samples.py` caused the dumps collector to die within ~2
+  minutes with no error, producing 0 samples -- while the *device itself*
+  correctly ran its full 15-capture series into the void (confirmed
+  because a diagnostic re-run immediately after found `dumps_done` already
+  at its bound, i.e. a full run had genuinely completed, just unobserved).
+  **Fix: launch each long-running background process in its own Bash tool
+  call with explicit `nohup ... < /dev/null & disown`, and verify the
+  process is still alive and actually producing output a few seconds
+  later before starting anything that depends on it.** This worked
+  cleanly for both runs that followed.
+- **Ran two full collection sessions, each a fresh hard-reset boot, no
+  reflash between them:**
+  - Positive: `collect_serial_dumps.py` capturing to `/tmp/pcm_train_positive`
+    concurrently with `collect_samples.py --count 78 --gap-seconds 3.5
+    --session-tag positive` (continuous "hey jarvis" TTS across 7 macOS
+    voices/4 rates, replayed near the device for ~7.5 minutes). Result:
+    15/15 full captures saved, all 78 utterances logged, session window
+    written.
+  - Negative: same pattern, `--negative --count 70 --session-tag
+    negative` (10 everyday non-wake phrases). Result: 15/15 full captures
+    saved, all 70 utterances logged, session window written.
+  - Chunk-decode failures stayed in the same ~0.05-0.1%/1280 range seen
+    in the earlier pure-transport tests (1-3 chunks per capture,
+    zero-filled by the tool as designed) -- no change under real
+    TTS-playback conditions vs. the earlier idle-room tests.
+- **Ran the real `tools/label_captures.py --session-mode` against both
+  directories** (this script needed zero changes -- it already keyed off
+  the `<recv_time>_seq<N>.raw` filename convention that
+  `collect_serial_dumps.py` already matches, since it was written
+  against `receiver.py`'s WiFi-path output using the identical
+  convention). **Result: 30 labeled 2-second 16kHz mono WAV clips** in
+  `/tmp/training_clips/{positive,negative}/`, 15 each, correctly
+  converted through the same Q31->Q25->gain->Q31->16-bit pipeline that
+  matches what `micro_wake_word`'s `MicrophoneSource` actually sees.
+- **Sanity-checked amplitude on a sample of clips (not just file
+  presence): real, varied peak/RMS levels across both classes (peaks
+  frequently near full-scale, consistent with real speech through this
+  gain_factor 4 setup), not silence or corrupted zero-fill noise.**
+- **Net: one full pass of steps 1-2 across this story is now complete on
+  real hardware.** 30 samples (15/15 balanced) is far more than session
+  15's WiFi-path yield of 1 in a full day, but still small by
+  microWakeWord training standards (typically wants hundreds-thousands).
+  Scaling this further (more sessions, longer TTS runs, more voices/
+  phrases) is straightforward now that the pipeline is proven -- it's
+  pure repetition of what just worked, not new engineering. Training
+  data currently lives only in `/tmp/pcm_train_positive`,
+  `/tmp/pcm_train_negative`, and `/tmp/training_clips` -- **not
+  persisted anywhere durable yet**; a future session should either copy
+  it somewhere permanent before running more collection passes that
+  might reuse those tmp dirs, or fold accumulation logic into the
+  collection scripts.
+- **Next real step (step 3, not attempted): actually train a
+  microWakeWord model** on this data using the training environment
+  session 15 already set up (`/tmp/mww_train_venv`, `microwakeword`
+  installed and import-verified, but the training run itself never
+  attempted since there was never data until now). 30 samples is likely
+  too few for a good model but enough to prove the training pipeline
+  itself runs end-to-end -- worth trying now, then deciding whether to
+  scale up data collection before investing in a "real" training run.
+
 ## RESUME HERE (2026-09-09, end of session 16, fourth update)
 
 **Fourth update, same session: scaled the bounded repeat from 3 to 15
