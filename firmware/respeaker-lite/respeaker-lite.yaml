@@ -25,6 +25,16 @@
 esphome:
   name: respeaker-lite
   friendly_name: "Hermes Puck (reSpeaker Lite)"
+  # micro_wake_word does not start listening on its own -- MicroWakeWord::setup()
+  # never calls start(), and its own data callback explicitly drops audio while
+  # state_ == STOPPED. Without a voice_assistant: component (which normally
+  # triggers this), it needs an explicit start action, or it sits permanently
+  # stopped -- exactly matching every symptom seen debugging this story
+  # (zero mic activity, zero detections, at any log verbosity).
+  on_boot:
+    priority: -100  # run after all components finish setup(), not during boot
+    then:
+      - micro_wake_word.start
 
 esp32:
   board: seeed_xiao_esp32s3
@@ -98,7 +108,24 @@ microphone:
     bits_per_sample: 32bit
     i2s_mode: secondary
     channel: stereo
-
+    # TEMPORARY diagnostic for the "zero audio pipeline activity" mystery --
+    # logs raw amplitude every ~1s, independent of micro_wake_word, to prove
+    # whether any signal reaches the ESP32 at all. Remove once resolved.
+    on_data:
+      - lambda: |-
+          static uint32_t last_log_ms = 0;
+          static int32_t running_max = 0;
+          for (size_t i = 0; i + 3 < x.size(); i += 4) {
+            int32_t sample = (int32_t)(x[i] | (x[i+1] << 8) | (x[i+2] << 16) | (x[i+3] << 24));
+            int32_t abs_sample = sample < 0 ? -sample : sample;
+            if (abs_sample > running_max) running_max = abs_sample;
+          }
+          uint32_t now = millis();
+          if (now - last_log_ms > 1000) {
+            ESP_LOGI("mic_diag", "peak amplitude last ~1s: %d (bytes this callback: %d)", (int) running_max, (int) x.size());
+            running_max = 0;
+            last_log_ms = now;
+          }
 # On-device wake-word detection. Wake phrase is the pretrained community
 # model `hey_jarvis` (bundled with micro_wake_word, zero training
 # required) — NOT "hey hermes"; see README.md. The `stop` model is

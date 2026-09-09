@@ -177,21 +177,39 @@ Implementation Notes:**
    update-check HTTPS call entirely.
 
 Both compile and flash are now verified working (see Validation Scenario
-above). **Spoken-word detection was attempted 4 times (with a human
-physically present, "hey jarvis" spoken near the device, live log capture)
-across two builds — the base config and one with an added `vad:` block
-(also present in Seeed's reference tutorial, initially missing here). Every
-attempt produced zero detections and zero audio-pipeline log activity of
-any kind, even at maximum log verbosity.** This is inconclusive rather than
-a confirmed failure — some ESPHome audio components stay silent in their
-processing loop by design, and there's no confirmed-working baseline of
-this exact config on this exact board to compare against. Real
-possibilities: a mic wiring/gain issue specific to this board's assembly, a
-remaining software gap, or verbal-test methodology defeating a working
-pipeline. Resolving this needs either deliberate audio-level
-instrumentation or physical hardware inspection — tracked as this story's
-one open follow-up, not silently declared working. See the story file's
-Implementation Notes for the full attempt-by-attempt record.
+above).
+
+**A third, more fundamental issue was found in a follow-up session and is
+now fixed:** `micro_wake_word` never starts listening on its own.
+`MicroWakeWord::setup()` never calls `start()`, and its own audio callback
+explicitly drops all data while stopped — without a `voice_assistant:`
+component (which normally issues the start call) or an explicit action of
+our own, the engine sat permanently in `STOPPED`. This fully explained
+every "zero activity" symptom from the first debugging session — it was
+never about sample rate, gain, or VAD. Fixed with `esphome: on_boot: then:
+[micro_wake_word.start]` at `priority: -100` (must run after all
+components finish `setup()`, or it fails with "hasn't been setup yet"). A
+permanent amplitude diagnostic (`mic_diag` log tag, independent of
+`micro_wake_word`) now confirms the pipeline is genuinely alive — baseline
+room noise reads ~5–90M, speech spikes it to 1–2 billion.
+
+**Spoken-word detection is still unconfirmed even with that fix in
+place.** Two more live attempts at "hey jarvis," plus one at the bundled
+`stop` model (a different phrase with a far more lenient threshold, used
+specifically to rule out "hey jarvis is just a hard accent match") — all
+three produced clear amplitude spikes but zero detection log lines. VAD
+gating and the fork's decimation logic were both checked by reading the
+actual source and ruled out as the sole explanation (the fork does perform
+real, if crude/unfiltered, 48kHz→16kHz decimation — not just a metadata
+relabel, an earlier conclusion in this file that was wrong and has been
+corrected). Two attempts to capture raw audio for a human to actually
+listen to both crash-looped the device (tripping ESPHome's Safe Mode
+protection) and were fully reverted — **do not repeat either approach**
+(growing a buffer inside the microphone's own real-time callback, or a
+PSRAM-backed fixed buffer resized in `on_boot`) without first
+understanding why they aborted. See the story file's Implementation Notes
+for the complete, attempt-by-attempt record. Resolving this remains this
+story's one open follow-up, not silently declared working.
 
 **If you raise `logger: level:` above `DEBUG` while debugging this:**
 `VERY_VERBOSE` logs the configured WiFi password in cleartext (found and
