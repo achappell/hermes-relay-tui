@@ -204,22 +204,22 @@ inline void upload_and_restart(esphome::http_request::HttpRequestComponent *clie
 
 // Serial-dump path (story 3, session 16 -- see story doc for the full
 // history). A prior version dumped the *full* ~256KB capture (~1280 chunks)
-// continuously, immediately re-arming after every 2s window; it hung the
-// device on first live test with no crash marker, not root-caused. This
-// version is deliberately much smaller as a first safety test: it dumps
-// once, caps output to DUMP_MAX_CHUNKS (a small fraction of one capture),
-// and never re-arms. Only once this is confirmed to survive on real
-// hardware should the cap be raised toward a full single capture, and only
-// after that should continuous/repeating operation be reconsidered at all.
+// continuously, immediately re-arming after every 2s window, indefinitely;
+// it hung the device on first live test with no crash marker. Root-caused
+// later the same session (loopTask watchdog starvation, fixed via
+// App.feed_wdt() below) and proven safe one-shot at full capture size.
+// This step re-arms, but only for a small, bounded number of repeats
+// (MAX_DUMPS) -- not an indefinite loop -- to test whether *repeated*
+// captures are safe before ever going back to continuous.
 static const size_t DUMP_CHUNK_BYTES = 200;
-static const size_t DUMP_MAX_CHUNKS = 1280;  // full ~256KB/2s capture -- session 16 step 3, up from 300
+static const size_t DUMP_MAX_CHUNKS = 1280;  // full ~256KB/2s capture
+static const uint32_t MAX_DUMPS = 3;  // session 16 step 4: bounded repeat, not indefinite
 
 inline void dump_over_serial() {
-  static bool already_dumped = false;
-  if (already_dumped || !capture_done || buffer == nullptr) {
+  static uint32_t dumps_done = 0;
+  if (dumps_done >= MAX_DUMPS || !capture_done || buffer == nullptr) {
     return;
   }
-  already_dumped = true;
 
   size_t full_chunks = (write_pos + DUMP_CHUNK_BYTES - 1) / DUMP_CHUNK_BYTES;
   size_t total_chunks = std::min(full_chunks, DUMP_MAX_CHUNKS);
@@ -253,9 +253,15 @@ inline void dump_over_serial() {
   }
   ESP_LOGI(TAG, "PCMDUMP end seq=%u", (unsigned) sample_index);
   sample_index++;
-  // Deliberately do NOT call start() again here -- single bounded capture
-  // only. Confirm the device survives this before ever considering
-  // re-arming for continuous operation.
+  dumps_done++;
+  if (dumps_done < MAX_DUMPS) {
+    // Bounded re-arm: start the next 2s capture. capture_done goes false
+    // again immediately, so this function no-ops on subsequent interval
+    // ticks until the new capture fills, exactly like the first one.
+    start();
+  } else {
+    ESP_LOGI(TAG, "PCMDUMP series complete after %u dumps -- not re-arming further", (unsigned) dumps_done);
+  }
 }
 
 }  // namespace pcm_capture

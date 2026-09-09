@@ -12,6 +12,40 @@ context:
   - firmware/respeaker-lite/README.md
 ---
 
+## RESUME HERE (2026-09-09, end of session 16, third update)
+
+**Third update, same session: proved bounded, re-armed repeat capture
+works -- three full 2s/1280-chunk captures back-to-back, no hang, no
+crash, via the real `collect_serial_dumps.py` tool producing three real
+`.raw` training samples.**
+
+- Changed `dump_over_serial()`'s single-shot `already_dumped` flag to a
+  bounded counter (`MAX_DUMPS = 3`): after each dump completes, if the
+  count hasn't been reached, it calls `start()` to re-arm the next 2s
+  capture; once reached, it stops permanently and logs "series complete."
+  Deliberately NOT an indefinite loop -- this tests whether *repeated*
+  captures survive before ever reconsidering continuous operation.
+- **Verified twice on real hardware:** once watching raw `esphome logs`
+  output directly (seq=0/1/2 each began, ran their full ~20s dump, and
+  ended cleanly; series-complete message logged; device kept running
+  mww/mic diagnostics normally 45+s afterward with zero crash markers),
+  and once through the real `tools/collect_serial_dumps.py` against a
+  fresh boot, which produced three genuine 256000-byte `.raw` files
+  (`_seq0.raw`, `_seq1.raw`, `_seq2.raw`) with no manual intervention.
+- **Chunk loss observed:** 2 out of 1280 chunks failed base64 decode in
+  one of the six total dumps run across both verification passes (both
+  times consistent with the ~1-2/1280 rate the tool's own docstring
+  already anticipated as normal serial-line corruption from session 4);
+  zero-fill handling covered it transparently in both the ad hoc verifier
+  and the real tool. Not a regression, not new behavior.
+- **This resolves the transport-safety question entirely for repeated
+  captures within a bounded series.** What's still genuinely untested:
+  indefinite/continuous re-arming (no upper bound), and whether the
+  occasional chunk-corruption rate holds steady or grows over a much
+  longer run (dozens+ of captures, not 3). Given today's device has now
+  been reflashed multiple times, further live testing should wait for a
+  fresh session per the router-anti-flood caution already on record.
+
 ## RESUME HERE (2026-09-09, end of session 16, continued)
 
 **Second update, same session: root-caused session 15's serial-dump hang
