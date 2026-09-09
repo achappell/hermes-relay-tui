@@ -1,0 +1,137 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Direction 02 — Night Console</title>
+  <style>
+    /* Palette: #101725 midnight, #EAF7FF ice, #62E6C7 aqua, #FFCF5C signal, #FF7D9C coral, #7C8CFF blue. */
+    :root {
+      color-scheme: dark;
+      --midnight: #101725;
+      --ice: #EAF7FF;
+      --aqua: #62E6C7;
+      --signal: #FFCF5C;
+      --coral: #FF7D9C;
+      --blue: #7C8CFF;
+      --dim: rgba(234,247,255,.58);
+      --grid: rgba(234,247,255,.09);
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; min-height: 100vh; padding: 36px 22px 52px; background: #0B101B; color: var(--ice); font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+    .direction { max-width: 1160px; margin: 0 auto; }
+    .notes { max-width: 800px; margin: 0 auto 24px; color: var(--ice); }
+    .notes h1 { margin: 0 0 8px; font-family: system-ui, sans-serif; font-size: clamp(24px, 4vw, 38px); letter-spacing: -.04em; }
+    .notes p { margin: 6px 0; color: var(--dim); line-height: 1.5; font-family: system-ui, sans-serif; font-size: 15px; }
+    .browser { overflow: hidden; border: 1px solid #2A3850; border-radius: 20px; background: var(--midnight); box-shadow: 0 28px 90px rgba(0,0,0,.48); }
+    .chrome { display: flex; align-items: center; gap: 8px; height: 38px; padding: 0 15px; border-bottom: 1px solid #2A3850; background: #0D1320; }
+    .dot { width: 8px; height: 8px; border-radius: 50%; background: #35425A; }
+    .dot:first-child { background: var(--coral); }
+    .chrome-label { margin-left: 10px; color: #7E8BA2; font-size: 11px; letter-spacing: .15em; text-transform: uppercase; }
+    .screen { position: relative; min-height: min(58vw, 675px); aspect-ratio: 1024 / 600; overflow: hidden; padding: 4.4% 5%; background: var(--midnight); isolation: isolate; }
+    .screen::before { position: absolute; z-index: -2; inset: 0; background-image: linear-gradient(var(--grid) 1px, transparent 1px), linear-gradient(90deg, var(--grid) 1px, transparent 1px); background-size: 34px 34px; content: ""; mask-image: linear-gradient(to bottom, #000, transparent 94%); }
+    .screen::after { position: absolute; z-index: -1; inset: 0; background: radial-gradient(circle at 72% 45%, rgba(124,140,255,.16), transparent 33%), radial-gradient(circle at 19% 84%, rgba(98,230,199,.09), transparent 28%); content: ""; }
+    .console-head { display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid #2A3850; padding-bottom: 14px; }
+    .brandline { display: flex; align-items: center; gap: 12px; }
+    .signal-dot { width: 14px; height: 14px; border-radius: 50%; background: var(--aqua); box-shadow: 0 0 0 6px rgba(98,230,199,.11), 0 0 22px rgba(98,230,199,.7); animation: ping 1.8s ease-out infinite; }
+    .label { color: #7E8BA2; font-size: clamp(10px, 1.25vw, 13px); letter-spacing: .15em; text-transform: uppercase; }
+    .name { margin-top: 3px; color: var(--ice); font-size: clamp(21px, 3vw, 30px); font-weight: 900; letter-spacing: -.06em; }
+    .head-metrics { display: flex; gap: 18px; color: var(--dim); font-size: clamp(10px, 1.2vw, 12px); letter-spacing: .1em; text-transform: uppercase; }
+    .head-metrics strong { color: var(--aqua); font-weight: 700; }
+    .console { display: grid; grid-template-columns: 23% minmax(0, 1fr) 22%; gap: 2.3%; height: calc(100% - 74px); padding-top: 4.5%; }
+    .rail { border-right: 1px solid #2A3850; padding-right: 18px; }
+    .rail h3 { margin: 0 0 17px; color: #7E8BA2; font-size: 11px; letter-spacing: .15em; text-transform: uppercase; }
+    .rail-item { position: relative; margin-bottom: 20px; padding-left: 19px; color: #8291A8; font-size: clamp(11px, 1.45vw, 15px); line-height: 1.35; }
+    .rail-item::before { position: absolute; top: 3px; left: 0; width: 10px; height: 10px; border: 1px solid #60708A; border-radius: 50%; content: ""; }
+    .rail-item.done { color: var(--aqua); }
+    .rail-item.done::before { border-color: var(--aqua); background: var(--aqua); box-shadow: 0 0 12px rgba(98,230,199,.65); }
+    .rail-item.current { color: var(--ice); font-weight: 800; }
+    .rail-item.current::before { border-color: var(--signal); box-shadow: 0 0 0 4px rgba(255,207,92,.12); }
+    .console-main { position: relative; display: flex; min-width: 0; flex-direction: column; justify-content: center; align-items: center; }
+    .main-state { align-self: stretch; color: var(--signal); font-size: clamp(13px, 1.7vw, 18px); font-weight: 800; letter-spacing: .17em; text-align: center; text-transform: uppercase; }
+    .main-state::before { content: "[ "; color: #718097; }
+    .main-state::after { content: " ]"; color: #718097; }
+    .wavebox { position: relative; display: flex; align-items: center; justify-content: center; width: min(40vw, 410px); aspect-ratio: 1.65; margin-top: 2.8%; border: 1px solid #7189AA; background: rgba(16,23,37,.58); box-shadow: inset 0 0 45px rgba(124,140,255,.08); }
+    .wavebox::before { position: absolute; inset: 12% 5%; border-top: 1px dashed rgba(234,247,255,.2); border-bottom: 1px dashed rgba(234,247,255,.2); content: ""; }
+    .wave { display: flex; align-items: center; gap: clamp(3px, .6vw, 7px); height: 72%; }
+    .wave i { width: clamp(4px, .7vw, 8px); height: 20%; background: var(--aqua); box-shadow: 0 0 14px rgba(98,230,199,.62); animation: equalize 730ms ease-in-out infinite alternate; }
+    .wave i:nth-child(1) { animation-delay: -500ms; }
+    .wave i:nth-child(2) { height: 43%; animation-delay: -320ms; }
+    .wave i:nth-child(3) { height: 70%; animation-delay: -150ms; }
+    .wave i:nth-child(4) { height: 96%; animation-delay: -610ms; }
+    .wave i:nth-child(5) { height: 58%; animation-delay: -290ms; }
+    .wave i:nth-child(6) { height: 78%; animation-delay: -90ms; }
+    .wave i:nth-child(7) { height: 35%; animation-delay: -440ms; }
+    .wave i:nth-child(8) { height: 86%; animation-delay: -260ms; }
+    .wave i:nth-child(9) { height: 52%; animation-delay: -530ms; }
+    .wave i:nth-child(10) { height: 28%; animation-delay: -180ms; }
+    .big-state { margin-top: 3.5%; color: var(--ice); font-family: system-ui, sans-serif; font-size: clamp(42px, 7vw, 82px); font-weight: 950; letter-spacing: -.09em; line-height: .9; text-transform: uppercase; }
+    .substate { margin-top: 12px; color: var(--dim); font-family: system-ui, sans-serif; font-size: clamp(13px, 1.6vw, 17px); font-weight: 650; text-align: center; }
+    .side { display: flex; flex-direction: column; gap: 14px; }
+    .side-card { padding: 15px; border: 1px solid #2A3850; background: rgba(13,19,32,.82); }
+    .side-card.current { border-color: var(--signal); box-shadow: 0 0 24px rgba(255,207,92,.09); }
+    .side-card .label { font-size: 10px; }
+    .side-card strong { display: block; margin-top: 9px; color: var(--ice); font-family: system-ui, sans-serif; font-size: clamp(17px, 2.3vw, 25px); letter-spacing: -.05em; }
+    .side-card p { margin: 8px 0 0; color: var(--dim); font-family: system-ui, sans-serif; font-size: 12px; line-height: 1.35; }
+    .side-card.variant { border-style: dashed; opacity: .86; }
+    .footer { position: absolute; right: 5%; bottom: 4%; left: 5%; display: flex; justify-content: space-between; gap: 12px; color: #7E8BA2; font-size: clamp(9px, 1vw, 11px); letter-spacing: .12em; text-transform: uppercase; }
+    .footer b { color: var(--aqua); font-weight: 700; }
+    @keyframes equalize { to { transform: scaleY(.28); opacity: .6; } }
+    @keyframes ping { 0% { box-shadow: 0 0 0 0 rgba(98,230,199,.4), 0 0 16px rgba(98,230,199,.5); } 70%, 100% { box-shadow: 0 0 0 13px rgba(98,230,199,0), 0 0 22px rgba(98,230,199,.7); } }
+    @media (max-width: 760px) {
+      body { padding: 22px 12px 36px; }
+      .screen { min-height: 600px; aspect-ratio: auto; padding: 24px 20px; }
+      .head-metrics { display: none; }
+      .console { grid-template-columns: 1fr; height: auto; gap: 14px; padding-top: 28px; }
+      .rail { display: flex; justify-content: space-between; gap: 8px; border-right: 0; border-bottom: 1px solid #2A3850; padding: 0 0 16px; }
+      .rail h3 { display: none; }
+      .rail-item { margin: 0; padding: 0; font-size: 10px; text-align: center; }
+      .rail-item::before { display: block; position: static; width: 8px; height: 8px; margin: 0 auto 7px; }
+      .wavebox { width: min(82vw, 410px); }
+      .side { display: grid; grid-template-columns: 1fr 1fr; }
+      .footer { position: static; margin-top: 22px; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after { animation: none !important; transition: none !important; }
+      .wave i { opacity: 1; transform: scaleY(1); }
+    }
+  </style>
+</head>
+<body>
+  <main class="direction">
+    <section class="notes" aria-label="Design direction rationale">
+      <h1>02 / Night Console</h1>
+      <p>A denser, high-contrast direction for a household that wants every phase legible at a glance. The console vocabulary turns the same conversation into a calm instrument panel: an explicit turn path, a large state word, and a live waveform that implies voice synchronization without exposing response content.</p>
+      <p><strong>Hero:</strong> room display moving through Connecting → Listening → Speaking, with a Listening variant card and the active Hermes profile in the header.</p>
+    </section>
+    <section class="browser" aria-label="Room display visual direction">
+      <div class="chrome"><span class="dot"></span><span class="dot"></span><span class="dot"></span><span class="chrome-label">room display / active turn</span></div>
+      <div class="screen">
+        <header class="console-head">
+          <div class="brandline"><span class="signal-dot" aria-hidden="true"></span><div><div class="label">Hermes profile</div><div class="name">Missy</div></div></div>
+          <div class="head-metrics"><span>state / <strong>live</strong></span><span>room / <strong>private</strong></span></div>
+        </header>
+        <div class="console">
+          <aside class="rail" aria-label="Turn path">
+            <h3>Turn path</h3>
+            <div class="rail-item done">Connecting</div>
+            <div class="rail-item done">Listening</div>
+            <div class="rail-item current">Speaking</div>
+          </aside>
+          <section class="console-main" aria-label="Speaking state">
+            <div class="main-state">voice active</div>
+            <div class="wavebox" aria-label="Voice-synchronized response animation"><div class="wave" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div></div>
+            <div class="big-state">Speaking</div>
+            <div class="substate">The display moves with the voice.</div>
+          </section>
+          <aside class="side" aria-label="State variants">
+            <div class="side-card current"><div class="label">Current</div><strong>Speaking</strong><p>Profile: Missy</p></div>
+            <div class="side-card variant"><div class="label">Variant</div><strong>Listening</strong><p>Sound cue + readable state</p></div>
+          </aside>
+        </div>
+        <footer class="footer"><span>ambient / background only</span><span>next / <b>follow-up</b></span></footer>
+      </div>
+    </section>
+  </main>
+</body>
+</html>

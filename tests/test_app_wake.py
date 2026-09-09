@@ -116,6 +116,7 @@ class WakeFakes:
             acknowledge=kwargs.get("acknowledge"),
             capture_finished=kwargs.get("capture_finished"),
             on_state_change=kwargs.get("on_state_change"),
+            is_ready=kwargs.get("is_ready"),
         )
         self.listener = listener
         self.coordinator = coordinator

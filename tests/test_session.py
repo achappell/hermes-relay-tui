@@ -1,8 +1,11 @@
+import asyncio
 import json
 import types
 
+import pytest
+
 import config
-from session import HermesSession
+from session import HermesSession, SessionNotReadyError
 
 
 class FakeWebSocket:
@@ -40,6 +43,49 @@ def make_args(**overrides):
     }
     values.update(overrides)
     return types.SimpleNamespace(**values)
+
+
+async def test_session_is_not_connected_until_hello_ack_is_verified(monkeypatch):
+    hello_started = asyncio.Event()
+    release_hello = asyncio.Event()
+    websocket = FakeWebSocket([])
+
+    async def recv_hello():
+        hello_started.set()
+        await release_hello.wait()
+        return json.dumps({"type": "hello_ack", "chat_id": "chat"})
+
+    websocket.recv = recv_hello
+    monkeypatch.setattr(
+        config,
+        "connect_factory",
+        lambda: lambda *args, **kwargs: FakeContextManager(websocket),
+    )
+    session = HermesSession(make_args())
+    connecting = asyncio.create_task(session.connect())
+
+    await hello_started.wait()
+    assert session.is_connected() is False
+    with pytest.raises(SessionNotReadyError):
+        session.send_turn("premature")
+    assert session.turn_index == 0
+    assert session.active_turn_id is None
+    assert all(json.loads(frame)["type"] != "turn" for frame in websocket.sent)
+
+    release_hello.set()
+    await connecting
+
+    assert session.is_connected() is True
+
+
+def test_session_rejects_turn_before_a_verified_connection():
+    session = HermesSession(make_args())
+
+    with pytest.raises(RuntimeError, match="Not connected to relay"):
+        session.send_turn("hello")
+
+    assert session.turn_index == 0
+    assert session.active_turn_id is None
 
 
 async def test_session_sends_interrupt_for_the_active_turn_when_capability_is_advertised(

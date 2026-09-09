@@ -32,6 +32,10 @@ from mic import (
 )
 
 
+class SessionNotReadyError(RuntimeError):
+    """A turn was requested before the selected profile was verified."""
+
+
 class SessionProtocol(Protocol):
     """What a front end needs from a session — implemented by `HermesSession`
     and by the test doubles, so there is exactly one code path here."""
@@ -107,6 +111,7 @@ class HermesSession:
         self._voice_cancel_requested = threading.Event()
         self._shared_recorder: Any = None
         self._capabilities: frozenset[str] = frozenset()
+        self._hello_verified = False
         self.active_turn_id: str | None = None
         self._interrupt_sent_for_turn: str | None = None
 
@@ -179,6 +184,9 @@ class HermesSession:
                 session_id=self._session_id,
                 display_name=self.args.display_name,
             )
+            # ``ws`` exists while the handshake is in flight. It is not an
+            # authorized session until Hermes has answered with hello_ack.
+            self._hello_verified = True
             if hello.get("session_id"):
                 self._session_id = str(hello.get("session_id"))
                 if hasattr(self.args, "session_id"):
@@ -231,9 +239,11 @@ class HermesSession:
             raise
 
     def is_connected(self) -> bool:
-        return self.ws is not None
+        """Return true only after the selected profile passed hello_ack."""
+        return self.ws is not None and self._hello_verified
 
     async def close(self) -> None:
+        self._hello_verified = False
         self.cancel_voice()
         microphone = self.microphone
         self.microphone = None
@@ -256,6 +266,8 @@ class HermesSession:
         self._interrupt_sent_for_turn = None
 
     def send_turn(self, text: str, *, stt_source: str = "local"):
+        if not self.is_connected():
+            raise SessionNotReadyError("Not connected to relay")
         # turn_index stays 0-based for the first turn, matching the reference
         # script's `index` — _audio_path only adds a suffix from index 1 on.
         self.turn_index += 1

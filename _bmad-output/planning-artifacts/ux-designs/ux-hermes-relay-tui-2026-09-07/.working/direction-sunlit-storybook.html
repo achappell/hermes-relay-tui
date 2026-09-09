@@ -1,0 +1,189 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Direction 01 — Sunlit Storybook</title>
+  <style>
+    /* Palette: #342F45 ink, #FFF8EA paper, #FFD166 sun, #70D6B5 mint, #FF8FA3 coral, #8E7CFF violet. */
+    :root {
+      color-scheme: light;
+      --ink: #342F45;
+      --paper: #FFF8EA;
+      --sun: #FFD166;
+      --mint: #70D6B5;
+      --coral: #FF8FA3;
+      --violet: #8E7CFF;
+      --line: rgba(52, 47, 69, .14);
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      padding: 36px 22px 52px;
+      color: var(--ink);
+      background: #342F45;
+      font-family: ui-rounded, "SF Pro Rounded", system-ui, sans-serif;
+    }
+    .direction { max-width: 1160px; margin: 0 auto; }
+    .notes { color: #FFF8EA; max-width: 760px; margin: 0 auto 24px; }
+    .notes h1 { margin: 0 0 8px; font-size: clamp(24px, 4vw, 38px); letter-spacing: -.04em; }
+    .notes p { margin: 6px 0; line-height: 1.5; font-size: 15px; opacity: .88; }
+    .browser {
+      overflow: hidden;
+      border: 1px solid rgba(255,255,255,.17);
+      border-radius: 28px;
+      background: var(--paper);
+      box-shadow: 0 26px 80px rgba(0,0,0,.28);
+    }
+    .chrome {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      height: 42px;
+      padding: 0 16px;
+      border-bottom: 1px solid var(--line);
+      background: #FFFDF6;
+    }
+    .dot { width: 9px; height: 9px; border-radius: 50%; }
+    .dot:nth-child(1) { background: #FF8FA3; }
+    .dot:nth-child(2) { background: #FFD166; }
+    .dot:nth-child(3) { background: #70D6B5; }
+    .chrome-label { margin-left: 8px; color: #766F84; font-size: 12px; letter-spacing: .08em; text-transform: uppercase; }
+    .screen {
+      position: relative;
+      min-height: min(58vw, 675px);
+      aspect-ratio: 1024 / 600;
+      overflow: hidden;
+      padding: 5.2% 6%;
+      background: var(--paper);
+      isolation: isolate;
+    }
+    .ambient {
+      position: absolute;
+      z-index: -2;
+      inset: 0;
+      background:
+        radial-gradient(circle at 16% 18%, rgba(255,209,102,.38) 0 8%, transparent 26%),
+        radial-gradient(circle at 88% 22%, rgba(112,214,181,.31) 0 9%, transparent 27%),
+        radial-gradient(circle at 72% 88%, rgba(142,124,255,.18) 0 12%, transparent 34%),
+        linear-gradient(135deg, #FFF8EA 0%, #FFF4E4 100%);
+    }
+    .ambient::before, .ambient::after {
+      content: "";
+      position: absolute;
+      border-radius: 48% 52% 58% 42%;
+      filter: blur(1px);
+      opacity: .44;
+    }
+    .ambient::before { width: 25%; height: 42%; left: -5%; bottom: -16%; background: var(--mint); transform: rotate(-16deg); }
+    .ambient::after { width: 29%; height: 42%; right: -7%; top: -18%; background: var(--coral); transform: rotate(21deg); }
+    .topline { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+    .profile { display: flex; align-items: center; gap: 12px; }
+    .avatar {
+      display: grid;
+      width: 54px;
+      height: 54px;
+      place-items: center;
+      border: 3px solid var(--ink);
+      border-radius: 42% 58% 55% 45%;
+      background: var(--sun);
+      font-size: 23px;
+      font-weight: 900;
+      transform: rotate(-5deg);
+      box-shadow: 4px 5px 0 var(--ink);
+    }
+    .eyebrow { margin-bottom: 2px; color: #766F84; font-size: 12px; font-weight: 800; letter-spacing: .12em; text-transform: uppercase; }
+    .profile-name { font-size: clamp(22px, 3vw, 32px); font-weight: 900; letter-spacing: -.05em; }
+    .privacy { padding: 9px 14px; border: 1px solid var(--line); border-radius: 999px; background: rgba(255,255,255,.52); font-size: 13px; font-weight: 800; }
+    .path { display: flex; justify-content: center; gap: 9px; margin: 4.5% auto 0; }
+    .step { display: flex; align-items: center; gap: 8px; color: #8B8496; font-size: clamp(11px, 1.35vw, 14px); font-weight: 800; }
+    .step + .step::before { content: "→"; margin-right: 2px; color: #B8B0BF; }
+    .step.done { color: #4A806F; }
+    .step.current { color: var(--ink); }
+    .step.current b { background: var(--coral); }
+    .step b { display: grid; width: 22px; height: 22px; place-items: center; border-radius: 50%; background: #E9E3E0; font-size: 11px; }
+    .stage { display: grid; grid-template-columns: minmax(0, 1fr) minmax(190px, 25%); align-items: center; gap: 5%; max-width: 850px; margin: 4.5% auto 0; }
+    .voice-orb { position: relative; display: grid; width: min(31vw, 286px); aspect-ratio: 1; margin: 0 auto; place-items: center; }
+    .ring, .ring::after { position: absolute; inset: 4%; border: 2px solid rgba(142,124,255,.33); border-radius: 45% 55% 49% 51%; content: ""; animation: breathe 3.2s ease-in-out infinite; }
+    .ring::after { inset: 8%; border-color: rgba(255,143,163,.46); animation-delay: -1.1s; }
+    .orb-core { display: grid; z-index: 1; width: 54%; height: 54%; place-items: center; border: 4px solid var(--ink); border-radius: 46% 54% 58% 42%; background: var(--mint); box-shadow: 8px 9px 0 var(--ink); animation: float 2.8s ease-in-out infinite; }
+    .bars { display: flex; align-items: center; gap: 6px; height: 54px; }
+    .bars i { display: block; width: 7px; height: 18px; border-radius: 10px; background: var(--ink); animation: voice 760ms ease-in-out infinite alternate; }
+    .bars i:nth-child(2) { height: 38px; animation-delay: -240ms; }
+    .bars i:nth-child(3) { height: 52px; animation-delay: -480ms; }
+    .bars i:nth-child(4) { height: 29px; animation-delay: -120ms; }
+    .bars i:nth-child(5) { height: 15px; animation-delay: -360ms; }
+    .status-copy { text-align: left; }
+    .status-copy h2 { margin: 0; font-size: clamp(42px, 7vw, 78px); line-height: .9; letter-spacing: -.08em; }
+    .status-copy p { max-width: 300px; margin: 14px 0 0; color: #766F84; font-size: clamp(15px, 1.7vw, 19px); line-height: 1.35; font-weight: 700; }
+    .variant { margin-top: 19px; padding: 14px 16px; border: 2px solid var(--ink); border-radius: 18px; background: rgba(255,255,255,.65); box-shadow: 4px 4px 0 rgba(52,47,69,.13); }
+    .variant small { display: block; color: #766F84; font-size: 11px; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; }
+    .variant strong { display: block; margin-top: 3px; font-size: 20px; letter-spacing: -.04em; }
+    .bottomline { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-top: 4.2%; }
+    .follow { display: flex; align-items: center; gap: 9px; color: var(--ink); font-size: clamp(13px, 1.6vw, 17px); font-weight: 900; }
+    .follow-mark { display: grid; width: 30px; height: 30px; place-items: center; border-radius: 50%; background: var(--violet); color: var(--paper); animation: blink 1.8s ease-in-out infinite; }
+    .ambient-note { color: #8B8496; font-size: 12px; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; }
+    @keyframes breathe { 0%, 100% { transform: scale(.92) rotate(-5deg); opacity: .45; } 50% { transform: scale(1.08) rotate(8deg); opacity: .9; } }
+    @keyframes float { 0%, 100% { transform: translateY(2px) rotate(-3deg); } 50% { transform: translateY(-7px) rotate(4deg); } }
+    @keyframes voice { to { transform: scaleY(.38); } }
+    @keyframes blink { 0%, 100% { opacity: .7; } 50% { opacity: 1; transform: scale(1.08); } }
+    @media (max-width: 700px) {
+      body { padding: 22px 12px 36px; }
+      .screen { min-height: 500px; aspect-ratio: auto; padding: 28px 24px; }
+      .stage { grid-template-columns: 1fr; gap: 14px; margin-top: 28px; }
+      .voice-orb { width: 200px; }
+      .status-copy { text-align: center; }
+      .status-copy p { margin-inline: auto; }
+      .variant { max-width: 220px; margin: 16px auto 0; text-align: left; }
+      .path { flex-wrap: wrap; }
+      .bottomline { margin-top: 28px; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; }
+    }
+  </style>
+</head>
+<body>
+  <main class="direction">
+    <section class="notes" aria-label="Design direction rationale">
+      <h1>01 / Sunlit Storybook</h1>
+      <p>A low-density, rounded direction that makes the active doorway feel like a friendly character joining the room. Warm paper, soft ambient shapes, a large readable phase, and breathing voice bars keep the background gentle while making the speaking moment unmistakable.</p>
+      <p><strong>Hero:</strong> room display moving through Connecting → Listening → Speaking, with a visible Missy profile and a Listening state variant.</p>
+    </section>
+    <section class="browser" aria-label="Room display visual direction">
+      <div class="chrome"><span class="dot"></span><span class="dot"></span><span class="dot"></span><span class="chrome-label">room display / active turn</span></div>
+      <div class="screen">
+        <div class="ambient" aria-label="Idle ambient background"></div>
+        <div class="topline">
+          <div class="profile">
+            <div class="avatar" aria-hidden="true">M</div>
+            <div><div class="eyebrow">Hermes profile</div><div class="profile-name">Missy</div></div>
+          </div>
+          <div class="privacy">Room display · private</div>
+        </div>
+        <div class="path" aria-label="Turn phases">
+          <div class="step done"><b>1</b> Connecting</div>
+          <div class="step done"><b>2</b> Listening</div>
+          <div class="step current"><b>3</b> Speaking</div>
+        </div>
+        <div class="stage">
+          <div class="voice-orb" aria-label="Voice-synchronized response animation">
+            <div class="ring"></div>
+            <div class="orb-core"><div class="bars" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i></div></div>
+          </div>
+          <div class="status-copy">
+            <h2>Speaking</h2>
+            <p>The voice is active. The display moves with it.</p>
+            <div class="variant"><small>State variant</small><strong>Listening</strong><small>sound cue + readable state</small></div>
+          </div>
+        </div>
+        <div class="bottomline">
+          <div class="follow"><span class="follow-mark">↗</span> Follow-up after speaking</div>
+          <div class="ambient-note">Ambient stays in the background</div>
+        </div>
+      </div>
+    </section>
+  </main>
+</body>
+</html>

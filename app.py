@@ -74,7 +74,7 @@ from history import (
     history_path_for_profile,
 )
 from prompts import PendingPrompt
-from session import HermesSession, SessionProtocol
+from session import HermesSession, SessionNotReadyError, SessionProtocol
 from session_picker import SessionPickerModal
 from shell import (
     ShellExecutionError,
@@ -686,6 +686,13 @@ class HermesStreamingApp(App):
         self.domain.set_connection_state(state)
         self._refresh_connection_status()
 
+    def _connection_is_ready(self) -> bool:
+        """Return true only when the selected profile has a verified session."""
+        return (
+            self.connection_state == CONNECTION_CONNECTED
+            and self.session.is_connected()
+        )
+
     def _refresh_empty_state(self) -> None:
         try:
             widget = self.query_one("#empty-state", Static)
@@ -803,8 +810,13 @@ class HermesStreamingApp(App):
             if getattr(self.session, "confirmed_model", None)
             else ""
         )
-        line = f"{symbol} {self.connection_state} · session {session_id}{model_part}"
-        self.sub_title = f"{self.connection_state} · session {session_id}{model_part}"
+        profile_part = (
+            f" · profile {self._active_profile_name}"
+            if self._profiles_configured and self._active_profile_name
+            else ""
+        )
+        line = f"{symbol} {self.connection_state}{profile_part} · session {session_id}{model_part}"
+        self.sub_title = f"{self.connection_state}{profile_part} · session {session_id}{model_part}"
         try:
             widget = self.query_one("#connection-status", Static)
         except (NoMatches, ScreenStackError):
@@ -1227,6 +1239,7 @@ class HermesStreamingApp(App):
                 capture=self._capture_wake_voice,
                 follow_up_capture=self._capture_wake_follow_up,
                 send=self._send_wake_turn,
+                is_ready=self._connection_is_ready,
                 speech_detected=self._wake_speech_detected,
                 stop_playback=self._abort_player,
                 acknowledge=self._acknowledge_wake,
@@ -1660,6 +1673,8 @@ class HermesStreamingApp(App):
 
     def _capture_wake_voice(self) -> str:
         """Capture the utterance after the wake phrase with a real bound."""
+        if not self._connection_is_ready():
+            return ""
         timeout = getattr(
             self.args, "wake_listen_timeout", handsfree.DEFAULT_LISTEN_TIMEOUT
         )
@@ -1667,6 +1682,8 @@ class HermesStreamingApp(App):
 
     def _capture_wake_follow_up(self) -> str:
         """Give a speaker one quiet, wake-word-free conversational window."""
+        if not self._connection_is_ready():
+            return ""
         timeout = getattr(self.args, "wake_followup_seconds", 8.0)
         return self.session.capture_voice(wait_timeout=float(timeout))
 
@@ -2814,6 +2831,17 @@ class HermesStreamingApp(App):
             if coordinator is not None and coordinator.state != handsfree.IDLE:
                 self._append_block("[a wake turn is already in flight]")
                 return
+        if not self._connection_is_ready():
+            if not await self._connect():
+                self._append_block(
+                    "[error] voice turn not started; microphone remains closed"
+                )
+                return
+            if not self._connection_is_ready():
+                self._append_block(
+                    "[error] voice turn not started; microphone remains closed"
+                )
+                return
         self._voice_capture_cancelled = False
         wake_was_armed = self.wake_armed
         if wake_was_armed:
@@ -3140,7 +3168,7 @@ class HermesStreamingApp(App):
             stt_source,
             summarize_text(text),
         )
-        if not self.session.is_connected():
+        if not self._connection_is_ready():
             if not await self._connect():
                 self._append_block(f"you> {text}")
                 self._append_block("[error] not connected; prompt kept in queue")
@@ -3180,6 +3208,12 @@ class HermesStreamingApp(App):
             else:
                 await self._consume_turn(events, index, generation=index)
             self._last_prompt_status = PROMPT_COMPLETED
+        except SessionNotReadyError:
+            await self._mark_connection_lost()
+            self._last_prompt_status = PROMPT_NOT_SENT
+            self._append_block(f"you> {text}")
+            self._append_block("[error] not connected; prompt kept in queue")
+            return False
         except asyncio.CancelledError:
             self._set_voice_state(VOICE_INTERRUPTED)
             self._append_block("[interrupted]")

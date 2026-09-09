@@ -1,0 +1,461 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Hermes UX key screen — Room active turn</title>
+  <style>
+    /*
+      Governing UX spine sections:
+      DESIGN.md — Brand & Style; Colors; Typography; Layout & Spacing; Components;
+      Do's and Don'ts.
+      EXPERIENCE.md — State Patterns; Component Patterns; Wake, routing, and capture;
+      Turn-taking and cues; Presentation and privacy; Accessibility Floor; UJ-1.
+    */
+    :root {
+      color-scheme: dark;
+      --base: #0B101B;
+      --console: #101725;
+      --panel: #0D1320;
+      --raised: #182338;
+      --grid: #1A2639;
+      --ink: #EAF7FF;
+      --secondary: #B3C0D2;
+      --muted: #91A0B5;
+      --border: #2A3850;
+      --emphasis: #7189AA;
+      --live: #62E6C7;
+      --live-on: #08241D;
+      --attention: #FFCF5C;
+      --attention-on: #201A08;
+      --identity: #7C8CFF;
+      --unavailable: #FF7D9C;
+      --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      --sans: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-width: 320px;
+      padding: 36px 24px 56px;
+      background: var(--base);
+      color: var(--ink);
+      font-family: var(--sans);
+    }
+    .page { max-width: 1320px; margin: 0 auto; }
+    .masthead { max-width: 760px; margin: 0 auto 28px; }
+    .eyebrow, .label, .caption-kicker, .chrome-label {
+      font-family: var(--mono);
+      font-size: 12px;
+      font-weight: 700;
+      letter-spacing: .12em;
+      line-height: 1.3;
+      text-transform: uppercase;
+    }
+    .eyebrow { color: var(--identity); }
+    h1 {
+      margin: 8px 0 10px;
+      font-size: clamp(32px, 5vw, 56px);
+      font-weight: 850;
+      letter-spacing: -.06em;
+      line-height: .98;
+    }
+    .masthead p {
+      margin: 0;
+      color: var(--secondary);
+      font-size: 18px;
+      line-height: 1.45;
+    }
+    .variants { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 20px; }
+    .variant { min-width: 0; }
+    .variant-caption {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 16px;
+      margin: 0 4px 10px;
+    }
+    .variant-caption h2 { margin: 0; font-size: 20px; letter-spacing: -.03em; }
+    .variant-caption p { margin: 0; color: var(--muted); font-size: 13px; text-align: right; }
+    .display-shell {
+      overflow: hidden;
+      border: 1px solid var(--border);
+      border-radius: 20px;
+      background: var(--console);
+      box-shadow: 0 24px 70px rgba(0, 0, 0, .38);
+    }
+    .window-bar {
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      height: 38px;
+      padding: 0 14px;
+      border-bottom: 1px solid var(--border);
+      background: var(--panel);
+    }
+    .window-dot { width: 8px; height: 8px; border-radius: 50%; background: #40506B; }
+    .window-dot:first-child { background: var(--unavailable); }
+    .chrome-label { margin-left: 9px; color: var(--muted); font-size: 10px; }
+    .room-screen {
+      position: relative;
+      min-height: 575px;
+      overflow: hidden;
+      padding: 34px 36px 28px;
+      background: var(--console);
+      isolation: isolate;
+    }
+    .room-screen::before {
+      position: absolute;
+      z-index: -2;
+      inset: 0;
+      background-image: linear-gradient(var(--grid) 1px, transparent 1px), linear-gradient(90deg, var(--grid) 1px, transparent 1px);
+      background-size: 32px 32px;
+      content: "";
+      opacity: .45;
+      mask-image: linear-gradient(to bottom, #000 0%, transparent 96%);
+    }
+    .room-screen::after {
+      position: absolute;
+      z-index: -1;
+      inset: 0;
+      background: radial-gradient(circle at 73% 48%, rgba(124, 140, 255, .13), transparent 36%), radial-gradient(circle at 22% 78%, rgba(98, 230, 199, .08), transparent 30%);
+      content: "";
+    }
+    .console-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 18px;
+      padding-bottom: 16px;
+      border-bottom: 1px solid var(--border);
+    }
+    .identity-lock { display: flex; align-items: center; gap: 12px; min-width: 0; }
+    .identity-mark {
+      width: 14px;
+      height: 14px;
+      flex: 0 0 auto;
+      border-radius: 50%;
+      background: var(--identity);
+      box-shadow: 0 0 0 6px rgba(124, 140, 255, .12), 0 0 18px rgba(124, 140, 255, .62);
+    }
+    .label { color: var(--muted); font-size: 10px; }
+    .profile-name {
+      margin-top: 3px;
+      color: var(--ink);
+      font-size: clamp(22px, 3vw, 30px);
+      font-weight: 850;
+      letter-spacing: -.06em;
+    }
+    .head-meta {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+      gap: 8px 18px;
+      color: var(--muted);
+      font-family: var(--mono);
+      font-size: 10px;
+      letter-spacing: .08em;
+      text-transform: uppercase;
+    }
+    .head-meta strong { color: var(--live); font-weight: 700; }
+    .turn-console {
+      display: grid;
+      grid-template-columns: 144px minmax(0, 1fr) 172px;
+      gap: 22px;
+      min-height: 418px;
+      padding-top: 28px;
+    }
+    .path-rail { border-right: 1px solid var(--border); padding-right: 18px; }
+    .path-rail > .label { display: block; margin-bottom: 18px; }
+    .path-step {
+      position: relative;
+      margin: 0 0 16px;
+      padding-left: 20px;
+      color: #7889A3;
+      font-family: var(--mono);
+      font-size: 11px;
+      font-weight: 600;
+      letter-spacing: .03em;
+      line-height: 1.25;
+    }
+    .path-step::before {
+      position: absolute;
+      top: 1px;
+      left: 0;
+      width: 9px;
+      height: 9px;
+      border: 1px solid #61718B;
+      border-radius: 50%;
+      content: "";
+    }
+    .path-step.done { color: var(--live); }
+    .path-step.done::before { border-color: var(--live); background: var(--live); box-shadow: 0 0 10px rgba(98, 230, 199, .55); }
+    .path-step.current { color: var(--ink); font-weight: 800; }
+    .path-step.current::before { border-color: var(--attention); box-shadow: 0 0 0 4px rgba(255, 207, 92, .12); }
+    .turn-main {
+      display: flex;
+      min-width: 0;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      text-align: center;
+    }
+    .phase-overline {
+      color: var(--attention);
+      font-family: var(--mono);
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: .14em;
+      text-transform: uppercase;
+    }
+    .phase-overline::before { content: "[ "; color: var(--emphasis); }
+    .phase-overline::after { content: " ]"; color: var(--emphasis); }
+    .big-state {
+      margin: 17px 0 0;
+      color: var(--ink);
+      font-size: clamp(48px, 6vw, 72px);
+      font-weight: 900;
+      letter-spacing: -.09em;
+      line-height: .92;
+    }
+    .state-support {
+      max-width: 310px;
+      margin: 13px 0 0;
+      color: var(--secondary);
+      font-size: 16px;
+      font-weight: 550;
+      line-height: 1.4;
+    }
+    .state-support strong { color: var(--identity); }
+    .listen-orb {
+      position: relative;
+      display: grid;
+      place-items: center;
+      width: 98px;
+      height: 98px;
+      margin-bottom: 2px;
+      border: 1px solid var(--live);
+      border-radius: 50%;
+      background: rgba(98, 230, 199, .08);
+      box-shadow: 0 0 0 14px rgba(98, 230, 199, .045), 0 0 38px rgba(98, 230, 199, .22);
+    }
+    .listen-orb::before, .listen-orb::after {
+      position: absolute;
+      border: 1px solid rgba(98, 230, 199, .38);
+      border-radius: 50%;
+      content: "";
+    }
+    .listen-orb::before { inset: 18px; }
+    .listen-orb::after { inset: 31px; border-color: var(--live); background: var(--live); box-shadow: 0 0 17px rgba(98, 230, 199, .62); }
+    .listen-orb span { position: relative; z-index: 1; color: var(--live); font-family: var(--mono); font-size: 9px; font-weight: 800; letter-spacing: .12em; text-transform: uppercase; }
+    .capture-cue {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      margin-top: 22px;
+      padding: 9px 12px;
+      border: 1px solid rgba(98, 230, 199, .42);
+      border-radius: 6px;
+      background: rgba(8, 36, 29, .7);
+      color: var(--live);
+      font-size: 13px;
+      font-weight: 700;
+    }
+    .live-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--live); box-shadow: 0 0 12px rgba(98, 230, 199, .75); }
+    .speaking .phase-overline { color: var(--live); }
+    .visualizer {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 5px;
+      width: min(100%, 290px);
+      height: 88px;
+      margin-top: 1px;
+      border: 1px solid var(--emphasis);
+      border-radius: 2px;
+      background: rgba(13, 19, 32, .82);
+      box-shadow: inset 0 0 30px rgba(124, 140, 255, .08);
+    }
+    .visualizer::before, .visualizer::after { position: absolute; right: 18px; left: 18px; height: 0; border-top: 1px dashed rgba(234, 247, 255, .18); content: ""; }
+    .visualizer::before { top: 28%; }
+    .visualizer::after { bottom: 28%; }
+    .visualizer { position: relative; }
+    .visualizer-bar { position: relative; z-index: 1; width: 7px; height: 24%; background: var(--live); box-shadow: 0 0 13px rgba(98, 230, 199, .64); animation: voice-pulse 720ms ease-in-out infinite alternate; transform-origin: center; }
+    .visualizer-bar:nth-child(2) { height: 48%; animation-delay: -140ms; }
+    .visualizer-bar:nth-child(3) { height: 76%; animation-delay: -260ms; }
+    .visualizer-bar:nth-child(4) { height: 96%; animation-delay: -420ms; }
+    .visualizer-bar:nth-child(5) { height: 62%; animation-delay: -90ms; }
+    .visualizer-bar:nth-child(6) { height: 82%; animation-delay: -330ms; }
+    .visualizer-bar:nth-child(7) { height: 43%; animation-delay: -520ms; }
+    .visualizer-bar:nth-child(8) { height: 70%; animation-delay: -210ms; }
+    .visualizer-bar:nth-child(9) { height: 34%; animation-delay: -460ms; }
+    .visualizer-bar:nth-child(10) { height: 18%; animation-delay: -40ms; }
+    @keyframes voice-pulse { to { opacity: .58; transform: scaleY(.45); } }
+    .speech-card {
+      width: min(100%, 340px);
+      margin-top: 20px;
+      padding: 14px 16px;
+      border-left: 2px solid var(--live);
+      background: rgba(13, 19, 32, .8);
+      text-align: left;
+    }
+    .speech-card .label { color: var(--live); }
+    .speech-card p { margin: 7px 0 0; color: var(--ink); font-size: 16px; line-height: 1.42; }
+    .side-stack { display: flex; flex-direction: column; gap: 12px; }
+    .side-panel {
+      min-height: 82px;
+      padding: 13px 14px;
+      border: 1px solid var(--border);
+      background: rgba(13, 19, 32, .82);
+    }
+    .side-panel.identity { border-color: rgba(124, 140, 255, .75); }
+    .side-panel.current { border-color: var(--attention); box-shadow: 0 0 18px rgba(255, 207, 92, .08); }
+    .side-panel strong { display: block; margin-top: 8px; color: var(--ink); font-size: 19px; font-weight: 800; letter-spacing: -.04em; }
+    .side-panel p { margin: 6px 0 0; color: var(--secondary); font-size: 12px; line-height: 1.35; }
+    .screen-footer {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      margin-top: 5px;
+      color: var(--muted);
+      font-family: var(--mono);
+      font-size: 10px;
+      letter-spacing: .08em;
+      line-height: 1.3;
+      text-transform: uppercase;
+    }
+    .screen-footer strong { color: var(--live); }
+    .footnote {
+      max-width: 900px;
+      margin: 20px auto 0;
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.5;
+      text-align: center;
+    }
+    @media (max-width: 1080px) {
+      .variants { grid-template-columns: 1fr; }
+      .room-screen { min-height: 540px; }
+    }
+    @media (max-width: 700px) {
+      body { padding: 24px 12px 38px; }
+      .room-screen { min-height: 0; padding: 24px 18px; }
+      .console-head { align-items: flex-start; flex-direction: column; }
+      .head-meta { justify-content: flex-start; }
+      .turn-console { grid-template-columns: 1fr; min-height: 0; gap: 22px; }
+      .path-rail { display: grid; grid-template-columns: repeat(7, 1fr); gap: 5px; border-right: 0; border-bottom: 1px solid var(--border); padding: 0 0 17px; }
+      .path-rail > .label { grid-column: 1 / -1; margin-bottom: 4px; }
+      .path-step { margin: 0; padding: 18px 0 0; font-size: 9px; text-align: center; }
+      .path-step::before { top: 0; left: 50%; transform: translateX(-50%); }
+      .side-stack { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .screen-footer { flex-direction: column; }
+      .variant-caption { align-items: flex-start; flex-direction: column; gap: 3px; }
+      .variant-caption p { text-align: left; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after { animation: none !important; transition: none !important; }
+    }
+  </style>
+</head>
+<body>
+  <main class="page">
+    <header class="masthead">
+      <div class="eyebrow">UX key screen 01 / shared display</div>
+      <h1>Room active turn</h1>
+      <p>The selected Hermes Profile is visible before capture, the current phase is named in plain language, and the room Display mirrors one room-local turn without becoming another doorway.</p>
+    </header>
+
+    <section class="variants" aria-label="Room active turn state variants">
+      <article class="variant">
+        <div class="variant-caption">
+          <h2>Heard → Listening</h2>
+          <p>Profile fixed before capture</p>
+        </div>
+        <div class="display-shell">
+          <div class="window-bar" aria-hidden="true"><span class="window-dot"></span><span class="window-dot"></span><span class="window-dot"></span><span class="chrome-label">room display / kitchen / active turn</span></div>
+          <div class="room-screen listening" role="region" aria-label="Kitchen Room Display showing Missy and the Listening state before capture">
+            <header class="console-head">
+              <div class="identity-lock">
+                <span class="identity-mark" aria-hidden="true"></span>
+                <div><div class="label">Hermes Profile</div><div class="profile-name">Missy</div></div>
+              </div>
+              <div class="head-meta"><span>Room / <strong>Kitchen</strong></span><span>Scope / room-local</span></div>
+            </header>
+            <div class="turn-console">
+              <aside class="path-rail" aria-label="Turn Path">
+                <div class="label">Turn Path</div>
+                <div class="path-step done">Heard</div>
+                <div class="path-step current">Listening</div>
+                <div class="path-step">Transcribing</div>
+                <div class="path-step">Thinking</div>
+                <div class="path-step">Buffering</div>
+                <div class="path-step">Speaking</div>
+                <div class="path-step">Complete</div>
+              </aside>
+              <section class="turn-main" aria-label="Listening state">
+                <div class="phase-overline">identity fixed</div>
+                <div class="listen-orb" aria-hidden="true"><span>heard</span></div>
+                <div class="big-state">Listening</div>
+                <p class="state-support"><strong>Profile: Missy</strong> is fixed before capture. Speak when you are ready.</p>
+                <div class="capture-cue"><span class="live-dot" aria-hidden="true"></span>Capture is open</div>
+              </section>
+              <aside class="side-stack" aria-label="Listening details">
+                <div class="side-panel identity"><div class="label">Profile</div><strong>Missy</strong><p>Wake Mapping: “Hey Missy”</p></div>
+                <div class="side-panel current"><div class="label">Puck status</div><strong>Listening</strong><p>Status only on the Puck.</p></div>
+                <div class="side-panel"><div class="label">Privacy</div><strong>Transient</strong><p>Room-local capture path.</p></div>
+              </aside>
+            </div>
+            <footer class="screen-footer"><span>no response text yet</span><span>next / <strong>Transcribing</strong></span></footer>
+          </div>
+        </div>
+      </article>
+
+      <article class="variant">
+        <div class="variant-caption">
+          <h2>Speaking</h2>
+          <p>Same Profile, response present</p>
+        </div>
+        <div class="display-shell">
+          <div class="window-bar" aria-hidden="true"><span class="window-dot"></span><span class="window-dot"></span><span class="window-dot"></span><span class="chrome-label">room display / kitchen / response active</span></div>
+          <div class="room-screen speaking" role="region" aria-label="Kitchen Room Display showing Missy and the Speaking state with a room-local response">
+            <header class="console-head">
+              <div class="identity-lock">
+                <span class="identity-mark" aria-hidden="true"></span>
+                <div><div class="label">Hermes Profile</div><div class="profile-name">Missy</div></div>
+              </div>
+              <div class="head-meta"><span>Room / <strong>Kitchen</strong></span><span>Audio / <strong>live</strong></span></div>
+            </header>
+            <div class="turn-console">
+              <aside class="path-rail" aria-label="Turn Path">
+                <div class="label">Turn Path</div>
+                <div class="path-step done">Heard</div>
+                <div class="path-step done">Listening</div>
+                <div class="path-step done">Transcribing</div>
+                <div class="path-step done">Thinking</div>
+                <div class="path-step done">Buffering</div>
+                <div class="path-step current">Speaking</div>
+                <div class="path-step">Complete</div>
+              </aside>
+              <section class="turn-main" aria-label="Speaking state">
+                <div class="phase-overline">response audio active</div>
+                <div class="visualizer" aria-label="Voice-synchronized visualizer"><span class="visualizer-bar"></span><span class="visualizer-bar"></span><span class="visualizer-bar"></span><span class="visualizer-bar"></span><span class="visualizer-bar"></span><span class="visualizer-bar"></span><span class="visualizer-bar"></span><span class="visualizer-bar"></span><span class="visualizer-bar"></span><span class="visualizer-bar"></span></div>
+                <div class="big-state">Speaking</div>
+                <p class="state-support">The Display moves with Hermes' voice. The active identity stays visible.</p>
+                <div class="speech-card"><div class="label">Response text / room-local</div><p>Hermes response text remains visible here.</p></div>
+              </section>
+              <aside class="side-stack" aria-label="Speaking details">
+                <div class="side-panel identity"><div class="label">Profile</div><strong>Missy</strong><p>Identity remains visible through completion.</p></div>
+                <div class="side-panel current"><div class="label">Now</div><strong>Speaking</strong><p>Audio is actually available.</p></div>
+                <div class="side-panel"><div class="label">After complete</div><strong>8 sec</strong><p>Follow-up opens with a Listening cue.</p></div>
+              </aside>
+            </div>
+            <footer class="screen-footer"><span>response remains visible here</span><span>next / <strong>Follow-up Listening</strong></span></footer>
+          </div>
+        </div>
+      </article>
+    </section>
+    <p class="footnote">The Puck remains status-only. The room Display mirrors the selected Room's Active Turn; other Rooms do not receive this conversation text.</p>
+  </main>
+</body>
+</html>

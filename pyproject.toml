@@ -48,6 +48,14 @@ hermes-relay-home = "home_display.appliance:main"
 hermes-relay-home-demo = "home_display.demo:main"
 hermes-relay-benchmark = "speech_benchmark:main"
 
+# uv resolves optional extras for every environment by default. The home wake
+# stack currently has no Linux/Python 3.14 tflite-runtime wheel, even though
+# the relay's supported developer/runtime environment here is macOS. Keep
+# that unavailable target out of uv's universal solve without changing the
+# published optional extras or the base TUI install.
+[tool.uv]
+environments = ["sys_platform == 'darwin'"]
+
 [tool.setuptools]
 py-modules = ["app", "attachments", "audio", "clipboard", "client", "commands", "config", "diagnostics", "domain", "earcons", "history", "installer", "mic", "profile_cli", "prompts", "session", "session_picker", "setup_wizard", "shell", "speech_benchmark", "timing", "transcript", "voice", "wake", "handsfree"]
 include-package-data = false
