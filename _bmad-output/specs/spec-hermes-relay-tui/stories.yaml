@@ -1,0 +1,73 @@
+- id: "1"
+  title: Choose the on-device wake-word engine
+  description: >-
+    Resolve the SPEC.md open question on which embedded wake-word engine the
+    Puck uses (Espressif ESP-SR, Seeed's micro_wake_word/ESPHome reference
+    stack, or a ported/retrained model) — research and decision only, no
+    firmware in this story.
+  spec_checkpoint: true
+  done_checkpoint: true
+  invoke_dev_with: >-
+    This gates stories 3 and 6; the existing wakewords/*.onnx (openWakeWord-style)
+    assets target a Python/ONNX host runtime and likely do not port directly to
+    the ESP32-S3 — evaluate rather than assume they carry over.
+
+- id: "2"
+  title: Stand up the firmware build target
+  description: >-
+    Create firmware/respeaker-lite/ with its own board config and build files,
+    and get a blank firmware image building and flashing to the physical
+    reSpeaker Lite hardware.
+  spec_checkpoint: false
+  done_checkpoint: true
+  invoke_dev_with: >-
+    Use firmware/esp32-s3-touch-lcd-7 only as structural precedent for how a
+    dedicated ESP32-S3 firmware target is organized in this repo (board file,
+    CMakeLists, simulator layout) — it is a full LVGL touch-display target and
+    its audio/display content does not apply.
+
+- id: "3"
+  title: Implement on-device wake-word detection
+  description: >-
+    Integrate the wake-word engine chosen in story 1 and validate detection on
+    the reSpeaker Lite, with the XU316's onboard AEC/beamforming path active.
+  spec_checkpoint: true
+  done_checkpoint: false
+
+- id: "4"
+  title: Design Puck network identity and credential enforcement
+  description: >-
+    Define how the Puck holds and checks a revocable Device Credential and
+    fails closed before capture (NFR4), consistent with the Epic 3
+    Device-identity model rather than a parallel scheme.
+  spec_checkpoint: true
+  done_checkpoint: true
+  invoke_dev_with: >-
+    Likely blocked on Epic 3 Device-identity stories (3.1 Discover, 3.2
+    Approve/configure, 3.5 Fail closed for revoked/unavailable identities)
+    landing first — confirm those exist and reuse their credential model
+    rather than inventing a separate one for the Puck.
+
+- id: "5"
+  title: Stream audio to host after a validated wake
+  description: >-
+    Design and implement the post-wake audio transport from Puck to the relay
+    host, handing off into the existing session.py/SessionProtocol core
+    without duplicating turn-phase state.
+  spec_checkpoint: false
+  done_checkpoint: false
+  invoke_dev_with: >-
+    Depends on stories 3 and 4 being in place; raw Puck audio must stay
+    transient and home-LAN-only per NFR3.
+
+- id: "6"
+  title: Map local Puck status onto the shared turn-phase vocabulary
+  description: >-
+    Implement the Puck's own status feedback (wake ack, listening/thinking/
+    speaking/stop) per UX-DR5, reusing the shared phase vocabulary rather than
+    a new state machine.
+  spec_checkpoint: false
+  done_checkpoint: true
+  invoke_dev_with: >-
+    No full response text or transcript on the Puck's small surface — status
+    only, per UX-DR5.
