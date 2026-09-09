@@ -12,7 +12,94 @@ context:
   - firmware/respeaker-lite/README.md
 ---
 
-## RESUME HERE (2026-09-09, end of session 14)
+## RESUME HERE (2026-09-09, end of session 15)
+
+**Update from session 15: pivoted to actually collecting training data and
+attempting a real training run. Real infrastructure built, but the WiFi
+upload path's yield was far too low to be usable, and a second live-hang
+was hit and reverted. Net: still no custom model, no on-device detection.
+Read this before touching firmware again.**
+
+- **Built the full orchestration/labeling toolchain** (`tools/
+  collect_samples.py`, `tools/label_captures.py`) -- generates "hey
+  jarvis" TTS across 7 natural macOS voices, plays it near the device,
+  and correlates the WiFi-uploaded captures against playback timestamps,
+  replicating `MicrophoneSource::process_audio_`'s exact channel-select/
+  gain/Q31↔Q25 conversion in Python so the output WAV genuinely matches
+  what the wake-word model sees (not an approximation -- verified against
+  `esphome/components/microphone/microphone_source.cpp`'s actual source).
+- **The WiFi upload path's real yield, measured across a full day: 1
+  genuine correlated positive sample.** Not a typo. Out of ~150 played
+  utterances (spread across per-utterance and "flood" back-to-back
+  collection strategies), only one raw capture's timestamp landed close
+  enough to a playback window to correlate. This is a materially worse
+  number than session 13's "~40% chunk loss" framing suggested --
+  most *capture cycles themselves* never complete successfully, not just
+  most *chunks within* a cycle. The pipeline is not currently viable for
+  building a training dataset in any practical timeframe.
+- **Attempted a fix: swapped the receiver for a non-threaded, non-keep-
+  alive one to rule out session 14's tooling change as the cause.** No
+  improvement -- still near-100% failure in a live 45s window
+  (`Upload 20 chunk 0/1 failed`, heap otherwise healthy at ~121KB, well
+  above the circuit-breaker threshold). The low yield is not obviously
+  caused by anything this session touched; most likely today's WiFi/
+  router conditions (see session 11's own documented router anti-flood
+  throttle from repeated reflashing) compounded by many reflash cycles
+  across sessions 13-15.
+- **Pivoted to a different transport: serial (session 4's already-proven-
+  safe chunked-base64-over-`ESP_LOGI` technique), to sidestep WiFi/HTTP
+  entirely.** Added `pcm_capture::dump_over_serial()` (200 bytes/chunk,
+  base64, ~1280 log lines per 2s sample) and `tools/
+  collect_serial_dumps.py` to parse `esphome logs` output and reconstruct
+  samples host-side. **This hung the device on first live test** --
+  identical symptom to session 14's connection-reuse hang (device stays
+  enumerated over USB but produces zero further serial output, not even
+  the normal boot banner content on a fresh `esphome logs` attach).
+  Recovered via `esptool.py --after hard_reset chip_id` (same recovery as
+  session 14). **Reverted `pcm_capture.h` and `respeaker-lite.yaml` to
+  the exact session-13 committed state** (`git checkout HEAD --`),
+  recompiled, reflashed, and confirmed a clean boot with a real
+  successful upload chunk logged (`Upload 0 chunk 12 ok`) -- device is
+  back in its known-good, verified-stable configuration.
+- **The serial-dump hang was not root-caused.** Plausible causes, none
+  confirmed: the USB-Serial/JTAG TX path blocking indefinitely under
+  sustained ~1280-lines/2s volume if the host-side reader can't drain
+  fast enough (session 4's original serial dump was a one-shot debug
+  capture, never run in this continuous, high-volume, indefinitely-
+  repeating form); or watchdog starvation from the tight loop despite the
+  5ms per-line `vTaskDelay`. **Do not retry the continuous version of
+  this as tried here** without first testing a much smaller, bounded
+  burst (e.g., one 2s sample, not an indefinite loop) and confirming the
+  device survives before scaling up.
+- **Net result: two real, working pieces of infrastructure exist now**
+  (`collect_samples.py`/`label_captures.py` for WiFi-based collection,
+  proven correct in its audio-processing math even though yield is too
+  low to be useful; `collect_serial_dumps.py`'s *host-side* parser, which
+  is safe and ready whenever a working serial-dump firmware path exists)
+  **but neither produced a usable dataset.** Total real, verified-correct
+  training data collected today: 1 positive clip. microWakeWord (cloned
+  to `/tmp/microwakeword_src`, installed into a dedicated `/tmp/
+  mww_train_venv` Python 3.12 venv, imports verified working) was never
+  actually run -- there was never enough data to feed it.
+- **Concrete recommendation for next steps, not attempted this session:**
+  (1) Do not keep reflashing/experimenting live against this one physical
+  device in the same session as trying to collect data -- session 11
+  already documented that repeated reflashing triggers a real router-side
+  anti-flood throttle, and today's very low WiFi yield may partly be a
+  symptom of that same pattern compounding across sessions 13-15's many
+  flash cycles. (2) If continuing the WiFi path: let the device run
+  *completely undisturbed* (no reflashing, no other `esphome logs`
+  attaches) for a long unattended stretch with periodic playback, and see
+  whether yield improves once the router/WiFi conditions have had time to
+  settle. (3) If pursuing serial dump instead: test a single bounded
+  capture (not an indefinite loop) in isolation first, and only build up
+  to continuous operation once that's confirmed safe. (4) Either way, the
+  actual `microwakeword` training environment is ready and waiting in
+  `/tmp/mww_train_venv` -- reproducible via `pip install -e
+  /tmp/microwakeword_src` if that ephemeral venv doesn't survive to a
+  future session.
+
+## RESUME HERE (2026-09-09, end of session 14, superseded above)
 
 **Update from session 14:** attempted the natural next step on upload
 reliability -- reuse one `esp_http_client` connection across all 16 chunks
