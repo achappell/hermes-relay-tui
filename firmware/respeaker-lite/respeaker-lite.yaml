@@ -1,18 +1,20 @@
-# Minimal ESPHome build target for the Puck prototype hardware: Seeed
-# reSpeaker Lite (XMOS XU316 DSP) + Seeed XIAO ESP32-S3 host MCU.
+# ESPHome build target for the Puck prototype hardware: Seeed reSpeaker
+# Lite (XMOS XU316 DSP) + Seeed XIAO ESP32-S3 host MCU.
 #
-# Scope for this story (SPEC.md story 2 / firmware/respeaker-lite): WiFi,
-# API, and board/platform sections only. No wake-word model, no
-# identity/credential logic, and no audio-streaming-to-host logic yet — those
-# land in later stories. The point of this file is proving the build target
-# is real: `esphome compile` succeeds and the binary boots on the confirmed
-# device without a crash loop.
+# Story 2 (SPEC.md / firmware/respeaker-lite) established WiFi, API, and
+# board/platform sections only, proving the build target and hardware are
+# real. Story 3 adds the I2S audio path and an on-device `micro_wake_word:`
+# wake engine on top of that base. No identity/credential logic and no
+# audio-streaming-to-host logic yet — those land in stories 4 and 5. The
+# wake phrase here is the pretrained community model `hey_jarvis`, not
+# "hey hermes" — see README.md's "Wake Phrase" section for why.
 #
 # Adapted from Seeed's own reSpeaker Lite ESPHome reference config
 # (formatBCE/Respeaker-Lite-ESPHome-integration, credited from Seeed's wiki
-# tutorial for this exact board) — board/platform shape only; the full
-# reference's voice-assistant pipeline, timers, alarms, and LED animations
-# are out of scope here and are not ported.
+# tutorial for this exact board: wiki.seeedstudio.com/respeaker_lite_ha/) —
+# board/platform shape plus the I2S audio path and micro_wake_word block;
+# the full reference's voice-assistant pipeline, timers, alarms, and LED
+# animations are out of scope here and are not ported.
 #
 # Secrets: copy secrets.yaml.example to secrets.yaml next to this file and
 # fill in installation-specific values. secrets.yaml is gitignored and must
@@ -23,6 +25,16 @@
 esphome:
   name: respeaker-lite
   friendly_name: "Hermes Puck (reSpeaker Lite)"
+  # micro_wake_word does not start listening on its own -- MicroWakeWord::setup()
+  # never calls start(), and its own data callback explicitly drops audio while
+  # state_ == STOPPED. Without a voice_assistant: component (which normally
+  # triggers this), it needs an explicit start action, or it sits permanently
+  # stopped -- exactly matching every symptom seen debugging this story
+  # (zero mic activity, zero detections, at any log verbosity).
+  on_boot:
+    priority: -100  # run after all components finish setup(), not during boot
+    then:
+      - micro_wake_word.start
 
 esp32:
   board: seeed_xiao_esp32s3
@@ -53,3 +65,84 @@ wifi:
   ap:
     ssid: "Respeaker-Lite Fallback"
     password: !secret ap_fallback_password
+
+# Mainline ESPHome's `i2s_audio`/`microphone` components require a literal
+# 16kHz mic source and cannot resample; the XU316 only emits 48kHz/32-bit
+# I2S. Both cited reference integrations (formatBCE's and Seeed's own,
+# named above) solve this with a forked, patched `i2s_audio` component.
+# Accepted as a trusted build dependency for this board — see the
+# mid-implementation Decision in this story's spec file
+# (_bmad-output/specs/spec-hermes-relay-tui/stories/3-implement-on-device-wake-word-detection.md).
+external_components:
+  - source:
+      type: git
+      url: https://github.com/formatBCE/esphome
+      # Pinned to a commit, not the mutable `respeaker_microphone` branch --
+      # a trusted-third-party build dependency should not silently change
+      # under this project when upstream pushes to that branch. Re-pin
+      # deliberately (new SHA + a note why) rather than tracking the branch.
+      ref: eedcdbee335dbe296d432b3e6421da0469907365
+    components:
+      - i2s_audio
+
+# I2S audio bus from the XU316 DSP into the XIAO ESP32-S3's host-side ADC
+# input. Pin assignments sourced from Seeed's own wiki tutorial for this
+# exact board (wiki.seeedstudio.com/respeaker_lite_ha/), also used by
+# formatBCE/Respeaker-Lite-ESPHome-integration.
+i2s_audio:
+  - id: i2s_bus
+    i2s_lrclk_pin: GPIO7
+    i2s_bclk_pin: GPIO8
+    i2s_mclk_pin: GPIO9
+
+# The XU316's I2S output arrives as external-ADC, 48kHz, 32-bit, stereo
+# audio (secondary/subordinate I2S mode — the XU316 is the bus master).
+microphone:
+  - platform: i2s_audio
+    id: puck_mic
+    i2s_audio_id: i2s_bus
+    i2s_din_pin: GPIO44
+    adc_type: external
+    pdm: false
+    sample_rate: 48000
+    bits_per_sample: 32bit
+    i2s_mode: secondary
+    channel: stereo
+    # TEMPORARY diagnostic for the "zero audio pipeline activity" mystery --
+    # logs raw amplitude every ~1s, independent of micro_wake_word, to prove
+    # whether any signal reaches the ESP32 at all. Remove once resolved.
+    on_data:
+      - lambda: |-
+          static uint32_t last_log_ms = 0;
+          static int32_t running_max = 0;
+          for (size_t i = 0; i + 3 < x.size(); i += 4) {
+            int32_t sample = (int32_t)(x[i] | (x[i+1] << 8) | (x[i+2] << 16) | (x[i+3] << 24));
+            int32_t abs_sample = sample < 0 ? -sample : sample;
+            if (abs_sample > running_max) running_max = abs_sample;
+          }
+          uint32_t now = millis();
+          if (now - last_log_ms > 1000) {
+            ESP_LOGI("mic_diag", "peak amplitude last ~1s: %d (bytes this callback: %d)", (int) running_max, (int) x.size());
+            running_max = 0;
+            last_log_ms = now;
+          }
+# On-device wake-word detection. Wake phrase is the pretrained community
+# model `hey_jarvis` (bundled with micro_wake_word, zero training
+# required) — NOT "hey hermes"; see README.md. The `stop` model is
+# ESPHome's bundled internal model, kept internal (not exposed as a
+# separately toggleable Home Assistant entity).
+micro_wake_word:
+  id: mww
+  microphone:
+    microphone: puck_mic
+    channels: 1
+    gain_factor: 4
+  models:
+    - model: wake_models/hey_jarvis.json
+      id: hey_jarvis
+    - model: wake_models/stop.json
+      id: stop
+      internal: true
+  vad:
+    model: wake_models/vad.json
+    probability_cutoff: 0.05
