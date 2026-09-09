@@ -1,0 +1,55 @@
+# Minimal ESPHome build target for the Puck prototype hardware: Seeed
+# reSpeaker Lite (XMOS XU316 DSP) + Seeed XIAO ESP32-S3 host MCU.
+#
+# Scope for this story (SPEC.md story 2 / firmware/respeaker-lite): WiFi,
+# API, and board/platform sections only. No wake-word model, no
+# identity/credential logic, and no audio-streaming-to-host logic yet — those
+# land in later stories. The point of this file is proving the build target
+# is real: `esphome compile` succeeds and the binary boots on the confirmed
+# device without a crash loop.
+#
+# Adapted from Seeed's own reSpeaker Lite ESPHome reference config
+# (formatBCE/Respeaker-Lite-ESPHome-integration, credited from Seeed's wiki
+# tutorial for this exact board) — board/platform shape only; the full
+# reference's voice-assistant pipeline, timers, alarms, and LED animations
+# are out of scope here and are not ported.
+#
+# Secrets: copy secrets.yaml.example to secrets.yaml next to this file and
+# fill in installation-specific values. secrets.yaml is gitignored and must
+# never be committed, matching the -D HERMES_DISPLAY_WS_URI pattern in
+# firmware/esp32-s3-touch-lcd-7/platformio.ini of keeping installation
+# values out of version control.
+
+esphome:
+  name: respeaker-lite
+  friendly_name: "Hermes Puck (reSpeaker Lite)"
+
+esp32:
+  board: seeed_xiao_esp32s3
+  variant: esp32s3
+  flash_size: 8MB
+  framework:
+    type: esp-idf
+    version: recommended
+
+logger:
+  level: DEBUG
+
+# Enables OTA updates and Home Assistant API discovery/auth.
+api:
+  encryption:
+    key: !secret api_encryption_key
+
+ota:
+  - platform: esphome
+    password: !secret ota_password
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+
+  # Fallback hotspot in case WiFi connection fails, so the device is still
+  # reachable to fix configuration.
+  ap:
+    ssid: "Respeaker-Lite Fallback"
+    password: !secret ap_fallback_password

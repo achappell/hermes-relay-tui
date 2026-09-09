@@ -42,6 +42,14 @@ home = [
   "hermes-relay-tui[voice,wake]",
 ]
 
+# Build/flash tooling for the Puck's ESPHome firmware target
+# (firmware/respeaker-lite/). Kept out of the base install for the same
+# reason as `voice`/`wake`: a terminal or appliance install has no business
+# pulling in a firmware compiler toolchain.
+firmware = [
+  "esphome>=2025.9.0",
+]
+
 [project.scripts]
 hermes-relay = "app:main"
 hermes-relay-home = "home_display.appliance:main"
