@@ -1,0 +1,191 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Hermes UX key screen — Disconnected State recovery</title>
+  <style>
+    /*
+      Governing UX spine sections:
+      DESIGN.md — Brand & Style; Colors; Typography; Layout & Spacing; Components;
+      Do's and Don'ts.
+      EXPERIENCE.md — Component Patterns (Disconnected State, Retry Action, Local History);
+      State Patterns; Priority and persistence notes; Recovery and explicit actions;
+      Accessibility Floor; UJ-5.
+    */
+    :root {
+      color-scheme: dark;
+      --base: #0B101B;
+      --console: #101725;
+      --panel: #0D1320;
+      --raised: #182338;
+      --ink: #EAF7FF;
+      --secondary: #B3C0D2;
+      --muted: #91A0B5;
+      --border: #2A3850;
+      --emphasis: #7189AA;
+      --live: #62E6C7;
+      --live-on: #08241D;
+      --attention: #FFCF5C;
+      --attention-on: #201A08;
+      --identity: #7C8CFF;
+      --unavailable: #FF7D9C;
+      --unavailable-on: #260A12;
+      --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      --sans: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; min-width: 320px; padding: 36px 24px 56px; background: var(--base); color: var(--ink); font-family: var(--sans); }
+    .page { max-width: 1180px; margin: 0 auto; }
+    .masthead { max-width: 760px; margin: 0 auto 30px; }
+    .eyebrow, .label, .meta, .path-label, .phone-chrome {
+      font-family: var(--mono);
+      font-size: 12px;
+      font-weight: 700;
+      letter-spacing: .11em;
+      line-height: 1.3;
+      text-transform: uppercase;
+    }
+    .eyebrow { color: var(--unavailable); }
+    h1 { margin: 8px 0 10px; font-size: clamp(32px, 5vw, 56px); font-weight: 850; letter-spacing: -.06em; line-height: .98; }
+    .masthead p { margin: 0; color: var(--secondary); font-size: 18px; line-height: 1.45; }
+    .recovery-stage { display: grid; grid-template-columns: minmax(0, 450px) minmax(0, 1fr); gap: 48px; align-items: start; }
+    .phone-stage { display: flex; flex-direction: column; align-items: center; gap: 12px; }
+    .phone-caption { align-self: stretch; margin: 0 0 2px; color: var(--muted); font-family: var(--mono); font-size: 11px; font-weight: 700; letter-spacing: .12em; text-align: center; text-transform: uppercase; }
+    .phone {
+      position: relative;
+      width: min(100%, 430px);
+      min-height: 850px;
+      overflow: hidden;
+      padding: 18px 16px 22px;
+      border: 5px solid #252E43;
+      border-radius: 44px;
+      background: #080D17;
+      box-shadow: 0 30px 80px rgba(0, 0, 0, .52), inset 0 0 0 1px #59657A;
+    }
+    .phone::before { position: absolute; top: 9px; left: 50%; width: 112px; height: 25px; border-radius: 20px; background: #05070C; content: ""; transform: translateX(-50%); }
+    .phone-body { position: relative; z-index: 1; }
+    .statusbar { display: flex; justify-content: space-between; padding: 2px 10px 25px; color: var(--ink); font-size: 12px; font-weight: 700; }
+    .status-icons { display: flex; gap: 7px; color: var(--secondary); font-size: 11px; }
+    .ios-nav { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 0 4px 17px; }
+    .ios-nav h2 { margin: 0; font-size: 18px; font-weight: 800; letter-spacing: -.03em; }
+    .profile-header { display: flex; align-items: center; gap: 11px; padding: 13px 4px 18px; border-bottom: 1px solid var(--border); }
+    .identity-mark { width: 13px; height: 13px; flex: 0 0 auto; border-radius: 50%; background: var(--identity); box-shadow: 0 0 0 6px rgba(124, 140, 255, .11), 0 0 18px rgba(124, 140, 255, .5); }
+    .profile-header strong { display: block; margin-top: 3px; font-size: 23px; font-weight: 850; letter-spacing: -.05em; }
+    .profile-header .label { color: var(--muted); font-size: 9px; }
+    .state-block { padding: 25px 4px 18px; }
+    .state-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+    .state-word { margin: 0; color: var(--unavailable); font-size: 42px; font-weight: 900; letter-spacing: -.08em; line-height: .95; }
+    .unavailable-pill { display: inline-flex; align-items: center; gap: 6px; padding: 7px 9px; border-radius: 999px; background: var(--unavailable-on); color: var(--unavailable); font-family: var(--mono); font-size: 9px; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; }
+    .unavailable-pill::before { width: 6px; height: 6px; border-radius: 50%; background: var(--unavailable); content: ""; }
+    .state-block p { max-width: 340px; margin: 11px 0 0; color: var(--secondary); font-size: 15px; line-height: 1.42; }
+    .turn-card { margin-top: 3px; padding: 16px; border: 1px solid var(--border); border-radius: 10px; background: var(--panel); }
+    .turn-card .meta { color: var(--muted); font-size: 9px; }
+    .prompt-bubble { margin-top: 13px; padding: 12px 13px; border: 1px solid var(--emphasis); border-radius: 8px 8px 8px 2px; background: rgba(24, 35, 56, .62); color: var(--ink); font-size: 15px; line-height: 1.4; }
+    .response-partial { margin-top: 9px; padding: 12px 13px; border-left: 2px solid var(--attention); background: rgba(32, 26, 8, .58); color: var(--secondary); font-size: 14px; line-height: 1.44; }
+    .response-partial strong { color: var(--attention); font-family: var(--mono); font-size: 9px; letter-spacing: .08em; text-transform: uppercase; }
+    .response-partial p { margin: 7px 0 0; color: var(--ink); }
+    .unresolved { display: flex; align-items: flex-start; gap: 8px; margin-top: 12px; color: var(--unavailable); font-family: var(--mono); font-size: 10px; font-weight: 700; letter-spacing: .04em; line-height: 1.35; text-transform: uppercase; }
+    .unresolved::before { content: "!"; display: grid; place-items: center; width: 16px; height: 16px; flex: 0 0 auto; border: 1px solid var(--unavailable); border-radius: 50%; font-size: 10px; }
+    .recovery-card { margin-top: 14px; padding: 16px; border: 1px solid var(--unavailable); border-radius: 10px; background: rgba(38, 10, 18, .72); }
+    .recovery-card h3 { margin: 0; font-size: 18px; letter-spacing: -.03em; }
+    .recovery-card p { margin: 7px 0 0; color: var(--secondary); font-size: 13px; line-height: 1.42; }
+    .retry-button { display: flex; align-items: center; justify-content: center; min-height: 46px; width: 100%; margin-top: 15px; border: 1px solid var(--identity); border-radius: 7px; background: var(--identity); color: var(--base); font-family: var(--sans); font-size: 16px; font-weight: 800; }
+    .retry-note { margin-top: 9px; color: var(--ink); font-family: var(--mono); font-size: 10px; font-weight: 700; letter-spacing: .08em; text-align: center; text-transform: uppercase; }
+    .phone-footer { margin-top: 19px; color: var(--muted); font-family: var(--mono); font-size: 9px; letter-spacing: .06em; line-height: 1.4; text-align: center; text-transform: uppercase; }
+    .explanation { padding-top: 38px; }
+    .explanation h2 { margin: 0; font-size: clamp(26px, 4vw, 40px); font-weight: 850; letter-spacing: -.06em; line-height: 1; }
+    .explanation > p { max-width: 510px; margin: 14px 0 24px; color: var(--secondary); font-size: 17px; line-height: 1.5; }
+    .recovery-path { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; margin-bottom: 25px; }
+    .path-node { position: relative; min-height: 112px; padding: 15px 13px; border: 1px solid var(--border); background: var(--panel); }
+    .path-node::after { position: absolute; top: 50%; right: -9px; width: 8px; border-top: 1px solid var(--emphasis); content: ""; }
+    .path-node:last-child::after { display: none; }
+    .path-node.current { border-color: var(--unavailable); }
+    .path-node.next { border-color: var(--identity); }
+    .path-node .path-label { color: var(--muted); font-size: 10px; }
+    .path-node.current .path-label { color: var(--unavailable); }
+    .path-node.next .path-label { color: var(--identity); }
+    .path-node strong { display: block; margin-top: 10px; font-size: 17px; letter-spacing: -.03em; }
+    .path-node p { margin: 6px 0 0; color: var(--secondary); font-size: 12px; line-height: 1.35; }
+    .contract-list { display: flex; flex-direction: column; gap: 10px; }
+    .contract { display: grid; grid-template-columns: 24px 1fr; gap: 12px; padding: 15px; border: 1px solid var(--border); background: var(--panel); }
+    .contract-symbol { color: var(--live); font-family: var(--mono); font-size: 17px; font-weight: 800; }
+    .contract strong { display: block; font-size: 16px; letter-spacing: -.02em; }
+    .contract p { margin: 5px 0 0; color: var(--secondary); font-size: 14px; line-height: 1.4; }
+    .contract.no .contract-symbol { color: var(--unavailable); }
+    .contract.attention .contract-symbol { color: var(--attention); }
+    .small-print { max-width: 530px; margin-top: 22px; color: var(--muted); font-size: 12px; line-height: 1.5; }
+    @media (max-width: 950px) {
+      .recovery-stage { grid-template-columns: minmax(0, 430px); justify-content: center; }
+      .explanation { padding-top: 5px; }
+    }
+    @media (max-width: 560px) {
+      body { padding: 24px 12px 38px; }
+      .phone { border-radius: 34px; }
+      .recovery-path { grid-template-columns: 1fr; }
+      .path-node { min-height: 0; }
+      .path-node::after { top: auto; right: auto; bottom: -8px; left: 50%; width: 0; height: 7px; border-top: 0; border-left: 1px solid var(--emphasis); }
+      .path-node:last-child::after { display: none; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after { animation: none !important; transition: none !important; }
+    }
+  </style>
+</head>
+<body>
+  <main class="page">
+    <header class="masthead">
+      <div class="eyebrow">UX key screen 03 / iOS recovery</div>
+      <h1>Disconnected means unresolved</h1>
+      <p>The connection loss ends the waiting state honestly. The partial turn stays visible, Retry reconnects only, and the next conversation begins with a fresh prompt.</p>
+    </header>
+
+    <section class="recovery-stage" aria-label="iOS Disconnected State recovery">
+      <article class="phone-stage">
+        <p class="phone-caption">Active turn interrupted / no replay</p>
+        <div class="phone" role="region" aria-label="iOS Client showing Missy, Disconnected State, partial response, unresolved turn, and Retry reconnect-only">
+          <div class="phone-body">
+            <div class="statusbar"><span>9:46</span><span class="status-icons">▮▮▮ &nbsp; Wi‑Fi &nbsp; ◼</span></div>
+            <nav class="ios-nav" aria-label="iOS navigation"><span class="phone-chrome">Conversation</span><h2>Kitchen</h2><span class="phone-chrome">•••</span></nav>
+            <header class="profile-header"><span class="identity-mark" aria-hidden="true"></span><div><div class="label">Hermes Profile</div><strong>Missy</strong></div></header>
+            <section class="state-block" aria-label="Disconnected State">
+              <div class="state-row"><h3 class="state-word">Unavailable</h3><span class="unavailable-pill">Disconnected State</span></div>
+              <p>The Hermes connection closed during this turn. The doorway is not waiting for a response that can no longer arrive.</p>
+            </section>
+            <section class="turn-card" aria-labelledby="turn-title">
+              <div id="turn-title" class="meta">Unresolved turn · 9:45 PM</div>
+              <div class="prompt-bubble">What should I make for dinner, and when should I start?</div>
+              <div class="response-partial"><strong>Response text received before disconnect</strong><p>Hermes response text remains visible.</p></div>
+              <div class="unresolved">Partial text remains visible · this turn may have reached Hermes</div>
+            </section>
+            <section class="recovery-card" aria-labelledby="recovery-title">
+              <h3 id="recovery-title">Connection lost</h3>
+              <p>Retry will establish a new Hermes Session. It will not resend this prompt.</p>
+              <button class="retry-button" type="button">Retry</button>
+              <div class="retry-note">Reconnect only</div>
+            </section>
+            <div class="phone-footer">After verified recovery / start a fresh turn</div>
+          </div>
+        </div>
+      </article>
+
+      <aside class="explanation" aria-label="Recovery contract">
+        <div class="eyebrow">The recovery contract</div>
+        <h2>One loss. One honest state.</h2>
+        <p>Nothing on this screen suggests that the old request can safely be sent again. The visible partial response gives continuity without pretending the turn completed.</p>
+        <div class="recovery-path" aria-label="Recovery sequence">
+          <div class="path-node current"><div class="path-label">Now</div><strong>Disconnected</strong><p>Turn is unresolved; partial text stays visible.</p></div>
+          <div class="path-node next"><div class="path-label">Action</div><strong>Retry</strong><p>Reconnects only. No microphone or replay.</p></div>
+          <div class="path-node"><div class="path-label">After verified recovery</div><strong>Fresh prompt</strong><p>Start a new Hermes Session turn.</p></div>
+        </div>
+        <div class="contract-list">
+          <div class="contract no"><div class="contract-symbol">×</div><div><strong>No silent replay</strong><p>The prior prompt may already have reached Hermes, so the unresolved turn is never resent automatically.</p></div></div>
+          <div class="contract attention"><div class="contract-symbol">!</div><div><strong>No false completion</strong><p>The header keeps Profile: Missy, while the state says the connection is unavailable—not Ready, Speaking, or Complete.</p></div></div>
+          <div class="contract"><div class="contract-symbol">✓</div><div><strong>Local continuity stays intentional</strong><p>iOS Local History can retain the conversation surface; shared Pucks and Displays do not rehydrate this text.</p></div></div>
+        </div>
+        <p class="small-print">The same semantic recovery applies to the TUI: show the active Profile, preserve the unresolved turn, expose a keyboard-equivalent Retry, and require an explicit fresh prompt after reconnect.</p>
+      </aside>
+    </section>
+  </main>
+</body>
+</html>

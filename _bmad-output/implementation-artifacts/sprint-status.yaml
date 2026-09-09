@@ -1,0 +1,72 @@
+# STATUS DEFINITIONS:
+# ==================
+# Epic Status:
+#   - backlog: Epic not yet started
+#   - in-progress: Epic actively being worked on
+#   - done: All stories in epic completed
+
+# Story Status:
+#   - backlog: Story only exists in epic file
+#   - ready-for-dev: Story file created, ready for development
+#   - in-progress: Developer actively working on implementation
+#   - review: Implementation complete, ready for review
+#   - done: Story completed
+
+# Retrospective Status:
+#   - optional: Can be completed but not required
+#   - done: Retrospective has been completed
+
+# Action Item Status:
+#   - open: Committed during a retrospective, not yet addressed
+#   - in-progress: Actively being worked on
+#   - done: Completed
+
+# WORKFLOW NOTES:
+# ===============
+# - Epic transitions to 'in-progress' automatically when its first story starts (via build's sprint sync)
+# - Stories can be worked in parallel if team capacity allows
+# - Developer typically creates the next story after the previous one is 'done' to incorporate learnings
+# - Dev moves story to 'review', then runs code-review (fresh context, different LLM recommended)
+# - Retrospective appends its action items to action_items; the status view surfaces open ones
+generated: 09-08-2026 00:00
+last_updated: 09-08-2026 22:18
+project: hermes-relay-tui
+project_key: NOKEY
+tracking_system: file-system
+story_location: 
+  /Users/amandachappell/Development/hermes-relay-tui/_bmad-output/implementation-artifacts
+development_status:
+  epic-1: backlog
+  1-1-start-an-authorized-hermes-turn: backlog
+  1-2-render-honest-turn-phases-and-response-delivery: backlog
+  1-3-continue-with-bounded-follow-up-and-exact-stop: backlog
+  1-4-recover-without-replaying-an-uncertain-turn: backlog
+  epic-1-retrospective: optional
+
+  epic-2: backlog
+  2-1-keep-each-display-in-its-room-scoped-ambient-surface: backlog
+  2-2-show-live-capture-state-and-transcription: backlog
+  2-3-mirror-only-the-owning-room-s-active-turn: backlog
+  2-4-mirror-hermes-prompts-without-becoming-another-assistant: backlog
+  2-5-stay-useful-and-honest-when-disconnected: backlog
+  epic-2-retrospective: optional
+
+  epic-3: backlog
+  3-1-discover-unconfigured-devices-safely: backlog
+  3-2-approve-and-configure-a-device: backlog
+  3-3-keep-wake-mappings-unique-and-profile-specific: backlog
+  3-4-select-one-device-for-a-simultaneous-wake: backlog
+  3-5-fail-closed-for-revoked-or-unavailable-identities: backlog
+  3-6-revoke-access-and-require-verified-re-enrollment: backlog
+  epic-3-retrospective: optional
+
+  epic-4: backlog
+  4-1-qualify-events-using-usable-travel-context: backlog
+  4-2-promote-a-household-wide-departure-card: backlog
+  4-3-recompute-and-clear-departure-cards-automatically: backlog
+  epic-4-retrospective: optional
+
+  epic-5: backlog
+  5-1-use-ios-as-an-independent-conversation-doorway: backlog
+  5-2-use-the-tui-as-an-independent-direct-voice-chat-gateway: backlog
+  epic-5-retrospective: optional

@@ -1,0 +1,111 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Direction 04 — Comic Stage</title>
+  <style>
+    /* Palette: #FFF4D6 cream, #231F20 ink, #FF5D73 pink, #32C7A5 green, #5C7CFA blue, #FFC857 yellow. */
+    :root {
+      color-scheme: light;
+      --cream: #FFF4D6;
+      --ink: #231F20;
+      --pink: #FF5D73;
+      --green: #32C7A5;
+      --blue: #5C7CFA;
+      --yellow: #FFC857;
+      --white: #FFFDF5;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; min-height: 100vh; padding: 36px 22px 52px; color: var(--ink); background: #E0D1C3; font-family: ui-rounded, "SF Pro Rounded", system-ui, sans-serif; }
+    .direction { max-width: 1160px; margin: 0 auto; }
+    .notes { max-width: 790px; margin: 0 auto 24px; }
+    .notes h1 { margin: 0 0 8px; font-size: clamp(24px, 4vw, 38px); font-weight: 950; letter-spacing: -.07em; }
+    .notes p { margin: 6px 0; color: #584D4B; line-height: 1.5; font-size: 15px; }
+    .browser { overflow: hidden; border: 3px solid var(--ink); border-radius: 18px; background: var(--cream); box-shadow: 10px 12px 0 rgba(35,31,32,.24); }
+    .chrome { display: flex; align-items: center; gap: 8px; height: 38px; padding: 0 15px; border-bottom: 3px solid var(--ink); background: var(--white); }
+    .dot { width: 9px; height: 9px; border: 2px solid var(--ink); border-radius: 50%; background: var(--yellow); }
+    .dot:first-child { background: var(--pink); }
+    .dot:last-of-type { background: var(--green); }
+    .chrome-label { margin-left: 10px; font-size: 11px; font-weight: 900; letter-spacing: .12em; text-transform: uppercase; }
+    .screen { position: relative; min-height: min(58vw, 675px); aspect-ratio: 1024 / 600; overflow: hidden; padding: 4.6% 5.6%; background: var(--cream); isolation: isolate; }
+    .screen::before { position: absolute; z-index: -2; inset: 0; background-image: radial-gradient(var(--ink) 1.2px, transparent 1.2px); background-size: 19px 19px; content: ""; opacity: .055; }
+    .ambient-shape { position: absolute; z-index: -1; top: 5%; right: 3%; width: 44%; height: 83%; border: 3px solid var(--ink); border-radius: 44% 56% 38% 62%; background: var(--yellow); opacity: .22; transform: rotate(9deg); }
+    .ambient-shape::before, .ambient-shape::after { position: absolute; border: 3px solid var(--ink); border-radius: 50%; content: ""; }
+    .ambient-shape::before { top: 18%; left: 16%; width: 28%; height: 25%; background: var(--green); }
+    .ambient-shape::after { right: 10%; bottom: 12%; width: 31%; height: 31%; background: var(--blue); }
+    .identity { display: flex; align-items: center; justify-content: space-between; gap: 20px; }
+    .identity-badge { display: flex; align-items: center; gap: 12px; }
+    .sticker { display: grid; width: 55px; height: 55px; place-items: center; border: 3px solid var(--ink); border-radius: 42% 58% 53% 47%; background: var(--pink); box-shadow: 5px 6px 0 var(--ink); font-size: 25px; font-weight: 950; transform: rotate(-7deg); }
+    .mini-label { font-size: 11px; font-weight: 900; letter-spacing: .13em; text-transform: uppercase; }
+    .profile-name { margin-top: 2px; font-size: clamp(23px, 3.2vw, 34px); font-weight: 950; letter-spacing: -.08em; }
+    .active-pill { padding: 9px 13px; border: 3px solid var(--ink); border-radius: 99px; background: var(--green); box-shadow: 4px 4px 0 var(--ink); font-size: 12px; font-weight: 950; letter-spacing: .09em; text-transform: uppercase; }
+    .hero { display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(220px, .8fr); align-items: center; gap: 5%; max-width: 860px; margin: 4.4% auto 0; }
+    .burst { position: relative; display: grid; width: min(35vw, 330px); aspect-ratio: 1; margin: auto; place-items: center; }
+    .burst::before { position: absolute; inset: 7%; border: 4px dashed var(--ink); border-radius: 44% 56% 49% 51%; content: ""; animation: spin 18s linear infinite; }
+    .burst::after { position: absolute; inset: 0; background: repeating-conic-gradient(from 4deg, transparent 0deg 13deg, rgba(255,200,87,.65) 13deg 16deg, transparent 16deg 27deg); clip-path: polygon(50% 0%, 58% 34%, 83% 10%, 70% 39%, 100% 50%, 67% 58%, 90% 87%, 61% 70%, 50% 100%, 40% 68%, 10% 90%, 34% 60%, 0% 50%, 34% 40%, 10% 13%, 41% 33%); opacity: .85; }
+    .speech-bubble { display: grid; z-index: 1; width: 64%; height: 53%; place-items: center; border: 4px solid var(--ink); border-radius: 46% 54% 53% 47%; background: var(--white); box-shadow: 7px 8px 0 var(--ink); transform: rotate(-4deg); }
+    .speech-bubble::after { position: absolute; right: 15%; bottom: -14px; width: 22px; height: 22px; border-right: 4px solid var(--ink); border-bottom: 4px solid var(--ink); background: var(--white); content: ""; transform: skew(12deg) rotate(36deg); }
+    .dots { display: flex; align-items: center; gap: 7px; }
+    .dots i { width: 14px; height: 14px; border: 3px solid var(--ink); border-radius: 50%; background: var(--blue); animation: pop 680ms ease-in-out infinite alternate; }
+    .dots i:nth-child(2) { background: var(--green); animation-delay: -220ms; }
+    .dots i:nth-child(3) { background: var(--pink); animation-delay: -440ms; }
+    .copy { min-width: 0; }
+    .phase-strip { display: flex; flex-wrap: wrap; gap: 7px; margin-bottom: 14px; }
+    .phase { padding: 7px 10px; border: 2px solid var(--ink); border-radius: 999px; background: var(--white); font-size: 11px; font-weight: 950; letter-spacing: .04em; text-transform: uppercase; }
+    .phase.done { background: var(--yellow); }
+    .phase.current { background: var(--pink); }
+    .big-state { margin: 0; font-size: clamp(46px, 8vw, 92px); font-weight: 950; letter-spacing: -.1em; line-height: .82; text-transform: uppercase; transform: rotate(-2deg); }
+    .tagline { max-width: 300px; margin: 18px 0 0; font-size: clamp(14px, 1.7vw, 19px); font-weight: 750; line-height: 1.25; }
+    .variant { display: flex; align-items: center; gap: 10px; margin-top: 20px; padding: 12px 14px; border: 3px solid var(--ink); border-radius: 15px; background: var(--white); box-shadow: 4px 4px 0 var(--ink); font-size: 13px; font-weight: 850; }
+    .variant-mark { display: grid; width: 24px; height: 24px; place-items: center; border: 2px solid var(--ink); border-radius: 50%; background: var(--blue); }
+    .footer { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 3.4%; font-size: 11px; font-weight: 900; letter-spacing: .1em; text-transform: uppercase; }
+    .footer span:first-child { opacity: .54; }
+    .footer span:last-child { padding: 8px 11px; border: 2px solid var(--ink); border-radius: 99px; background: var(--yellow); }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    @keyframes pop { to { transform: translateY(-7px) scale(1.13); } }
+    @media (max-width: 720px) {
+      body { padding: 22px 12px 36px; }
+      .screen { min-height: 650px; aspect-ratio: auto; padding: 25px 22px; }
+      .hero { grid-template-columns: 1fr; gap: 15px; margin-top: 28px; }
+      .burst { width: 210px; }
+      .copy { text-align: center; }
+      .phase-strip, .variant { justify-content: center; }
+      .tagline { margin-inline: auto; }
+      .footer { margin-top: 28px; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; }
+    }
+  </style>
+</head>
+<body>
+  <main class="direction">
+    <section class="notes" aria-label="Design direction rationale">
+      <h1>04 / Comic Stage</h1>
+      <p>A bold, high-energy direction that treats each turn as a small piece of household theatre. Chunky type, sticker-like phase chips, a burst of motion, and a speech-free voice signal make the moment joyful for children while keeping the words of the Hermes response out of the design artifact.</p>
+      <p><strong>Hero:</strong> room display moving through Connecting → Listening → Speaking, with Missy visibly active and a Listening state variant shown as a friendly return path.</p>
+    </section>
+    <section class="browser" aria-label="Room display visual direction">
+      <div class="chrome"><span class="dot"></span><span class="dot"></span><span class="dot"></span><span class="chrome-label">room display / active turn</span></div>
+      <div class="screen">
+        <div class="ambient-shape" aria-label="Idle ambient background"></div>
+        <header class="identity">
+          <div class="identity-badge"><div class="sticker" aria-hidden="true">M</div><div><div class="mini-label">Hermes profile</div><div class="profile-name">Missy</div></div></div>
+          <div class="active-pill">Active · room display</div>
+        </header>
+        <div class="hero">
+          <div class="burst" aria-label="Voice-synchronized response animation"><div class="speech-bubble"><div class="dots" aria-hidden="true"><i></i><i></i><i></i></div></div></div>
+          <section class="copy" aria-label="Speaking state">
+            <div class="phase-strip" aria-label="Turn phases"><span class="phase done">Connecting</span><span class="phase done">Listening</span><span class="phase current">Speaking</span></div>
+            <h2 class="big-state">Speaking</h2>
+            <p class="tagline">The voice is here. The display keeps up.</p>
+            <div class="variant"><span class="variant-mark">↺</span><span>Listening · sound cue</span></div>
+          </section>
+        </div>
+        <footer class="footer"><span>ambient stays in the background</span><span>follow-up after speaking</span></footer>
+      </div>
+    </section>
+  </main>
+</body>
+</html>
