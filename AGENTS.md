@@ -32,7 +32,7 @@ ends that consume it.
 **Core — must not import a user-interface framework:**
 `session.py`, `client.py`, `config.py`, `diagnostics.py`, `audio.py`,
 `earcons.py`, `mic.py`, `shell.py`, `attachments.py`, `clipboard.py`,
-`history.py`, `timing.py`, `wake.py`, `handsfree.py`.
+`history.py`, `timing.py`, `wake.py`, `handsfree.py`, `domain.py`.
 
 **Front-end-specific:** `app.py` (Textual), `transcript.py` (Rich rendering for
 a terminal transcript), `prompts.py` (structured-prompt state and rendering

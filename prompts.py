@@ -11,7 +11,9 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
-MASKED_PROMPT_KINDS = frozenset({"sudo", "secret"})
+from domain import PromptState
+
+MASKED_PROMPT_KINDS = frozenset({"sudo", "secret", "password"})
 
 
 @dataclass(frozen=True)
@@ -35,9 +37,29 @@ class PendingPrompt:
     # can't go out while the first is still in flight.
     awaiting_response: bool = False
     rejection_reason: Optional[str] = None
+    domain_state: Optional[PromptState] = field(default=None, repr=False, compare=False)
 
     @classmethod
     def from_event(cls, event: dict[str, Any]) -> "PendingPrompt":
+        try:
+            domain_state = PromptState.from_event(event)
+        except ValueError:
+            domain_state = None
+        if domain_state is not None:
+            return cls(
+                prompt_id=domain_state.prompt_id,
+                prompt_kind=domain_state.prompt_kind,
+                text=domain_state.text,
+                options=[
+                    PromptOption(id=option.option_id, label=option.label)
+                    for option in domain_state.options
+                ],
+                sensitive=domain_state.sensitive,
+                turn_id=domain_state.turn_id or "",
+                session_id=domain_state.session_id or "",
+                timeout_s=int(domain_state.timeout_s or 0),
+                domain_state=domain_state,
+            )
         raw_options = event.get("options")
         options = [
             PromptOption(id=str(option.get("id") or ""), label=str(option.get("label") or ""))
@@ -62,11 +84,15 @@ class PendingPrompt:
     @property
     def masked(self) -> bool:
         """Whether the answer must never be echoed anywhere visible."""
+        if self.domain_state is not None:
+            return self.domain_state.masked
         return self.prompt_kind in MASKED_PROMPT_KINDS or self.sensitive
 
     @property
     def accepts_free_text(self) -> bool:
         """Whether a free-text input box should be offered at all."""
+        if self.domain_state is not None:
+            return self.domain_state.accepts_free_text
         return self.masked or self.prompt_kind == "clarify" or not self.options
 
     def option_at(self, number: int) -> Optional[PromptOption]:
