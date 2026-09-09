@@ -12,6 +12,77 @@ context:
   - firmware/respeaker-lite/README.md
 ---
 
+## RESUME HERE (2026-09-09, end of session 16, sixth update -- step 3 done)
+
+**Sixth update, same session: ran microWakeWord's training pipeline
+end-to-end against the 30-clip dataset from step 2 and got a real
+quantized streaming .tflite artifact out. This is the first time this
+story has produced an actual trained model file, not just infrastructure
+around one.**
+
+- Reused session 15's training environment (`/tmp/mww_train_venv`,
+  `/tmp/microwakeword_src` -- both survived on disk). Import-verified
+  in session 15 but never actually exercised training until now.
+- **Two real dependency gaps found and fixed, neither specific to this
+  project:** (1) `microwakeword.audio.clips.Clips` loads audio via
+  HuggingFace `datasets`' `Audio` feature, which in the installed
+  `datasets` version requires `torchcodec`, which itself requires an
+  ffmpeg build matching one of a few pinned major versions --
+  homebrew's installed ffmpeg (9.x) was too new, and getting a
+  compatible older one felt like more dependency wrangling than
+  warranted. Fixed by bypassing `Clips` entirely: since the training
+  clips are already clean 16kHz mono 16-bit PCM WAVs, loaded them
+  directly with the stdlib `wave` module and called
+  `generate_features_for_clip()` (the actual feature-extraction
+  function `Clips` would have called anyway) directly. (2)
+  `model_train_eval.py`'s training loop calls `tf.summary.scalar`,
+  which needs the `tensorboard` package -- not pulled in as a
+  dependency by default; `pip install tensorboard` fixed it.
+- **One upstream default-value bug found:** `mixednet`'s own
+  `--residual_connection` CLI default is `"0,0,0,0,0"` (5 values) while
+  its other list-shaped hyperparameters (`pointwise_filters`,
+  `repeat_in_block`, `mixconv_kernel_sizes`) default to 4 values each --
+  `mixednet.py`'s `model()` raises `ValueError: all input lists have to
+  be the same length` with the tool's own defaults. Not a bug in
+  anything this story touched; worked around by passing
+  `--residual_connection "0,0,0,0"` explicitly.
+- **Built `firmware/respeaker-lite/tools/build_training_features.py`**
+  (new committed tool): generates ragged-mmap spectrogram features from
+  `label_captures.py`'s WAV output and writes a `training_parameters.yaml`,
+  skipping augmentation and the HuggingFace negative-dataset downloads
+  the notebook normally uses (would add real value for a serious
+  training run, but weren't needed to prove the pipeline works).
+- **Ran the actual training** (`microwakeword.model_train_eval`,
+  `mixednet` architecture, 200 steps, batch size 16, our 30-clip
+  90/10/10-ish train/validation/testing split): converged to near-zero
+  training loss within 50 steps (expected overfitting on 11 training
+  clips per class), and **produced a genuine 57KB quantized streaming
+  TFLite model** at
+  `tflite_stream_state_internal_quant/stream_state_internal_quant.tflite`
+  -- the exact artifact format `micro_wake_word:`'s ESPHome component
+  expects per the story's own README.
+- **The model itself is not usable and was not flashed to the device.**
+  ROC/false-accept-rate numbers came back degenerate (AUC `nan`, `faph`
+  `nan` at every cutoff) because there's no real ambient/background
+  negative set and only 2 held-out test clips per class -- exactly the
+  outcome microWakeWord's own README warns is normal for a first run
+  with too little data. **Flashing this model would be a wasted reflash
+  cycle for a near-certainly-broken detector; don't do it.**
+- **Net: the full step 1 -> step 2 -> step 3 pipeline (serial capture ->
+  labeled dataset -> trained artifact) is now proven working end-to-end
+  on real hardware and real data, for the first time in this story's
+  history.** What's missing for an actually usable model is purely
+  *more and better data* -- more collection sessions (the pipeline
+  scales by repetition, no new engineering needed), and ideally the
+  HuggingFace ambient-negative datasets (`dinner_party`, `no_speech`,
+  `speech` from `kahrendt/microwakeword`) for realistic false-accept
+  evaluation, which `build_training_features.py` deliberately skipped
+  this run.
+- **Next real step: scale up data collection** (more sessions like
+  step 2's, ideally hundreds of positive/negative clips, not 15/15),
+  then retrain and evaluate before ever considering a flash-to-device
+  test.
+
 ## RESUME HERE (2026-09-09, end of session 16, fifth update -- step 2 done)
 
 **Fifth update, same session: actually collected a real, correlated,
