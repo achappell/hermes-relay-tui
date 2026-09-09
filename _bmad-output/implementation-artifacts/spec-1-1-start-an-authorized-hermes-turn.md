@@ -82,7 +82,7 @@ open speakers, a microphone, or the connected Puck device.
 - `HermesSession.is_connected()` is now true only after `hello_ack` completes and is cleared at the beginning of `close()`. `send_turn()` raises `SessionNotReadyError` before advancing turn state or writing a turn frame.
 - Explicit TUI voice capture reconnects through the selected profile before opening the microphone. Wake and appliance paths use a readiness callback so profile routing and connection loss are checked against the current session, including immediately after acknowledgement and before follow-up capture.
 - A pre-wire readiness failure remains `PROMPT_NOT_SENT` and is queued. Once a turn has been displayed as submitted, transport failure retains the existing ambiguous/no-replay behavior.
-- Review fixes were validated with the focused fake-session run (`281 passed, 1 skipped`) and the complete suite (`842 passed, 1 skipped`). No live Hermes, microphone, speaker, or Puck smoke test was run; that check remains intentionally pending for a supervised session.
+- Review fixes were validated with the focused fake-session run (`281 passed, 1 skipped`) and the complete suite (`842 passed, 1 skipped`). A supervised audible-playback or Puck smoke remains intentionally pending.
 - Live smoke on 2026-09-09 passed against the selected `amanda` profile: the real TUI completed a text turn; the real MacBook Air Microphone (input index 1) produced a non-empty Whisper transcript and a completed voice turn; and an intentionally refused endpoint kept the TUI disconnected with no microphone created. Response PCM was discarded and earcons/playback were disabled, so speakers and the Puck remained silent.
 
 ## Spec Change Log
