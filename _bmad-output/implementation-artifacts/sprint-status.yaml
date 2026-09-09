@@ -29,7 +29,7 @@
 # - Dev moves story to 'review', then runs code-review (fresh context, different LLM recommended)
 # - Retrospective appends its action items to action_items; the status view surfaces open ones
 generated: 09-08-2026 00:00
-last_updated: 09-08-2026 23:52
+last_updated: 09-09-2026 10:29
 project: hermes-relay-tui
 project_key: NOKEY
 tracking_system: file-system
@@ -39,7 +39,7 @@ development_status:
   epic-1: in-progress
   1-1-start-an-authorized-hermes-turn: review
   1-2-render-honest-turn-phases-and-response-delivery: backlog
-  1-3-continue-with-bounded-follow-up-and-exact-stop: backlog
+  1-3-continue-with-bounded-follow-up-and-exact-stop: review
   1-4-recover-without-replaying-an-uncertain-turn: backlog
   epic-1-retrospective: optional
 
