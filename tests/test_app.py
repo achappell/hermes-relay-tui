@@ -3696,7 +3696,11 @@ async def test_clarify_prompt_supports_a_listed_option_and_free_text_other():
         assert app._pending_prompt is None
 
 
-async def test_secret_prompt_uses_masked_input_never_echoed_anywhere():
+@pytest.mark.parametrize(
+    ("prompt_kind", "sensitive"),
+    [("secret", True), ("password", False)],
+)
+async def test_secret_prompt_uses_masked_input_never_echoed_anywhere(prompt_kind, sensitive):
     session = QueuedEventsSession()
     app = HermesStreamingApp(args=make_args(), session_factory=lambda: session)
     async with app.run_test() as pilot:
@@ -3708,12 +3712,12 @@ async def test_secret_prompt_uses_masked_input_never_echoed_anywhere():
             {
                 "type": "prompt_request",
                 "prompt_id": "p3",
-                "prompt_kind": "secret",
+                "prompt_kind": prompt_kind,
                 "turn_id": "t1",
                 "session_id": "s1",
                 "text": "Enter the API key",
                 "options": [],
-                "sensitive": True,
+                "sensitive": sensitive,
                 "timeout_s": 300,
             }
         )
@@ -3731,7 +3735,7 @@ async def test_secret_prompt_uses_masked_input_never_echoed_anywhere():
         assert session.prompt_responses == [
             {
                 "prompt_id": "p3",
-                "prompt_kind": "secret",
+                "prompt_kind": prompt_kind,
                 "option_id": None,
                 "value": secret,
                 "reason": None,
@@ -3800,6 +3804,54 @@ async def test_rejected_prompt_response_stays_open_and_can_be_answered_again(cap
         await turn
         await pilot.pause()
         assert app._pending_prompt is None
+
+
+async def test_failed_prompt_write_releases_the_domain_retry_gate():
+    class FlakyPromptSession(QueuedEventsSession):
+        def __init__(self):
+            super().__init__()
+            self.prompt_attempts = 0
+
+        async def send_prompt_response(self, **kwargs):
+            self.prompt_attempts += 1
+            if self.prompt_attempts == 1:
+                return False
+            return await super().send_prompt_response(**kwargs)
+
+    session = FlakyPromptSession()
+    app = HermesStreamingApp(args=make_args(), session_factory=lambda: session)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        turn = asyncio.create_task(app._run_turn("answer after retry"))
+        await asyncio.sleep(0)
+
+        await session.push(dict(APPROVAL_REQUEST))
+        await pilot.pause()
+        await pilot.press("1")
+        await pilot.pause()
+
+        assert session.prompt_attempts == 1
+        assert session.prompt_responses == []
+        assert app._pending_prompt is not None
+        assert app._pending_prompt.awaiting_response is False
+        assert app.domain.state.prompt_awaiting is False
+
+        await pilot.press("2")
+        await pilot.pause()
+        assert session.prompt_responses[-1]["option_id"] == "deny"
+
+        await session.push(
+            {
+                "type": "prompt_resolved",
+                "prompt_id": "p1",
+                "prompt_kind": "approval",
+                "status": "denied",
+                "session_id": "s1",
+            }
+        )
+        await session.push({"type": "turn_end", "turn_id": "t1"})
+        await session.push(None)
+        await turn
 
 
 async def test_duplicate_option_presses_do_not_send_a_second_response():
@@ -4155,4 +4207,3 @@ async def test_connect_banner_shows_unconfirmed_model_when_relay_omits():
         await pilot.pause()
         text = transcript_of(app)
         assert "Connected to s-custom (chat chat-2, model cli-model (unconfirmed))." in text
-

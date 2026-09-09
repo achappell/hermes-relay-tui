@@ -24,6 +24,7 @@ CORE_MODULES = [
     "clipboard",
     "config",
     "diagnostics",
+    "domain",
     "earcons",
     "handsfree",
     "history",

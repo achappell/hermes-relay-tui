@@ -67,6 +67,7 @@ from diagnostics import (
     summarize_text,
     trace_monotonic_ms,
 )
+from domain import TuiDomain, decide_busy
 from history import (
     PromptHistory,
     artifact_path_for_profile,
@@ -567,6 +568,7 @@ class HermesStreamingApp(App):
         )
         self.audio_input_device = getattr(args, "mic_input_device", None)
         self.transcript = TranscriptBuffer()
+        self.domain = TuiDomain()
         self.show_transcript_details = not bool(getattr(args, "hide_thinking", False))
         self.voice_state = VOICE_READY
         self._turn_in_flight = False
@@ -676,10 +678,12 @@ class HermesStreamingApp(App):
 
     def _set_voice_state(self, state: str) -> None:
         self.voice_state = state
+        self.domain.observe_voice_state(state)
         self._refresh_voice_status()
 
     def _set_connection_state(self, state: str) -> None:
         self.connection_state = state
+        self.domain.set_connection_state(state)
         self._refresh_connection_status()
 
     def _refresh_empty_state(self) -> None:
@@ -1006,13 +1010,14 @@ class HermesStreamingApp(App):
                     )
                     continue
 
-                self._set_connection_state(CONNECTION_CONNECTED)
-                self._set_voice_state(VOICE_READY)
-                self._needs_reconnect = False
                 session_id = (
                     getattr(self.session, "session_id", None)
                     or getattr(self.args, "session_id", "session")
                 )
+                self._set_connection_state(CONNECTION_CONNECTED)
+                self.domain.reset_session(str(session_id) if session_id else None)
+                self._set_voice_state(VOICE_READY)
+                self._needs_reconnect = False
                 conn_details = []
                 if self._profiles_configured:
                     conn_details.append(f"profile {self._active_profile_name}")
@@ -1886,23 +1891,32 @@ class HermesStreamingApp(App):
         prompt = self._pending_prompt
         if prompt is None or prompt.awaiting_response:
             return
+        prepared = self.domain.prepare_prompt_action(option_id=option_id, value=value)
+        if not prepared.accepted or prepared.action is None:
+            diagnostic_logger.debug(
+                "app.prompt.rejected reason=%s", prepared.reason or "unknown"
+            )
+            return
+        action = prepared.action
         prompt.awaiting_response = True
         prompt.rejection_reason = None
         self._refresh_prompt_panel()
         try:
             sent = await self.session.send_prompt_response(
-                prompt_id=prompt.prompt_id,
-                prompt_kind=prompt.prompt_kind,
-                option_id=option_id,
-                value=value,
+                prompt_id=action.prompt_id,
+                prompt_kind=action.prompt_kind,
+                option_id=action.option_id,
+                value=action.value,
             )
         except Exception as exc:
             if self._pending_prompt is prompt:
+                self.domain.prompt_response_failed(str(exc))
                 prompt.awaiting_response = False
                 self._append_block(f"[error] prompt response: {exc}", role="error")
                 self._refresh_prompt_panel()
             return
         if not sent and self._pending_prompt is prompt:
+            self.domain.prompt_response_failed("structured prompts unsupported")
             prompt.awaiting_response = False
             self._append_block(
                 "[error] endpoint does not support structured prompts; response not sent",
@@ -2088,6 +2102,10 @@ class HermesStreamingApp(App):
             self.args = new_args
             self._sync_profile_metadata(new_args)
             self.session = self._new_session(new_args)
+            self.domain.reset_session(
+                getattr(self.session, "session_id", None)
+                or getattr(new_args, "session_id", None)
+            )
             self._needs_reconnect = False
             self._history = PromptHistory(self._history_path_for_args(new_args))
             self._queued_prompts.clear()
@@ -2248,6 +2266,7 @@ class HermesStreamingApp(App):
             self._append_block(f"[error] Failed to start new session: {exc}")
             return
         self.transcript.clear()
+        self.domain.reset_session(getattr(self.session, "session_id", None))
         self._refresh_transcript()
         self._refresh_connection_status()
         new_sid = self.session.session_id
@@ -2304,6 +2323,7 @@ class HermesStreamingApp(App):
             self._append_block(f"[error] Failed to resume session {sid}: {exc}")
             return
         self.transcript.clear()
+        self.domain.reset_session(getattr(self.session, "session_id", None))
         history = res.get("history") or []
         if history:
             self._hydrate_transcript(history)
@@ -3025,17 +3045,22 @@ class HermesStreamingApp(App):
         while self._busy_transition_owner is not None:
             await asyncio.sleep(0)
 
-        if not self._turn_in_flight:
-            if self._queued_prompts:
-                self._enqueue_prompt(text)
-                next_text = self._queued_prompts.pop(0)
-                self._refresh_queue_shelf()
-                self._append_block(f"starting queued: {self._queue_preview(next_text)}")
-                await self._run_turn(next_text)
-                return
+        decision = decide_busy(
+            mode=self.busy_mode,
+            turn_in_flight=self._turn_in_flight,
+            has_queued_prompts=bool(self._queued_prompts),
+        )
+        if decision.action == "start_queued":
+            self._enqueue_prompt(text)
+            next_text = self._queued_prompts.pop(0)
+            self._refresh_queue_shelf()
+            self._append_block(f"starting queued: {self._queue_preview(next_text)}")
+            await self._run_turn(next_text)
+            return
+        if decision.action == "start":
             await self._run_turn(text)
             return
-        if self.busy_mode == "queue":
+        if decision.action == "queue":
             self._enqueue_prompt(text)
             return
 
@@ -3045,7 +3070,7 @@ class HermesStreamingApp(App):
         self._busy_transition_owner = current_task
         try:
             await self._interrupt_active_turn()
-            if self.busy_mode == "steer":
+            if decision.action == "steer":
                 await self._run_turn(text)
         finally:
             if self._busy_transition_owner is current_task:
@@ -3131,11 +3156,29 @@ class HermesStreamingApp(App):
             self._set_voice_state(VOICE_THINKING)
         timeout = getattr(self.args, "turn_timeout", 0) or 0
         try:
+            domain_turn = self.domain.begin_turn(
+                generation=index,
+            )
+            if not domain_turn.accepted:
+                raise RuntimeError(
+                    "domain rejected turn start: "
+                    + (domain_turn.reason or "unknown")
+                )
             events = self.session.send_turn(text, stt_source=stt_source)
+            bound_turn = self.domain.bind_turn_id(
+                getattr(self.session, "active_turn_id", None)
+            )
+            if not bound_turn.accepted:
+                raise RuntimeError(
+                    "domain rejected turn identity: "
+                    + (bound_turn.reason or "unknown")
+                )
             if timeout > 0:
-                await asyncio.wait_for(self._consume_turn(events, index), timeout)
+                await asyncio.wait_for(
+                    self._consume_turn(events, index, generation=index), timeout
+                )
             else:
-                await self._consume_turn(events, index)
+                await self._consume_turn(events, index, generation=index)
             self._last_prompt_status = PROMPT_COMPLETED
         except asyncio.CancelledError:
             self._set_voice_state(VOICE_INTERRUPTED)
@@ -3234,7 +3277,13 @@ class HermesStreamingApp(App):
         else:
             self.player.close()
 
-    async def _consume_turn(self, events: AsyncIterator[dict[str, Any]], index: int) -> None:
+    async def _consume_turn(
+        self,
+        events: AsyncIterator[dict[str, Any]],
+        index: int,
+        *,
+        generation: int | None = None,
+    ) -> None:
         audio = bytearray()
         audio_format: Optional[tuple[int, int, int]] = None
         audio_file = bytearray()
@@ -3463,6 +3512,25 @@ class HermesStreamingApp(App):
                 kind,
                 summarize_payload(event),
             )
+            domain_result = self.domain.apply_event(event, generation=generation)
+            if not domain_result.accepted:
+                diagnostic_logger.debug(
+                    "app.domain.event_rejected kind=%s reason=%s",
+                    kind,
+                    domain_result.reason or "unknown",
+                )
+                if domain_result.reason not in {
+                    "late_turn_event",
+                    "stale_turn_event",
+                    "stale_session_event",
+                    "stale_prompt",
+                }:
+                    self._set_voice_state(VOICE_ERROR)
+                    self._append_block(
+                        f"[error] invalid turn event: {domain_result.reason or 'rejected'}",
+                        role="error",
+                    )
+                continue
             if kind in {"text_delta", "text_replace"}:
                 ensure_assistant_stream()
                 if kind == "text_replace":
