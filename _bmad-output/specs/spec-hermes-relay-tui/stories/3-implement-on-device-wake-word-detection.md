@@ -2,7 +2,7 @@
 title: 'Implement on-device wake-word detection on the Puck'
 type: 'feature'
 created: '2026-09-08'
-status: 'done'
+status: 'in-progress — see RESUME HERE below, not done'
 route: 'dispatch'
 review_loop_iteration: 0
 baseline_commit: '44047c964b6d4c8dbfad7427e07a51c74f727239'
@@ -11,6 +11,130 @@ context:
   - firmware/respeaker-lite/respeaker-lite.yaml
   - firmware/respeaker-lite/README.md
 ---
+
+## RESUME HERE (2026-09-09, end of session 12)
+
+**Update from session 12:** step 1 below (retry-with-backoff) was tried and
+reverted — proven ineffective with live hardware evidence, not just
+theorized. Once the HTTP client wedges, each individual POST call blocks
+~11s before failing regardless of app-level retry; retrying just stacks
+multiple 11s blocks with no gain. `pcm_capture.h` is back to
+single-attempt-per-chunk, bounded abandonment (unchanged from session 11's
+end state). See "Follow-up session 12" below for detail, including a note
+about not colliding with another concurrently-running session against this
+same physical device — check for other active `esphome logs`/upload
+processes or listeners on the receiver port before reflashing.
+
+## RESUME HERE (2026-09-09, end of session 11, superseded above)
+
+**Read this section first — the rest of the file is a long, session-by-session
+investigation log kept for evidence, not a thing to read start to finish.**
+
+### The actual state of wake-word detection
+
+Wake word does **not** work yet. Extensive investigation (sessions 3–10)
+proved, with hard evidence at every step, that the entire software pipeline
+is correct: decimation, anti-aliasing filtering, gain, channel selection,
+feature extraction, model file integrity, tensor shapes. A cross-validation
+against a reference Python implementation (session 10) showed clean
+synthetic "hey jarvis" TTS speech detects perfectly (probability → 255)
+through the identical pipeline, while real audio captured through this
+hardware never crosses the threshold (flat 0). **Conclusion: this is an
+acoustic/hardware mismatch — the reSpeaker Lite's onboard XMOS DSP
+(AEC/beamforming/noise-suppression) colors the voice signal in a way the
+pretrained community models never saw in training — not a fixable bug in
+this repo's firmware.**
+
+The only real fix is training a custom wake-word model on audio actually
+captured through this hardware. Session 11 started building that pipeline.
+
+### What's built and working right now
+
+- Device is flashed with a **real anti-aliasing FIR filter** (session 6,
+  keep this regardless of anything else) and a **local-vendored
+  `i2s_audio` + `micro_wake_word`** (`firmware/respeaker-lite/components/`)
+  so both are directly patchable in-repo.
+- **Real WiFi is configured** (`secrets.yaml`, gitignored — SSID "The
+  Chappells"). If the device won't associate, it's likely a router-side
+  anti-flood throttle from repeated reflashing — wait a few minutes and
+  retry before assuming it's broken.
+- **A continuous rolling PCM-capture-and-upload pipeline** is flashed and
+  working: `firmware/respeaker-lite/pcm_capture.h` captures ~2s windows of
+  the exact audio `micro_wake_word` consumes, uploads each one in ~16KB
+  chunks via `http_request` to a local receiver, then immediately re-arms.
+  Verified over a 2-minute run: **zero crashes**, but only **~60% of
+  uploads succeed** — the `http_request` component intermittently wedges
+  into a persistent `ESP_FAIL` state after a run of successes (not yet
+  root-caused; see session 11's notes). A bounded-abandon mitigation is in
+  place (give up after 2 consecutive chunk failures) so a stuck sample
+  can't stall the whole pipeline for 100+ seconds anymore.
+- The **receiver server** (`receiver.py`) and a downloaded **Piper TTS
+  voice** are in `/tmp` on the dev Mac used that session — **not saved
+  anywhere durable**. A fresh session will need to recreate these (see
+  "To recreate ephemeral tooling" below) or relocate them into the repo /
+  a proper tools directory if this becomes ongoing infrastructure.
+- All prior diagnostics (per-channel amplitude, mww state, raw probability,
+  feature vector, tensor shape) are still compiled in and logging — verbose
+  but harmless; fine to leave or strip down once the acoustic-mismatch
+  conclusion is acted on.
+
+### Concrete next steps, in order
+
+1. **Harden the upload pipeline.** Retry-with-backoff was tried in session
+   12 and reverted — proven ineffective, since each wedged POST call
+   itself blocks ~11s regardless of app-level retry timing. What's left:
+   root-cause the `ESP_FAIL` wedging (check for a leaked/reused
+   `esp_http_client` handle, or try a fresh client per request instead of
+   the shared component instance), or a periodic forced close/reconnect of
+   the client connection. The current 2-strikes-and-abandon logic bounds
+   damage but doesn't fix the underlying ~40% loss rate.
+2. **Build the playback-and-capture orchestration script.** Generate a
+   TTS utterance (Piper — voice model was `en_US-lessac-medium`, see
+   below), play it through a speaker positioned at the physical Puck,
+   correlate the resulting capture by timestamp against the receiver's
+   log, save as a labeled training sample. None of this orchestration
+   exists yet — session 11 only proved the underlying capture+upload
+   mechanism works, via one manual `afplay` + manual log inspection.
+3. **Collect a real dataset at scale.** Positive samples (varied TTS
+   voices/phrasings of the wake phrase, played and captured through this
+   hardware) plus negative/background samples. Hundreds of positives is a
+   reasonable initial target per typical `microWakeWord` practice.
+4. **Work through `microWakeWord`'s actual training pipeline**
+   (`kahrendt/microWakeWord` on GitHub, `basic_training_notebook.ipynb`).
+   The upstream project's own README is explicit that this requires real
+   hyperparameter experimentation, not a single scripted run — budget for
+   iteration, not a one-shot.
+
+### To recreate ephemeral tooling in a fresh session
+
+```bash
+# Reference feature-extraction + model-testing venv (used for session 10's
+# cross-validation and would be reusable for dataset sanity-checking):
+python3 -m venv /tmp/pyref_venv
+/tmp/pyref_venv/bin/pip install pymicro-features ai-edge-litert piper-tts
+
+# Local upload receiver (rewrite from this file's own history if lost --
+# session 11's version lives in this session's transcript, not committed
+# anywhere in the repo yet):
+#   listens on 0.0.0.0:8765, POST /upload?seq=N&chunk=C&total=T&ms=MS,
+#   reassembles chunks per seq into <recv_time>_seq<N>.raw
+
+# Piper voice used for the one manual test:
+curl -sL -o en_US-lessac-medium.onnx \
+  "https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_US/lessac/medium/en_US-lessac-medium.onnx"
+curl -sL -o en_US-lessac-medium.onnx.json \
+  "https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_US/lessac/medium/en_US-lessac-medium.onnx.json"
+```
+
+### Repo state as of end of session
+
+Working tree has real, uncommitted changes: the FIR filter, vendored
+`components/i2s_audio` and `components/micro_wake_word`, the WiFi/upload
+`pcm_capture.h` rewrite, `http_request:` added to `respeaker-lite.yaml`,
+and this story file's session log. Nothing has been committed or PR'd yet
+— check `git status`/`git diff` in `firmware/respeaker-lite/` before
+starting new work, and decide with the human whether to commit the
+diagnostic-heavy current state or clean it up first.
 
 <frozen-after-approval reason="human-owned intent — do not modify unless human renegotiates">
 
@@ -218,6 +342,133 @@ detection check remains.**
     the channel that gets dropped rather than kept, that alone would
     produce exactly the "zero audio activity" symptom seen in all 4
     attempts — worth checking before assuming a wiring or gain problem.
+
+### Follow-up session 3: two hypotheses tested and ruled out, still unresolved
+
+**Picked up the story's own "one unexplained detail" and the deferred review note about the fork's stereo-to-mono handling. Both led somewhere, but the underlying non-detection is still unresolved — this is new negative evidence, not a fix.**
+
+- **Split the amplitude diagnostic per channel** (`mic_diag` now logs `ch0`/`ch1` separately instead of one combined peak) to directly test whether `channels: 1` (micro_wake_word's mono-channel selection) was silently reading a dead/wrong channel while a live signal sat on channel 0. Confirmed against `formatBCE/Respeaker-Lite-ESPHome-integration`'s own full reference config (`config/common/respeaker-satellite-base.yaml`): it uses `channels: 1` for its own `micro_wake_word:` block and `channels: 0` for `voice_assistant:`, matching this README's own table ("ch0 fits ASR, ch1 fits micro_wake_word") — so `channels: 1` here is correct, not a copy/typo bug.
+- **Hypothesis 1 (channel selection) ruled out with hardware evidence, not just config comparison:** live capture shows `ch0` and `ch1` reporting byte-for-byte identical peak values on every single sample throughout multiple runs (ambient and speech). Whatever the XU316 firmware variant is doing, both stereo slots the ESP32 receives carry the same content — `channels: 1` is not starving micro_wake_word of a silent channel.
+- **Added a second diagnostic** (`mww_diag`, a 2s `interval:` polling `id(mww).is_running()` and `id(mww).get_vad_state()`) so the component's live state doesn't depend on catching the one-time `on_boot` transition log. Confirmed `is_running: true` continuously across every test run in this session — the inference task is alive and has been the whole time, not silently stopped or crashed.
+- **Live speech test, gain_factor 4 (Seeed's original value):** speaking "hey jarvis" loudly and close to the device produced a genuine, unambiguous amplitude spike to 833,893,830 (raw 32-bit sample magnitude) — well above the room-noise baseline (~5-20M) and above the previous session's "confirmed speech" reference range (1-2 billion is the room-noise-vs-speech *contrast*, not a hard floor; this spike is real, loud, unmistakable speech). Zero detection log lines for either `hey_jarvis` or `stop`. `vad_state` did not visibly correlate with the spike in real time (it read `false` throughout the loud interval and only flipped `true` ~1-3s afterward) — most likely explained by the diagnostic's 2s polling granularity racing the actual inference/VAD update cadence rather than a second real bug; not separately isolated.
+- **Hypothesis 2 (gain-induced Q25 clipping) — formed, tested, and ruled out.** `MicrophoneSource::process_audio_` (esphome core, not the fork) converts each sample to Q25, multiplies by `gain_factor`, then hard-clamps to `Q25_MAX_VALUE = (1<<25)-1 = 33,554,431` before converting back. Worked the actual numbers from the 833M sample above: Q31→Q25 (`>>6`) ≈ 13,029,591 (under the ceiling) but ×4 gain ≈ 52,118,364 — over the ceiling, meaning real speech at that volume was being hard-clipped into a distorted, saturated waveform before ever reaching the wake-word model's feature extraction. Formed as a single, falsifiable hypothesis and tested by dropping `gain_factor` to 1 (removing the multiplication that causes the overflow) and reflashing. **Result: still zero detections**, even with sustained, un-clipped speech in the 40-400,000,000 raw-amplitude range (confirmed via `mic_diag`; per the same Q25 math, none of these values clip at gain 1). This directly falsifies the clipping hypothesis — reverted `gain_factor` back to 4 (Seeed's tested value) since there's no evidence it's wrong and no reason to diverge from the reference.
+- **Net result:** two more plausible, concrete hypotheses tested this session, both ruled out with direct hardware evidence rather than left as unconfirmed guesses. The wake-word engine is confirmed alive, receiving real (matching-channel, unclipped) audio, at genuinely loud amplitude, and still never fires — for either bundled model. This narrows the remaining explanation space toward something deeper than mic wiring, channel selection, or gain: most likely the TFLite feature-extraction/spectrogram frontend (`frontend_config_` in `micro_wake_word.cpp`, not inspected this session) receiving audio that's technically present and loud but spectrally malformed — e.g. from the fork's un-filtered nearest-sample 48kHz→16kHz decimation (naive 1-in-3 sample drop, no anti-aliasing filter, already flagged as a real DSP quality concern in the prior session and never resolved) — or a genuine model/hardware mismatch that only a human listening to the actual captured PCM, or a working reference recording compared side-by-side, can settle from here.
+- **Next concrete step, not attempted this session:** get an actual audio recording off the device to listen to. The two previous raw-PCM-capture attempts both crash-looped the device (see the prior session's notes) — **do not repeat either approach** (growing a buffer inside the mic's own real-time callback; a fixed-size PSRAM buffer resized in `on_boot`). The safer redesign already suggested there — accumulate via a queue handed from `on_data` to a separate `interval:`-driven consumer task rather than allocating/growing memory inside the audio driver's own callback context — was not attempted this session and remains the most promising unblocked path to actually hearing what reaches the model.
+
+### Follow-up session 4: raw PCM captured and inspected — likely root cause found (aliasing)
+
+**Built the safer capture design session 3 deferred, got it working, and actually looked at the audio for the first time. Strong new evidence, not yet a fix.**
+
+- **Design, deliberately avoiding both prior crash patterns:** a single `heap_caps_malloc(..., MALLOC_CAP_SPIRAM)` call in `setup()` (once, never resized -- not a `std::vector`), a 4-second fixed-size buffer (512,000 bytes: 16kHz × 4 bytes × 2 channels × 4s). The mic's real-time `on_data` callback only does a bounded `memcpy` into that buffer at an index, never allocates. Draining/dumping happens later from a slow `interval:` tick (100ms), never from the real-time path. See `firmware/respeaker-lite/pcm_capture.h`.
+- **Isolation step done first, per the prior session's own ambiguity note:** flashed `psram: mode: octal` alone, with zero capture logic, and confirmed a clean boot (`is_running: true` continuously, no crash markers) before adding anything else. This resolves the prior session's open question ("points at the psram: configuration or the resize() call itself") -- PSRAM enablement itself is not what crashed the earlier attempts; the resize() pattern was.
+- **Real crash-free capture-and-dump run**, twice. First attempt used a naive `DUMP_CHUNK_BYTES = 768` and every single dumped line came back silently truncated to ~470-471 base64 chars -- traced to ESPHome's own fixed per-log-message length cap (~480 bytes total), not a bug in the capture code. Fixed by shrinking to 300 raw bytes/chunk (400 base64 chars, comfortably under the cap) and re-running; all 1707 chunks arrived intact (verified: no gaps, correct total length reassembling to exactly 512,000 bytes).
+- **Reconstructed the actual PCM** (`ffmpeg -f s32le -ar 16000 -ac 2`) from the base64 dump and rendered spectrograms to actually look at what reaches the model, instead of only ever seeing amplitude numbers.
+  - Real, syllable-timed bursts of energy are visible at roughly 1.87s, 2.4s, 2.9s, and 3.7s into the 4s capture -- plausibly "hey jarvis" said more than once -- confirming actual speech content reached the buffer, not silence or pure noise.
+  - **But the energy in each burst is broadband and static**, not formant-shaped: at 1200x600 log-scale resolution, zooming into one 300ms burst shows fixed horizontal bands sitting at constant frequencies (~7200Hz, ~5900Hz, ~4300Hz, ~2100Hz, ~1600Hz) that do not move for the entire window. Real speech formants continuously sweep as the vocal tract changes shape through a syllable; static, comb-like bands that hold still like this are the classic signature of aliasing, not natural speech.
+  - **Likely root cause, not yet proven by elimination:** the fork's 48kHz→16kHz decimation (`each_third_sample`, keeps 1 stereo frame out of every 3, no anti-aliasing lowpass filter first -- flagged as a real DSP quality concern as far back as this story's first session) is folding high-frequency content back down across the spectrum, corrupting the signal into something that isn't valid 16kHz-bandlimited audio anymore. A wake-word model trained on clean speech would plausibly never recognize this, independent of phrase, volume, gain, or channel -- consistent with every other symptom seen across all four sessions.
+- **Not yet done:** this is strong visual/spectral evidence, not a confirmed-by-fix root cause. The actual fix -- adding a real anti-aliasing lowpass filter before decimation (or switching to a component/path that resamples properly instead of dropping samples) -- is real DSP/firmware work, a materially bigger scope than this capture diagnostic, and was intentionally not attempted without checking in first. Left the device flashed with the capture diagnostics in place (harmless, capture-only, no crash risk) rather than mid-change.
+
+### Follow-up session 5: anti-aliasing filter implemented and tested — changed the signal, did not fix detection
+
+**Acted on session 4's aliasing finding. Real fix attempted and tested live, not just theorized.**
+
+- **Vendored the forked `i2s_audio` component locally** (`firmware/respeaker-lite/components/i2s_audio/`, a verbatim copy of `formatBCE/esphome` at the previously-pinned commit `eedcdbee335dbe296d432b3e6421da0469907365`) via `external_components: - source: {type: local, path: components}`, replacing the git-fetched source. This makes the component directly patchable in-repo instead of depending on an upstream fork for a fix specific to this project.
+- **Replaced the nearest-sample-drop decimation** in `components/i2s_audio/microphone/i2s_audio_microphone.cpp`'s `mic_task` with a 3-tap boxcar (moving average) filter applied per channel before downsampling 48kHz→16kHz — averages the 3 raw 32-bit samples that previously had 2 of 3 discarded, instead of just keeping the first and dropping the rest. A crude but real lowpass filter (nulls near the new Nyquist), not a proper windowed-sinc FIR, chosen for being simple, fast, and low-risk to implement correctly in one pass.
+- **Isolation-tested clean first:** compiled and flashed with only the local-component swap (no capture logic changes), confirmed clean boot with no crash markers, before layering the PCM-capture diagnostics back on top for verification.
+- **Live test, two capture rounds:** first round's 4-second capture window didn't overlap the loudest speech (timing miss, not a firmware issue -- confirmed by comparing `mic_diag` timestamps against the capture window). Reflashed and re-ran with tighter timing; second capture showed sustained loud speech (150-480M raw amplitude) genuinely inside the 4-second window this time.
+- **Spectrogram comparison, same capture/inspection pipeline as session 4:** the static, non-sweeping comb-like frequency bands from the unfiltered version are gone. The filtered capture instead shows a smoother, continuous low-frequency-weighted spectrum that decays toward higher frequencies -- consistent with the boxcar filter's intended lowpass behavior actually taking effect, not the aliasing signature from before. The fix measurably changed the signal in the expected direction.
+- **Wake-word detection still did not fire.** Zero `hey_jarvis`/`stop` detections across both live rounds, despite confirmed loud, sustained, now-differently-filtered speech genuinely reaching the model's input.
+- **Net result, stated plainly:** the anti-aliasing fix is real, implemented correctly (verified by spectral comparison, not just code review), and demonstrably changes the audio, but it was not sufic to make detection work on its own. Aliasing was very likely a real contributing problem, not a red herring, but it was not the *sole* cause of the non-detection -- or a 3-tap boxcar's mild attenuation is not enough correction (a proper steeper-cutoff FIR/IIR lowpass may be needed, not just "a filter"), or a separate issue remains stacked on top. Not disproven which; not guessed at further this session.
+- **Left in a stable, known state:** device flashed with the anti-aliasing fix in place (it's a strict improvement over the unfiltered original regardless of the open detection question) and the capture/diagnostic scaffolding still present. No crash-prone patterns introduced. `gain_factor` remains at 4 (Seeed's tested value, ruled out separately in session 3).
+- **Next concrete step, not attempted:** either a proper steeper anti-aliasing filter (e.g. a short windowed-sinc FIR instead of a 3-tap boxcar) to test whether stronger filtering closes the gap, or capturing and spectrogram-comparing the *filtered* audio against a known-good reference recording of "hey jarvis" (rather than only visually eyeballing "does this look like aliasing") to get a more concrete signal about how much more correction, if any, is actually needed.
+
+### Follow-up session 6: proper FIR anti-aliasing filter — still no detection, even at extreme volume
+
+**Replaced the boxcar with a real filter. Confirms this is no longer an audio-quality problem.**
+
+- Replaced the 3-tap boxcar with a 31-tap windowed-sinc (Hamming) FIR lowpass, cutoff 7000Hz at 48kHz, unity DC gain, applied per-channel via a circular history buffer that persists across chunk boundaries (so filter context doesn't restart cold every ~16ms). Coefficients generated offline (Python, sinc + Hamming window) and hardcoded. Compiled and flashed clean, no crash markers.
+- Two capture-window timing misses (loud speech happened after the fixed 4-second PCM buffer had already closed) wasted the first two attempts at re-verifying the spectrogram improvement, but were themselves informative: `mic_diag` showed genuine amplitude peaks up to **1.45-1.6 billion** (out of a ~2.1 billion int32 ceiling — this is about as loud as the input can get before hard clipping) during a sustained ~10-second span of continuous "hey jarvis" repetition, confirmed via direct live monitoring (not just the fixed capture window).
+- **Zero detections, at any point, across all of it.** Not a timing problem, not a loudness problem, not (per session 5's spectrogram comparison) primarily an aliasing problem anymore -- this is now the loudest, most sustained, best-filtered audio tested across the whole investigation, and `micro_wake_word` never once logged a detection or even a `"Wake word model predicts ... but VAD model doesn't"` partial-match line for either `hey_jarvis` or `stop`.
+- **Per `systematic-debugging`'s explicit guidance (3+ tested-and-failed fixes ⇒ question the architecture, don't attempt a 4th):** three real, independently-tested audio-pipeline hypotheses have now failed to produce a single detection -- gain-induced clipping (session 3, falsified), a weak boxcar anti-aliasing filter (session 5, measurably improved the spectrum, no detection), and a proper 31-tap FIR anti-aliasing filter (this session, measurably improved further per spectrogram, tested against by far the loudest/most sustained speech of the whole investigation, still no detection). The audio reaching the model is now about as clean and loud as this hardware can plausibly produce. Continuing to tune the analog/DSP front end without new evidence would be guessing blind against the skill's own explicit stop condition.
+- **Not yet checked, and the natural next places to look given this pattern:** whether the vendored/pretrained `hey_jarvis`/`stop` TFLite model files themselves are intact and version-compatible with this ESPHome release's `micro_wake_word` implementation (a corrupted or mismatched model would show exactly this symptom -- audio arrives fine, inference never fires -- independent of any amount of front-end DSP work); and the TFLite feature-extraction/spectrogram frontend inside `micro_wake_word.cpp` itself (`frontend_config_`), which has never been directly inspected across any session so far, only inferred about via the audio it's fed.
+- **Left in a stable, improved state:** device flashed with the proper FIR filter (an unambiguous improvement over both prior versions, kept regardless of the open detection question) and all capture/diagnostic scaffolding still in place. No crash-prone patterns introduced.
+
+### Follow-up session 7: root cause narrowed to the WakeWordModel class itself, not audio or model files
+
+**Instrumented the actual inference pipeline instead of the audio feeding it. This is the sharpest, most specific finding of the whole investigation.**
+
+- **Model file integrity, checked and cleared.** Fetched fresh copies of `hey_jarvis.json`/`.tflite` from the canonical `esphome/micro-wake-word-models` repo and diffed by SHA-256 against the vendored copies -- byte-for-byte identical. Not a corrupted or mismatched model file.
+- **Vendored `micro_wake_word` locally too** (`components/micro_wake_word/`, a verbatim copy of this project's installed ESPHome 2026.8.2 package), alongside the already-vendored `i2s_audio`, so it could be directly instrumented rather than inferred about from the outside.
+- **Added a raw-probability diagnostic** (`streaming_model.cpp`'s `perform_streaming_inference`, throttled per-model-instance to ~1/s) -- the stock component only ever logs a binary detected/not-detected outcome. This is the first time any session actually saw the underlying number.
+- **Result: `hey_jarvis`'s raw probability was a flat, unmoving 0/255 across a full 25-second loud, sustained "hey jarvis" test -- not close to the 247/255 cutoff, the literal floor value every single sample.** The VAD model, invoked every cycle with the *exact same shared `features_buffer`* (both are fed by one `generate_features_()` call per cycle -- confirmed by reading `update_model_probabilities_`), responded normally and variably (0-25/255) to the same audio. Since both consume identical input, this conclusively rules out the entire audio pipeline (mic, decimation, either anti-aliasing filter, gain, channel selection) as an explanation for the non-detection -- something is different between how the `hey_jarvis` *model* processes those features and how VAD does, not what reaches either of them.
+- **Found and fixed a real, separate bug while investigating: only the first model in `models:` is enabled by default.** `micro_wake_word/__init__.py`: `default_enabled = i == 0`; the rest start disabled and stay disabled unless explicitly enabled (state persists to flash across reboots). Not documented anywhere in this project's config or README before now. Added a second wake-word model (`okay_nabu`, freshly downloaded, hash-unverified-but-official) to differentially test whether the flatline was specific to `hey_jarvis`'s weights -- it silently never logged at all until `micro_wake_word.enable_model: okay_nabu` was added to `on_boot`, which was the actual first sighting of this default-disabled behavior.
+- **Differential result, with both models properly enabled and clean names (not just pointers) so results are unambiguous:** `hey_jarvis` max probability across a fresh test = 0/255. `okay_nabu` max = 1/255. `vad` max = 25/255. **Both independently-trained, hash-verified-stock wake-word models flatline near-zero on this hardware's processed audio, while VAD (same publisher, same feature pipeline) does not.** This is not a single corrupted model; it is a `WakeWordModel`-class-vs-`VADModel`-class difference, or (more likely) a real mismatch between this hardware's audio characteristics and what these specific pretrained models expect, that a lenient VAD-style classifier tolerates and a strict (0.97 cutoff) wake-word classifier does not.
+- **Checked tensor shape/stride/arena size as one more structural hypothesis -- came back completely normal.** Added a one-time diagnostic logging each model's actual loaded tensor shape (`streaming_model.cpp`'s `load_model_()`). `hey_jarvis`: stride=3, feature_size=40, arena=22512 bytes. `okay_nabu`: stride=3, feature_size=40, arena=25840 bytes. Both exactly match their manifest's declared values and each other. No structural anomaly in how either model is loaded or invoked -- ruled out.
+- **Net result:** the non-detection is now conclusively isolated to something inside how `WakeWordModel` (any instance) evaluates the shared feature stream, or a genuine level/dynamic-range mismatch between this specific hardware's audio and what these pretrained models were trained against -- not the mic, not the decimation/filtering, not gain, not channel selection, not model file corruption, not tensor shape/arena sizing. This is a different, deeper class of question than anything tested in sessions 1-6, and wasn't pursued further this session -- checking in before opening feature-vector-level instrumentation (the next concrete step: log the actual 40-element `int8` feature vector itself, not just the model's output probability, and compare its numeric range/distribution against what these models were trained on) rather than continuing an already very long session unchecked.
+- **Left in a stable, fully-instrumented state:** device flashed with all diagnostics (per-channel amplitude, mww state, raw probability, tensor shape, PCM capture) still in place, both wake-word models enabled, no crashes across the entire session. `components/micro_wake_word/` and `components/i2s_audio/` are both now locally vendored and directly patchable for whatever comes next.
+
+### Follow-up session 8: environmental confound discovered — sessions 7-8's conclusions are provisional
+
+**Important caveat on everything above in sessions 7-8: partway through, the room the device was tested in changed (human confirmed: moved rooms around 9am), and this was not caught until well after the differential model-testing and feature-vector diagnostics were run.**
+
+- **Attempted an isolated-utterance test** (silence, then one clear "hey jarvis", then silence again) to test a new hypothesis: these microfrontend noise-suppression pipelines adaptively track a noise floor and are designed to make a short wake-word utterance stand out against a *quiet* background, not to work against continuous loud input -- all of this session's prior tests had the human speaking near-continuously for 15-30+ seconds at a stretch, which is an unusual usage pattern these models may not tolerate well regardless of any audio-pipeline fix.
+- **The "silent" portion of that test was never actually quiet.** `mic_diag` showed sustained amplitude of 150M-2.1B (out of a ~2.1B ceiling) continuously across a full 70-second capture, including the stretches the human was asked to stay silent for -- no quiet baseline anywhere, a dramatic change from earlier in this same session (~5-20M ambient baseline, sessions 1-6). Asked the human directly rather than guessing: they had changed rooms around 9am, mid-session, and this wasn't noticed until now.
+- **Consequence: session 7's core finding (both `hey_jarvis` and `okay_nabu` flatline near-zero probability while VAD responds normally on identical shared features) and session 8's feature-vector diagnostic (features pinned near -128 almost always) were both measured after this room change, in what may now be a persistently noisy environment.** If the room itself keeps amplitude pinned near the ceiling even during intended silence, these strict-threshold (0.97 cutoff) models may never get the clean signal-against-quiet-background contrast their training assumes -- independent of any code-level bug in the audio pipeline or the `WakeWordModel` class. VAD's much more lenient 0.05 cutoff would still respond to genuine activity even in a noisy room, which is consistent with everything observed and does not require the deeper "model class" explanation session 7 leaned toward.
+- **This does not un-confirm anything already fixed** (the anti-aliasing filter, the default-disabled-model-after-first bug, the confirmed-identical model files) -- those are real, verified improvements independent of room acoustics. It specifically undermines confidence in the *interpretation* of sessions 7-8's flatline finding as necessarily a deep model/frontend bug, when a much simpler explanation (a genuinely noisy test environment) now has direct evidence behind it too.
+- **Not yet done, and the necessary next step before drawing further conclusions:** re-run the raw-probability and feature-vector diagnostics (already in place, no further code changes needed) once the device is back in a quiet room, with a real silence-then-one-utterance test actually achieving a quiet baseline this time. If probabilities and features respond normally to an isolated utterance against real quiet, sessions 7-8's "structural WakeWordModel bug" framing was likely a room-noise artifact, and the story is much closer to resolved than it currently reads. If they still flatline even against genuine silence, session 7's deeper-bug hypothesis stands and remains the right thing to pursue next.
+- **Left in a stable, fully-instrumented state, no further live testing attempted this session** once the confound was identified -- further tests in an unconfirmed-noisy room would just produce more unreliable data. All diagnostics (per-channel amplitude, mww state, raw probability, tensor shape, feature vector, PCM capture) remain in place on the device for whenever a quiet-room retest is possible.
+
+### Follow-up session 9: room-noise confound resolved; features confirmed correct and responsive, model output still flat
+
+**Retested properly after session 8's environmental confound, with tight cueing to fix the async-timing problem that undermined earlier isolated-utterance attempts.**
+
+- **A genuinely quiet baseline was confirmed directly** (human explicitly silent, hands off keyboard): 5-30M raw amplitude, matching sessions 1-6's baseline. The prior "always loud, no quiet baseline" reading was not real steady-state room noise -- most likely a transient (the first sample of that capture hit the literal int32 ceiling, consistent with a keyboard/mouse click at the moment logging attached) followed by data that was never actually re-examined carefully. Re-verified: the room is genuinely quiet.
+- **A clean, valid isolated-utterance retest** (real quiet baseline, one clear "hey jarvis" per trial, tightly cued in real time to fix async instruction-timing lag) reproduced session 7's finding under proper conditions: `hey_jarvis` and `okay_nabu` still flatlined at 0/255 through confirmed speech spikes (480M and 226M amplitude). **This rules the room-noise explanation back out** -- the flatline is real, not a session-8 artifact.
+- **Tightened both probability and feature-vector diagnostics from 1/s to 1/100ms** (10x denser) to see the full sequence across a spoken word instead of one lucky per-second sample. This produced the sharpest evidence of the whole investigation:
+  - **The feature generator works correctly.** During a confirmed clean utterance, the feature vector's mean visibly rose from the usual ~-100 (near-floor) baseline up to **+6.2**, with several consecutive frames showing genuine, strongly positive values across many of the 40 bands (e.g. 71, 96, 75, 83, 80) -- a textbook well-formed, clearly speech-shaped feature vector, not noise-floor garbage. This directly disproves any remaining worry that the frontend itself is miscalibrated or broken; most samples read near -128 simply because most of any 1-second window *is* silence between words, which is normal and expected.
+  - **The model's own probability output never moved.** Across that same well-formed speech window, `hey_jarvis` stayed at a literal, unmoving 0/255 the entire time -- not trending upward, not close, flat zero straight through demonstrably good input. `okay_nabu` ticked up to 1-3/255 about a second *after* the speech energy had already ended, nowhere near its 247 cutoff.
+- **Net conclusion, now much better supported than session 7's:** every layer up through and including feature generation is confirmed correct and responsive to real speech. The break is specifically between "correct, speech-shaped features exist" and "the model's own inference responds to them" -- which is a narrower, more specific claim than session 7 could make. The most likely remaining explanation, not yet tested: the features may be numerically well-formed (right range, right statistical shape) while not matching the exact representation these specific pretrained models' weights expect -- e.g. a filterbank channel-ordering mismatch, which would look completely reasonable to any diagnostic that only checks value ranges/statistics (as this session's have) while being effectively meaningless to a CNN/RNN trained on a specific channel convention. Also still open: some other feature-generation subtlety (frontend state persistence/reset behavior, log-scale/PCAN parameter interaction) not yet isolated.
+- **Concrete next step, not attempted this session:** cross-validate this pipeline's feature output against a reference implementation (Google's `microfrontend` / the `micro_wake_word` training project's own Python feature extractor) fed the *exact same* captured raw PCM (already have several captures from sessions 4-6: `capture_raw2.bin`, `capture4.wav`, etc.) and diff the resulting feature vectors directly. If they match, the feature layer is fully cleared and the remaining bug is deeper in the TFLite interpreter/streaming-window mechanics. If they differ, that pinpoints the exact transformation this pipeline gets wrong relative to what the models were trained on.
+- **Left in a stable, heavily-instrumented state.** All diagnostics from sessions 3-9 remain in place (per-channel amplitude, mww state, raw probability at 100ms resolution, tensor shape, feature vector at 100ms resolution, PCM capture, anti-aliasing FIR filter). No crashes across the entire session. This was an unusually long, deep investigation across many hours and many real hardware test cycles -- a natural, well-documented stopping point given how much has already been verified and how different in kind the remaining step (cross-implementation validation) is from anything tried so far.
+
+### Follow-up session 10: cross-validated against a reference implementation — likely a hardware/acoustic mismatch, not a software bug
+
+**Decisive result. Built an independent, offline validation harness using the same underlying feature-extraction library and the real model file, completely outside ESPHome/our firmware, and got a clean positive control plus a clear negative result on real captured audio.**
+
+- **Installed `pymicro-features`** (a Python binding to the same TFLite Micro audio frontend library ESPHome's `micro_wake_word` wraps) and **`ai-edge-litert`** (TFLite interpreter) in an isolated venv (`/tmp/pyref_venv`, not part of the repo).
+- **Reconstructed the exact 16-bit mono PCM our firmware's `MicroWakeWord` consumes** from a raw 32-bit stereo capture already on disk (`/tmp/capture_raw4.bin`, from session 6, confirmed to contain real "hey jarvis" speech): replicated `MicrophoneSource::process_audio_`'s conversion in Python (channel select, Q31→Q25, ×gain(4), clamp, Q25→Q31, top-16-bits) byte-for-byte matching the C++ logic.
+- **Fed that reconstructed audio through the reference feature extractor**, quantized the output with the exact same formula `generate_features_` uses, and compared against what the firmware had logged live: closely matching overall character (mostly near-floor with occasional bumps to +40-90), not the wildly different pattern a channel-ordering or scale bug would produce. This further clears feature generation.
+- **Ran the actual downloaded `hey_jarvis.tflite` model** (via `ai-edge-litert`, replicating the exact stride=3/non-overlapping-window streaming logic `perform_streaming_inference` uses) against those quantized features. **Result: flat 0/255 probability across all 132 inference steps** -- reproducing the firmware's exact behavior completely independent of ESPHome, our vendored components, or any C++ code.
+- **Positive control, to rule out a bug in this new test harness itself:** synthesized clean "Hey Jarvis" speech with macOS's `say` TTS, padded with silence, ran through the identical pipeline. **Produced a clean, correct detection curve** -- probability climbed from 0 through 233, 246, 249, up to 255 (max), decisively crossing the 247 cutoff, then decayed back down as the utterance ended. This proves the harness, the quantization math, and the model file are all functioning correctly.
+- **Conclusion: the problem is very likely the actual acoustic content reaching the model, not a remaining software defect.** Every stage has now been independently verified correct -- decimation, anti-aliasing filtering, gain, channel selection, feature extraction, model file integrity, and (via this session's reference-implementation test) the model's own inference given correctly-formed features. The one thing never tested in isolation is whether the reSpeaker Lite's actual voice signal -- after the XU316's onboard DSP processing (AEC, beamforming, noise suppression, all board-described as "optimized for micro wake word" but evidently tuned for something other than what these specific community-trained models expect) -- resembles human speech closely enough for a model trained on typical laptop/phone-mic recordings to recognize. The TTS positive control's clean, un-processed audio detects perfectly; our hardware's processed voice audio, run through the identical downstream pipeline, does not.
+- **This reframes the remaining work.** It is very unlikely that further ESPHome/firmware-side fixes (more filtering, different gain, etc.) will resolve this -- everything downstream of the raw signal has been verified correct. The two real paths forward: (1) train a custom wake-word model on audio actually captured through this exact hardware chain (the `microWakeWord` project explicitly supports and documents this exact scenario -- a mic with unusual acoustic characteristics needing its own trained model, via Piper TTS synthesis plus the same training pipeline story 1 already scoped out as real, separate effort), or (2) investigate whether the reSpeaker Lite's I2S firmware variant can be reconfigured or replaced with one whose DSP processing is less aggressive/different, closer to what a "plain" microphone would produce. Neither was attempted this session -- both are real, separate scopes of work, not further debugging of the existing pipeline.
+- **Left in a stable, fully-instrumented, and now well-understood state.** No firmware changes this session (the cross-validation was done entirely offline in Python); the device remains flashed with all prior fixes and diagnostics from sessions 3-9.
+
+### Follow-up session 12: retry-with-backoff tried for the upload wedging bug and reverted — proven ineffective
+
+**Tested step (1) of session 11's next-steps list against live hardware. Real negative result, not a guess.**
+
+- Implemented per-chunk retry-with-backoff (up to 3 attempts per chunk, 50/150/400ms delays) in `pcm_capture.h`'s `upload_and_restart`, compiled, flashed, and watched live logs against a real receiver.
+- **Direct evidence the fix doesn't work:** once `esp_http_client` wedges into the `ESP_FAIL` state, each individual `client->post()` call itself blocks for ~11 seconds before returning failure — confirmed via serial-log timestamps (`11:59:07` → `11:59:18` → `11:59:29` → `11:59:40`, ~11s apart per attempt). This is an ESP-IDF-internal reconnect/retry delay inside the blocking call itself, not a gap between our own attempts that app-level backoff could do anything about. Retrying the same wedged chunk 3x just stacks three ~11s blocking calls instead of one, turning a ~22s stall-then-abandon into a ~66s one, with zero improvement in whether any given chunk actually succeeds.
+- **Reverted to the original single-attempt-per-chunk, abandon-after-2-consecutive-failures logic.** Recompiled, reflashed, confirmed clean boot (no crash markers) afterward.
+- **Net result: rules out app-level retry as a fix for this specific bug**, narrowing session 11's "root-cause or work around" framing — a real fix needs to act on the client/connection itself (forced close-and-reconnect of the `esp_http_client` handle, or a periodic component-level reset) rather than retrying the same call. Not attempted this session.
+- **Also discovered (important process note, not a firmware finding):** a separate, still-running Claude Code session (different session directory, orphaned background `receiver.py` process, PID unrelated to this session) had been actively collecting real training-data captures on this same physical device since ~11:18, with samples as recent as 11:56 in its own `wake_data/` directory. This session's compile/flash cycle at ~11:57 interrupted that in-progress capture run before this was noticed. Confirmed with the human that the other session was no longer active before continuing. **Flag for future sessions: confirm no other session is actively driving the physical device (check `lsof -iTCP:8765` or equivalent, and for other `esphome logs`/upload processes) before reflashing** — this hardware is a single, shared, stateful resource that a concurrent session can be mid-experiment against.
+
+### Follow-up session 11: training-data pipeline built and partially proven; real reliability bug remains
+
+**Acted on session 10's conclusion (the gap is acoustic, not software) by starting the actual fix: infrastructure to collect real training data captured through this hardware. Real progress, not yet complete or fully reliable.**
+
+- **Got real WiFi working.** Configured real household credentials in `secrets.yaml` (gitignored). First attempts failed to associate at all ("Probe Request Unsuccessful" on every try, across two mesh AP BSSIDs) -- most likely a router-side anti-flood throttle from the many rapid reflash/reconnect cycles across this session's many prior test rounds. Waited ~2.5 minutes; connected cleanly on retry.
+- **Replaced the pcm_capture.h design** (was: one-shot capture, base64-dump-over-serial, far too slow for bulk data collection) **with continuous rolling capture + WiFi upload:** a 2-second PSRAM buffer, uploaded via `http_request` to a local receiver server on the dev Mac the moment it fills, then immediately re-armed for the next window -- no per-sample trigger round-trip needed.
+- **First version of this crashed the device.** `std::string body(buffer, write_pos)` -- constructing one ~256KB string from the whole capture buffer -- threw `std::bad_alloc` and aborted: libstdc++'s default `operator new` for a plain `std::string` does not land on PSRAM here, and a single ~256KB contiguous internal-RAM allocation reliably fails. Root-caused via the decoded crash backtrace (`pcm_capture::upload_and_restart` at the string-construction line), not guessed at.
+- **Fixed by chunking uploads** (~16KB per POST, well within internal-RAM allocation limits), with the receiver (`receiver.py`, a small Python `http.server` on the dev Mac) reassembling chunks by sequence + chunk-index into one file per capture window. Also added a small inter-chunk delay (`vTaskDelay(30ms)`) after back-to-back POSTs appeared to exhaust something in the ESP32's TCP stack.
+- **Found and fixed a receiver-side bug too:** the reassembly logic only started a new output file on `chunk == 0`; if chunk 0 itself was dropped, every subsequent chunk for that sample got written to a *new* file instead of the shared one. Fixed to key off "first chunk seen for this sequence," not specifically chunk index 0.
+- **Result: real, working captures.** Six complete, correctly-reassembled 256,000-byte samples (`seq0`-`seq5`) uploaded cleanly with no crashes, confirming the whole path -- PSRAM capture, chunked HTTP POST, receiver reassembly -- works end to end.
+- **Not yet solved: intermittent upload reliability.** After a run of successful uploads, the `http_request` component sometimes drops into a persistent `ESP_FAIL` state (`http_request set Error flag: unspecified`), failing every subsequent chunk at a suspicious ~11-second cadence per attempt (longer than the configured 5s timeout, suggesting a retry/reconnect delay inside ESP-IDF's HTTP client rather than a clean single timeout). `response->end()` is called unconditionally including on failure, calling through to `esp_http_client_close`/`esp_http_client_cleanup`, so this isn't an obviously missing cleanup call in this project's own code -- most likely a resource exhaustion or connection-reuse quirk inside ESP-IDF's `esp_http_client` under rapid reconnect, not yet root-caused. Not attempted this session: explicit retry-with-backoff, periodic component reset, or switching to a persistent/keep-alive connection instead of one POST per chunk.
+- **Not attempted this session (correctly out of scope for tonight):** actually collecting a full training dataset (hundreds of positive TTS-utterance-through-speaker-through-Puck captures, plus negative/background samples), and the `microWakeWord` training run itself (explicitly documented upstream as requiring real hyperparameter experimentation, not a single scripted run). One real end-to-end playback test (Piper TTS "hey jarvis" played through the dev Mac's speaker) was attempted but landed during an upload stall, so it did not produce a verified correlated sample this session.
+- **Left in a stable state, mid-build.** Device flashed with the new WiFi/upload capture pipeline (not the old serial-dump version); `firmware/respeaker-lite/pcm_capture.h` now depends on `http_request:` (added to `respeaker-lite.yaml`). The receiver script and a Piper TTS voice model are on the dev Mac in `/tmp` (not part of the repo -- ephemeral, would need to be redone or relocated into the repo/tooling for a real multi-session data-collection effort). `secrets.yaml` now holds real WiFi credentials (still gitignored).
+- **Concrete next steps, in order:** (1) root-cause or work around the intermittent `ESP_FAIL` streaks (retry-with-backoff is the fastest mitigation even without a root cause); (2) build the actual playback-and-capture orchestration loop (play a TTS utterance, wait, correlate against the nearest completed upload by timestamp, label and save); (3) collect a real dataset at scale (this hardware's positive samples plus negative/background); (4) work through `microWakeWord`'s training notebook, which the upstream project itself describes as requiring real experimentation, not a single automated run.
+- **Added a bounded-abandon mitigation and re-verified over a longer window:** after 2 consecutive chunk failures, the current sample is abandoned (rather than burning through all 16 chunks at the ESP-IDF client's own multi-second retry cadence -- previously a single stuck sample could stall the pipeline for 100+ seconds). A clean 2-minute stability run afterward: zero crashes, 5 fully successful uploads logged, 7 abandoned (roughly 40% loss rate) -- the underlying `ESP_FAIL` streak issue is not fixed, only bounded. 11 files landed on disk in that window, several complete 256,000-byte samples among them. This loss rate is workable for forward progress (just means collecting at roughly 2-3x the capture time to reach a target sample count) but should be revisited before serious data-collection volume.
 
 ### Follow-up session: root cause found, detection still unresolved
 
