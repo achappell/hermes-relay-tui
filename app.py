@@ -1782,7 +1782,7 @@ class HermesStreamingApp(App):
     def _acknowledge_capture(self) -> None:
         self._earcons.play(earcons_module.CAPTURE_DONE)
 
-    def _send_wake_turn(self, text: str) -> None:
+    def _send_wake_turn(self, text: str) -> bool:
         """Run one wake turn on the event loop, blocking the listener thread.
 
         Blocking is the point: the coordinator is single-flight, so while this
@@ -1791,11 +1791,11 @@ class HermesStreamingApp(App):
         """
         loop = self._wake_loop
         if loop is None:
-            return
+            return False
         future = asyncio.run_coroutine_threadsafe(
             self._run_turn(text, stt_source="local"), loop
         )
-        future.result()
+        return bool(future.result())
 
     # --- input paths ----------------------------------------------------------
 
@@ -3204,19 +3204,20 @@ class HermesStreamingApp(App):
 
     # --- the turn loop --------------------------------------------------------
 
-    async def _run_turn(self, text: str, *, stt_source: str = "local") -> None:
+    async def _run_turn(self, text: str, *, stt_source: str = "local") -> bool:
         if self._turn_in_flight:
             # Keep one websocket reader while preserving text submitted during
             # a response. The active turn drains this FIFO after it completes.
             self._last_prompt = text
             self._last_prompt_status = PROMPT_NOT_SENT
             self._enqueue_prompt(text)
-            return
+            return False
         current_task = asyncio.current_task()
         self._active_turn_task = current_task
         self._turn_in_flight = True
         self._set_barge_listening(active=True)
         self._set_wake_listening(busy=True)
+        initial_prompt_status: Optional[str] = None
         if self._busy_transition_owner is current_task:
             self._busy_transition_owner = None
         try:
@@ -3224,6 +3225,8 @@ class HermesStreamingApp(App):
             next_stt_source = stt_source
             while next_text is not None:
                 turn_was_sent = await self._run_single_turn(next_text, stt_source=next_stt_source)
+                if initial_prompt_status is None:
+                    initial_prompt_status = self._last_prompt_status
                 if not turn_was_sent:
                     self._queued_prompts.insert(0, next_text)
                     self._refresh_queue_shelf()
@@ -3244,6 +3247,7 @@ class HermesStreamingApp(App):
             if not self._barge_capture_active:
                 self._set_barge_listening(active=False)
             self._set_wake_listening(busy=self._barge_capture_active)
+        return initial_prompt_status == PROMPT_COMPLETED
 
     async def _run_single_turn(self, text: str, *, stt_source: str) -> bool:
         self._last_prompt = text
@@ -3434,6 +3438,7 @@ class HermesStreamingApp(App):
         audio_bytes_received = 0
         last_playback_trace_ms = -250
         turn_completed = False
+        turn_failed = False
 
         def update_thinking(text: Optional[str] = None) -> None:
             nonlocal thinking_started_at, thinking_preview
@@ -3947,6 +3952,7 @@ class HermesStreamingApp(App):
                     )
                     render_assistant()
             elif kind == "error":
+                turn_failed = True
                 self._set_voice_state(VOICE_ERROR)
                 thinking_activity_active = False
                 self._append_block(f"[error] {event['error']}", role="error")
@@ -3965,6 +3971,7 @@ class HermesStreamingApp(App):
                     self._refresh_prompt_panel()
                 return False
             elif kind == "turn_end":
+                turn_completed = True
                 complete_thinking()
                 log_playback_sample(force=True)
                 # turn_end can arrive while the final PCM is still queued in
@@ -3988,7 +3995,7 @@ class HermesStreamingApp(App):
                 turn_completed = True
                 self._set_voice_state(VOICE_READY)
 
-        return turn_completed
+        return turn_completed and not turn_failed
 
     def _save_turn_audio(
         self,
