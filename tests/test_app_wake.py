@@ -410,10 +410,10 @@ async def test_wake_on_repaints_startup_while_microphone_opens():
     async with app.run_test() as pilot:
         await pilot.pause()
         startup = asyncio.create_task(app._handle_wake_command("on"))
-        await asyncio.sleep(0.05)
-
+        await asyncio.to_thread(fakes.recorder_created.wait, 1.0)
         assert fakes.recorders
         recorder = fakes.recorders[0]
+        await asyncio.to_thread(recorder.open_started.wait, 1.0)
         assert recorder.open_started.is_set()
         assert app.voice_state == app_module.VOICE_STARTING
         assert "wake mode starting — opening microphone" in transcript_text(app)

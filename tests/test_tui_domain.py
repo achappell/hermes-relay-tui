@@ -318,3 +318,44 @@ def test_shared_prompt_action_fixture_is_the_tui_choice_projection() -> None:
     assert result.accepted
     assert result.action is not None
     assert result.action.to_display_action() == action_fixture
+
+
+def test_local_capture_empty_and_partial_error_keep_terminal_facts_honest() -> None:
+    domain = connected_domain()
+
+    assert domain.apply_event({"type": "capture_started"}).accepted
+    assert domain.apply_event({"type": "capture_finished"}).accepted
+    empty = domain.apply_event({"type": "capture_empty"})
+    assert empty.accepted
+    assert domain.state.phase is TurnPhase.IDLE
+    assert domain.state.turn_active is False
+
+    start_turn(domain)
+    assert domain.apply_event({"type": "text_delta", "text": "partial reply"}).accepted
+    failed = domain.apply_event({"type": "error", "error": "socket went away"})
+
+    assert failed.accepted
+    assert domain.state.phase is TurnPhase.ERROR
+    assert domain.state.turn_active is False
+    assert domain.state.response_text == "partial reply"
+    assert domain.state.last_error == "socket went away"
+
+
+def test_activity_and_unknown_events_cannot_regress_an_active_speaking_turn() -> None:
+    domain = connected_domain()
+    start_turn(domain)
+    assert domain.apply_event({"type": "text_delta", "text": "answer"}).accepted
+    assert domain.apply_event({"type": "audio_start"}).accepted
+    before = domain.state
+
+    for event in (
+        {"type": "status", "text": "working"},
+        {"type": "tool_start", "name": "search"},
+        {"type": "unknown_event", "event_type": "future.event"},
+    ):
+        result = domain.apply_event(event)
+        assert result.accepted
+        assert domain.state.phase is TurnPhase.SPEAKING
+        assert domain.state.response_text == before.response_text
+
+    assert domain.state.audio_active is True
