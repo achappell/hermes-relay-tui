@@ -4,7 +4,7 @@
 
 ## Goal
 
-Give every configured Hermes doorway one honest conversation path: authorization and Profile identity are settled before capture or submission, the request crosses one normalized SessionProtocol boundary, the response phases remain observable, and transport failure cannot duplicate or silently resume a turn. This is the foundation consumed by the room Display, Puck, iOS, and TUI surfaces.
+Give every configured Hermes doorway one honest conversation path: authorization and Profile identity are settled before capture or submission, the request crosses one normalized SessionProtocol boundary, observed response phases remain consistent, and transport failure cannot duplicate or silently resume a turn. This is the foundation consumed by the room Display, Puck, iOS, and TUI surfaces.
 
 ## Stories
 
@@ -19,7 +19,7 @@ Give every configured Hermes doorway one honest conversation path: authorization
 - Fix the selected Profile before Puck capture or Hermes submission. Unapproved, revoked, unavailable, or unverified identity must fail closed before capture and must not select a fallback.
 - Expose normalized session and turn events through the shared SessionProtocol. Front ends must not parse Hermes wire frames or invent assistant responses.
 - Preserve one Active Turn per doorway and one initial submission per accepted initiation. A request that may have reached Hermes is never automatically replayed.
-- Surfaces expose only observed phases: `heard`, `listening`, `transcribing`, `thinking`, `buffering`, `speaking`, `complete`, and honest Disconnected State. Completed text remains available when audio is unavailable.
+- Surfaces expose only observed phases: `heard`, `listening`, `transcribing`, `thinking`, `buffering`, `speaking`, `complete`, and honest Disconnected State. A doorway must not advance or regress before the corresponding event, and completed text remains available when audio is unavailable.
 - Puck follow-up is bounded—eight seconds by default—and exact `stop` closes local capture silently without a replacement turn. Blocking capture/playback stays outside UI event loops.
 - Credentials remain in the owning local process/profile. Raw Puck audio and shared-device transcripts are transient; only deliberate iOS/TUI Local History may persist by default.
 - Developer and CI validation uses fake Hermes sessions/WebSockets and local fixtures. Live text/voice smoke testing is an explicit runtime check, not a test fixture.
@@ -35,7 +35,7 @@ Give every configured Hermes doorway one honest conversation path: authorization
 
 - Show the active Profile from `heard` through completion on the Room Display and in iOS/TUI headers; identity explains routing, not answer correctness.
 - Use readable child-friendly labels alongside technical phases. Color, motion, and sound support state text but never replace it. The Puck remains status-only; response text and transcript history do not belong on its TFT.
-- Stream the same Hermes response text on text-capable surfaces and play audio only when audio is actually available. `Retry` reconnects only and never resembles send or replay.
+- Stream the same Hermes response text on text-capable surfaces and play audio only when audio is actually available. If audio fails, preserve usable text and label audio as unavailable; `Retry` reconnects only and never resembles send or replay.
 - Keep conversation text and active-turn state Room-local. Displays do not capture, speak, create a second Session, or expose touch actions for Hermes prompts in v1.
 
 ## Cross-Story Dependencies

@@ -545,7 +545,7 @@ prepared when `--no-check` is used.
 
 ## Audio output
 
-By default, the app plays supported 16-bit PCM as it arrives. If playback is unavailable, it reports the failure and continues buffering the turn. Use `--audio-output-device` or `/audio output <device>` to select a speaker, and `--no-play --output response.wav` to capture audio without using one.
+By default, the app plays supported 16-bit PCM as it arrives. If playback is unavailable, it reports `audio unavailable`, keeps the completed text response readable, and continues collecting audio for an optional WAV fallback. Use `--audio-output-device` or `/audio output <device>` to select a speaker, and `--no-play --output response.wav` to capture audio without using one.
 
 When `--output` is set, the first turn uses that path and later turns use numbered suffixes such as `response-1.wav`. Without `--output`, audio that was not played live is written to the current directory as `hybrid-tui-<turn-id>.wav`.
 

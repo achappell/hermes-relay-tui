@@ -67,7 +67,7 @@ from diagnostics import (
     summarize_text,
     trace_monotonic_ms,
 )
-from domain import TuiDomain, decide_busy
+from domain import TuiDomain, TurnPhase, decide_busy
 from history import (
     PromptHistory,
     artifact_path_for_profile,
@@ -350,11 +350,13 @@ VOICE_STARTING = "starting…"
 VOICE_CONNECTING = "connecting…"
 VOICE_RECONNECTING = "reconnecting…"
 VOICE_DISCONNECTED = "disconnected"
+VOICE_HEARD = "heard"
 VOICE_LISTENING = "listening…"
 VOICE_TRANSCRIBING = "transcribing…"
 VOICE_THINKING = "thinking…"
 VOICE_SPEAKING = "speaking…"
 VOICE_BUFFERING = "buffering…"
+VOICE_AUDIO_UNAVAILABLE = "audio unavailable"
 VOICE_INTERRUPTED = "interrupted"
 VOICE_ERROR = "error"
 
@@ -448,7 +450,12 @@ class HermesStreamingApp(App):
     #voice-status.-transcribing,
     #voice-status.-thinking,
     #voice-status.-buffering,
+    #voice-status.-heard,
     #voice-status.-interrupted {
+        color: $warning;
+    }
+
+    #voice-status.-audio-unavailable {
         color: $warning;
     }
 
@@ -571,6 +578,7 @@ class HermesStreamingApp(App):
         self.domain = TuiDomain()
         self.show_transcript_details = not bool(getattr(args, "hide_thinking", False))
         self.voice_state = VOICE_READY
+        self._audio_unavailable_reason: Optional[str] = None
         self._turn_in_flight = False
         self._queued_prompts: list[str] = []
         self._pending_prompt: Optional[PendingPrompt] = None
@@ -677,9 +685,74 @@ class HermesStreamingApp(App):
         self._refresh_transcript()
 
     def _set_voice_state(self, state: str) -> None:
+        result = self.domain.observe_voice_state(state)
+        if not result.accepted:
+            diagnostic_logger.debug(
+                "app.voice.state_rejected state=%s reason=%s",
+                state,
+                result.reason or "unknown",
+            )
+            return
         self.voice_state = state
-        self.domain.observe_voice_state(state)
         self._refresh_voice_status()
+
+    def _sync_voice_state_from_domain(self, phase: TurnPhase) -> None:
+        """Render an accepted domain phase without trusting event wording."""
+        labels = {
+            TurnPhase.IDLE: VOICE_READY,
+            TurnPhase.HEARD: VOICE_HEARD,
+            TurnPhase.LISTENING: VOICE_LISTENING,
+            TurnPhase.TRANSCRIBING: VOICE_TRANSCRIBING,
+            TurnPhase.THINKING: VOICE_THINKING,
+            TurnPhase.BUFFERING: VOICE_BUFFERING,
+            TurnPhase.SPEAKING: VOICE_SPEAKING,
+            TurnPhase.COMPLETE: VOICE_READY,
+            TurnPhase.INTERRUPTED: VOICE_INTERRUPTED,
+            TurnPhase.ERROR: VOICE_ERROR,
+            TurnPhase.DISCONNECTED: VOICE_DISCONNECTED,
+        }
+        label = labels.get(phase)
+        if label is None:
+            # Prompt presentation owns its own panel and must not erase the
+            # phase that led to it.
+            return
+        if self._audio_unavailable_reason and phase in {
+            TurnPhase.BUFFERING,
+            TurnPhase.SPEAKING,
+        }:
+            self._refresh_voice_status()
+            return
+        if phase is TurnPhase.SPEAKING and not self._player_is_playing():
+            if self._playback_is_disabled():
+                self._mark_audio_unavailable("playback disabled")
+            elif self.player.failure:
+                self._mark_audio_unavailable("playback failed")
+            else:
+                self._set_voice_state(VOICE_BUFFERING)
+            return
+        self._set_voice_state(label)
+
+    def _clear_audio_unavailable(self) -> None:
+        if self._audio_unavailable_reason is None:
+            return
+        self._audio_unavailable_reason = None
+        self._refresh_voice_status()
+
+    def _mark_audio_unavailable(self, reason: str) -> None:
+        if self._audio_unavailable_reason is None:
+            self._audio_unavailable_reason = reason
+            diagnostic_logger.debug("app.audio.unavailable reason=%s", reason)
+        self._refresh_voice_status()
+
+    def _player_is_playing(self) -> bool:
+        """Return true only when the output port reports audible playback."""
+        playing = getattr(self.player, "playing", None)
+        if playing is not None:
+            return bool(playing)
+        return bool(getattr(self.player, "active", False))
+
+    def _playback_is_disabled(self) -> bool:
+        return not bool(getattr(self.player, "enabled", True))
 
     def _set_connection_state(self, state: str) -> None:
         self.connection_state = state
@@ -868,7 +941,15 @@ class HermesStreamingApp(App):
         repainted on a state change would say nothing at all about an open
         microphone — which is the failure this indicator exists to prevent.
         """
-        line = f"● {self.voice_state}"
+        unavailable = self._audio_unavailable_reason is not None
+        display_state = (
+            VOICE_AUDIO_UNAVAILABLE
+            if unavailable and self.voice_state in {VOICE_BUFFERING, VOICE_SPEAKING}
+            else self.voice_state
+        )
+        line = f"● {display_state}"
+        if unavailable and display_state != VOICE_AUDIO_UNAVAILABLE:
+            line += f" · {VOICE_AUDIO_UNAVAILABLE}"
         if self.microphone_is_open:
             line += f"   [$warning]◉ {MIC_OPEN_LABEL}[/]"
         try:
@@ -880,6 +961,7 @@ class HermesStreamingApp(App):
                 VOICE_CONNECTING,
                 VOICE_RECONNECTING,
                 VOICE_DISCONNECTED,
+                VOICE_HEARD,
                 VOICE_LISTENING,
                 VOICE_TRANSCRIBING,
                 VOICE_THINKING,
@@ -888,7 +970,11 @@ class HermesStreamingApp(App):
                 VOICE_INTERRUPTED,
                 VOICE_ERROR,
             ):
-                widget.set_class(state == self.voice_state, f"-{state.rstrip('…')}")
+                widget.set_class(state == display_state, f"-{state.rstrip('…')}")
+            widget.set_class(
+                unavailable and display_state == VOICE_AUDIO_UNAVAILABLE,
+                "-audio-unavailable",
+            )
         except (NoMatches, ScreenStackError):
             # A state change can still be in flight during teardown.
             pass
@@ -2872,6 +2958,7 @@ class HermesStreamingApp(App):
             if self.voice_state == VOICE_INTERRUPTED:
                 return
             if not transcript_text:
+                self.domain.apply_event({"type": "capture_empty"})
                 self._set_voice_state(VOICE_READY)
                 self._append_block("no speech detected.")
                 return
@@ -3179,13 +3266,12 @@ class HermesStreamingApp(App):
                 return False
 
         index = self.session.turn_index
+        self._clear_audio_unavailable()
         self._append_block(text, role="user")
         # send_turn may have placed the request on the wire before its async
         # stream reports an error, so every post-user-display failure is
         # intentionally treated as ambiguous and is never auto-replayed.
         self._last_prompt_status = PROMPT_AMBIGUOUS
-        if stt_source != "local-faster-whisper":
-            self._set_voice_state(VOICE_THINKING)
         timeout = getattr(self.args, "turn_timeout", 0) or 0
         try:
             domain_turn = self.domain.begin_turn(
@@ -3196,6 +3282,7 @@ class HermesStreamingApp(App):
                     "domain rejected turn start: "
                     + (domain_turn.reason or "unknown")
                 )
+            self._set_voice_state(VOICE_THINKING)
             events = self.session.send_turn(text, stt_source=stt_source)
             bound_turn = self.domain.bind_turn_id(
                 getattr(self.session, "active_turn_id", None)
@@ -3213,8 +3300,9 @@ class HermesStreamingApp(App):
                 turn_completed = await self._consume_turn(
                     events, index, generation=index
                 )
-            if turn_completed:
-                self._last_prompt_status = PROMPT_COMPLETED
+            self._last_prompt_status = (
+                PROMPT_COMPLETED if turn_completed else PROMPT_AMBIGUOUS
+            )
         except SessionNotReadyError:
             await self._mark_connection_lost()
             self._last_prompt_status = PROMPT_NOT_SENT
@@ -3250,6 +3338,7 @@ class HermesStreamingApp(App):
                 in {VOICE_INTERRUPTED, VOICE_ERROR, VOICE_DISCONNECTED}
             )
             await self._stop_caption_clock()
+            self.transcript.finish_stream()
             if self._pending_prompt is not None:
                 # Timeout, disconnect, cancellation, or an exception from a
                 # dead socket all end the turn without a prompt_resolved ever
@@ -3395,7 +3484,6 @@ class HermesStreamingApp(App):
             if assistant_started:
                 return
             complete_thinking()
-            self._set_voice_state(VOICE_THINKING)
             self.transcript.start_stream("assistant")
             assistant_started = True
 
@@ -3574,6 +3662,8 @@ class HermesStreamingApp(App):
                         role="error",
                     )
                 continue
+            if kind not in {"audio_start", "turn_end"}:
+                self._sync_voice_state_from_domain(domain_result.state.phase)
             if kind in {"text_delta", "text_replace"}:
                 ensure_assistant_stream()
                 if kind == "text_replace":
@@ -3603,18 +3693,15 @@ class HermesStreamingApp(App):
                     self._pending_prompt.rejection_reason = str(event.get("reason") or "")
                     self._refresh_prompt_panel()
             elif kind == "thinking_delta":
-                self._set_voice_state(VOICE_THINKING)
                 if not assistant_started:
                     update_thinking(event.get("text"))
             elif kind == "reasoning_available":
-                self._set_voice_state(VOICE_THINKING)
                 if not assistant_started:
                     update_thinking(event.get("text"))
             elif kind == "status":
                 status_text = str(event.get("text") or "").strip()
                 if status_text and status_text != last_status:
                     last_status = status_text
-                    self._set_voice_state(status_text)
                     if assistant_started:
                         self._append_block(f"[{status_text}]", role="status")
                     elif not (
@@ -3630,11 +3717,9 @@ class HermesStreamingApp(App):
                 thinking_activity_active = False
                 set_activity("notification cleared", role="notification")
             elif kind == "tool_start":
-                self._set_voice_state(VOICE_THINKING)
                 thinking_activity_active = False
                 set_activity(f"tool: {event.get('name') or 'tool'}…", role="tool")
             elif kind == "tool_progress":
-                self._set_voice_state(VOICE_THINKING)
                 thinking_activity_active = False
                 name = event.get("name") or "tool"
                 preview = str(event.get("preview") or "working…").strip()
@@ -3698,10 +3783,12 @@ class HermesStreamingApp(App):
                     start_caption_clock()
                 playback_failed = playback_failed or bool(self.player.failure)
                 played_live = played_live or self.player.active
-                if self.player.active:
+                if self._player_is_playing():
                     self._set_voice_state(VOICE_SPEAKING)
+                elif self._playback_is_disabled():
+                    self._mark_audio_unavailable("playback disabled")
                 elif self.player.failure:
-                    self._set_voice_state(VOICE_BUFFERING)
+                    self._mark_audio_unavailable("playback failed")
                 else:
                     self._set_voice_state(VOICE_BUFFERING)
             elif kind == "audio_chunk":
@@ -3749,6 +3836,12 @@ class HermesStreamingApp(App):
                     bool(after.get("playing", False)),
                 )
                 playback_failed = playback_failed or bool(self.player.failure)
+                if self.player.failure:
+                    self._mark_audio_unavailable("playback failed")
+                elif self._player_is_playing():
+                    self._set_voice_state(VOICE_SPEAKING)
+                elif not self._playback_is_disabled():
+                    self._set_voice_state(VOICE_BUFFERING)
             elif kind == "audio_end":
                 # This closes one PCM segment, not necessarily the response.
                 # Keep playback and the caption clock alive until turn_end so
@@ -3787,7 +3880,10 @@ class HermesStreamingApp(App):
                     audio_file_format = (int(metadata[0]), int(metadata[1]), int(metadata[2]))
                 else:
                     audio_file_format = None
-                self._set_voice_state(VOICE_BUFFERING)
+                if self._playback_is_disabled():
+                    self._mark_audio_unavailable("playback disabled")
+                else:
+                    self._set_voice_state(VOICE_BUFFERING)
             elif kind == "audio_file_chunk":
                 audio_file.extend(event["data"])
             elif kind == "audio_file_end":
@@ -3814,11 +3910,20 @@ class HermesStreamingApp(App):
                 playback_failed = playback_failed or bool(self.player.failure)
                 played_live = played_live or self.player.active
                 if self.player.active:
-                    self._set_voice_state(VOICE_SPEAKING)
                     await asyncio.to_thread(self.player.write, file_audio)
                     playback_failed = playback_failed or bool(self.player.failure)
+                    if self.player.failure:
+                        self._mark_audio_unavailable("playback failed")
+                    elif self._player_is_playing():
+                        self._set_voice_state(VOICE_SPEAKING)
+                    elif not self._playback_is_disabled():
+                        self._set_voice_state(VOICE_BUFFERING)
                     await self._close_player()
+                elif self._playback_is_disabled():
+                    self._mark_audio_unavailable("playback disabled")
                 elif self.player.failure:
+                    self._mark_audio_unavailable("playback failed")
+                else:
                     self._set_voice_state(VOICE_BUFFERING)
                 render_assistant(complete=not self.player.active)
             elif kind == "speech_timing":
@@ -3854,6 +3959,7 @@ class HermesStreamingApp(App):
                 if self._pending_prompt is not None:
                     self._pending_prompt = None
                     self._refresh_prompt_panel()
+                return False
             elif kind == "turn_interrupted":
                 await self._close_player(abort=True)
                 complete_thinking()
@@ -3873,6 +3979,9 @@ class HermesStreamingApp(App):
                 # caption, otherwise the last duration-fallback clause jumps
                 # onto the screen at the remote turn boundary.
                 await self._close_player()
+                playback_failed = playback_failed or bool(self.player.failure)
+                if playback_failed and audio_started:
+                    self._mark_audio_unavailable("playback failed")
                 render_assistant(complete=True)
                 self.transcript.finish_stream()
                 self._save_turn_audio(
@@ -3883,6 +3992,7 @@ class HermesStreamingApp(App):
                     played_live,
                     playback_failed,
                 )
+                turn_completed = True
                 self._set_voice_state(VOICE_READY)
 
         return turn_completed and not turn_failed
