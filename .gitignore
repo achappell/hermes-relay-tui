@@ -1,4 +1,5 @@
 venv/
+venv-firmware/
 build/
 dist/
 *.egg-info/

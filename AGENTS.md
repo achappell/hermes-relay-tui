@@ -79,32 +79,33 @@ Rules:
   in a `[project.optional-dependencies]` extra, not the base dependency list,
   so installing the TUI does not drag in appliance hardware libraries.
 
-**When to split into separate repositories:** not yet, and not on
-anticipated growth. The trigger is a genuine, demonstrated dependency
-conflict — a front end needing a package version another front end cannot
-accept, or a platform-specific wheel that will not install alongside the
-existing stack. At that point the core becomes an installable
-`hermes-relay-core` package that each front end depends on. Until `pip
-install` actually fails, one repository is cheaper than keeping two in
-version lockstep.
-
-**Naming:** the repository name `hermes-relay-tui` stops describing the
-contents once a second, non-terminal front end lands. Renaming is deferred
-until that front end exists rather than done speculatively, because the name
-is currently load-bearing in the published package name, the Homebrew tap
-(`achappell/homebrew-hermes-relay`), and the release workflow — see
-`DIST-02`.
+**Repository boundary:** the native Apple client lives in the sibling
+`~/Development/hermes-relay-ios` repository. That split is intentional: keep
+SwiftUI, Apple platform services, and terminal-specific UI assumptions in
+their respective delivery repositories. Extracting a shared
+`hermes-relay-core` package remains gated by a demonstrated dependency or
+ownership conflict, not by speculative growth. The repository name and
+published package remain `hermes-relay-tui`; see `DIST-02` for release
+implications.
 
 ## BMad project workflow
 
 This repository uses BMad for product discovery, architecture, UX, story
-specification, implementation planning, and review. BMad artifacts are part of
-the engineering record, but they do not replace the GitHub Project as the task
-queue or source of truth for priority and workflow state.
+specification, implementation planning, and review. The Personal Vault is now
+the canonical home for durable cross-repository product intent and
+reconciliation decisions:
 
-- Tracked planning artifacts live under `_bmad-output/planning-artifacts/`.
-  Use the PRD, architecture, UX, epic, and specification documents as design
-  evidence; check the board when their status conflicts with the board.
+`~/Documents/Vaults/Personal Vault/projects/hermes-home/hermes-home.md`
+
+BMad artifacts are part of the engineering record, but they do not replace
+the GitHub Project as the task queue or source of truth for priority and
+workflow state. See [`docs/bmad-upstream.md`](docs/bmad-upstream.md) for the
+delivery boundary and reading order.
+
+- Existing tracked planning artifacts under `_bmad-output/planning-artifacts/`
+  are preserved historical snapshots and implementation evidence. Read the
+  relevant Personal Vault hub and source notes first; do not create a second,
+  silently divergent PRD or epic set here.
 - Tracked implementation artifacts live under
   `_bmad-output/implementation-artifacts/`. Keep active story specifications,
   task lists, validation notes, and sprint-status evidence aligned with the
@@ -113,6 +114,13 @@ queue or source of truth for priority and workflow state.
   its clarify, plan, implement, review, and presentation gates; do not jump
   from a board title straight to code when the workflow requires a ready
   specification.
+- Use the repository-local BMAD runtime at the intentional shared version; do
+  not copy `_bmad/` or local tool configuration from `hermes-relay-ios`.
+- Keep one active vertical slice per repository/workstream. Independent TUI
+  and iOS cards may both be in `Building` when their contracts are settled and
+  their files do not contend. Shared protocol or contract work remains a
+  prerequisite when both clients depend on it. Feed durable cross-repository
+  discoveries back to the Personal Vault hub.
 - The BMad framework under `_bmad/` and local tool integrations under
   `.agents/`, `.claude/`, and `.opencode/` are tooling, not product scope by
   themselves. Rendered workflow/cache output is transient. Include these
@@ -161,9 +169,10 @@ never print token values.
 - Keep the built-in `Status` field aligned with `Workflow` (`Todo` for
   planned work, `In Progress` for active work, and `Done` only after
   completion). `Workflow` is the board's kanban state.
-- Keep one active vertical slice in `Building`. Move the current item there
-  before implementation and move it out promptly when the work is blocked,
-  ready for verification, or complete.
+- Keep one active vertical slice per repository/workstream in `Building`.
+  Independent TUI and iOS items may be in `Building` simultaneously when
+  their contracts are settled and their files do not contend. Move each item
+  out promptly when it is blocked, ready for verification, or complete.
 - Manage the board continuously as the work changes: add newly discovered
   follow-ups, split oversized tasks, edit acceptance criteria, link PRs and
   evidence, remove duplicates or abandoned tasks, and delete stale work
