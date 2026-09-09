@@ -80,6 +80,7 @@ COMMAND_REGISTRY: tuple[Command, ...] = (
     Command("copy", "Copy the visible transcript to the system clipboard"),
     Command("logs", "Show local debug and crash logging status and paths"),
     Command("usage", "Show relay usage information when supported"),
+    Command("reconnect", "Reconnect without replaying an uncertain turn"),
     Command("retry", "Retry the last prompt only when it was never sent"),
     Command("undo", "Remove the last unsent local prompt from the queue"),
     Command("compress", "Compress the conversation when the relay supports it"),
