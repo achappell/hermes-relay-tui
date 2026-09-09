@@ -35,8 +35,9 @@ Hermes endpoint or audio hardware.
 
 **Never:** Change the Hermes wire protocol or invent a local response path. Do
 not auto-replay a turn that may have reached Hermes. Do not modify the Puck
-firmware or other-thread work, broaden this into iOS 16, or run live tests that
-open speakers, a microphone, or the connected Puck device.
+firmware or other-thread work, broaden this into iOS 16, or use the connected
+Puck for this story's validation. A supervised smoke may use the selected
+laptop microphone or built-in speaker when explicitly authorized.
 
 ## I/O & Edge-Case Matrix
 
@@ -82,10 +83,13 @@ open speakers, a microphone, or the connected Puck device.
 - `HermesSession.is_connected()` is now true only after `hello_ack` completes and is cleared at the beginning of `close()`. `send_turn()` raises `SessionNotReadyError` before advancing turn state or writing a turn frame.
 - Explicit TUI voice capture reconnects through the selected profile before opening the microphone. Wake and appliance paths use a readiness callback so profile routing and connection loss are checked against the current session, including immediately after acknowledgement and before follow-up capture.
 - A pre-wire readiness failure remains `PROMPT_NOT_SENT` and is queued. Once a turn has been displayed as submitted, transport failure retains the existing ambiguous/no-replay behavior.
-- Review fixes were validated with the focused fake-session run (`281 passed, 1 skipped`) and the complete suite (`842 passed, 1 skipped`). A supervised audible-playback or Puck smoke remains intentionally pending.
+- Review fixes were validated with the focused fake-session run (`281 passed, 1 skipped`) and the complete suite (`842 passed, 1 skipped`).
 - Live smoke on 2026-09-09 passed against the selected `amanda` profile: the real TUI completed a text turn; the real MacBook Air Microphone (input index 1) produced a non-empty Whisper transcript and a completed voice turn; and an intentionally refused endpoint kept the TUI disconnected with no microphone created. Response PCM was discarded and earcons/playback were disabled, so speakers and the Puck remained silent.
+- Supervised speaker smoke on 2026-09-09 passed against the selected `amanda` profile: the real TUI verified `hello_ack`, submitted exactly one text turn, opened `MacBook Air Speakers` (output index 2), drained playback without a PortAudio failure, and closed the stream. The response contained 90,880 PCM bytes at 24 kHz, mono, signed 16-bit; earcons were disabled and the Puck was not contacted.
 
 ## Spec Change Log
+
+- 2026-09-09: Completed the authorized MacBook speaker smoke; playback succeeded on output device 2 with no Puck involvement. Merge remains the final release gate.
 
 ## Review Triage Log
 
@@ -117,4 +121,5 @@ open speakers, a microphone, or the connected Puck device.
 - `git diff --check` -- expected: no whitespace errors.
 
 **Manual checks (if no CLI):**
-- Live Hermes text and voice smoke passed on 2026-09-09 with playback disabled; the failure control against `ws://127.0.0.1:1/voice-session` also passed. Audible playback and the connected Puck were intentionally not exercised.
+- Live Hermes text and voice smoke passed on 2026-09-09 with playback disabled; the failure control against `ws://127.0.0.1:1/voice-session` also passed.
+- Supervised audible playback smoke passed on 2026-09-09 through `MacBook Air Speakers` (device 2): one verified text turn, 90,880 PCM bytes delivered at 24 kHz mono 16-bit, no playback failure, and the stream closed cleanly. The connected Puck was not exercised.
