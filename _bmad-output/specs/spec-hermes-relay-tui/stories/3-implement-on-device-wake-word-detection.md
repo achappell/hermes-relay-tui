@@ -12,6 +12,60 @@ context:
   - firmware/respeaker-lite/README.md
 ---
 
+## RESUME HERE (2026-09-09, end of session 16, continued)
+
+**Second update, same session: root-caused session 15's serial-dump hang
+and proved a full single 2s/1280-chunk capture dumps cleanly end-to-end,
+including through the real `collect_serial_dumps.py` tool. This was the
+actual blocker on the WiFi-vs-serial transport decision -- it's resolved.**
+
+- **Root cause of session 15's hang, found by scaling incrementally
+  instead of jumping straight back to 1280 chunks:** at `DUMP_MAX_CHUNKS =
+  300` (~60KB), the very first live test tripped ESPHome's own loopTask
+  task watchdog (`task_wdt: Aborting`) partway through the dump -- a real
+  crash marker this time, not session 15's silent no-marker hang. Cause:
+  `dump_over_serial()` runs entirely inside one `interval:` callback, and
+  ESPHome only feeds its own watchdog once per `loop()` iteration --
+  `vTaskDelay()` between chunks yields the CPU but does not feed a task
+  explicitly subscribed to ESP-IDF's TWDT. Below ~400ms (the 25-chunk
+  test) this never mattered; past roughly a couple seconds of blocking it
+  does. This is almost certainly what actually hung the device in session
+  15's full-size attempt too, not the unconfirmed "host-side reader can't
+  drain fast enough" theory that session logged as the leading
+  hypothesis -- that theory is now most likely wrong, or at least not the
+  primary cause.
+- **Fix: added `esphome::App.feed_wdt()` inside the per-chunk loop** in
+  `pcm_capture.h`. This is ESPHome's own public, rate-limited watchdog-feed
+  API -- the same one `http_request`'s component calls internally around
+  its own long-running operations (`http_request.h`'s `App.feed_wdt()`
+  calls) -- not a raw ESP-IDF watchdog bypass or anything resembling
+  session 14's dangerous `esp_http_client_perform()` deviation. Safe,
+  well-precedented fix.
+- **Verified incrementally on real hardware, one flash per step, watching
+  full `esphome logs` output for crash markers and post-dump survival
+  each time:** 300 chunks after the fix -> clean, no watchdog trip, ~4.8s
+  dump, 300/300 chunks reassembled with zero gaps. Then straight to the
+  full 1280 chunks (256000 bytes, the exact size that hung session 15) ->
+  also clean, ~20s dump, 1280/1280 chunks reassembled with zero gaps,
+  device still logging normally 40+s later.
+- **Ran the real, committed `tools/collect_serial_dumps.py` against a
+  fresh device boot** (not just the ad hoc verification script used for
+  the two chunk-count checks above) -- it correctly parsed live
+  `esphome logs` output end-to-end and wrote a genuine 256000-byte
+  `.raw` file (`1788984616_seq0.raw`) with zero missing chunks reported.
+  The full pipeline -- firmware dump -> serial -> host parser -> `.raw`
+  file -- is now proven working on real hardware, not just in isolation.
+- **Still NOT done, deliberately not attempted this session:** the dump
+  still fires exactly once per boot (`already_dumped` static, no
+  re-arm/`start()` call after dumping) -- this proves the transport is
+  safe at full capture size, but not yet that *repeated* captures are
+  safe back-to-back. Re-arming for continuous/rolling capture (the actual
+  requirement for collecting a real training dataset across many
+  utterances) is the next real step, and should itself be tested
+  incrementally (e.g. a bounded N-capture loop, watching for the same
+  class of watchdog-starvation or resource-exhaustion issue across
+  repeated dumps, before ever going back to an indefinite loop).
+
 ## RESUME HERE (2026-09-09, end of session 16)
 
 **Update from session 16: the bounded serial-dump safety test session 15

@@ -212,7 +212,7 @@ inline void upload_and_restart(esphome::http_request::HttpRequestComponent *clie
 // hardware should the cap be raised toward a full single capture, and only
 // after that should continuous/repeating operation be reconsidered at all.
 static const size_t DUMP_CHUNK_BYTES = 200;
-static const size_t DUMP_MAX_CHUNKS = 25;  // ~5KB / ~20ms of audio -- proof of life only
+static const size_t DUMP_MAX_CHUNKS = 1280;  // full ~256KB/2s capture -- session 16 step 3, up from 300
 
 inline void dump_over_serial() {
   static bool already_dumped = false;
@@ -233,6 +233,17 @@ inline void dump_over_serial() {
     std::string b64 = esphome::base64_encode(buffer + offset, len);
     ESP_LOGI(TAG, "PCMDUMP seq=%u chunk=%u total=%u b64=%s", (unsigned) sample_index, (unsigned) chunk,
              (unsigned) total_chunks, b64.c_str());
+    // Session 16 step 2 (300 chunks) tripped ESPHome's own loopTask
+    // watchdog (task_wdt: Aborting) partway through -- ESPHome only feeds
+    // it once per loop() iteration, and this whole dump runs inside a
+    // single interval callback, so a long enough dump starves it even
+    // though vTaskDelay below yields the CPU. http_request's own component
+    // hits this same class of problem and fixes it the same way (see
+    // http_request.h: `App.feed_wdt()` inside its own long-running loops)
+    // -- App.feed_wdt() is ESPHome's own rate-limited public API for this,
+    // not a raw ESP-IDF watchdog bypass like session 14's dangerous
+    // connection-reuse attempt.
+    esphome::App.feed_wdt();
     // Deliberate breathing room -- session 15 speculated the hang may have
     // been the host-side reader unable to drain fast enough at high serial
     // volume. This dump is small enough that this delay barely matters for
