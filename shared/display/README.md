@@ -94,11 +94,14 @@ the action queue. Surfaces do not receive a socket or parse wire JSON.
 
 The reducer port is injected into `DisplayBridge`, so a generated WebAssembly
 binding can replace the browser implementation without changing transport or
-surface code. Browser WebSocket APIs deliver protocol-fragmented frames as one
-complete message; an incomplete application payload is rejected atomically and
-cannot replace the last accepted view.
+surface code. The normal Web/iPad `App.svelte` path uses the plain TypeScript
+reducer, `StateSurface`, and the capability-gated `PromptOverlay`; passive
+consumers receive the same observed state but no prompt action path. Browser
+WebSocket APIs deliver protocol-fragmented frames as one complete message; an
+incomplete application payload is rejected atomically and cannot replace the
+last accepted view.
 
-## WebAssembly display target
+## Optional WebAssembly display target
 
 `display_wasm.c` and `display_wasm.h` expose the shared reducer and the LVGL
 surface through version 2 of a small C ABI. The browser binding in
@@ -115,7 +118,7 @@ WebAssembly memory; the browser host converts it to the RGBA order required by
 mapping touch coordinates from `getBoundingClientRect()`, so a high-DPI iPad
 does not turn a button into a nearby suggestion.
 
-The reproducible build pins Emscripten `6.0.5` and LVGL `8.3.11`, and uses
+The reproducible optional target pins Emscripten `6.0.5` and LVGL `8.3.11`, and uses
 `shared/display/wasm/` for the browser's board and LVGL configuration shims:
 
 ```bash
@@ -128,11 +131,12 @@ bash scripts/build_display_wasm.sh
 npm --prefix home_display/web run build
 ```
 
-The first build fetches LVGL into the ignored `build/display-wasm/` cache. It
-writes `display_core.js` and `display_core.wasm` to
+The first optional build fetches LVGL into the ignored `build/display-wasm/`
+cache. It writes `display_core.js` and `display_core.wasm` to
 `home_display/web/public/wasm/`; Vite copies them into the packaged
 `home_display/static/wasm/` directory. Set `EMCC`, `LVGL_DIR`,
 `DISPLAY_WASM_BUILD_DIR`, or `DISPLAY_WASM_OUTPUT_DIR` when a build machine
-uses different paths. A kiosk started without the generated module shows an
-actionable setup error instead of opening a display with an unvalidated
-JavaScript-only reducer.
+uses different paths. The direct-use Svelte kiosk neither loads nor requires
+these generated files; the `WasmDisplayReducer` and `WasmCanvas` tests remain
+available for this optional target, and a caller that explicitly selects it
+still receives an actionable setup error when its module is missing.

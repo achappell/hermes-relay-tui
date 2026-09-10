@@ -2,7 +2,7 @@
 import "@testing-library/jest-dom/vitest";
 import { fireEvent, render } from "@testing-library/svelte";
 import { tick } from "svelte";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { DisplayAction, DisplayAudioEvent } from "./state/protocol";
 import type { DisplayView } from "./state/reducer";
@@ -20,22 +20,20 @@ type BridgeOptions = {
 };
 
 const bridges = vi.hoisted(() => ({
-  instances: [] as Array<{ start: ReturnType<typeof vi.fn>; stop: ReturnType<typeof vi.fn> }>,
+  instances: [] as Array<{
+    start: ReturnType<typeof vi.fn>;
+    stop: ReturnType<typeof vi.fn>;
+    dispatchAction: ReturnType<typeof vi.fn>;
+    sendVoiceTurn: ReturnType<typeof vi.fn>;
+  }>,
   options: [] as BridgeOptions[],
-}));
-
-const wasm = vi.hoisted(() => ({
-  loadDisplayWasm: vi.fn(),
-}));
-
-const canvasHosts = vi.hoisted(() => ({
-  instances: [] as Array<{ start: ReturnType<typeof vi.fn>; stop: ReturnType<typeof vi.fn> }>,
 }));
 
 vi.mock("./state/bridge", () => ({
   DisplayBridge: class {
     start = vi.fn();
     stop = vi.fn();
+    dispatchAction = vi.fn(async (_action: DisplayAction) => true);
     sendVoiceTurn = vi.fn(async (_text: string) => true);
 
     constructor(...args: unknown[]) {
@@ -43,47 +41,141 @@ vi.mock("./state/bridge", () => ({
       bridges.options.push(args[0] as BridgeOptions);
     }
 
-    dispatchAction(_action: DisplayAction): Promise<boolean> {
-      return Promise.resolve(true);
-    }
-  },
-}));
-
-vi.mock("./state/wasm", () => wasm);
-
-vi.mock("./state/canvas", () => ({
-  CanvasDisplayHost: class {
-    start = vi.fn();
-    stop = vi.fn();
-
-    constructor() {
-      canvasHosts.instances.push(this);
-    }
   },
 }));
 
 import App from "./App.svelte";
 
 describe("App", () => {
-  beforeEach(() => {
-    wasm.loadDisplayWasm.mockReset();
-    wasm.loadDisplayWasm.mockResolvedValue({});
-  });
-
   afterEach(() => {
     bridges.instances.length = 0;
     bridges.options.length = 0;
-    canvasHosts.instances.length = 0;
   });
 
-  it("starts and stops a same-origin state channel after the WASM reducer loads", async () => {
-    const { unmount } = render(App);
+  it("starts and stops the same-origin state channel with the DOM reducer", async () => {
+    const { container, unmount } = render(App);
     await tick();
     const bridge = bridges.instances.at(-1);
 
+    expect(bridges.options.at(-1)?.reducer).toBeUndefined();
+    expect(bridges.options.at(-1)?.onValidSnapshot).toBeUndefined();
     expect(bridge?.start).toHaveBeenCalledOnce();
+    expect(container.querySelector(".state-surface")).not.toBeNull();
+    expect(container.querySelector(".wasm-bootstrap-shell")).toBeNull();
     unmount();
     expect(bridge?.stop).toHaveBeenCalledOnce();
+  });
+
+  it("gates browser voice until a connected, hydrated idle snapshot is ready", async () => {
+    const recognitions: FakeRecognition[] = [];
+    class FakeRecognition {
+      continuous = false;
+      interimResults = false;
+      lang = "";
+      onresult: ((event: unknown) => void) | null = null;
+      onerror: ((event: unknown) => void) | null = null;
+      onend: (() => void) | null = null;
+      start = vi.fn();
+      stop = vi.fn();
+
+      constructor() {
+        recognitions.push(this);
+      }
+    }
+    class FakeAudioContext {
+      state = "running";
+      currentTime = 0;
+      destination = {};
+      resume = vi.fn(async () => {});
+      createBuffer = vi.fn();
+      createBufferSource = vi.fn();
+    }
+    Object.defineProperty(window, "SpeechRecognition", {
+      configurable: true,
+      value: FakeRecognition,
+    });
+    Object.defineProperty(window, "AudioContext", {
+      configurable: true,
+      value: FakeAudioContext,
+    });
+
+    const { container, unmount } = render(App);
+    await tick();
+    const options = bridges.options.at(-1);
+    const voiceSnapshot = {
+      type: "snapshot" as const,
+      schema: 1 as const,
+      sequence: 1,
+      state: "idle" as const,
+      response_text: "",
+      status_text: null,
+      media: null,
+      prompt: null,
+      capabilities: { actions: [], features: ["browser_voice"] },
+      is_busy: false,
+      connection_healthy: true,
+      can_choose: false,
+      can_dismiss: false,
+    };
+    options?.onView(voiceSnapshot);
+    await tick();
+
+    const voiceButton = container.querySelector<HTMLButtonElement>("[data-voice-button]");
+    expect(voiceButton).not.toBeNull();
+    expect(voiceButton).toBeDisabled();
+    await fireEvent.click(voiceButton as HTMLButtonElement);
+    expect(recognitions).toHaveLength(0);
+
+    options?.onConnectionState("connected");
+    await tick();
+    expect(voiceButton).not.toBeDisabled();
+    await fireEvent.click(voiceButton as HTMLButtonElement);
+    await tick();
+    expect(recognitions).toHaveLength(1);
+    expect(recognitions[0].start).toHaveBeenCalledOnce();
+
+    recognitions[0].onresult?.({
+      resultIndex: 0,
+      results: [{ isFinal: true, 0: { transcript: "  what is the weather?  " } }],
+    });
+    await tick();
+    expect(bridges.instances.at(-1)?.sendVoiceTurn).toHaveBeenCalledWith("what is the weather?");
+
+    options?.onView({ ...voiceSnapshot, sequence: 2 });
+    await tick();
+    expect(container.querySelector("[data-voice-status]")).toBeNull();
+
+    await fireEvent.click(voiceButton as HTMLButtonElement);
+    await tick();
+    expect(recognitions).toHaveLength(2);
+    options?.onView({
+      ...voiceSnapshot,
+      sequence: 3,
+      state: "thinking",
+      status_text: "Thinking",
+      is_busy: true,
+    });
+    await tick();
+    expect(recognitions[1].stop).toHaveBeenCalledOnce();
+    expect(bridges.instances.at(-1)?.sendVoiceTurn).toHaveBeenCalledOnce();
+
+    options?.onView({ ...voiceSnapshot, sequence: 4 });
+    await tick();
+    await fireEvent.click(voiceButton as HTMLButtonElement);
+    await tick();
+    expect(recognitions).toHaveLength(3);
+    options?.onView({
+      ...voiceSnapshot,
+      sequence: 5,
+      state: "disconnected",
+      status_text: "Display disconnected",
+    });
+    await tick();
+    expect(recognitions[2].stop).toHaveBeenCalledOnce();
+
+    unmount();
+    delete (window as Window & { SpeechRecognition?: unknown }).SpeechRecognition;
+    delete (window as Window & { AudioContext?: unknown }).AudioContext;
   });
 
   it("shows a browser voice control when the display advertises browser voice", async () => {
@@ -112,7 +204,7 @@ describe("App", () => {
     unmount();
   });
 
-  it("gates hands-free on a connected idle display and keeps accessible state text off-canvas", async () => {
+  it("gates hands-free on a connected idle display with the visible DOM state surface", async () => {
     const { container, unmount } = render(App);
     await tick();
     const options = bridges.options.at(-1);
@@ -144,7 +236,7 @@ describe("App", () => {
     const handsFreeButton = container.querySelector<HTMLButtonElement>("[data-handsfree-button]");
     expect(handsFreeButton).toHaveTextContent("Enable hands-free");
     expect(handsFreeButton).not.toBeDisabled();
-    expect(container.querySelector(".state-surface.accessible-only")).not.toBeNull();
+    expect(container.querySelector(".state-surface.accessible-only")).toBeNull();
 
     options?.onView({
       type: "snapshot",
@@ -229,6 +321,8 @@ describe("App", () => {
       can_dismiss: false,
     });
     await tick();
+    expect(container.querySelector(".prompt-overlay")).toBeNull();
+    expect(container.querySelector(".prompt-btn")).toBeNull();
 
     await fireEvent.click(container.querySelector("[data-handsfree-button]") as HTMLElement);
     await tick();
@@ -399,7 +493,98 @@ describe("App", () => {
     delete (window as Window & { AudioContext?: unknown }).AudioContext;
   });
 
-  it("keeps the semantic mirror synchronized with the rendered response", async () => {
+  it("stops streamed audio when a direct-use prompt arrives", async () => {
+    const audioSources: Array<{
+      onended: (() => void) | null;
+      connect: ReturnType<typeof vi.fn>;
+      start: ReturnType<typeof vi.fn>;
+      stop: ReturnType<typeof vi.fn>;
+    }> = [];
+
+    class FakeAudioContext {
+      state = "running";
+      currentTime = 0;
+      destination = {};
+      resume = vi.fn(async () => {});
+      createBuffer = vi.fn(() => ({ duration: 1, copyToChannel: vi.fn() }));
+      createBufferSource = vi.fn(() => {
+        const source = {
+          onended: null as (() => void) | null,
+          connect: vi.fn(),
+          start: vi.fn(),
+          stop: vi.fn(),
+        };
+        audioSources.push(source);
+        return source;
+      });
+    }
+    Object.defineProperty(window, "AudioContext", {
+      configurable: true,
+      value: FakeAudioContext,
+    });
+
+    const { unmount } = render(App);
+    await tick();
+    const options = bridges.options.at(-1);
+    options?.onConnectionState("connected");
+    options?.onView({
+      type: "snapshot",
+      schema: 1,
+      sequence: 1,
+      state: "idle",
+      response_text: "",
+      status_text: null,
+      media: null,
+      prompt: null,
+      is_busy: false,
+      connection_healthy: true,
+      can_choose: false,
+      can_dismiss: false,
+    });
+    await tick();
+
+    options?.onAudioEvent?.({
+      type: "audio_start",
+      schema: 1,
+      turn_id: "turn-1",
+      sample_rate: 24000,
+      channels: 1,
+      sample_width: 2,
+    });
+    options?.onAudioChunk?.(new Uint8Array([1, 2]).buffer);
+    await tick();
+    expect(audioSources).toHaveLength(1);
+
+    options?.onView({
+      type: "snapshot",
+      schema: 1,
+      sequence: 2,
+      state: "prompt",
+      response_text: "",
+      status_text: null,
+      media: null,
+      prompt: {
+        kind: "notice",
+        title: "Setup needed",
+        body: "Configure home channel?",
+        options: [{ id: "yes", label: "Set home" }],
+        action_id: "sethome",
+        timeout_seconds: null,
+      },
+      capabilities: { actions: ["prompt.choose"], features: ["prompt_overlay"] },
+      is_busy: false,
+      connection_healthy: true,
+      can_choose: true,
+      can_dismiss: false,
+    });
+    await tick();
+
+    expect(audioSources[0].stop).toHaveBeenCalledOnce();
+    unmount();
+    delete (window as Window & { AudioContext?: unknown }).AudioContext;
+  });
+
+  it("renders the semantic DOM surface with the streamed response", async () => {
     const { container, unmount } = render(App);
     await tick();
     const options = bridges.options.at(-1);
@@ -424,10 +609,8 @@ describe("App", () => {
     const mirror = container.querySelector(".state-surface");
     expect(mirror).toHaveAttribute("data-state", "speaking");
     expect(mirror).toHaveTextContent("The answer is ready.");
-    expect(container.querySelector("[data-display-canvas]")).toHaveAttribute(
-      "aria-hidden",
-      "true",
-    );
+    expect(mirror).not.toHaveClass("accessible-only");
+    expect(container.querySelector("[data-display-canvas]")).toBeNull();
     unmount();
   });
 
@@ -461,7 +644,7 @@ describe("App", () => {
     options?.onProtocolError("display data unavailable");
     await tick();
     expect(container.querySelector("[data-handsfree-button]")).toBeDisabled();
-    expect(container.querySelector("[data-canvas-error]")).toHaveTextContent(
+    expect(container.querySelector('[data-state="error"]')).toHaveTextContent(
       "display data unavailable",
     );
     unmount();
@@ -475,7 +658,7 @@ describe("App", () => {
     options?.onConnectionState("connected");
     options?.onProtocolError("display data unavailable");
     await tick();
-    expect(container.querySelector("[data-canvas-error]")).not.toBeNull();
+    expect(container.querySelector('[data-state="error"]')).not.toBeNull();
 
     options?.onView({
       type: "snapshot",
@@ -492,12 +675,12 @@ describe("App", () => {
       can_dismiss: false,
     });
     await tick();
-    expect(container.querySelector("[data-display-canvas]")).not.toBeNull();
+    expect(container.querySelector('[data-state="speaking"]')).not.toBeNull();
     expect(container.querySelector("[data-canvas-error]")).toBeNull();
     unmount();
   });
 
-  it("keeps the shared canvas visible when state is prompt", async () => {
+  it("renders a direct-use prompt and sends one validated bridge action", async () => {
     const { container, unmount } = render(App);
     await tick();
     const options = bridges.options.at(-1);
@@ -519,14 +702,77 @@ describe("App", () => {
         action_id: "sethome",
         timeout_seconds: null,
       },
+      capabilities: {
+        actions: ["prompt.choose"],
+        features: ["prompt_overlay"],
+      },
       is_busy: false,
       connection_healthy: true,
       can_choose: true,
       can_dismiss: false,
     });
     await tick();
-    expect(container.querySelector("[data-display-canvas]")).not.toBeNull();
+
+    const bridge = bridges.instances.at(-1);
+    expect(container.querySelector(".state-surface")).not.toHaveClass("accessible-only");
+    expect(container.querySelector('[aria-hidden="true"] > .state-surface')).not.toBeNull();
+    expect(container.querySelector(".prompt-overlay")).not.toBeNull();
+    await fireEvent.click(container.querySelector(".prompt-btn") as HTMLElement);
+    await tick();
+
+    expect(bridge?.dispatchAction).toHaveBeenCalledWith({
+      type: "action",
+      schema: 1,
+      action_id: "sethome",
+      choice: "yes",
+    });
+    expect(bridge?.dispatchAction).toHaveBeenCalledOnce();
     expect(container.querySelector(".prompt-overlay")).toBeNull();
+    unmount();
+  });
+
+  it("keeps a direct-use prompt available after a failed action", async () => {
+    const { container, unmount } = render(App);
+    await tick();
+    const options = bridges.options.at(-1);
+    const bridge = bridges.instances.at(-1);
+    bridge?.dispatchAction.mockResolvedValue(false);
+
+    options?.onConnectionState("connected");
+    options?.onView({
+      type: "snapshot",
+      schema: 1,
+      sequence: 1,
+      state: "prompt",
+      response_text: "",
+      status_text: null,
+      media: null,
+      prompt: {
+        kind: "notice",
+        title: "Setup Needed",
+        body: "Configure home channel?",
+        options: [{ id: "yes", label: "Set home" }],
+        action_id: "sethome",
+        timeout_seconds: null,
+      },
+      capabilities: {
+        actions: ["prompt.choose"],
+        features: ["prompt_overlay"],
+      },
+      is_busy: false,
+      connection_healthy: true,
+      can_choose: true,
+      can_dismiss: false,
+    });
+    await tick();
+
+    await fireEvent.click(container.querySelector(".prompt-btn") as HTMLElement);
+    await tick();
+
+    expect(container.querySelector(".prompt-overlay")).not.toBeNull();
+    expect(container.querySelector("[data-action-error]")).toHaveTextContent(
+      "Display action could not be sent",
+    );
     unmount();
   });
 
@@ -558,25 +804,22 @@ describe("App", () => {
       can_dismiss: false,
     });
     await tick();
-    expect(container.querySelector("[data-display-canvas]")).not.toBeNull();
+    expect(container.querySelector(".prompt-overlay")).not.toBeNull();
 
     options?.onConnectionState("disconnected");
     await tick();
-    expect(container.querySelector("[data-display-canvas]")).not.toBeNull();
+    expect(container.querySelector(".prompt-overlay")).toBeNull();
+    expect(container.querySelector('[data-state="disconnected"]')).not.toBeNull();
     unmount();
   });
 
-  it("shows an actionable setup error when the WASM artifact is unavailable", async () => {
-    wasm.loadDisplayWasm.mockRejectedValueOnce(
-      new Error("Display WebAssembly is unavailable. Run scripts/build_display_wasm.sh"),
-    );
+  it("does not require generated WASM artifacts to start the DOM display", async () => {
     const { container, unmount } = render(App);
     await tick();
-    await tick();
 
-    expect(container.querySelector('[data-state="error"]')).not.toBeNull();
-    expect(container).toHaveTextContent("scripts/build_display_wasm.sh");
-    expect(bridges.instances).toHaveLength(0);
+    expect(container.querySelector(".state-surface")).not.toBeNull();
+    expect(container.querySelector(".wasm-bootstrap-shell")).toBeNull();
+    expect(bridges.instances).toHaveLength(1);
     unmount();
   });
 });
