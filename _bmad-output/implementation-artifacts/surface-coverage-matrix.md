@@ -85,10 +85,11 @@ prompt, error, reconnect, and accessibility coverage.
 ## iOS audit — 2026-09-09
 
 The sibling `../hermes-relay-ios` repository was inspected read-only for the
-implementation audit. Its local `main` commit is now `951eef5` (`feat: discover
-unconfigured household devices`); the Device Discovery slice is committed, with
-only unrelated `.gitignore` and documentation-only `AGENTS.md` changes still
-uncommitted in that worktree.
+implementation audit. Its local `main` commit is now `211787c` (`feat: discover
+unconfigured household devices`), while `origin/main` remains `53b69bf`. The
+Device Discovery slice is committed; its active feature checkout is one local
+configuration commit ahead, with only unrelated `.gitignore` and
+documentation-only `AGENTS.md` changes still uncommitted.
 
 - The iOS Epic 1 artifacts explicitly close Stories 1.1 and 1.2, and the
   physical-device validation record says their device-only checks completed.
