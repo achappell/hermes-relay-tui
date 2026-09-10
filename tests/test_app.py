@@ -750,6 +750,91 @@ async def test_dropped_turn_is_not_replayed_but_next_prompt_recovers():
         assert app.connection_state == "connected"
 
 
+async def test_protocol_failure_commits_text_beyond_the_audio_caption_prefix():
+    class ActivePlayer:
+        enabled = True
+        active = False
+        failure = None
+
+        @property
+        def playback_position(self):
+            return 0.0
+
+        def start(self, audio_format):  # noqa: ARG002 - mirrors PCMPlayer
+            self.active = True
+
+        def close(self):
+            self.active = False
+
+    session = FakeSession(
+        events=[
+            {"type": "audio_start", "sample_rate": 24000, "channels": 1, "sample_width": 2},
+            {"type": "text_delta", "text": "Complete failure response."},
+            {"type": "error", "error": "relay failed", "turn_id": "failed-caption"},
+        ]
+    )
+    app = HermesStreamingApp(args=make_args(no_play=False), session_factory=lambda: session)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.player = ActivePlayer()
+        await app._run_turn("hi")
+
+        assert [
+            message.text
+            for message in app.transcript.messages
+            if message.role == "assistant"
+        ] == ["Complete failure response."]
+        assert app.voice_state == app_module.VOICE_ERROR
+
+
+async def test_transport_failure_commits_the_received_response_before_disconnect():
+    class TransportFailureSession(FakeSession):
+        def send_turn(self, text, *, stt_source="local"):
+            self.sent_turns.append((text, stt_source))
+
+            async def stream():
+                yield {
+                    "type": "audio_start",
+                    "sample_rate": 24000,
+                    "channels": 1,
+                    "sample_width": 2,
+                }
+                yield {"type": "text_delta", "text": "Transport failure response."}
+                raise ConnectionResetError("socket went away")
+                yield  # pragma: no cover - keeps this an async generator
+
+            return stream()
+
+    class ActivePlayer:
+        enabled = True
+        active = False
+        failure = None
+
+        @property
+        def playback_position(self):
+            return 0.0
+
+        def start(self, audio_format):  # noqa: ARG002 - mirrors PCMPlayer
+            self.active = True
+
+        def close(self):
+            self.active = False
+
+    session = TransportFailureSession()
+    app = HermesStreamingApp(args=make_args(no_play=False), session_factory=lambda: session)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.player = ActivePlayer()
+        await app._run_turn("hi")
+
+        assert [
+            message.text
+            for message in app.transcript.messages
+            if message.role == "assistant"
+        ] == ["Transport failure response."]
+        assert app.connection_state == app_module.CONNECTION_DISCONNECTED
+
+
 async def test_submitting_input_sends_a_turn_and_clears_input():
     session = FakeSession()
     app = HermesStreamingApp(args=make_args(), session_factory=lambda: session)
@@ -2763,6 +2848,12 @@ async def test_stream_without_terminal_event_cleans_up_for_the_next_turn():
 
         await app._run_turn("first turn")
         assert app.domain.state.turn_active is False
+        assert app.voice_state == app_module.VOICE_ERROR
+        assert [
+            message.text
+            for message in app.transcript.messages
+            if message.role == "assistant"
+        ] == ["partial"]
         assert "turn ended without a completion event" in transcript_of(app)
 
         app._queued_prompts.clear()
@@ -2904,11 +2995,65 @@ async def test_audio_write_failure_preserves_a_recovery_wav(tmp_path, monkeypatc
     async with app.run_test() as pilot:
         await pilot.pause()
         app.player = FailingPlayer()
-        await app._run_turn("hi")
-        assert voice_status_of(app) == "● ready · audio unavailable"
-        assert "hermes: Text survives speaker failure." in transcript_of(app)
+        status_history = []
+        original_refresh = app._refresh_voice_status
+
+        def record_status():
+            original_refresh()
+            status_history.append(voice_status_of(app))
+
+        app._refresh_voice_status = record_status
+        try:
+            await app._run_turn("hi")
+            assert voice_status_of(app) == "● ready · audio unavailable"
+            assert "hermes: Text survives speaker failure." in transcript_of(app)
+            unavailable_index = status_history.index("● audio unavailable")
+            assert all(
+                "speaking" not in status
+                for status in status_history[unavailable_index:]
+            )
+        finally:
+            app._refresh_voice_status = original_refresh
 
     recovery_wav = tmp_path / "hybrid-tui-speaker-failed.wav"
+    assert recovery_wav.exists()
+    with wave.open(str(recovery_wav), "rb") as handle:
+        assert handle.readframes(2) == b"\x00\x01\x02\x03"
+
+
+async def test_audio_before_a_failed_turn_is_preserved_as_recovery_wav(tmp_path, monkeypatch):
+    class FailingPlayer:
+        active = False
+        failure = None
+
+        def start(self, audio_format):  # noqa: ARG002 - mirrors PCMPlayer
+            self.active = True
+
+        def write(self, chunk):  # noqa: ARG002 - mirrors PCMPlayer
+            self.active = False
+            self.failure = "speaker stopped"
+
+        def close(self):
+            self.active = False
+
+    monkeypatch.chdir(tmp_path)
+    session = FakeSession(
+        events=[
+            {"type": "audio_start", "sample_rate": 24000, "channels": 1, "sample_width": 2},
+            {"type": "audio_chunk", "data": b"\x00\x01\x02\x03"},
+            {"type": "text_delta", "text": "Text before a failed turn."},
+            {"type": "error", "error": "relay failed", "turn_id": "failed-audio"},
+        ]
+    )
+    app = HermesStreamingApp(args=make_args(no_play=False), session_factory=lambda: session)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.player = FailingPlayer()
+        await app._run_turn("hi")
+
+        assert voice_status_of(app) == "● error · audio unavailable"
+
+    recovery_wav = tmp_path / "hybrid-tui-failed-audio.wav"
     assert recovery_wav.exists()
     with wave.open(str(recovery_wav), "rb") as handle:
         assert handle.readframes(2) == b"\x00\x01\x02\x03"
@@ -2948,6 +3093,41 @@ async def test_audio_playback_closes_once_after_turn_end():
         await app._run_turn("hi")
 
         assert player.close_states == [True]
+
+
+async def test_audio_close_failure_reports_unavailable_after_turn_end():
+    class CloseFailingPlayer:
+        enabled = True
+        active = False
+        failure = None
+
+        def start(self, audio_format):  # noqa: ARG002 - mirrors PCMPlayer
+            self.active = True
+
+        def write(self, chunk):  # noqa: ARG002 - mirrors PCMPlayer
+            pass
+
+        def close(self):
+            self.active = False
+            self.failure = "speaker close failed"
+
+    session = FakeSession(
+        events=[
+            {"type": "audio_start", "sample_rate": 24000, "channels": 1, "sample_width": 2},
+            {"type": "audio_chunk", "data": b"\x00\x01"},
+            {"type": "turn_end", "turn_id": "close-failed"},
+        ]
+    )
+    app = HermesStreamingApp(
+        args=make_args(no_play=False), session_factory=lambda: session
+    )
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.player = CloseFailingPlayer()
+        await app._run_turn("hi")
+
+        assert voice_status_of(app) == "● ready · audio unavailable"
+        assert "audio unavailable" in voice_status_of(app)
 
 
 async def test_audio_close_runs_off_the_textual_event_loop():
@@ -3169,6 +3349,48 @@ async def test_audio_file_fallback_is_recovered_as_wav(tmp_path):
         with wave.open(str(output), "rb") as handle:
             assert handle.getframerate() == 16000
             assert handle.readframes(2) == b"\x00\x01\x02\x03"
+        assert voice_status_of(app) == "● ready · audio unavailable"
+
+
+async def test_undecodable_file_only_fallback_reports_audio_unavailable():
+    session = FakeSession(
+        events=[
+            {"type": "audio_file_start", "mime_type": "audio/wav"},
+            {"type": "audio_file_chunk", "data": b"not a wav"},
+            {"type": "audio_file_end"},
+            {"type": "turn_end", "turn_id": "bad-fallback"},
+        ]
+    )
+    app = HermesStreamingApp(
+        args=make_args(no_play=False), session_factory=lambda: session
+    )
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await app._run_turn("hi")
+
+        assert voice_status_of(app) == "● ready · audio unavailable"
+        assert "unsupported audio file fallback" in transcript_of(app)
+
+
+async def test_audio_unavailable_state_clears_for_a_later_successful_turn():
+    session = FakeSession(
+        events=[
+            {"type": "audio_start", "sample_rate": 24000, "channels": 1, "sample_width": 2},
+            {"type": "text_delta", "text": "First response."},
+            {"type": "turn_end", "turn_id": "unavailable"},
+        ]
+    )
+    app = HermesStreamingApp(args=make_args(), session_factory=lambda: session)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await app._run_turn("first")
+        assert voice_status_of(app) == "● ready · audio unavailable"
+
+        session.events = DEFAULT_EVENTS
+        await app._run_turn("second")
+
+        assert voice_status_of(app) == "● ready"
+        assert "audio unavailable" not in voice_status_of(app)
 
 
 async def test_a_turn_that_ends_without_audio_end_still_closes_the_speaker():
