@@ -29,7 +29,7 @@
 # - Dev moves story to 'review', then runs code-review (fresh context, different LLM recommended)
 # - Retrospective appends its action items to action_items; the status view surfaces open ones
 generated: 09-08-2026 00:00
-last_updated: 09-10-2026 06:34
+last_updated: 09-10-2026 08:32
 project: hermes-relay-tui
 project_key: NOKEY
 tracking_system: file-system
@@ -41,32 +41,62 @@ development_status:
   1-2-render-honest-turn-phases-and-response-delivery: review
   1-3-continue-with-bounded-follow-up-and-exact-stop: review
   1-4-recover-without-replaying-an-uncertain-turn: review
+  1-i-1-authorized-initiation: backlog
+  1-i-2-honest-phases-with-response-audio-delivery: backlog
+  1-i-3-fresh-recovery-without-replay: backlog
+  1-p-1-authorized-wake-and-capture: backlog
+  1-p-2-status-and-response-audio-delivery: backlog
+  1-p-3-bounded-follow-up-and-exact-stop: backlog
+  1-p-4-recovery-without-replay: backlog
+  1-e-1-authorized-voice-capture: backlog
+  1-e-2-native-phases-and-streamed-response-rendering: backlog
+  1-e-3-response-audio-delivery: backlog
+  1-e-4-bounded-follow-up-and-exact-stop: backlog
+  1-e-5-recovery-without-replay: backlog
+  1-wk-1-one-shared-w-k-browser-voice-plus-display-surface-for-author: backlog
   epic-1-retrospective: optional
 
   epic-2: backlog
-  2-1-keep-each-display-in-its-room-scoped-ambient-surface: backlog
-  2-2-show-live-capture-state-and-transcription: backlog
-  2-3-mirror-only-the-owning-room-s-active-turn: backlog
-  2-4-mirror-hermes-prompts-without-becoming-another-assistant: backlog
-  2-5-stay-useful-and-honest-when-disconnected: backlog
+  2-i-1-show-the-ios-doorway-s-capture-acknowledgement-and-live-tran: backlog
+  2-i-2-show-honest-ios-disconnected-unavailable-state-without-stale: backlog
+  2-p-1-expose-the-puck-s-local-capture-response-and-status-phases-w: backlog
+  2-p-2-fail-closed-and-show-unavailable-disconnected-status-when-th: backlog
+  2-e-1-render-the-room-scoped-ambient-surface-in-native-lvgl: backlog
+  2-e-2-render-room-local-active-turn-state-live-transcription-and-t: backlog
+  2-e-3-mirror-hermes-prompts-without-creating-touch-response-action: backlog
+  2-e-4-render-honest-disconnected-state-and-safe-cached-context-on: backlog
+  2-wk-1-render-the-shared-room-scoped-ambient-surface-for-web-and-ip: backlog
+  2-wk-2-render-active-capture-room-local-transcription-response-and: backlog
+  2-wk-3-mirror-hermes-prompts-without-touch-approval-or-a-second-ses: backlog
+  2-wk-4-render-honest-disconnected-state-cached-context-and-accessib: backlog
+  2-t-1-keep-the-direct-tui-doorway-s-capture-and-phase-state-visibl: backlog
+  2-t-2-keep-tui-disconnect-recovery-presentation-honest-without-rep: backlog
   epic-2-retrospective: optional
 
   epic-3: backlog
-  3-1-discover-unconfigured-devices-safely: backlog
-  3-2-approve-and-configure-a-device: backlog
-  3-3-keep-wake-mappings-unique-and-profile-specific: backlog
-  3-4-select-one-device-for-a-simultaneous-wake: backlog
-  3-5-fail-closed-for-revoked-or-unavailable-identities: backlog
-  3-6-revoke-access-and-require-verified-re-enrollment: backlog
+  3-i-1-discover-and-connect-an-unconfigured-device-without-granting: backlog
+  3-i-2-approve-a-device-and-guide-room-wake-mapping-and-ready-setup: backlog
+  3-i-3-validate-unique-wake-mappings-and-profile-specific-publish-s: backlog
+  3-i-4-configure-and-expose-deterministic-single-device-wake-arbitr: backlog
+  3-i-5-show-and-enforce-unavailable-or-revoked-identity-as-a-failed: backlog
+  3-i-6-revoke-access-and-require-explicit-verified-re-enrollment: backlog
+  3-p-1-advertise-independently-identifiable-unconfigured-state-for: backlog
+  3-p-2-apply-approved-room-credential-and-wake-mapping-configuratio: backlog
+  3-p-3-enforce-the-selected-wake-mapping-and-profile-before-capture: backlog
+  3-p-4-participate-in-single-winner-wake-arbitration-and-remain-sil: backlog
+  3-p-5-reject-revoked-unavailable-or-unverified-identity-before-cap: backlog
+  3-p-6-retire-revoked-credentials-and-require-the-ordered-setup-flo: backlog
   epic-3-retrospective: optional
 
   epic-4: backlog
-  4-1-qualify-events-using-usable-travel-context: backlog
-  4-2-promote-a-household-wide-departure-card: backlog
-  4-3-recompute-and-clear-departure-cards-automatically: backlog
+  4-c-1-qualify-events-only-with-usable-location-route-or-estimate-f: backlog
+  4-e-1-promote-the-household-wide-departure-card-in-native-lvgl-whi: backlog
+  4-e-2-recompute-and-clear-the-native-departure-card-on-time-locati: backlog
+  4-wk-1-promote-the-same-departure-card-in-the-shared-web-ipad-brows: backlog
+  4-wk-2-recompute-and-clear-the-browser-departure-card-while-preserv: backlog
   epic-4-retrospective: optional
 
   epic-5: backlog
-  5-1-use-ios-as-an-independent-conversation-doorway: backlog
-  5-2-use-the-tui-as-an-independent-direct-voice-chat-gateway: backlog
+  5-i-1-use-ios-as-an-independent-typed-and-tap-to-speak-conversatio: backlog
+  5-t-1-use-the-tui-as-an-independent-direct-voice-chat-gateway-with: backlog
   epic-5-retrospective: optional

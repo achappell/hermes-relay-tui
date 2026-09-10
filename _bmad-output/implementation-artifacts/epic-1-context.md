@@ -66,3 +66,12 @@ dependency.
 - The existing local TUI Stories 1.1–1.4 preserve their implementation history; new iOS, Puck, ESP32 Touch, and W/K work is tracked as surface-specific Epic 1 stories rather than inferred from TUI closure.
 - Later room-context epics consume Epic 1’s normalized events and recovery semantics; they must not create alternate protocol paths. A passive Display may mirror an active touch doorway, but must not create a second Session.
 - Physical-device credentials, provisioning, revocation, and wake arbitration belong to the separate device-administration work. This epic consumes an authorized configuration and does not invent that system.
+
+## Next local slice selection — 2026-09-10
+
+The next local TUI action is the review gate for T-2, represented by the
+numeric local alias `1-2-render-honest-turn-phases-and-response-delivery`.
+It is the first existing in-review slice, has focused and full-suite evidence
+recorded, and closes the phase/response-delivery contract consumed by T-3 and
+T-4. Keep its tracker status at `review` until the fresh code-review gate
+resolves; do not open a second local implementation slice in parallel.
