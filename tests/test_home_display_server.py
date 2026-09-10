@@ -1,13 +1,59 @@
 import asyncio
 import json
+import shutil
+import ssl
+import subprocess
 from urllib.request import Request, urlopen
 
 import pytest
 from websockets.exceptions import InvalidHandshake
 from websockets.legacy.client import connect
 
-from home_display.server import DisplayServer
+from home_display.server import DisplayServer, load_tls_context
 from home_display.state import DisplayStatePublisher
+
+
+def _test_tls_files(tmp_path):
+    openssl = shutil.which("openssl")
+    if openssl is None:
+        pytest.skip("openssl is required for the TLS integration test")
+    certificate = tmp_path / "display-cert.pem"
+    private_key = tmp_path / "display-key.pem"
+    subprocess.run(
+        [
+            openssl,
+            "req",
+            "-x509",
+            "-newkey",
+            "rsa:2048",
+            "-nodes",
+            "-keyout",
+            str(private_key),
+            "-out",
+            str(certificate),
+            "-days",
+            "1",
+            "-subj",
+            "/CN=127.0.0.1",
+        ],
+        check=True,
+        capture_output=True,
+    )
+    return certificate, private_key
+
+
+def _unverified_client_context() -> ssl.SSLContext:
+    return ssl._create_unverified_context()
+
+
+def test_load_tls_context_requires_certificate_and_key_together(tmp_path):
+    with pytest.raises(ValueError, match="supplied together"):
+        load_tls_context(tmp_path / "cert.pem", None)
+
+
+def test_load_tls_context_reports_missing_files(tmp_path):
+    with pytest.raises(ValueError, match="could not load display TLS"):
+        load_tls_context(tmp_path / "cert.pem", tmp_path / "key.pem")
 
 
 @pytest.mark.asyncio
@@ -20,6 +66,60 @@ async def test_server_serves_index_html_and_current_state(tmp_path):
         assert await asyncio.to_thread(lambda: urlopen(info.http_url).read()) == b"home"
         async with connect(info.websocket_url) as socket:
             assert json.loads(await socket.recv())["state"] == "idle"
+    finally:
+        await server.close()
+
+
+@pytest.mark.asyncio
+async def test_server_serves_https_page_and_secure_state_channel(tmp_path):
+    (tmp_path / "index.html").write_text("secure home", encoding="utf-8")
+    certificate, private_key = _test_tls_files(tmp_path)
+    server = DisplayServer(
+        DisplayStatePublisher(),
+        tmp_path,
+        ssl_context=load_tls_context(certificate, private_key),
+    )
+    info = await server.start()
+    client_context = _unverified_client_context()
+    try:
+        assert info.secure is True
+        assert info.http_url.startswith("https://")
+        assert info.websocket_url.startswith("wss://")
+        assert await asyncio.to_thread(
+            lambda: urlopen(info.http_url, context=client_context).read()
+        ) == b"secure home"
+        async with connect(
+            info.websocket_url,
+            origin=info.http_url,
+            ssl=client_context,
+        ) as socket:
+            assert json.loads(await socket.recv())["state"] == "idle"
+    finally:
+        await server.close()
+
+
+@pytest.mark.asyncio
+async def test_https_state_rejects_plain_http_origin(tmp_path):
+    (tmp_path / "index.html").write_text("secure home", encoding="utf-8")
+    certificate, private_key = _test_tls_files(tmp_path)
+    server = DisplayServer(
+        DisplayStatePublisher(),
+        tmp_path,
+        ssl_context=load_tls_context(certificate, private_key),
+    )
+    info = await server.start()
+    try:
+        with pytest.raises(InvalidHandshake) as error:
+            await connect(
+                info.websocket_url,
+                origin=f"http://{info.host}:{info.port}/",
+                ssl=_unverified_client_context(),
+            )
+        response = getattr(error.value, "response", None)
+        status_code = getattr(error.value, "status_code", None)
+        if status_code is None:
+            status_code = getattr(response, "status_code", None)
+        assert status_code == 403
     finally:
         await server.close()
 

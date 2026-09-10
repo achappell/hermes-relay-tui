@@ -61,6 +61,39 @@ describe("parseSnapshot", () => {
     });
   });
 
+  it("preserves bounded hands-free metadata from the active profile", () => {
+    const parsed = parseSnapshot({
+      ...snapshot,
+      capabilities: {
+        actions: [],
+        features: ["browser_voice", "browser_hands_free"],
+        wake_phrases: ["hey hermes", "hello hermes"],
+        wake_listen_seconds: 8,
+        wake_followup_seconds: 6,
+      },
+    });
+
+    expect(parsed?.capabilities).toEqual({
+      actions: [],
+      features: ["browser_voice", "browser_hands_free"],
+      wake_phrases: ["hey hermes", "hello hermes"],
+      wake_listen_seconds: 8,
+      wake_followup_seconds: 6,
+    });
+  });
+
+  it.each([
+    { wake_phrases: [" "] },
+    { wake_phrases: Array.from({ length: 9 }, (_unused, index) => `phrase ${index}`) },
+    { wake_listen_seconds: 0 },
+    { wake_followup_seconds: Number.POSITIVE_INFINITY },
+  ])("rejects malformed hands-free metadata %#", (metadata) => {
+    expect(parseSnapshot({
+      ...snapshot,
+      capabilities: { actions: [], features: [], ...metadata },
+    })).toBeNull();
+  });
+
   it("rejects prompt state with null prompt", () => {
     expect(parseSnapshot({ ...snapshot, state: "prompt", prompt: null })).toBeNull();
   });

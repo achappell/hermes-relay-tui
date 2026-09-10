@@ -1,6 +1,7 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
+  BrowserHandsFreeController,
   BrowserVoiceController,
   PcmAudioPlayer,
   type AudioBufferLike,
@@ -15,11 +16,15 @@ class FakeRecognition implements SpeechRecognitionLike {
   onresult: SpeechRecognitionLike["onresult"] = null;
   onerror: SpeechRecognitionLike["onerror"] = null;
   onend: SpeechRecognitionLike["onend"] = null;
+  onstart: (() => void) | null = null;
   starts = 0;
   stops = 0;
 
+  constructor(private readonly announcesStart = true) {}
+
   start(): void {
     this.starts += 1;
+    if (this.announcesStart) this.onstart?.();
   }
 
   stop(): void {
@@ -77,12 +82,390 @@ describe("BrowserVoiceController", () => {
     await expect(controller.start()).resolves.toBe(false);
     expect(states).toEqual(["error", "Microphone or speech recognition is unavailable"]);
   });
+
+  it("stops an active recognition session when reset clears the controller", async () => {
+    const recognition = new FakeRecognition();
+    const controller = new BrowserVoiceController({
+      recognitionFactory: () => recognition,
+      sendText: () => true,
+    });
+
+    await expect(controller.start()).resolves.toBe(true);
+    controller.reset();
+
+    expect(recognition.stops).toBe(1);
+    expect(recognition.onresult).toBeNull();
+  });
+});
+
+describe("BrowserHandsFreeController", () => {
+  afterEach(() => vi.useRealTimers());
+
+  it("discards the wake phrase and sends one initial turn plus one follow-up", async () => {
+    vi.useFakeTimers();
+    const recognitions: FakeRecognition[] = [];
+    const sendText = vi.fn(() => true);
+    const states: string[] = [];
+    const controller = new BrowserHandsFreeController({
+      recognitionFactory: () => {
+        const recognition = new FakeRecognition();
+        recognitions.push(recognition);
+        return recognition;
+      },
+      wakePhrases: ["Hey Hermes"],
+      sendText,
+      onState: (state) => states.push(state),
+    });
+
+    await expect(controller.arm()).resolves.toBe(true);
+    recognitions[0].result({ isFinal: true, transcript: "background words" });
+    expect(sendText).not.toHaveBeenCalled();
+
+    recognitions[0].result({ isFinal: true, transcript: "Hey Hermes" });
+    expect(states).toContain("heard");
+    vi.advanceTimersByTime(150);
+    expect(states).toContain("listening");
+    recognitions[0].result({ isFinal: true, transcript: "what is the weather?" });
+    expect(sendText).toHaveBeenCalledTimes(1);
+    expect(sendText).toHaveBeenCalledWith("what is the weather?");
+
+    controller.turnFinished();
+    await Promise.resolve();
+    expect(states).toContain("follow_up");
+    expect(recognitions).toHaveLength(2);
+    recognitions[1].result({ isFinal: true, transcript: "and tomorrow?" });
+    expect(sendText).toHaveBeenCalledTimes(2);
+    controller.turnFinished();
+    expect(states.at(-1)).toBe("wake_ready");
+    recognitions.at(-1)?.result({ isFinal: true, transcript: "another question" });
+    expect(sendText).toHaveBeenCalledTimes(2);
+    controller.disarm();
+  });
+
+  it("retries a follow-up recognizer that silently hangs after playback", async () => {
+    vi.useFakeTimers();
+    const recognitions: FakeRecognition[] = [];
+    const sendText = vi.fn(() => true);
+    const states: string[] = [];
+    const controller = new BrowserHandsFreeController({
+      recognitionFactory: () => {
+        // The first post-playback instance models Safari's silent hang: start()
+        // succeeds, but no start/result/end callback ever arrives.
+        const recognition = new FakeRecognition(recognitions.length !== 1);
+        recognitions.push(recognition);
+        return recognition;
+      },
+      wakePhrases: ["hey hermes"],
+      sendText,
+      onState: (state) => states.push(state),
+    });
+
+    await expect(controller.arm()).resolves.toBe(true);
+    recognitions[0].result({
+      isFinal: true,
+      transcript: "hey hermes what is the weather",
+    });
+    controller.turnFinished();
+    await Promise.resolve();
+
+    expect(states.at(-1)).toBe("follow_up");
+    expect(recognitions).toHaveLength(2);
+    vi.advanceTimersByTime(1500);
+
+    expect(recognitions.length).toBeGreaterThan(2);
+    recognitions.at(-1)?.result({ isFinal: true, transcript: "and tomorrow?" });
+    expect(sendText).toHaveBeenCalledTimes(2);
+    expect(sendText).toHaveBeenLastCalledWith("and tomorrow?");
+    controller.disarm();
+  });
+
+  it("retries when Safari reports started but never returns follow-up speech", async () => {
+    vi.useFakeTimers();
+    const recognitions: FakeRecognition[] = [];
+    const sendText = vi.fn(() => true);
+    const controller = new BrowserHandsFreeController({
+      recognitionFactory: () => {
+        // This variant has an onstart callback but no result, error, or end.
+        const recognition = new FakeRecognition();
+        recognitions.push(recognition);
+        return recognition;
+      },
+      wakePhrases: ["hey hermes"],
+      sendText,
+    });
+
+    await expect(controller.arm()).resolves.toBe(true);
+    recognitions[0].result({
+      isFinal: true,
+      transcript: "hey hermes what is the weather",
+    });
+    controller.turnFinished();
+    await Promise.resolve();
+    expect(recognitions).toHaveLength(2);
+
+    vi.advanceTimersByTime(4_000);
+    expect(recognitions.length).toBeGreaterThan(2);
+    recognitions.at(-1)?.result({ isFinal: true, transcript: "and tomorrow?" });
+    expect(sendText).toHaveBeenCalledTimes(2);
+    controller.disarm();
+  });
+
+  it("primes the microphone once before starting follow-up recognition", async () => {
+    const events: string[] = [];
+    const recognitions: FakeRecognition[] = [];
+    const prepareRecognition = vi.fn(() => {
+      events.push("prime");
+    });
+    const controller = new BrowserHandsFreeController({
+      recognitionFactory: () => {
+        events.push("recognition");
+        const recognition = new FakeRecognition();
+        recognitions.push(recognition);
+        return recognition;
+      },
+      wakePhrases: ["hey hermes"],
+      sendText: () => true,
+      prepareRecognition,
+    });
+
+    await expect(controller.arm()).resolves.toBe(true);
+    recognitions[0].result({
+      isFinal: true,
+      transcript: "hey hermes what is the weather",
+    });
+    controller.turnFinished();
+    await Promise.resolve();
+
+    expect(prepareRecognition).toHaveBeenCalledOnce();
+    expect(events.indexOf("prime")).toBeLessThan(events.lastIndexOf("recognition"));
+    controller.disarm();
+  });
+
+  it("stops the temporary browser microphone stream used for follow-up recovery", async () => {
+    const originalMediaDevices = Object.getOwnPropertyDescriptor(navigator, "mediaDevices");
+    const stop = vi.fn();
+    const getUserMedia = vi.fn(async () => ({ getTracks: () => [{ stop }] }));
+    Object.defineProperty(navigator, "mediaDevices", {
+      configurable: true,
+      value: { getUserMedia },
+    });
+    const recognitions: FakeRecognition[] = [];
+    const controller = new BrowserHandsFreeController({
+      recognitionFactory: () => {
+        const recognition = new FakeRecognition();
+        recognitions.push(recognition);
+        return recognition;
+      },
+      wakePhrases: ["hey hermes"],
+      sendText: () => true,
+    });
+
+    try {
+      await expect(controller.arm()).resolves.toBe(true);
+      recognitions[0].result({
+        isFinal: true,
+        transcript: "hey hermes what is the weather",
+      });
+      controller.turnFinished();
+      await vi.waitFor(() => expect(getUserMedia).toHaveBeenCalledWith({ audio: true }));
+
+      expect(stop).toHaveBeenCalledOnce();
+      controller.disarm();
+    } finally {
+      if (originalMediaDevices) {
+        Object.defineProperty(navigator, "mediaDevices", originalMediaDevices);
+      } else {
+        Reflect.deleteProperty(navigator, "mediaDevices");
+      }
+    }
+  });
+
+  it("leaves hands-free instead of phantom-listening after bounded recovery fails", async () => {
+    vi.useFakeTimers();
+    const recognitions: FakeRecognition[] = [];
+    const errors: string[] = [];
+    const controller = new BrowserHandsFreeController({
+      recognitionFactory: () => {
+        const recognition = new FakeRecognition(recognitions.length === 0);
+        recognitions.push(recognition);
+        return recognition;
+      },
+      wakePhrases: ["hey hermes"],
+      followUpSeconds: 20,
+      sendText: () => true,
+      onError: (message) => errors.push(message),
+    });
+
+    await expect(controller.arm()).resolves.toBe(true);
+    recognitions[0].result({
+      isFinal: true,
+      transcript: "hey hermes what is the weather",
+    });
+    controller.turnFinished();
+    await Promise.resolve();
+    vi.advanceTimersByTime(12_000);
+
+    expect(controller.isArmed).toBe(false);
+    expect(controller.state).toBe("off");
+    expect(errors).toEqual(["Speech recognition could not resume after playback"]);
+  });
+
+  it("handles wake-plus-text and exact stop locally", async () => {
+    vi.useFakeTimers();
+    const recognitions: FakeRecognition[] = [];
+    const sendText = vi.fn(() => true);
+    const controller = new BrowserHandsFreeController({
+      recognitionFactory: () => {
+        const recognition = new FakeRecognition();
+        recognitions.push(recognition);
+        return recognition;
+      },
+      wakePhrases: ["hey hermes"],
+      sendText,
+    });
+
+    await expect(controller.arm()).resolves.toBe(true);
+    recognitions[0].result({ isFinal: true, transcript: "hey hermes, stop." });
+    expect(sendText).not.toHaveBeenCalled();
+    expect(controller.state).toBe("wake_ready");
+    vi.advanceTimersByTime(50);
+
+    recognitions.at(-1)?.result({ isFinal: true, transcript: "hey hermes what time is it" });
+    expect(sendText).toHaveBeenCalledWith("what time is it");
+    controller.disarm();
+  });
+
+  it("uses only changed final results from a cumulative recognition event", async () => {
+    const recognition = new FakeRecognition();
+    const sendText = vi.fn(() => true);
+    const controller = new BrowserHandsFreeController({
+      recognitionFactory: () => recognition,
+      wakePhrases: ["hey hermes"],
+      sendText,
+    });
+
+    await expect(controller.arm()).resolves.toBe(true);
+    recognition.onresult?.({
+      resultIndex: 0,
+      results: [{ isFinal: true, 0: { transcript: "hey hermes" } }],
+    });
+    recognition.onresult?.({
+      resultIndex: 1,
+      results: [
+        { isFinal: true, 0: { transcript: "hey hermes" } },
+        { isFinal: true, 0: { transcript: "what is the weather" } },
+      ],
+    });
+
+    expect(sendText).toHaveBeenCalledWith("what is the weather");
+    expect(sendText).toHaveBeenCalledTimes(1);
+    controller.disarm();
+  });
+
+  it("cancels initial and follow-up capture on an exact spoken stop", async () => {
+    vi.useFakeTimers();
+    const recognitions: FakeRecognition[] = [];
+    const sendText = vi.fn(() => true);
+    const controller = new BrowserHandsFreeController({
+      recognitionFactory: () => {
+        const recognition = new FakeRecognition();
+        recognitions.push(recognition);
+        return recognition;
+      },
+      wakePhrases: ["hey hermes"],
+      sendText,
+    });
+
+    await expect(controller.arm()).resolves.toBe(true);
+    recognitions[0].result({ isFinal: true, transcript: "hey hermes" });
+    recognitions[0].result({ isFinal: true, transcript: "stop!" });
+    expect(sendText).not.toHaveBeenCalled();
+    expect(controller.state).toBe("wake_ready");
+    vi.advanceTimersByTime(50);
+
+    recognitions.at(-1)?.result({ isFinal: true, transcript: "hey hermes what is the weather" });
+    expect(sendText).toHaveBeenCalledTimes(1);
+    controller.turnFinished();
+    await Promise.resolve();
+    recognitions.at(-1)?.result({ isFinal: true, transcript: "STOP." });
+    expect(sendText).toHaveBeenCalledTimes(1);
+    expect(controller.state).toBe("wake_ready");
+    controller.disarm();
+  });
+
+  it("returns to wake detection after a silent bounded capture", async () => {
+    vi.useFakeTimers();
+    const recognitions: FakeRecognition[] = [];
+    const controller = new BrowserHandsFreeController({
+      recognitionFactory: () => {
+        const recognition = new FakeRecognition();
+        recognitions.push(recognition);
+        return recognition;
+      },
+      wakePhrases: ["hey hermes"],
+      wakeListenSeconds: 1,
+      sendText: () => true,
+    });
+
+    await expect(controller.arm()).resolves.toBe(true);
+    recognitions[0].result({ isFinal: true, transcript: "hey hermes" });
+    vi.advanceTimersByTime(1000);
+    expect(controller.state).toBe("wake_ready");
+    controller.disarm();
+  });
+
+  it("disarms on a recognition permission failure", async () => {
+    const recognition = new FakeRecognition();
+    const errors: string[] = [];
+    const controller = new BrowserHandsFreeController({
+      recognitionFactory: () => recognition,
+      wakePhrases: ["hey hermes"],
+      sendText: () => true,
+      onError: (message) => errors.push(message),
+    });
+
+    await expect(controller.arm()).resolves.toBe(true);
+    recognition.onerror?.({ error: "not-allowed" });
+    expect(controller.isArmed).toBe(false);
+    expect(controller.state).toBe("off");
+    expect(errors).toEqual(["Microphone or speech recognition is unavailable"]);
+  });
+
+  it("ignores a late result or error from a previous armed generation", async () => {
+    const recognitions: FakeRecognition[] = [];
+    const sendText = vi.fn(() => true);
+    const controller = new BrowserHandsFreeController({
+      recognitionFactory: () => {
+        const recognition = new FakeRecognition();
+        recognitions.push(recognition);
+        return recognition;
+      },
+      wakePhrases: ["hey hermes"],
+      sendText,
+    });
+
+    await expect(controller.arm()).resolves.toBe(true);
+    const oldResult = recognitions[0].onresult;
+    const oldError = recognitions[0].onerror;
+    controller.disarm();
+    await expect(controller.arm()).resolves.toBe(true);
+
+    oldResult?.({
+      resultIndex: 0,
+      results: [{ isFinal: true, 0: { transcript: "hey hermes ask something" } }],
+    });
+    oldError?.({ error: "not-allowed" });
+    expect(sendText).not.toHaveBeenCalled();
+    expect(controller.isArmed).toBe(true);
+    controller.disarm();
+  });
 });
 
 describe("PcmAudioPlayer", () => {
   it("converts signed 16-bit little-endian chunks into scheduled browser audio", async () => {
     const source = {
       buffer: null as AudioBufferLike | null,
+      onended: null as (() => void) | null,
       connect: vi.fn(),
       start: vi.fn(),
       stop: vi.fn(),
@@ -124,5 +507,90 @@ describe("PcmAudioPlayer", () => {
 
     player.abort("turn-1");
     expect(source.stop).toHaveBeenCalledOnce();
+  });
+
+  it("reports playback completion only after scheduled sources end", () => {
+    const source = {
+      buffer: null as AudioBufferLike | null,
+      onended: null as (() => void) | null,
+      connect: vi.fn(),
+      start: vi.fn(),
+      stop: vi.fn(),
+    };
+    const buffer = { duration: 1, copyToChannel: vi.fn() };
+    const context = {
+      state: "running" as const,
+      currentTime: 0,
+      destination: {},
+      resume: vi.fn(async () => {}),
+      createBuffer: vi.fn(() => buffer),
+      createBufferSource: vi.fn(() => source),
+    };
+    const finished = vi.fn();
+    const player = new PcmAudioPlayer({
+      audioContextFactory: () => context,
+      onPlaybackFinished: finished,
+    });
+
+    player.start({
+      type: "audio_start",
+      schema: 1,
+      turn_id: "turn-2",
+      sample_rate: 24000,
+      channels: 1,
+      sample_width: 2,
+    });
+    player.append(new Uint8Array([1, 2]).buffer);
+    player.end("turn-2");
+    expect(finished).not.toHaveBeenCalled();
+    source.onended?.();
+    expect(finished).toHaveBeenCalledWith("turn-2");
+  });
+
+  it("waits for every scheduled source before reporting playback completion", () => {
+    const sources = [0, 1].map(() => ({
+      buffer: null as AudioBufferLike | null,
+      onended: null as (() => void) | null,
+      connect: vi.fn(),
+      start: vi.fn(),
+      stop: vi.fn(),
+    }));
+    const createdSources: typeof sources = [];
+    const buffer = { duration: 1, copyToChannel: vi.fn() };
+    const context = {
+      state: "running" as const,
+      currentTime: 0,
+      destination: {},
+      resume: vi.fn(async () => {}),
+      createBuffer: vi.fn(() => buffer),
+      createBufferSource: vi.fn(() => {
+        const source = sources.shift() as typeof sources[number];
+        createdSources.push(source);
+        return source;
+      }),
+    };
+    const finished = vi.fn();
+    const player = new PcmAudioPlayer({
+      audioContextFactory: () => context,
+      onPlaybackFinished: finished,
+    });
+
+    player.start({
+      type: "audio_start",
+      schema: 1,
+      turn_id: "turn-3",
+      sample_rate: 24000,
+      channels: 1,
+      sample_width: 2,
+    });
+    player.append(new Uint8Array([1, 2]).buffer);
+    player.append(new Uint8Array([3, 4]).buffer);
+    player.end("turn-3");
+
+    expect(finished).not.toHaveBeenCalled();
+    createdSources[0].onended?.();
+    expect(finished).not.toHaveBeenCalled();
+    createdSources[1].onended?.();
+    expect(finished).toHaveBeenCalledWith("turn-3");
   });
 });

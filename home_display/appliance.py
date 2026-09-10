@@ -47,12 +47,14 @@ from timing import (
     visible_text,
 )
 
-from .server import DisplayServer
+from .server import DisplayServer, load_tls_context
 from .state import (
     DisplayCapabilities,
     DisplayPrompt,
     DisplayState,
     DisplayStatePublisher,
+    MAX_DISPLAY_WAKE_PHRASE_LENGTH,
+    MAX_DISPLAY_WAKE_PHRASES,
     PromptOption,
 )
 
@@ -320,6 +322,36 @@ class Appliance:
 
     # ---- display -------------------------------------------------------
 
+    def _browser_capabilities(self) -> DisplayCapabilities:
+        """Return browser-safe, non-secret capabilities for the active session."""
+        raw_phrases = getattr(self._active_profile, "wake_phrases", ()) or ()
+        phrases = tuple(
+            phrase.strip()
+            for phrase in raw_phrases
+            if isinstance(phrase, str) and phrase.strip()
+        )
+        valid_phrases = (
+            0 < len(phrases) <= MAX_DISPLAY_WAKE_PHRASES
+            and len({phrase.casefold() for phrase in phrases}) == len(phrases)
+            and all(len(phrase) <= MAX_DISPLAY_WAKE_PHRASE_LENGTH for phrase in phrases)
+        )
+        if not valid_phrases:
+            return DisplayCapabilities(features=("browser_voice",))
+
+        def configured_seconds(name: str) -> float:
+            try:
+                seconds = float(getattr(self.args, name, 8.0))
+            except (TypeError, ValueError, OverflowError):
+                return 8.0
+            return seconds if math.isfinite(seconds) and seconds > 0 else 8.0
+
+        return DisplayCapabilities(
+            features=("browser_voice", "browser_hands_free"),
+            wake_phrases=phrases,
+            wake_listen_seconds=configured_seconds("wake_listen_timeout"),
+            wake_followup_seconds=configured_seconds("wake_followup_seconds"),
+        )
+
     def _publish(
         self,
         state: DisplayState,
@@ -333,8 +365,8 @@ class Appliance:
         status = status_text if status_text is not None else STATUS_TEXT.get(state)
         account = self._active_profile.display_name if self._active_profile else None
         capabilities = (
-            DisplayCapabilities(features=("browser_voice",))
-            if getattr(self.args, "browser_voice", False)
+            self._browser_capabilities()
+            if getattr(self.args, "browser_voice", False) and self._connected
             else None
         )
         payload = (state, self._response_text, status, account, capabilities)
@@ -472,6 +504,12 @@ class Appliance:
                     await server.send_audio_abort(turn_id=turn_id, reason=reason)
                 audio_active = False
 
+        def publish_terminal_error(status_text: str) -> None:
+            self._connected = False
+            self._publish("error", response_text="", status_text=status_text)
+            self._set_listening()
+            self._request_reconnect()
+
         try:
             events = self._session.send_turn(text, stt_source="browser")
             turn_id = str(
@@ -482,7 +520,7 @@ class Appliance:
                 kind = event.get("type")
                 if kind == "text_delta":
                     response += str(event.get("text") or "")
-                    publish_response()
+                    publish_response("speaking" if audio_active else "thinking")
                 elif kind == "text_replace":
                     response = str(event.get("text") or "")
                     publish_response("speaking" if audio_active else "thinking")
@@ -565,15 +603,12 @@ class Appliance:
                     audio_active = False
                 elif kind in ("audio_abort", "turn_interrupted"):
                     await abort_audio(str(event.get("error") or event.get("reason") or kind))
-                    self._publish("idle", response_text="")
+                    publish_terminal_error("Response interrupted")
                     return False
                 elif kind == "error":
-                    await abort_audio(str(event.get("error") or "Hermes error"))
-                    self._publish(
-                        "error",
-                        response_text="",
-                        status_text=str(event.get("error") or "Hermes error"),
-                    )
+                    error_text = str(event.get("error") or "Hermes error")
+                    await abort_audio(error_text)
+                    publish_terminal_error(error_text)
                     return False
                 elif kind == "turn_end":
                     if audio_active:
@@ -584,7 +619,7 @@ class Appliance:
                     break
             if not completed:
                 await abort_audio("turn ended without a reply")
-                self._publish("error", response_text="", status_text="Turn ended without a reply")
+                publish_terminal_error("Turn ended without a reply")
             return completed
         except asyncio.CancelledError:
             await abort_audio("turn cancelled")
@@ -592,12 +627,12 @@ class Appliance:
         except Exception:
             logger.debug("browser voice turn failed", exc_info=True)
             await abort_audio("connection lost")
+            self._connected = False
             self._publish(
                 "disconnected",
                 response_text="",
                 status_text=STATUS_TEXT["disconnected"],
             )
-            self._connected = False
             self._request_reconnect()
             return False
 
@@ -1037,12 +1072,12 @@ class Appliance:
             # Clear the partial reply. A finished answer stays up to be read;
             # half a sentence from a turn the connection killed is not an
             # answer, and must not sit there looking like one.
+            self._connected = False
             self._publish(
                 "disconnected",
                 response_text="",
                 status_text=STATUS_TEXT["disconnected"],
             )
-            self._connected = False
             self._set_listening()
             self._request_reconnect()
             raise RuntimeError("the turn ended without a reply") from error
@@ -1143,11 +1178,11 @@ class Appliance:
                 delay = min(delay * 2, MAX_RECONNECT_DELAY)
                 continue
 
-            delay = self._reconnect_delay
-            self._publish("idle")
             # Only listen while there is somewhere for a turn to go. A wake
             # phrase the unit cannot act on must do nothing at all, not queue.
             self._connected = True
+            delay = self._reconnect_delay
+            self._publish("idle")
             self._set_listening()
             try:
                 await self._reconnect.wait()
@@ -1257,9 +1292,24 @@ class Appliance:
 
     # ---- lifecycle -----------------------------------------------------
 
+    def _display_tls_context(self):
+        certificate = getattr(self.args, "display_tls_cert", None)
+        private_key = getattr(self.args, "display_tls_key", None)
+        if certificate is None and private_key is None:
+            return None
+        if not getattr(self.args, "browser_voice", False):
+            raise RuntimeError(
+                "display TLS requires --browser-voice; the physical display uses plain ws"
+            )
+        try:
+            return load_tls_context(certificate, private_key)
+        except ValueError as error:
+            raise RuntimeError(str(error)) from error
+
     def _build(self) -> None:
         if self._session is None:
             self._session = self._create_session_for_profile(self._active_profile)
+        tls_context = self._display_tls_context()
         if getattr(self.args, "browser_voice", False):
             if self._server is None:
                 self._server = DisplayServer(
@@ -1270,6 +1320,7 @@ class Appliance:
                     allow_remote=getattr(self.args, "display_remote", False),
                     on_action=self._on_action,
                     on_voice_turn=self._on_browser_voice_turn,
+                    ssl_context=tls_context,
                 )
             return
         if self._player is None:
@@ -1639,6 +1690,20 @@ def build_arg_parser(argv: list[str] | None = None) -> argparse.ArgumentParser:
         "--display-remote",
         action="store_true",
         help="allow the display server to bind beyond loopback for a LAN appliance",
+    )
+    parser.add_argument(
+        "--display-tls-cert",
+        type=Path,
+        default=None,
+        metavar="PATH",
+        help="PEM certificate for an HTTPS browser display",
+    )
+    parser.add_argument(
+        "--display-tls-key",
+        type=Path,
+        default=None,
+        metavar="PATH",
+        help="PEM private key for an HTTPS browser display",
     )
     parser.add_argument(
         "--browser-voice",

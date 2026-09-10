@@ -75,6 +75,15 @@ describe("StateSurface", () => {
     expect(response).toHaveTextContent("one stable block");
   });
 
+  it("keeps the completed response readable after playback returns to idle", () => {
+    const { container } = render(StateSurface, {
+      props: { snapshot: snapshot("idle", "The final answer"), connectionState: "connected" },
+    });
+
+    expect(container.querySelector("[data-response-text]")).toHaveTextContent("The final answer");
+    expect(container.querySelector("[aria-live=polite]")).not.toBeNull();
+  });
+
   it("automatically advances an overflowing response viewport", async () => {
     const { container, rerender } = render(StateSurface, {
       props: { snapshot: snapshot("speaking", "A long response"), connectionState: "connected" },
@@ -210,6 +219,27 @@ describe("StateSurface", () => {
 
     expect(screen.getByText("The response is catching up")).toBeInTheDocument();
     expect(screen.queryByText("Still working — please wait")).not.toBeInTheDocument();
+  });
+
+  it("exposes prompt details to the semantic mirror", () => {
+    const prompt = {
+      kind: "notice",
+      title: "Setup needed",
+      body: "Choose a home channel.",
+      options: [{ id: "yes", label: "Set home" }],
+      action_id: "sethome",
+      timeout_seconds: null,
+    };
+    const { container } = render(StateSurface, {
+      props: {
+        snapshot: { ...snapshot("prompt"), prompt },
+        connectionState: "connected",
+      },
+    });
+
+    expect(container.querySelector(".prompt-summary")).toHaveTextContent(
+      "Setup needed Choose a home channel. Set home",
+    );
   });
 });
 

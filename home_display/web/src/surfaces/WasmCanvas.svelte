@@ -40,6 +40,7 @@
     class="wasm-display-canvas"
     data-display-canvas
     aria-label="Hermes home display"
+    aria-hidden="true"
   ></canvas>
   {#if visibleError}
     <div class="wasm-canvas-error" data-canvas-error role="alert">{visibleError}</div>

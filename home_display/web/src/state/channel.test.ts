@@ -8,9 +8,14 @@ class FakeSocket implements WebSocketLike {
   onerror: (() => void) | null = null;
   onclose: (() => void) | null = null;
   closed = false;
+  sent: string[] = [];
 
   close(): void {
     this.closed = true;
+  }
+
+  send(data: string): void {
+    this.sent.push(data);
   }
 
   open(): void {
@@ -38,6 +43,31 @@ const rawSnapshot = (sequence: number) => JSON.stringify({
 
 describe("StateChannel", () => {
   afterEach(() => vi.useRealTimers());
+
+  it("does not send browser voice before the socket has hydrated", () => {
+    const socket = new FakeSocket();
+    const channel = new StateChannel(
+      "ws://display.test/state",
+      () => {},
+      () => {},
+      () => {},
+      () => socket,
+    );
+
+    channel.start();
+    socket.open();
+    expect(channel.sendVoiceTurn("not ready yet")).toBe(false);
+    expect(socket.sent).toEqual([]);
+
+    socket.message(rawSnapshot(1));
+    expect(channel.sendVoiceTurn("ready now")).toBe(true);
+    expect(JSON.parse(socket.sent[0])).toMatchObject({
+      type: "voice_turn",
+      schema: 1,
+      text: "ready now",
+    });
+    channel.stop();
+  });
 
   it("emits only newer snapshots and resets the sequence on a new socket", () => {
     const sockets: FakeSocket[] = [];

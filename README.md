@@ -114,8 +114,8 @@ not appliance runtime dependencies. Follow the
 to validate the local fake-state display after building.
 
 The display shell now renders the shared ESP32 C/LVGL surface in the browser,
-including state snapshots and prompt touch actions. Photo playback,
-YouTube/video, browser voice, and audio remain part of the HOME-16 work.
+including state snapshots, prompt touch actions, browser voice, and streamed
+audio. Photo playback and YouTube/video remain part of the HOME-16 work.
 
 ## Upgrade and uninstall
 
@@ -600,19 +600,35 @@ is how the real loop gets validated — including
 `scripts/fake_relay.py`, a stand-in server that lets the whole appliance be
 tested with no Hermes at all.
 
-For an iPad kiosk, pass `--browser-voice` with the remote display options. The
-served page owns microphone permission, push-to-talk recognition, and speaker
-playback; ops receives only the recognized turn text and does not open a local
-audio device. The browser reconnects to the same-origin state channel after an
-ops/container restart:
+For an iPad Safari browser tab, pass `--browser-voice` with the remote display
+options. The served page owns microphone permission, browser speech recognition,
+and speaker playback; ops receives only the recognized turn text and does not
+open a local audio device. After the display is connected and idle, tap
+**Enable hands-free** to grant permission and listen for the active profile's
+configured wake phrase. The browser discards ambient speech, strips the wake
+phrase before sending a question, opens one eight-second wake-free follow-up
+window after a completed answer, and treats exactly `stop` as a silent local
+cancel. A disconnect, server error, or recognition failure turns hands-free
+off; it never replays an uncertain transcript. The browser reconnects to the
+same-origin state channel after an ops/container restart:
 
 ```bash
-hermes-relay-home --browser-voice --display-host 192.168.1.20 --display-remote --display-port 8765
+hermes-relay-home --browser-voice \
+  --display-host 192.168.1.20 --display-remote --display-port 8765 \
+  --display-tls-cert ~/.hermes-relay-tui/certs/display-cert.pem \
+  --display-tls-key ~/.hermes-relay-tui/certs/display-key.pem
 ```
 
 Replace `192.168.1.20` with the ops machine's LAN address; the browser must
 open the same address so the display server's same-origin check accepts the
-WebSocket and action requests.
+WebSocket and action requests. Safari speech recognition requires a secure
+origin, so the certificate must include that LAN IP as an IP subject-alternate
+name and its local CA must be trusted on the iPad. The complete local
+certificate and iPad trust procedure is in the [HOME-09 smoke procedure](docs/testing/home-09-appliance-loop.md).
+The private key stays on the ops Mac; transfer only the public CA certificate
+to the iPad. For this story, validate the page in that Safari tab under Guided
+Access. Home Screen/PWA packaging is not included until it has passed a
+physical iPad gate.
 
 **A plain install does not include this.** `pip install hermes-relay-tui` and
 `brew install hermes-relay-tui` give you the typed client and the

@@ -13,6 +13,7 @@ import io
 import threading
 import types
 import wave
+from dataclasses import replace
 
 import pytest
 
@@ -206,6 +207,7 @@ def _args(**overrides):
         "audio_output_device": None,
         "mic_input_device": None,
         "wake_listen_timeout": 8.0,
+        "wake_followup_seconds": 6.0,
         "wake_barge_in": False,
         "browser_voice": False,
     }
@@ -413,13 +415,90 @@ async def test_browser_voice_turn_uses_ops_session_and_streams_pcm_without_local
             ("chunk", b"\x01\x02"),
             ("end", {"turn_id": server.audio[0][1]["turn_id"]}),
         ]
-        assert publisher.capabilities[-1].features == ("browser_voice",)
+        assert publisher.capabilities[-1].features == ("browser_voice", "browser_hands_free")
+        assert publisher.capabilities[-1].wake_phrases == ("hey hermes",)
+        assert publisher.capabilities[-1].wake_listen_seconds == 8.0
+        assert publisher.capabilities[-1].wake_followup_seconds == 6.0
         assert publisher.history[-1][0] == "idle"
     finally:
         appliance._stopping.set()
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await task
+
+
+@pytest.mark.asyncio
+async def test_browser_voice_turn_keeps_speaking_state_for_late_text_delta():
+    publisher = RecordingPublisher()
+    appliance = Appliance(
+        _args(browser_voice=True, wake_enabled=False),
+        session=FakeSession(
+            [
+                {"type": "audio_start", "sample_rate": 24000, "channels": 1, "sample_width": 2},
+                {"type": "text_delta", "text": "A late caption."},
+                {"type": "audio_chunk", "data": b"\x01\x02"},
+                {"type": "audio_end"},
+                {"type": "turn_end"},
+            ]
+        ),
+        server=FakeServer(),
+        publisher=publisher,
+    )
+    appliance._connected = True
+
+    assert await appliance._run_browser_turn("test late caption") is True
+    assert publisher.sequence == ["thinking", "speaking", "speaking", "idle"]
+    assert publisher.history[-1][1] == "A late caption."
+
+
+@pytest.mark.asyncio
+async def test_browser_hands_free_capability_is_safe_for_invalid_profile_metadata():
+    publisher = RecordingPublisher()
+    appliance = Appliance(
+        _args(
+            browser_voice=True,
+            wake_listen_timeout=0,
+            wake_followup_seconds=float("nan"),
+        ),
+        session=FakeSession(),
+        publisher=publisher,
+        server=FakeServer(),
+    )
+
+    appliance._connected = True
+    appliance._publish("idle")
+    capabilities = publisher.capabilities[-1]
+    assert capabilities.features == ("browser_voice", "browser_hands_free")
+    assert capabilities.wake_listen_seconds == 8.0
+    assert capabilities.wake_followup_seconds == 8.0
+
+    appliance._active_profile = replace(
+        appliance._active_profile,
+        wake_phrases=tuple(f"phrase {index}" for index in range(9)),
+    )
+    appliance._publish("thinking")
+    assert publisher.capabilities[-1].features == ("browser_voice",)
+
+    appliance._connected = False
+    appliance._publish("disconnected")
+    assert publisher.capabilities[-1] is None
+
+
+@pytest.mark.asyncio
+async def test_interrupted_browser_turn_does_not_return_to_follow_up_ready():
+    publisher = RecordingPublisher()
+    appliance = Appliance(
+        _args(browser_voice=True),
+        session=FakeSession([{"type": "turn_interrupted"}]),
+        publisher=publisher,
+        server=FakeServer(),
+    )
+    appliance._connected = True
+
+    assert await appliance._run_browser_turn("interrupt this") is False
+    assert publisher.history[-1][0] == "error"
+    assert publisher.history[-1][2] == "Response interrupted"
+    assert publisher.capabilities[-1] is None
 
 
 @pytest.mark.asyncio
@@ -1168,6 +1247,39 @@ def test_display_remote_bind_is_opt_in():
     assert remote.display_host == "192.168.1.20"
     assert remote.display_port == 8765
     assert remote.display_remote is True
+
+
+def test_display_tls_options_are_optional_paths():
+    from home_display import appliance
+
+    defaults = appliance.build_arg_parser([]).parse_args([])
+    tls = appliance.build_arg_parser([]).parse_args(
+        [
+            "--display-tls-cert",
+            "cert.pem",
+            "--display-tls-key",
+            "key.pem",
+        ]
+    )
+
+    assert defaults.display_tls_cert is None
+    assert defaults.display_tls_key is None
+    assert str(tls.display_tls_cert) == "cert.pem"
+    assert str(tls.display_tls_key) == "key.pem"
+
+
+def test_display_tls_is_restricted_to_browser_voice(tmp_path):
+    from home_display import appliance
+
+    relay, _state = make_appliance(
+        args=_args(
+            display_tls_cert=tmp_path / "cert.pem",
+            display_tls_key=tmp_path / "key.pem",
+        )
+    )
+
+    with pytest.raises(RuntimeError, match="requires --browser-voice"):
+        relay._build()
 
 
 @pytest.mark.asyncio

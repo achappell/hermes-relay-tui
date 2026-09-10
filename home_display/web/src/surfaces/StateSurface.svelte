@@ -6,6 +6,7 @@
   export let snapshot: DisplaySnapshot;
   export let connectionState: ConnectionState;
   export let protocolError: string | null = null;
+  export let accessibleOnly = false;
 
   const labels: Record<DisplayState, string> = {
     idle: "Ready",
@@ -31,7 +32,10 @@
       ? snapshot.state
       : "disconnected";
   $: status = protocolError ?? snapshot.status_text ?? fallbackStatus[displayState] ?? null;
-  $: showResponse = protocolError === null && displayState === "speaking" && snapshot.response_text.length > 0;
+  $: showResponse = protocolError === null && snapshot.response_text.length > 0
+    && (displayState === "speaking" || displayState === "idle");
+  let liveMode: "off" | "polite";
+  $: liveMode = displayState === "speaking" ? "off" : "polite";
   // Hermes announces the audio format about two seconds before the first
   // audible sample. Across that gap the unit is genuinely working and
   // genuinely silent, so it gets a sign of life that is visibly not a claim
@@ -112,11 +116,21 @@
   onDestroy(resetResponseScroll);
 </script>
 
-<main class:has-response={showResponse} class="state-surface" data-state={displayState} aria-live="polite">
+<main
+  class:has-response={showResponse}
+  class:accessible-only={accessibleOnly}
+  class="state-surface"
+  data-state={displayState}
+  aria-live={liveMode}
+  aria-atomic="true"
+>
   <div class="ambient-canvas" aria-hidden="true"></div>
 
   <section class="state-overlay" aria-label={labels[displayState]}>
     <p class="state-label">{labels[displayState]}</p>
+    {#if snapshot.account}
+      <p class="account-label">Profile: {snapshot.account}</p>
+    {/if}
     {#if status}
       <p class="status-text">
         {status}{#if working}<span class="working-dot" data-working-dot aria-hidden="true"></span>{/if}
@@ -130,5 +144,16 @@
     >
       <p class="response-text" data-response-text>{showResponse ? snapshot.response_text : ""}</p>
     </div>
+    {#if displayState === "prompt" && snapshot.prompt}
+      <section class="prompt-summary" aria-label={snapshot.prompt.title}>
+        <h2>{snapshot.prompt.title}</h2>
+        <p>{snapshot.prompt.body}</p>
+        <ul>
+          {#each snapshot.prompt.options as option}
+            <li>{option.label}</li>
+          {/each}
+        </ul>
+      </section>
+    {/if}
   </section>
 </main>
