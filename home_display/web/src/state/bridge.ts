@@ -22,6 +22,8 @@ export type ActionTransport = (action: DisplayAction) => Promise<void> | void;
 export type ActionDispatchError = ActionValidationResult | "transport_error";
 export type VoiceTransport = (text: string) => Promise<void> | void;
 
+const DISPLAY_ACTION_TIMEOUT_MS = 10_000;
+
 export interface DisplayBridgeOptions {
   url: string;
   onView: (view: DisplayView) => void;
@@ -43,9 +45,18 @@ export const postDisplayAction: ActionTransport = async (action) => {
     action_id: action.action_id,
     choice: action.choice,
   });
-  const response = await fetch(`/action?${query.toString()}`, { method: "POST" });
-  if (!response.ok) {
-    throw new Error(`display action failed with HTTP ${response.status}`);
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), DISPLAY_ACTION_TIMEOUT_MS);
+  try {
+    const response = await fetch(`/action?${query.toString()}`, {
+      method: "POST",
+      signal: controller.signal,
+    });
+    if (!response.ok) {
+      throw new Error(`display action failed with HTTP ${response.status}`);
+    }
+  } finally {
+    clearTimeout(timeoutId);
   }
 };
 

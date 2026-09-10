@@ -15,3 +15,11 @@
 - source_spec: `_bmad-output/implementation-artifacts/spec-1-3-continue-with-bounded-follow-up-and-exact-stop.md`
   summary: Reconcile generated BMad indexes and the older on-device wake-word story's status and provenance.
   evidence: The dirty generated index omits the existing firmware story, that story remains marked done despite its own unresolved detection notes, and its local-vendor documentation needs a single authoritative provenance/license record. This is historical firmware/planning reconciliation outside Story 1.3.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-web-epic-1-reliable-conversation.md`
+  summary: Add server-side validation for browser actions against the currently published prompt and advertised capability.
+  evidence: `DisplayServer` currently treats `/action` as a same-origin transport callback and does not inspect the publisher's current prompt; the restored App validates actions through `DisplayBridge`, but a direct request can still reach the callback without that reducer gate. Implementing this safely requires a shared server-side action authority and is pre-existing transport behavior outside this DOM restoration.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-web-epic-1-reliable-conversation.md`
+  summary: Run the physical Safari/iPad HTTPS/WSS, permission, audio, and direct-touch gate for the restored DOM kiosk.
+  evidence: The local fake-state and automated browser checks pass, but no physical iPad/Safari session was available in this worktree to verify Guided Access, secure state-channel hydration, microphone permission, audio playback, and touch-button operation on the supported device.

@@ -54,7 +54,10 @@ describe("PromptOverlay", () => {
 
     expect(fetchSpy).toHaveBeenCalledWith(
       "/action?action_id=sethome&choice=yes",
-      { method: "POST" }
+      expect.objectContaining({
+        method: "POST",
+        signal: expect.any(AbortSignal),
+      }),
     );
   });
 
@@ -68,7 +71,10 @@ describe("PromptOverlay", () => {
 
     expect(fetchSpy).toHaveBeenCalledWith(
       "/action?action_id=sethome&choice=no",
-      { method: "POST" }
+      expect.objectContaining({
+        method: "POST",
+        signal: expect.any(AbortSignal),
+      }),
     );
   });
 
@@ -89,6 +95,18 @@ describe("PromptOverlay", () => {
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 
+  it("dismisses only after the bridge accepts the action", async () => {
+    const onAction = vi.fn(async (_action: DisplayAction) => true);
+    const { container } = render(PromptOverlay, {
+      props: { prompt: samplePrompt, onAction },
+    });
+
+    await fireEvent.click(screen.getByText("Set home"));
+
+    expect(container.querySelector(".prompt-overlay")).toBeNull();
+    expect(onAction).toHaveBeenCalledOnce();
+  });
+
   it("keeps the prompt open when the bridge rejects an action", async () => {
     const onAction = vi.fn(async (_action: DisplayAction) => false);
     render(PromptOverlay, {
@@ -98,6 +116,7 @@ describe("PromptOverlay", () => {
     await fireEvent.click(screen.getByText("Set home"));
 
     expect(screen.getByRole("dialog")).toBeInTheDocument();
+    expect(screen.getByRole("alert")).toHaveTextContent("Display action could not be sent");
     expect(onAction).toHaveBeenCalledOnce();
   });
 
@@ -112,7 +131,68 @@ describe("PromptOverlay", () => {
 
     expect(fetchSpy).toHaveBeenCalledWith(
       "/action?action_id=sethome&choice=yes",
-      { method: "POST" }
+      expect.objectContaining({
+        method: "POST",
+        signal: expect.any(AbortSignal),
+      }),
     );
+  });
+
+  it("does not dispatch a timed action after the overlay is unmounted", () => {
+    vi.useFakeTimers();
+    const onAction = vi.fn();
+    const { unmount } = render(PromptOverlay, {
+      props: { prompt: samplePrompt, onAction },
+    });
+
+    unmount();
+    vi.advanceTimersByTime(30000);
+
+    expect(onAction).not.toHaveBeenCalled();
+  });
+
+  it("does not fire an oversized prompt timeout immediately", () => {
+    vi.useFakeTimers();
+    const onAction = vi.fn();
+    const { unmount } = render(PromptOverlay, {
+      props: {
+        prompt: { ...samplePrompt, timeout_seconds: 2_147_483.648 },
+        onAction,
+      },
+    });
+
+    vi.advanceTimersByTime(1);
+
+    expect(onAction).not.toHaveBeenCalled();
+    unmount();
+  });
+
+  it("does not restart the timeout for an identical republished prompt", async () => {
+    vi.useFakeTimers();
+    const onAction = vi.fn();
+    const { rerender, unmount } = render(PromptOverlay, {
+      props: { prompt: samplePrompt, onAction },
+    });
+
+    vi.advanceTimersByTime(29999);
+    await rerender({ prompt: { ...samplePrompt }, onAction });
+    vi.advanceTimersByTime(1);
+
+    expect(onAction).toHaveBeenCalledOnce();
+    unmount();
+  });
+
+  it("shows a safe error when an action transport hangs", async () => {
+    vi.useFakeTimers();
+    const onAction = vi.fn(() => new Promise<boolean>(() => {}));
+    render(PromptOverlay, {
+      props: { prompt: samplePrompt, onAction },
+    });
+
+    await fireEvent.click(screen.getByText("Set home"));
+    await vi.advanceTimersByTimeAsync(10000);
+
+    expect(screen.getByRole("alert")).toHaveTextContent("Display action could not be sent");
+    expect(screen.getByText("Set home")).not.toBeDisabled();
   });
 });
