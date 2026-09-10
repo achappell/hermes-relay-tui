@@ -242,8 +242,8 @@ async def test_app_shell_exposes_connection_state_and_honest_startup_surface():
 
         assert app.query_one(Header) is not None
         assert app.title == "Hermes Relay"
-        assert app.sub_title == "connecting · session s1"
-        assert connection_status_of(app) == "◌ connecting · session s1"
+        assert app.sub_title == "connecting · profile default · session s1"
+        assert connection_status_of(app) == "◌ connecting · profile default · session s1"
         empty_state = app.query_one("#empty-state", Static)
         assert empty_state.display is True
         assert str(empty_state.content) == "Connecting to Hermes…"
@@ -252,8 +252,8 @@ async def test_app_shell_exposes_connection_state_and_honest_startup_surface():
         await pilot.pause()
         await pilot.pause()
 
-        assert app.sub_title == "connected · session s1"
-        assert connection_status_of(app) == "● connected · session s1"
+        assert app.sub_title == "connected · profile default · session s1"
+        assert connection_status_of(app) == "● connected · profile default · session s1"
         assert app.query_one("#connection-status", Static).has_class("-connected")
         assert app.query_one("#voice-status", Static).has_class("-ready")
         assert empty_state.display is False
@@ -266,7 +266,7 @@ async def test_disconnected_surface_is_explicit_and_recoverable():
         await pilot.pause()
 
         connection = app.query_one("#connection-status", Static)
-        assert connection_status_of(app) == "○ disconnected · session s1"
+        assert connection_status_of(app) == "○ disconnected · profile default · session s1"
         assert connection.has_class("-disconnected")
         assert app.query_one("#voice-status", Static).has_class("-disconnected")
         assert "The app remains open; retry when the endpoint recovers." in transcript_of(app)
@@ -2475,8 +2475,8 @@ async def test_reload_command_picks_up_untouched_config_changes(tmp_path):
         await pilot.pause()
 
         assert app.args.turn_timeout == 42
-        assert app.sub_title == "connected · session s2"
-        assert connection_status_of(app) == "● connected · session s2"
+        assert app.sub_title == "connected · profile default · session s2"
+        assert connection_status_of(app) == "● connected · profile default · session s2"
         assert app.show_transcript_details is False
         assert "config reloaded from" in transcript_of(app)
 
@@ -2734,6 +2734,76 @@ async def test_pre_wire_not_ready_failure_is_queued_as_not_sent():
         assert app._last_prompt_status == app_module.PROMPT_NOT_SENT
         assert "prompt kept in queue" in transcript_of(app)
         assert not app._turn_in_flight
+
+
+async def test_invalid_event_is_reported_without_stranding_the_domain_turn():
+    session = FakeSession(
+        events=[
+            {"type": "audio_chunk", "data": b"\x00\x01"},
+            {"type": "turn_end", "turn_id": "never-reached"},
+        ]
+    )
+    app = HermesStreamingApp(args=make_args(), session_factory=lambda: session)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+
+        await app._run_turn("invalid event test")
+
+        assert app.domain.state.turn_active is False
+        assert app.domain.state.phase.value == "error"
+        assert "invalid turn event: audio_not_started" in transcript_of(app)
+        assert "hermes:" not in transcript_of(app)
+
+
+async def test_stream_without_terminal_event_cleans_up_for_the_next_turn():
+    session = FakeSession(events=[{"type": "text_delta", "text": "partial"}])
+    app = HermesStreamingApp(args=make_args(), session_factory=lambda: session)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+
+        await app._run_turn("first turn")
+        assert app.domain.state.turn_active is False
+        assert "turn ended without a completion event" in transcript_of(app)
+
+        app._queued_prompts.clear()
+        session.events = DEFAULT_EVENTS
+        await app._run_turn("second turn")
+
+        assert session.sent_turns == [("first turn", "local"), ("second turn", "local")]
+
+
+async def test_stale_event_is_ignored_before_the_current_turn_is_rendered():
+    session = FakeSession(
+        events=[
+            {"type": "text_delta", "turn_id": "stale", "text": "wrong answer"},
+            {"type": "text_delta", "turn_id": "current", "text": "right answer"},
+            {"type": "turn_end", "turn_id": "current"},
+        ]
+    )
+    session.active_turn_id = "current"
+    app = HermesStreamingApp(args=make_args(), session_factory=lambda: session)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+
+        await app._run_turn("stale event test")
+
+        assert "hermes: right answer" in transcript_of(app)
+        assert "wrong answer" not in transcript_of(app)
+        assert app.domain.state.turn_active is False
+
+
+async def test_connection_loss_event_updates_the_tui_connection_state():
+    session = FakeSession(events=[{"type": "connection_lost"}])
+    app = HermesStreamingApp(args=make_args(), session_factory=lambda: session)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+
+        await app._run_turn("connection loss event")
+
+        assert app.connection_state == app_module.CONNECTION_DISCONNECTED
+        assert app.voice_state == app_module.VOICE_DISCONNECTED
+        assert session.closed is True
+        assert app.domain.state.connection.value == "disconnected"
 
 
 async def test_a_failing_stream_reports_the_error_and_clears_the_flag():
@@ -4293,6 +4363,34 @@ async def test_failed_prompt_write_releases_the_domain_retry_gate():
                 "session_id": "s1",
             }
         )
+        await session.push({"type": "turn_end", "turn_id": "t1"})
+        await session.push(None)
+        await turn
+
+
+async def test_prompt_write_exception_releases_the_domain_retry_gate():
+    class ExplodingPromptSession(QueuedEventsSession):
+        async def send_prompt_response(self, **kwargs):
+            raise ConnectionError("prompt socket closed")
+
+    session = ExplodingPromptSession()
+    app = HermesStreamingApp(args=make_args(), session_factory=lambda: session)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        turn = asyncio.create_task(app._run_turn("answer after a failed write"))
+        await asyncio.sleep(0)
+
+        await session.push(dict(APPROVAL_REQUEST))
+        await pilot.pause()
+        await pilot.press("1")
+        await pilot.pause()
+
+        assert app._pending_prompt is not None
+        assert app._pending_prompt.awaiting_response is False
+        assert app.domain.state.prompt_awaiting is False
+        assert app.domain.state.prompt_rejection == "prompt socket closed"
+        assert "prompt response: prompt socket closed" in transcript_of(app)
+
         await session.push({"type": "turn_end", "turn_id": "t1"})
         await session.push(None)
         await turn
