@@ -13,3 +13,6 @@ __pycache__/
 _bmad/render/
 *.wav
 .pytest_cache/
+/.agents
+/.claude
+/.opencode
