@@ -109,9 +109,10 @@ reconciliation decisions:
 
 BMad artifacts are part of the engineering record. While GitHub Project work
 is paused, [`_bmad-output/implementation-artifacts/surface-coverage-matrix.md`](_bmad-output/implementation-artifacts/surface-coverage-matrix.md)
-is the shared cross-repository coverage and prioritization aid. The Personal
-Vault remains canonical for durable product intent and reconciliation; local
-BMad artifacts remain the delivery record for each repository. See
+is a thin shared cross-repository coverage and dependency index, not a second
+backlog or status system. The Personal Vault remains canonical for durable
+product intent and reconciliation; local BMad artifacts remain the delivery
+record for each repository. See
 [`docs/bmad-upstream.md`](docs/bmad-upstream.md) for the delivery boundary and
 reading order.
 
@@ -134,11 +135,27 @@ reading order.
   their files do not contend. Shared protocol or contract work remains a
   prerequisite when both clients depend on it. Feed durable cross-repository
   discoveries back to the Personal Vault hub.
-- Read the surface coverage matrix before selecting the next story. Treat
-  `Implemented` as surface-level evidence, `In review` as work needing its
-  validation or build gate finished, and `Foundation` as support that does not
-  close the story. Do not create a duplicate matrix or silently close a story
-  in one repository based only on another surface's cell.
+- Surface-specific story maps in `_bmad-output/planning-artifacts/epics.md`
+  define story identities and scope. A story closes only the named surface;
+  `I`, `P`, `E`, `W/K`, and `T` are separate delivery boundaries, with W/K
+  covering both web and iPad deployment and the ESP32 Touch Display owning
+  both its voice and display behavior.
+- The owning repository's story specification, validation record, and local
+  `sprint-status.yaml` are authoritative for delivery status and formal
+  closure. Never infer closure from another surface's implementation or from
+  a matrix row.
+- Read the surface coverage index before selecting the next story. Use it to
+  find applicable surfaces, cross-repository gaps, evidence, and shared
+  prerequisites; then follow the story ID to its owning `epics.md` and story
+  artifact. The index must not duplicate acceptance criteria, formal status,
+  or a task queue.
+- Update the surface coverage index only when surface applicability, evidence,
+  ownership, or a cross-surface dependency changes. Keep it compact: story
+  IDs, owner, evidence/dependency, and links to the authoritative artifacts.
+- After a planning change is merged, run the BMad sprint-planning readiness
+  gate and refresh the local sprint tracker from the surface-specific epics
+  before selecting new implementation work. Preserve the matrix as planning
+  context, not as a replacement for the tracker.
 - The BMad framework under `_bmad/` and local tool integrations under
   `.agents/`, `.claude/`, and `.opencode/` are tooling, not product scope by
   themselves. Rendered workflow/cache output is transient. Include these
@@ -169,8 +186,8 @@ surface reconciliation is completed. Until she explicitly reopens the board:
   prerequisites; then choose the smallest independently verifiable vertical
   slice. Keep one active slice per repository/workstream.
 - Use local `sprint-status.yaml` and story artifacts to record delivery state.
-  The matrix records cross-surface evidence, not formal closure in another
-  repository and not a replacement task queue.
+  The surface coverage index records cross-surface evidence and dependencies,
+  not formal closure in another repository and not a replacement task queue.
 - Do not use this pause to create a competing backlog in `docs/plans/` or
   `.hermes/plans/`; select from the existing BMad epics/stories and record any
   prioritization decision in the appropriate local implementation artifact.
