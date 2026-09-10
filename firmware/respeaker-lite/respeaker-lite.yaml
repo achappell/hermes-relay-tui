@@ -62,20 +62,6 @@ esphome:
     - priority: -200  # after the capture buffer is allocated above
       then:
         - lambda: pcm_capture::start();
-    # TEMPORARY (story 3 diagnostic): mww_shape logs once per model, at
-    # first load, which happens too early (~1-2s post-boot) to reliably
-    # catch before `esphome logs` finishes attaching to the serial port.
-    # Force a fresh, guaranteed-observable reload well after logs are
-    # attached by disabling then re-enabling both wake-word models.
-    - priority: -201
-      then:
-        - delay: 5s
-        - micro_wake_word.disable_model: hey_jarvis
-        - micro_wake_word.disable_model: okay_nabu
-        - delay: 500ms
-        - micro_wake_word.enable_model: hey_jarvis
-        - micro_wake_word.enable_model: okay_nabu
-
 esp32:
   board: seeed_xiao_esp32s3
   variant: esp32s3
@@ -313,15 +299,31 @@ interval:
           ESP_LOGI("mww_diag", "mww is_running: %s, vad_state: %s",
                    id(mww).is_running() ? "true" : "false",
                    id(mww).get_vad_state() ? "true" : "false");
-  # Training-data capture (session 16): serial-dump safety test, NOT the
-  # WiFi upload path (pcm_capture::upload_and_restart, still defined in
-  # pcm_capture.h but not called here). Polls a cheap already-dumped guard
-  # every 200ms and fires exactly once, no re-arm -- see pcm_capture.h's
-  # dump_over_serial() for why this is deliberately small and one-shot.
-  - interval: 200ms
-    then:
-      - lambda: |-
-          pcm_capture::dump_over_serial();
+          // Story 5, discovered live during this story's hardware smoke
+          // test on a marginal-WiFi-signal device: mww can stop (API
+          // disconnect churn, task starvation) with no crash marker and
+          // nothing else re-arms it. A self-heal keeps the wake path
+          // usable in that environment instead of requiring a manual
+          // reboot every few minutes. This does not address the
+          // underlying instability (still suspected weak-signal-driven,
+          // unconfirmed) -- it only keeps wake detection available while
+          // that's investigated separately.
+          if (!id(mww).is_running()) {
+            ESP_LOGW("mww_diag", "mww stopped -- restarting");
+            id(mww).start();
+          }
+  # Story 5: disabled the story-3 serial-dump diagnostic wiring that used
+  # to run here (pcm_capture::dump_over_serial(), still defined in
+  # pcm_capture.h but no longer called). MAX_DUMPS=15 full ~256KB captures
+  # base64-encoded over a 115200 baud serial link saturates the main loop
+  # for several minutes on every boot -- starving WiFi/API and making mww
+  # appear to stop (task starvation, not a crash). Discovered live during
+  # this story's hardware smoke test: WiFi/API dropped and mww is_running
+  # went false a couple minutes after every boot with no crash marker,
+  # exactly matching this dump's duration. Story 3's own serial-dump
+  # tooling (tools/collect_serial_dumps.py) is unaffected -- it drives this
+  # same dump_over_serial() function directly when needed, not via this
+  # always-on interval.
   # Story 5: ends the VAD-gated wake capture window on debounced silence.
   # 100ms keeps the end-of-utterance round-trip snappy without adding real
   # load -- this is a cheap boolean check, a no-op whenever no wake capture

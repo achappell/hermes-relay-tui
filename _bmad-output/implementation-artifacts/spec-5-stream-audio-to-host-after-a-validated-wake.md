@@ -55,6 +55,96 @@ context:
 
 ## Implementation Notes
 
+### Live hardware smoke test (2026-09-10)
+
+Ran the live smoke test against a real Puck. Found and fixed three real,
+pre-existing firmware defects along the way -- none introduced by this
+story's own diff, but none had ever been exercised together before,
+because story 5 is the first thing that actually drives the Puck's WiFi
+API log connection, `micro_wake_word`, and a real outbound HTTP upload
+concurrently for more than a few seconds:
+
+1. **A leftover story-3 diagnostic was still wired and firing on every
+   boot.** `respeaker-lite.yaml` had a 200ms `interval:` unconditionally
+   calling `pcm_capture::dump_over_serial()` -- up to 15 full ~256KB
+   captures, base64-encoded, over a 115200 baud serial link. That
+   saturates the main loop for several minutes after every boot, starving
+   WiFi/API and making `micro_wake_word` appear to silently stop with no
+   crash marker. Removed the interval wiring (the function itself stays
+   defined, unused, as evidence -- see `pcm_capture.h`).
+2. **`micro_wake_word` had no self-recovery.** Once stopped (by the above,
+   or by ordinary WiFi/API churn on a weak signal), nothing ever called
+   `micro_wake_word.start` again -- the device needed a manual reboot.
+   Added a lightweight watchdog to the existing 2s diagnostic interval:
+   if `is_running()` is false, log a warning and call `id(mww).start()`.
+   This does not fix the underlying instability; it keeps wake detection
+   available while that instability is a known, separate condition (see
+   below).
+3. **ESP-IDF's `esp_http_client_write()` aborts the whole POST the instant
+   a single `write()` call inside the body-send loop returns `<=0` -- it
+   never retries that write** (`http_request_idf.cpp:139-153`, upstream
+   ESPHome code, not this repo's). On this device's actual WiFi signal
+   (observed -89 to -90 dB throughout this session), a 16KB chunk had a
+   real chance of a write stalling mid-transfer. A live `tcpdump` capture
+   confirmed the mechanism directly: TCP handshake completes normally, a
+   small partial write lands and is ACKed, then silence -- the next
+   `write()` call fails outright with no retry, matching the device's own
+   `ESP_FAIL` log. Reduced `UPLOAD_CHUNK_BYTES` from 16000 to 2000 in both
+   `pcm_capture.h` and `puck_bridge/receiver.py` (the Python side only
+   uses it as a log hint, not a protocol assumption) so a single write has
+   far less time to survive a hiccup before completing. This measurably
+   improved reliability (most chunks now succeed) but did not eliminate
+   stalls on longer transfers -- see below.
+
+**What was proven on real hardware, with direct evidence:**
+- Wake detection: `Hey Jarvis` and `Okay Nabu` both fire reliably at 0.99+
+  sliding-average / 1.00 max probability.
+- The VAD-gated capture correctly starts on `on_wake_word_detected` and
+  ends cleanly on debounced VAD silence (`wake capture ended on VAD
+  silence (N bytes)`), not a fixed timer.
+- The chunked upload transport works: a short capture (8840 bytes, 5
+  chunks) completed in full (`Uploaded wake capture 1 (8840 bytes, 5
+  chunks)`).
+- The entire downstream pipeline works when a capture completes: that
+  same 5-chunk capture reached `puck_bridge/receiver.py`, converted to a
+  WAV, and was processed by `faster-whisper` successfully (empty
+  transcript only because the captured audio was itself extremely short
+  -- 69ms, essentially a noise blip, not real speech).
+
+**What remains unverified:** a full round-trip Hermes turn from a real
+spoken utterance. Every capture large enough to plausibly contain real
+speech (hundreds of chunks, matching several seconds of audio -- the
+device's room was not fully silent, so the VAD's 800ms silence-debounce
+kept extending capture windows well past the literal utterance) stalled
+partway through upload and was evicted by the receiver's TTL cleanup
+before completing. This is not a code gap surfaced by this session's
+evidence -- it is the device's current physical WiFi signal strength,
+independently confirmed by the `tcpdump` trace above and by the fact that
+short captures *do* complete reliably on the same link. The device could
+not be physically relocated closer to the AP during this session.
+
+**Recommendation:** re-run the live smoke test once the Puck can be
+positioned with a stronger WiFi signal (closer to the AP, or with
+improved coverage at its current location). Based on everything proven
+above, no further code changes are expected to be needed for that retest
+to succeed -- but this remains open, unverified evidence, not a
+completed acceptance criterion.
+
+**One additional defect found live, not yet fixed:** `puck_bridge/
+server.py`'s `build_session_args()` (added by the fix-round patch for
+finding #5 below) only defaults `session_args.session_id` when it is
+falsy -- but `config.build_arg_parser()`'s own profile-config loading
+already populates a non-empty `session_id` from the selected relay
+profile's YAML (e.g. `amanda-kiosk`) before that check ever runs. In
+practice this means the bridge silently reuses the *same* session id as
+the TUI's own normal use of that profile, defeating the "own distinct
+Hermes session" intent the code comment describes, and risking a real
+session collision if the TUI is active on the same profile at the same
+time. Recorded in `deferred-work.md` rather than fixed here, since it
+needs a design decision (an explicit `--session-id` flag default, or a
+suffix applied unconditionally) rather than a one-line correction, and
+this session's remaining time went to the hardware smoke test itself.
+
 ## Review Triage Log
 
 Review pass 1 (blind-hunter, edge-case-hunter, verification-gap; diff = baseline_commit..pre-fix tree):
@@ -94,3 +184,18 @@ Findings 1, 6, 7, 8, 10, 11, 12, 13, 14, 17, 19 were rejected/deferred per the t
 
 **Manual checks (if no CLI):**
 - Live hardware smoke: speak "hey jarvis" near the physical Puck; confirm one upload, a correct transcript, a completed Hermes turn, and an audible response on the host speakers -- this is the real acceptance evidence for the hardware-dependent tasks, not test-suite passage alone.
+
+**Live hardware smoke test result (2026-09-10): partially complete, not a full pass.**
+See Implementation Notes above for the full session. Confirmed on real hardware: wake
+detection (`Hey Jarvis`/`Okay Nabu`, 0.99+ confidence), VAD-gated capture start/end, a
+complete chunked upload reaching the bridge, and the bridge's receive -> WAV ->
+`faster-whisper` pipeline all working. **Not confirmed:** a full turn from real
+spoken content -- every capture large enough to hold real speech stalled mid-upload
+on the device's current WiFi signal (-89 to -90 dB) before reaching the bridge.
+Independently confirmed via a live `tcpdump` trace to be a link-quality issue (a
+stalled `esp_http_client_write()` mid-body, not a routing/firewall/application bug).
+Fixed three real pre-existing firmware defects found along the way (see
+Implementation Notes: a leftover story-3 serial-dump diagnostic saturating the boot
+sequence, a missing wake-engine self-heal, and a too-large upload chunk size for this
+link). Tracked as open follow-up work in `deferred-work.md`: re-run this smoke test
+once the Puck can be positioned with a stronger signal.

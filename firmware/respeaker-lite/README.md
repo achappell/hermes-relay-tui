@@ -474,3 +474,20 @@ evidence for the wake-to-upload firmware path and the audible response
 remains a live hardware smoke test: speak "hey jarvis" near the physical
 Puck with the bridge running, and confirm one upload, a correct transcript,
 one completed Hermes turn, and an audible response on the host speakers.
+
+#### Live smoke test status (2026-09-10)
+
+A live session against real hardware confirmed wake detection (`Hey
+Jarvis`/`Okay Nabu`, 0.99+ confidence), VAD-gated capture start/end, and a
+complete short capture reaching the bridge and being processed by
+`faster-whisper`. It did **not** confirm a full round-trip turn: on the
+tested device's WiFi signal (-89 to -90 dB), every capture large enough to
+hold real speech stalled mid-upload (`esp_http_client_write()` aborting a
+body write with no retry — see `pcm_capture.h`'s `UPLOAD_CHUNK_BYTES`
+comment) before reaching the bridge. Also found and fixed two other
+real, pre-existing issues along the way: a leftover story-3 serial-dump
+diagnostic that was saturating the boot sequence for minutes (removed),
+and `micro_wake_word` having no self-recovery once stopped (added a
+watchdog in the existing 2s diagnostic `interval:`). Retest once the
+device can sit with a stronger signal — see this story's spec
+Implementation Notes and `deferred-work.md` for the full record.

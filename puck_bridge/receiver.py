@@ -36,8 +36,10 @@ logger = logging.getLogger("hermes_relay_tui.puck_bridge.receiver")
 # Must match pcm_capture.h's UPLOAD_CHUNK_BYTES. Only used here as a sanity
 # hint in logs -- the receiver reassembles by declared chunk index, not by
 # assuming every chunk is exactly this size (the last chunk of a capture is
-# usually shorter).
-UPLOAD_CHUNK_BYTES = 16000
+# usually shorter). Shrunk from 16000 to 2000 alongside the firmware
+# constant -- see pcm_capture.h's comment for why (esp_http_client_write()
+# aborting mid-body on a weak WiFi link).
+UPLOAD_CHUNK_BYTES = 2000
 
 # The raw capture is stereo, 32-bit, 16kHz -- the exact format
 # MicrophoneSource hands to micro_wake_word before any of its own

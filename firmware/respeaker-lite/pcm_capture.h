@@ -87,7 +87,20 @@ inline void write(const uint8_t *data, size_t len) {
 // exception handler -> crash-loop). Uploading in small chunks keeps each
 // std::string allocation trivially small and internal-RAM-safe, and the
 // receiver reassembles them by sequence + chunk index.
-static const size_t UPLOAD_CHUNK_BYTES = 16000;  // ~16KB per POST body
+//
+// Story 5, discovered live during this story's hardware smoke test on a
+// marginal-WiFi-signal device (observed -89 to -90 dB): ESP-IDF's
+// esp_http_client_write() (http_request_idf.cpp) aborts the whole POST
+// with ESP_FAIL the instant a single write() call returns <=0 partway
+// through the body -- it never retries that write. tcpdump on the
+// receiving host confirmed the TCP handshake completing normally, a
+// small partial write landing, then silence: the socket write stalled
+// out on a lossy link before the full body went through. Shrunk from
+// 16000 to 2000 so a single write has to survive far less time on a
+// flaky link before completing -- this is a mitigation for a genuinely
+// weak signal, not a fix for it; moving the device closer to the AP
+// remains the real fix.
+static const size_t UPLOAD_CHUNK_BYTES = 2000;  // ~2KB per POST body
 
 // Called from a slow `interval:` tick, never from the real-time audio
 // path. Blocks on each POST (fine here -- main loop, not the mic task),
