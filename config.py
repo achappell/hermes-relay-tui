@@ -423,6 +423,22 @@ def resolve_profile_token_source(profile_env: Path, token_env: str) -> str:
     return _private_env_value(Path(profile_env).expanduser(), validate_token_env(token_env))
 
 
+# The Puck bridge's temporary stand-in for Story 4's real per-device
+# credential system (blocked on Epic 3's DEVICE-01/02/06 landing first).
+# Same token_env indirection as the relay-profile tokens above: only the
+# *name* of an environment variable lives here in config, the actual secret
+# lives in the environment or the profile `.env` file, and it is never a
+# literal in source. Replace this with Story 4's real credential once it
+# exists -- do not treat this as adequate for a real household deployment.
+PUCK_DEVICE_TOKEN_ENV = "PUCK_DEVICE_TOKEN"
+
+
+def resolve_puck_device_token(profile_env: Path | None = None) -> str:
+    """Resolve the standalone Puck-bridge device token."""
+    env_path = Path(profile_env or DEFAULT_PROFILE_ENV).expanduser()
+    return _private_env_value(env_path, PUCK_DEVICE_TOKEN_ENV)
+
+
 def _profile_env_path(cfg: dict[str, Any], args: Any = None) -> Path:
     value = getattr(args, "profile_env", None) if args is not None else None
     if value is None:
@@ -1319,8 +1335,10 @@ __all__ = [
     "delete_relay_profile",
     "migrate_legacy_profile_config",
     "profile_token_env",
+    "PUCK_DEVICE_TOKEN_ENV",
     "resolve_profile_token",
     "resolve_profile_token_source",
+    "resolve_puck_device_token",
     "save_relay_profile",
     "select_relay_profile",
     "validate_profile_name",

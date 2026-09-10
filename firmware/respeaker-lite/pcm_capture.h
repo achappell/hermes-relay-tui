@@ -27,6 +27,8 @@
 #include <cstdint>
 #include <cstddef>
 #include <cstring>
+#include <string>
+#include <vector>
 
 namespace pcm_capture {
 
@@ -85,7 +87,20 @@ inline void write(const uint8_t *data, size_t len) {
 // exception handler -> crash-loop). Uploading in small chunks keeps each
 // std::string allocation trivially small and internal-RAM-safe, and the
 // receiver reassembles them by sequence + chunk index.
-static const size_t UPLOAD_CHUNK_BYTES = 16000;  // ~16KB per POST body
+//
+// Story 5, discovered live during this story's hardware smoke test on a
+// marginal-WiFi-signal device (observed -89 to -90 dB): ESP-IDF's
+// esp_http_client_write() (http_request_idf.cpp) aborts the whole POST
+// with ESP_FAIL the instant a single write() call returns <=0 partway
+// through the body -- it never retries that write. tcpdump on the
+// receiving host confirmed the TCP handshake completing normally, a
+// small partial write landing, then silence: the socket write stalled
+// out on a lossy link before the full body went through. Shrunk from
+// 16000 to 2000 so a single write has to survive far less time on a
+// flaky link before completing -- this is a mitigation for a genuinely
+// weak signal, not a fix for it; moving the device closer to the AP
+// remains the real fix.
+static const size_t UPLOAD_CHUNK_BYTES = 2000;  // ~2KB per POST body
 
 // Called from a slow `interval:` tick, never from the real-time audio
 // path. Blocks on each POST (fine here -- main loop, not the mic task),
@@ -201,6 +216,193 @@ inline void upload_and_restart(esphome::http_request::HttpRequestComponent *clie
   sample_index++;
   start();
 }
+
+// VAD-gated, single-shot, wake-triggered capture (story 5). Reuses this
+// file's proven allocation/write/chunked-upload pattern above, but differs
+// from `upload_and_restart`'s rolling-capture design in exactly the ways
+// story 5 needs: (a) sized for ~8s of audio, not a fixed 2s window -- long
+// enough for a real spoken question with lead/trail silence, (b) the
+// capture window ends when `micro_wake_word`'s own VAD model (already
+// proven responsive: `probability_cutoff: 0.05` in respeaker-lite.yaml)
+// reports silence for a debounce period, not when the buffer fills, and
+// (c) it does NOT re-arm at the end -- one wake, one upload, then it waits
+// for the next `on_wake_word_detected` trigger. No continuous rolling
+// capture, matching this story's Boundaries & Constraints.
+namespace wake_capture {
+
+// 8 seconds of stereo, 32-bit, 16kHz audio -- comfortably longer than any
+// spoken household question, per this story's story file.
+static const size_t WAKE_CAPTURE_SECONDS = 8;
+static const size_t WAKE_CAPTURE_BYTES = 16000 * 4 * 2 * WAKE_CAPTURE_SECONDS;
+
+// How long VAD must report silence before the capture window is considered
+// over. Short enough to keep the round-trip snappy, long enough to survive
+// a normal mid-sentence pause without cutting the question off early.
+static const uint32_t VAD_SILENCE_DEBOUNCE_MS = 800;
+
+static uint8_t *buffer = nullptr;
+static size_t write_pos = 0;
+static bool capturing = false;
+static bool capture_done = false;
+static bool capture_pending_upload = false;
+static uint32_t silence_start_ms = 0;
+static uint32_t sample_index = 0;
+
+inline void setup() {
+  buffer = static_cast<uint8_t *>(heap_caps_malloc(WAKE_CAPTURE_BYTES, MALLOC_CAP_SPIRAM));
+  if (buffer == nullptr) {
+    ESP_LOGE(TAG, "Failed to allocate %u bytes of PSRAM for wake capture", (unsigned) WAKE_CAPTURE_BYTES);
+  } else {
+    ESP_LOGI(TAG, "Allocated %u bytes of PSRAM for wake capture", (unsigned) WAKE_CAPTURE_BYTES);
+  }
+}
+
+// Called from `on_wake_word_detected:`. Single-shot: a wake heard while a
+// capture or its upload is still in flight is dropped rather than
+// restarting the buffer mid-write, matching the "one wake, one upload"
+// rule -- the next wake after this one finishes gets a clean window.
+inline void start(const std::string &wake_word) {
+  if (buffer == nullptr || capturing || capture_pending_upload) {
+    ESP_LOGD(TAG, "wake capture ignored (wake_word=%s, already busy)", wake_word.c_str());
+    return;
+  }
+  write_pos = 0;
+  capture_done = false;
+  silence_start_ms = 0;
+  capturing = true;
+  ESP_LOGI(TAG, "wake capture started (wake_word=%s)", wake_word.c_str());
+}
+
+// Called from the microphone's real-time on_data callback, alongside the
+// existing training-data `pcm_capture::write()` above. Bounded,
+// allocation-free -- the same single-memcpy shape as that function.
+inline void write(const uint8_t *data, size_t len) {
+  if (!capturing || buffer == nullptr) {
+    return;
+  }
+  size_t remaining = WAKE_CAPTURE_BYTES - write_pos;
+  size_t to_copy = len < remaining ? len : remaining;
+  memcpy(buffer + write_pos, data, to_copy);
+  write_pos += to_copy;
+  if (write_pos >= WAKE_CAPTURE_BYTES) {
+    // The buffer filled before VAD ever reported silence -- still a valid,
+    // bounded capture; end it rather than overrun.
+    capturing = false;
+    capture_done = true;
+    capture_pending_upload = true;
+    ESP_LOGW(TAG, "wake capture reached the %us buffer limit before VAD silence", (unsigned) WAKE_CAPTURE_SECONDS);
+  }
+}
+
+// Called from a fast `interval:` tick (not the real-time audio path) with
+// the current VAD state. Ends the capture window on debounced silence --
+// this is what makes the window VAD-gated instead of a fixed timer.
+inline void tick(bool vad_active) {
+  if (!capturing) {
+    return;
+  }
+  uint32_t now = millis();
+  if (vad_active) {
+    silence_start_ms = 0;
+    return;
+  }
+  if (silence_start_ms == 0) {
+    silence_start_ms = now;
+    return;
+  }
+  if (now - silence_start_ms >= VAD_SILENCE_DEBOUNCE_MS) {
+    capturing = false;
+    capture_done = true;
+    capture_pending_upload = true;
+    ESP_LOGI(TAG, "wake capture ended on VAD silence (%u bytes)", (unsigned) write_pos);
+  }
+}
+
+// Called from a slow `interval:` tick, never from the real-time audio
+// path. Single-shot upload: unlike `upload_and_restart`, this does NOT
+// call `start()` again when finished -- the next capture only begins from
+// another `on_wake_word_detected` trigger. Reuses the exact chunked-POST
+// loop, heap-watermark reboot circuit breaker, 2-consecutive-failure
+// abandonment, and 30ms inter-chunk delay already proven above.
+inline void upload(esphome::http_request::HttpRequestComponent *client, const std::string &url,
+                    const std::string &token) {
+  if (!capture_done || !capture_pending_upload || buffer == nullptr) {
+    return;
+  }
+  capture_pending_upload = false;
+
+  // VAD reported silence before any audio was ever captured (write_pos ==
+  // 0): total_chunks below would compute to 0, the upload loop would
+  // silently no-op, and this wake would produce no upload at all with no
+  // diagnostic. Bail out explicitly instead of relying on the loop's
+  // implicit skip.
+  if (write_pos == 0) {
+    ESP_LOGW(TAG, "Wake upload %u skipped -- capture ended with zero bytes written", (unsigned) sample_index);
+    sample_index++;
+    return;
+  }
+
+  size_t total_chunks = (write_pos + pcm_capture::UPLOAD_CHUNK_BYTES - 1) / pcm_capture::UPLOAD_CHUNK_BYTES;
+  bool ok = true;
+  int consecutive_failures = 0;
+  for (size_t chunk = 0; chunk < total_chunks; ++chunk) {
+    size_t offset = chunk * pcm_capture::UPLOAD_CHUNK_BYTES;
+    size_t len = std::min(pcm_capture::UPLOAD_CHUNK_BYTES, write_pos - offset);
+    std::string body(reinterpret_cast<const char *>(buffer + offset), len);
+    std::string full_url = url + "?seq=" + std::to_string(sample_index) + "&chunk=" + std::to_string(chunk) +
+                            "&total=" + std::to_string(total_chunks) + "&ms=" + std::to_string(millis());
+    std::vector<esphome::http_request::Header> headers = {{"X-Puck-Token", token.c_str()}};
+
+    uint32_t heap_before = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
+    auto response = client->post(full_url, body, headers);
+    uint32_t heap_after = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
+    bool chunk_ok = response != nullptr && response->status_code >= 200 && response->status_code < 300;
+    if (!chunk_ok) {
+      ESP_LOGW(TAG, "Wake upload %u chunk %u failed (status %d) -- internal heap before=%u after=%u min_ever=%u",
+               (unsigned) sample_index, (unsigned) chunk, response ? response->status_code : -1,
+               (unsigned) heap_before, (unsigned) heap_after,
+               (unsigned) heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL));
+      ok = false;
+      consecutive_failures++;
+    } else {
+      ESP_LOGD(TAG, "Wake upload %u chunk %u ok -- internal heap before=%u after=%u", (unsigned) sample_index,
+               (unsigned) chunk, (unsigned) heap_before, (unsigned) heap_after);
+      consecutive_failures = 0;
+    }
+    if (response != nullptr) {
+      response->end();
+    }
+
+    // Same heap-watermark reboot circuit breaker as `upload_and_restart` --
+    // see that function's comment above for the full reasoning.
+    static const uint32_t LOW_HEAP_REBOOT_THRESHOLD = 96000;
+    uint32_t heap_watermark = heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL);
+    if (heap_watermark < LOW_HEAP_REBOOT_THRESHOLD) {
+      ESP_LOGE(TAG, "Internal heap watermark critically low (%u bytes) after a run of failed wake uploads -- "
+                     "rebooting to reclaim ESP-IDF-held resources before an uncontrolled crash",
+               (unsigned) heap_watermark);
+      esphome::App.safe_reboot();
+    }
+    if (consecutive_failures >= 2) {
+      ESP_LOGW(TAG, "Wake upload %u abandoned after %d consecutive chunk failures", (unsigned) sample_index,
+               consecutive_failures);
+      break;
+    }
+    // Same inter-chunk breathing room as `upload_and_restart` -- see that
+    // function's comment above.
+    vTaskDelay(pdMS_TO_TICKS(30));
+  }
+  if (ok) {
+    ESP_LOGD(TAG, "Uploaded wake capture %u (%u bytes, %u chunks)", (unsigned) sample_index, (unsigned) write_pos,
+             (unsigned) total_chunks);
+  }
+
+  sample_index++;
+  // Deliberately no `start()` here -- single-shot, no re-arm. The next
+  // capture begins only from the next `on_wake_word_detected` trigger.
+}
+
+}  // namespace wake_capture
 
 // Serial-dump path (story 3, session 16 -- see story doc for the full
 // history). A prior version dumped the *full* ~256KB capture (~1280 chunks)
