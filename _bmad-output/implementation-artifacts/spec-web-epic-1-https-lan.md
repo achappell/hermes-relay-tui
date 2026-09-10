@@ -48,6 +48,9 @@ context:
   `--display-tls-key` options. TLS is rejected for the physical display path,
   which remains plain WebSocket; malformed or incomplete TLS configuration
   fails before the appliance starts listening.
+- Browser turns keep text deltas that arrive after `audio_start` in the
+  `speaking` display state. This preserves the reducer's legal transition
+  sequence while captions continue streaming during playback.
 - The certificate recipe in the HOME-09 procedure uses a local CA and an
   IP-address SAN. Generated keys and trust material remain under the user's
   home directory, outside Git. Only the public CA certificate is transferred
@@ -65,16 +68,23 @@ context:
   and the live HTTPS harness. One documentation ordering defect was found and
   fixed: certificate creation now precedes the launch command. TLS loading was
   also hardened to wrap `ValueError` from invalid certificate/key material.
+- The physical playback smoke exposed a second actionable defect: a late
+  browser text delta was published as `thinking` after `speaking` began. Fix
+  `938e639` keeps that delta in `speaking`; the regression test now covers the
+  exact sequence.
 - No unresolved actionable findings remain.
 
 ## Verification
 
-- Python: `venv/bin/pytest` — 890 passed, one upstream deprecation warning.
+- Python: `venv/bin/pytest` — 891 passed, one upstream deprecation warning.
 - Focused TLS/server tests — 20 passed, one upstream deprecation warning.
+- Focused late-caption regression — passed.
 - Browser: `npm test` — 149 passed; `npm run check` — zero errors and zero
   warnings; `npm run build` succeeded with no generated bundle diff.
 - Live harness: the HTTPS page returned 200, the secure state channel returned
-  the initial `idle` snapshot, and a plain-HTTP WebSocket origin was rejected.
+  the initial `idle` snapshot, a plain-HTTP WebSocket origin was rejected, and
+  a real browser turn delivered PCM chunks through `thinking` → `speaking` →
+  `idle` without a protocol error.
 - Physical iPad Safari trust, microphone permission, and Guided Access smoke
   remain the explicit Verify gate; this implementation does not claim those
   hardware/browser results yet.
