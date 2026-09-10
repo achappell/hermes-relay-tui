@@ -36,7 +36,7 @@ None.
 
 The state contract is now mechanically usable. State Patterns cover cold/ambient, unconfigured, connecting, all named Turn Phases, stopped, audio unavailable, disconnected, revoked/unavailable identity, Departure Card, and prompt waiting (`EXPERIENCE.md:142–163`). The presentation mapping covers the canonical/local states, including the previously missing `error` state, with child-readable copy, technical detail, cues, and assistive presentation (`EXPERIENCE.md:171–193`).
 
-The per-surface matrix covers Puck, Room/iPad Display, iOS Client, iOS Settings, TUI, and Local History across cold/empty, active, offline/permission/failure, recovery, and persistence (`EXPERIENCE.md:195–206`). The requested trust boundaries are explicit:
+The per-surface matrix covers Puck, ESP32 Touch, the W/K browser surface (web/iPad), passive Room Display role, iOS Client, iOS Settings, TUI, and Local History across cold/empty, active, offline/permission/failure, recovery, and persistence (`EXPERIENCE.md:200–211`). The requested trust boundaries are explicit:
 
 - **Identity before capture:** Wake Mapping selects one Profile before Puck capture; the Room Display exposes it at `heard`, and iOS/TUI show it before capture (`EXPERIENCE.md:210–216`, `:297–303`).
 - **Active Turn vs Departure:** the selected Room's Active Turn outranks the household-wide Departure Card until completed response plus follow-up close or `Stopped`; other Displays continue to show the Departure Card, and the selected Display promotes it after the turn (`EXPERIENCE.md:165–169`).

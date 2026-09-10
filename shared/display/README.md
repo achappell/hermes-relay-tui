@@ -4,6 +4,13 @@ This directory is the wire-independent contract for the ESP display, Web
 Canvas, and TUI adapters. Rendering, WebSocket connections, touch/keyboard
 events, and platform capability checks remain outside this contract.
 
+The ESP32 touch unit is a full Epic 1 voice-plus-display doorway, but this
+contract remains visual: snapshots carry phases, response text, and
+audio-delivery state, not microphone or response PCM. A separate bounded
+audio/session adapter must connect the touch unit's capture and playback path
+to the owning Hermes session. The display reducer must never become a second
+Hermes authority or infer audio delivery from text alone.
+
 ## Snapshot
 
 `display_snapshot.schema.json` describes schema version 1. A snapshot always
