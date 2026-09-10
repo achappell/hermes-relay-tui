@@ -60,6 +60,16 @@ located in `firmware/esp32-s3-touch-lcd-7/main/src/`:
 - **Shared State Contract:** All targets consume the exact same `/ws` `DisplaySnapshot`
   JSON stream from `home_display/server.py` and dispatch touch choices back to `/action`.
 
+The ESP32-S3 touch target is a first-class Epic 1 voice-plus-display surface,
+not only a passive room mirror. Its product scope includes microphone capture,
+native response/phase rendering, and response-audio delivery. The shared
+`DisplaySnapshot` contract carries visual state and response presentation; a
+separate bounded audio/session adapter must carry microphone and response PCM.
+The current firmware transport implements snapshot receipt and `/action` only,
+so that audio path remains an explicit implementation slice. Hermes answer
+authority and no-replay session semantics stay behind the owning adapter; the
+firmware must not invent responses or parse Hermes wire frames.
+
 
 Rules:
 

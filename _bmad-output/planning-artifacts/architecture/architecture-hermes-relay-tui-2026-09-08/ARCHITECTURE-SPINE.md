@@ -7,7 +7,7 @@ paradigm: ports-and-adapters with functional cores
 scope: "The hermes-relay-tui repository: Python Hermes session core and TUI, household appliance, shared display contract and reducer, native LVGL firmware/simulator, and Web/WASM kiosk."
 status: final
 created: 2026-09-08
-updated: 2026-09-08
+updated: 2026-09-10
 binds:
   - FR-1 through FR-6
   - FR-10 through FR-12
@@ -42,7 +42,7 @@ Use ports-and-adapters with functional cores.
 
 - The Python core owns Hermes protocol normalization, session and turn lifecycle, configuration, and reusable local I/O ports. It must not import a UI framework or assume a terminal.
 - The portable C core in shared/display/ owns bounded display-state and action rules. It has no rendering, transport, device, or clock dependency.
-- Adapters compose those cores with WebSocket transports, microphones, speakers, Textual widgets, the household display server, ESP-IDF, native SDL, browser APIs, and WebAssembly.
+- Adapters compose those cores with WebSocket transports, microphones, speakers, Textual widgets, the household display server, ESP-IDF audio/display I/O, native SDL, browser APIs, and WebAssembly.
 - Renderers consume adapter state and emit platform actions. They do not become alternate protocol or display-rule implementations.
 
 ~~~mermaid
@@ -128,6 +128,12 @@ flowchart TB
 - **Prevents:** A schema or reducer change passing in one target while another silently interprets it differently.
 - **Rule:** Every shared contract change updates schemas and fixtures together, then runs Python contract tests, portable/native C reducer tests, Web/TypeScript parser or reducer tests, target adapter tests, and the core import-boundary test. A target may add presentation behavior only after the shared contract and reducer semantics are conformant.
 
+### AD-11 — The ESP32 touch unit is a voice-capable doorway [ADOPTED]
+
+- **Binds:** FR-1 through FR-6, FR-19, and the ESP32 Touch surface stories in Epic 1.
+- **Prevents:** Treating the touch unit as a passive display and forgetting its microphone, response-audio, cancellation, or recovery contract.
+- **Rule:** The ESP32-S3/LVGL touch unit is a first-class voice-plus-display surface. It captures voice only after authorization is verified, renders its own observed phases and streamed/completed response, and delivers response audio through an explicit bounded audio path. The same ownership rule applies to the W/K browser voice surface when `browser_voice` is advertised: its browser capture and playback bridge may own presentation I/O, but not Hermes answer authority or replay policy. The shared DisplaySnapshot contract governs visual state; audio ingress/egress is a separate contract and must not be smuggled into display JSON. Hermes answer authority and session semantics remain behind the owning session adapter—firmware and browser presentation code do not invent responses, parse Hermes wire frames, or replay uncertain turns. The current ESP32 snapshot/action transport is foundation only until the touch audio path is implemented and validated.
+
 ## Consistency Conventions
 
 | Concern | Convention |
@@ -202,7 +208,7 @@ flowchart LR
 
 | Capability / Area | Lives in | Governed by |
 | --- | --- | --- |
-| FR-1–FR-6: voice doorway, turn phases, response, follow-up, clean reconnect | client.py, session.py, voice.py, mic.py, wake.py, handsfree.py, app.py, home_display/appliance.py | AD-1, AD-2, AD-3, AD-7 |
+| FR-1–FR-6: voice doorway, turn phases, response, follow-up, clean reconnect | client.py, session.py, voice.py, mic.py, wake.py, handsfree.py, app.py, home_display/appliance.py, ESP32 Touch audio adapter | AD-1, AD-2, AD-3, AD-7, AD-11 |
 | FR-10–FR-12: ambient/display state, room-local mirroring, disconnected state | home_display/state.py, home_display/server.py, shared/display/, home_display/web/, firmware/ | AD-2, AD-4, AD-5, AD-6, AD-8 |
 | FR-19: recovery without a silent turn | session.py, home_display/appliance.py, display adapters | AD-2, AD-6, AD-7 |
 | FR-21: TUI as a direct Hermes doorway | app.py, transcript.py, prompts.py, session_picker.py | AD-1, AD-3, AD-7 |
@@ -213,7 +219,7 @@ flowchart LR
 
 - Per-device credentials, provisioning, revocation, authentication, and encrypted display transport. The pilot uses explicit LAN trust; revisit before wider deployment.
 - Wake arbitration and proximity signals when multiple physical devices hear the same phrase.
-- Media-server ownership, audio framing, backpressure, retention, and transcription boundaries.
+- Media-server/audio-bridge ownership, audio framing, backpressure, retention, and transcription boundaries for Puck and ESP32 Touch.
 - Calendar routing, Immich policy, Departure Card computation, and household-wide context providers.
 - iOS profile/device UX and the contract between this repository and the separate iOS client.
 - Exact ESP-IDF framework pin and hardware release/CI matrix; PlatformIO currently provides the firmware build seed.

@@ -192,7 +192,8 @@ when it was never sent,” and its handler replays that prompt
 user-facing hint says to retry later rather than exposing a reconnect action
 (app.py:339-346,1041-1047).
 
-Room/iPad surfaces have no Retry capability and no concrete route to a Client;
+Passive Room Displays have no Retry capability, while the W/K browser surface
+must not replay an uncertain turn and has no concrete route to a Client;
 the canvas only reports a generic error element when its host fails
 (WasmCanvas.svelte:37-46). Reserve Retry for reconnect, rename or separate the
 safe unsent-prompt replay command, and expose the unresolved-turn warning plus

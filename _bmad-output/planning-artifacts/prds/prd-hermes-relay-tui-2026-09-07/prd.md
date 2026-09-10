@@ -2,7 +2,7 @@
 title: "Hermes Home Assistant Platform"
 status: final
 created: 2026-09-07
-updated: 2026-09-07
+updated: 2026-09-10
 ---
 
 # PRD: Hermes Home Assistant Platform
@@ -15,7 +15,7 @@ This PRD turns the finalized product brief into testable product behavior for th
 
 The household can reach its chosen Hermes voice profile from the room without a phone or terminal. A device makes each phase legible—heard, listening, transcribing, thinking, buffering, and responding—so the household knows what happened instead of guessing whether the system heard them.
 
-The private pilot proves this through a kitchen dinner question: Missy remains the response authority, the media-server handles transcription, and the room display makes the exchange visible without becoming a second assistant.
+The private pilot proves this through a kitchen dinner question: Missy remains the response authority, the media-server handles transcription where the selected voice path requires it, and the active room device makes the exchange audible and visible without becoming a second assistant.
 
 ## 2. Target User
 
@@ -48,6 +48,14 @@ The private pilot proves this through a kitchen dinner question: Missy remains t
 - **Climax:** Amanda sees the dinner answer in the room and hears Missy respond with the same answer, making the household plan available without another surface.
 - **Resolution:** The response is complete and the device returns to its normal post-response state, including the bounded follow-up window.
 - **Edge case:** If the Media Server or Hermes connection is unavailable, the Display shows Disconnected State and the Puck shows a local visual indicator. The Puck must not capture speech, pretend to have heard, answer as Missy, or speak a local fallback phrase.
+
+#### UJ-1A. Amanda asks Missy through the ESP32 touch Display
+
+- **Persona + context:** Amanda is near the configured Waveshare ESP32-S3/LVGL touch unit and starts its supported voice capture without using the Puck.
+- **Entry state:** The touch unit has a verified authorized Profile and an available bounded microphone/audio path.
+- **Path:** The touch unit captures voice, renders `heard`/`listening`/`transcribing`, shows the streamed Hermes response in its native LVGL console, and plays the corresponding response audio. A passive Room Display may mirror the state but never opens a second capture path.
+- **Resolution:** The touch unit leaves the completed response visible, reports unavailable audio if playback fails, and enters only a configured bounded follow-up path.
+- **Edge case:** If authorization, transport, or audio is unavailable, the touch unit fails closed before capture/playback or shows an honest unavailable state. It never replays an uncertain turn.
 
 #### UJ-2. Amanda adds a new puck from iOS Settings
 
@@ -113,15 +121,17 @@ The private pilot proves this through a kitchen dinner question: Missy remains t
 ## 3. Glossary
 
 - **Device** — A physical household endpoint managed by iOS. A Device is either a Puck or a Display and has its own Device Credential.
-- **Puck** — The room voice Device that detects a Wake Mapping, captures speech, and plays Hermes audio.
-- **Display** — A room visual Device that renders the Ambient Surface, Active Turn state, live Transcription, response text, and Departure Card.
+- **Puck** — The ESP32-based room voice Device without a touch display. It detects a Wake Mapping, captures speech, and plays Hermes audio; its small TFT is status-only.
+- **Display** — A room visual Device that renders the Ambient Surface, Active Turn state, live Transcription, response text, and Departure Card. The Waveshare ESP32 Touch Display is also a voice-capable doorway: it can capture speech, own a Hermes Session, render the response, and play Hermes audio.
+- **Web/iPad Voice Surface** — One browser voice-plus-display surface, implemented by the Python/Svelte webview and deployed to iPad through Safari/Guided Access. It is not a separate iPad renderer.
+- **Passive Room Display** — A display-only target that mirrors the active doorway's room-local state without capturing, speaking, or creating a second Hermes Session. This is a role a Display can take when it is not the active voice doorway; it does not describe the ESP32 Touch or W/K voice surfaces when their voice capability is enabled.
 - **Client** — A software doorway, currently iOS or TUI, that can create an Hermes Session without being a physical Device.
 - **Room** — A named household location that binds Devices to presentation policy and room-local Active Turn mirroring.
 - **Wake Mapping** — One unique wake phrase mapped to one Hermes Profile on a Device.
 - **Hermes Profile** — The configured Hermes identity and authorized context selected by a Wake Mapping or Client configuration. Missy is one Hermes Profile.
 - **Hermes Session** — The conversation session owned by one doorway. A reconnect starts a new Hermes Session.
-- **Media Server** — The trusted home-LAN service that transcribes Puck audio before the transcript reaches Hermes.
-- **Transcription** — The text representation of captured speech produced while a Puck or Client is listening.
+- **Media Server** — The trusted home-LAN service that may transcribe captured Puck or ESP32 Touch audio before the transcript reaches Hermes.
+- **Transcription** — The text representation of captured speech produced while a Puck, ESP32 Touch Display, or Client is listening.
 - **Device Credential** — The individually revocable credential that authorizes one Device; it is never shared by multiple Devices.
 - **Active Turn** — One user request and its Hermes response, including listening, transcription, thinking, buffering, speaking, and completion states.
 - **Turn Phase** — One of the user-visible Active Turn states: heard, listening, transcribing, thinking, buffering, speaking, complete, or Disconnected State.
@@ -134,21 +144,21 @@ The private pilot proves this through a kitchen dinner question: Missy remains t
 
 ### 4.1 Voice doorway and Hermes session
 
-**Description:** A Puck or Client gives the household a direct doorway to a selected Hermes Profile. The doorway makes the Active Turn visible and audible without inventing a second assistant. This feature realizes UJ-1, UJ-5, and UJ-6.
+**Description:** A Puck, ESP32 Touch Display, enabled W/K browser voice surface, or Client gives the household a direct doorway to a selected Hermes Profile. The doorway makes the Active Turn visible and audible without inventing a second assistant. A passive Room Display may mirror that turn. This feature realizes UJ-1, UJ-5, and UJ-6.
 
 **Functional Requirements:**
 
 #### FR-1: Start an Active Turn
 
-A Puck can recognize a configured Wake Mapping, and an iOS Client or TUI can accept an explicit user-initiated turn when its Device Credential or Client configuration is authorized.
+A Puck, configured ESP32 Touch Display, or enabled W/K browser voice surface can accept its supported voice initiation, and an iOS Client or TUI can accept an explicit user-initiated turn when its Device Credential or Client configuration is authorized.
 
 **Consequences (testable):**
-- The selected Hermes Profile is known before Puck audio is submitted.
+- The selected Hermes Profile is known before Puck or ESP32 Touch audio is captured or submitted.
 - An unauthorized, revoked, or unavailable mapping cannot start an Active Turn.
 
 #### FR-2: Show live capture state and Transcription
 
-The room Display can show wake acknowledgement, the Listening Turn Phase, and live Transcription while the Puck captures speech. The iOS Client and TUI show their own corresponding capture state.
+The active Puck, ESP32 Touch Display, or W/K browser voice surface shows its local capture acknowledgement, while a passive Room Display mirrors the Listening Turn Phase and live Transcription for the owning Room. iOS and TUI show their own corresponding capture state.
 
 **Consequences (testable):**
 - Live Transcription updates as words arrive rather than appearing only after capture ends.
@@ -164,7 +174,7 @@ Each supported doorway exposes the appropriate Turn Phase—heard, listening, tr
 
 #### FR-4: Deliver the Hermes response multimodally
 
-The Puck or iOS Client speaks the Hermes response, and the room Display streams the same response text for the room-local Active Turn before leaving the completed answer visible. The TUI renders the conversation through its terminal surface.
+The Puck, ESP32 Touch Display, W/K browser voice surface, or iOS Client speaks the Hermes response. The active ESP32 Touch and W/K surfaces render their own streamed response text, while a passive room Display may stream the same room-local response before leaving the completed answer visible. The TUI renders the conversation through its terminal surface.
 
 **Consequences (testable):**
 - The spoken and displayed response come from the same Hermes response and remain aligned while text streams.
@@ -172,7 +182,7 @@ The Puck or iOS Client speaks the Hermes response, and the room Display streams 
 
 #### FR-5: Continue a bounded conversation
 
-After each response, the active Puck enters an eight-second follow-up window without requiring another Wake Mapping. Saying exactly “stop” during capture or follow-up closes the local window silently.
+After each response, a voice doorway that supports follow-up enters its configured bounded window; the Puck's v1 window is eight seconds without requiring another Wake Mapping, and the W/K browser voice surface uses its advertised bounded capability. Saying exactly “stop” during capture or follow-up closes the local window silently.
 
 **Consequences (testable):**
 - “stop” creates no replacement Hermes turn.
@@ -218,7 +228,7 @@ When multiple authorized Devices hear a Wake Mapping, the system selects the clo
 
 ### 4.3 Room Display and Ambient Surface
 
-**Description:** A Display provides calm room context when idle and mirrors the Active Turn only in the Room that owns the selected Puck. This feature realizes UJ-1 and UJ-4.
+**Description:** A passive Display provides calm room context when idle and mirrors the Active Turn only in the Room that owns the selected doorway. An ESP32 Touch Display may itself be the active voice doorway; its conversation behavior is owned by the Epic 1 touch surface stories. This feature realizes UJ-1 and UJ-4.
 
 **Functional Requirements:**
 
@@ -232,7 +242,7 @@ A Display shows Immich photos selected by its Room-level face filters while no h
 
 #### FR-11: Mirror a room-local Active Turn
 
-The Display bound to the selected Puck’s Room renders live Transcription, turn phases, and response text for that Active Turn without capturing audio, speaking, or creating a second Hermes Session.
+The passive Display bound to the selected doorway's Room renders live Transcription, turn phases, and response text for that Active Turn without capturing audio, speaking, or creating a second Hermes Session. An ESP32 Touch Display or enabled W/K browser voice surface that is the selected doorway is exempt from the passive-mirror boundary: it captures, speaks, and owns its Epic 1 doorway contract.
 
 **Consequences (testable):**
 - Other Displays do not receive conversation text from the Active Turn.
@@ -347,7 +357,7 @@ The TUI can start a voice conversation through its own Hermes Session and render
 
 #### FR-22: Mirror prompts without touch actions
 
-The room Display can show an active Hermes clarification or approval prompt, while the Puck or Client accepts the user’s spoken answer.
+The room Display can show an active Hermes clarification or approval prompt, while the active Puck, ESP32 Touch Display, W/K browser voice surface, or Client accepts the user’s spoken answer.
 
 **Consequences (testable):**
 - Prompt text and state are visible on the room Display.
@@ -388,9 +398,9 @@ The room Display can show an active Hermes clarification or approval prompt, whi
 
 - **Performance:** Wake acknowledgement and visible Puck status should appear in roughly one second; first spoken Hermes audio should begin in roughly four seconds after speech ends.
 - **Reliability:** Supported surfaces must expose the actual turn phase, avoid duplicate Active Turns, and recover from transport loss without replaying captured speech.
-- **Privacy:** Raw Puck audio remains transient on the home LAN; the Media Server does not retain transcripts; Local History is limited to intentional iOS/TUI storage.
+- **Privacy:** Raw Puck and ESP32 Touch audio remain transient on the home LAN; the Media Server/audio bridge does not retain transcripts; Local History is limited to intentional iOS/TUI storage.
 - **Security:** Every Device uses an individual revocable Device Credential; unapproved, revoked, or unavailable identity fails closed before capture.
-- **Consistency:** ESP32-S3 Display and iPad Display consume the same state semantics for Ambient Surface, Active Turn, Departure Card, and Disconnected State.
+- **Consistency:** ESP32-S3 Touch and W/K Web/iPad surfaces consume the same visual semantics for Ambient Surface, Active Turn, Departure Card, and Disconnected State; the touch and enabled W/K voice surfaces additionally own their voice capture and response-audio paths.
 
 ## 8. Constraints and Guardrails
 
@@ -405,8 +415,9 @@ The room Display can show an active Hermes clarification or approval prompt, whi
 
 - Puck wake detection and capture run at the Device boundary; Media Server transcription is required because of Puck resource limits.
 - The first Puck audio path is home-LAN-only.
+- The ESP32 Touch Display is a first-class Epic 1 voice-plus-display Device. Its native LVGL UI consumes the shared visual contract, while microphone ingress and response-audio egress use a separate bounded adapter. The current snapshot/action firmware path is foundation only until that adapter is implemented.
 - The private pilot uses the ReSpeaker Lite prototype, salvaged speaker driver, printed enclosure, and provisional TFT; exact electrical, acoustic, thermal, and firmware compatibility remain validation work.
-- iPad Display uses Safari/Guided Access at a local kiosk URL. LAN discovery is primary; QR/manual pairing is fallback.
+- The W/K browser surface uses Safari/Guided Access on iPad at a local kiosk URL. LAN discovery is primary; QR/manual pairing is fallback.
 
 ### 8.3 Hermes Boundary
 
@@ -437,8 +448,8 @@ The room Display can show an active Hermes clarification or approval prompt, whi
 
 1. What proximity signal and tie window should select the closest Device? **Owner:** Architecture. **Revisit:** before arbitration is finalized for architecture and story creation.
 2. How should iOS publish mapping, Room, and credential changes, and what last-known configuration is safe while a Device is offline? **Owner:** iOS + Architecture. **Revisit:** before enrollment and configuration stories are created.
-3. What exact Device Credential storage, rotation, expiry, and re-enrollment mechanism fits the Puck and iPad Display? **Owner:** Architecture + Security. **Revisit:** before Device enrollment implementation.
-4. What Media Server audio transport, bounded buffering, and cleanup behavior covers success, cancellation, and failure? **Owner:** Architecture + Media Server integration. **Revisit:** before Puck voice implementation.
+3. What exact Device Credential storage, rotation, expiry, and re-enrollment mechanism fits the Puck and W/K browser deployment? **Owner:** Architecture + Security. **Revisit:** before Device enrollment implementation.
+4. What Media Server/audio-bridge transport, bounded buffering, and cleanup behavior covers success, cancellation, and failure for the Puck and ESP32 Touch Display? **Owner:** Architecture + Media Server integration. **Revisit:** before either physical voice surface is implemented.
 5. Which people and exclusions define each Room’s Immich filter, and what freshness policy applies? **Owner:** UX + iOS. **Revisit:** before Room presentation settings are implemented.
 6. Where are travel estimates keyed in the vault, how is staleness detected, and how are missed calendar updates recovered? **Owner:** Hermes/vault integration. **Revisit:** before calendar integration stories are created.
 7. When does a future release earn active-playback barge-in? **Owner:** UX + Audio. **Revisit:** only after the v1 audio route proves echo-safe.

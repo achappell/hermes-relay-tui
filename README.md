@@ -130,11 +130,15 @@ not appliance runtime dependencies. Follow the
 [HOME-03 kiosk display smoke procedure](docs/testing/home-03-kiosk-display.md)
 to validate the local fake-state display after building.
 
-The display shell renders the DOM Svelte state surface by default, including
-state snapshots, streamed responses, direct-use prompt actions, browser voice,
-and streamed audio. The shared ESP32 C/LVGL surface remains an optional
-WebAssembly target. Photo playback and YouTube/video remain part of the HOME-16
-work.
+The display shell now renders the shared ESP32 C/LVGL surface in the browser,
+including state snapshots, prompt touch actions, browser voice, and streamed
+audio. Web and iPad are one W/K browser voice-plus-display surface; iPad is a
+deployment target, not a separate product surface. The physical ESP32 touch
+unit is a separate Epic 1 voice-plus-display doorway: it must capture voice,
+render its own response, and deliver response audio. Its current firmware
+foundation implements the display snapshot/action path; the bounded
+microphone/audio transport remains a dedicated implementation slice. Photo
+playback and YouTube/video remain part of the HOME-16 work.
 
 ## Upgrade and uninstall
 
