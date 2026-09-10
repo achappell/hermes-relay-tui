@@ -887,10 +887,18 @@ async def test_coordinator_states_pause_the_detector_during_capture():
         await app._handle_wake_command("on")
         fakes.listener.paused.clear()
 
+        fakes.coordinator._set_state(handsfree.ACKNOWLEDGING)
+        await pilot.pause()
+        assert app.voice_state == app_module.VOICE_HEARD
+
         fakes.coordinator._set_state(handsfree.CAPTURING)
         await pilot.pause()
         assert fakes.listener.paused[-1] is True
         assert app.voice_state == app_module.VOICE_LISTENING
+
+        fakes.coordinator._set_state(handsfree.SENDING)
+        await pilot.pause()
+        assert app.voice_state == app_module.VOICE_TRANSCRIBING
 
         fakes.coordinator._set_state(handsfree.IDLE)
         await pilot.pause()

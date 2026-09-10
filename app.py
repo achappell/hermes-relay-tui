@@ -1873,8 +1873,12 @@ class HermesStreamingApp(App):
         """Apply a worker-reported wake phase on Textual's event loop."""
         if not self.wake_armed:
             return
-        if state == handsfree.CAPTURING and not self._turn_in_flight:
+        if state == handsfree.ACKNOWLEDGING and not self._turn_in_flight:
+            self._set_voice_state(VOICE_HEARD)
+        elif state == handsfree.CAPTURING and not self._turn_in_flight:
             self._set_voice_state(VOICE_LISTENING)
+        elif state == handsfree.SENDING and not self._turn_in_flight:
+            self._set_voice_state(VOICE_TRANSCRIBING)
         elif (
             state == handsfree.IDLE
             and not self._turn_in_flight
@@ -3573,6 +3577,12 @@ class HermesStreamingApp(App):
         last_playback_trace_ms = -250
         turn_completed = False
         turn_failed = False
+        turn_id_for_audio = str(
+            getattr(self.session, "active_turn_id", None)
+            or getattr(self.domain.state, "turn_id", None)
+            or ""
+        )
+        failed_turn_finalized = False
 
         def update_thinking(text: Optional[str] = None) -> None:
             nonlocal thinking_started_at, thinking_preview
@@ -3770,7 +3780,35 @@ class HermesStreamingApp(App):
             if self._caption_task is None or self._caption_task.done():
                 self._caption_task = asyncio.create_task(caption_clock())
 
-        async for event in events:
+        def finalize_failed_turn() -> None:
+            """Commit received text and audio before the failure cleanup runs."""
+            nonlocal failed_turn_finalized
+            if failed_turn_finalized:
+                return
+            failed_turn_finalized = True
+            render_assistant(complete=True)
+            self._save_turn_audio(
+                bytes(audio),
+                audio_format,
+                index,
+                turn_id_for_audio,
+                played_live,
+                playback_failed,
+            )
+
+        async def guarded_events() -> AsyncIterator[dict[str, Any]]:
+            """Finalize an accumulated response if the event stream raises."""
+            try:
+                async for event in events:
+                    yield event
+            except BaseException:
+                finalize_failed_turn()
+                raise
+
+        async for event in guarded_events():
+            event_turn_id = event.get("turn_id")
+            if event_turn_id and not turn_id_for_audio:
+                turn_id_for_audio = str(event_turn_id)
             kind = event["type"]
             diagnostic_logger.debug(
                 "app.event kind=%s %s",
@@ -3804,11 +3842,13 @@ class HermesStreamingApp(App):
                         f"[error] {error_text}",
                         role="error",
                     )
+                    finalize_failed_turn()
                     return False
                 continue
             if kind in {"connection_lost", "disconnected"}:
-                await self._mark_connection_lost()
                 turn_failed = True
+                finalize_failed_turn()
+                await self._mark_connection_lost()
                 return False
             if kind not in {"audio_start", "turn_end"}:
                 self._sync_voice_state_from_domain(domain_result.state.phase)
@@ -4049,6 +4089,9 @@ class HermesStreamingApp(App):
                             self._append_block(
                                 "[error] unsupported audio file fallback"
                             )
+                            self._mark_audio_unavailable(
+                                "audio fallback unavailable"
+                            )
                         continue
                     file_audio, file_format = bytes(audio_file), audio_file_format
                 audio.extend(file_audio)
@@ -4104,11 +4147,13 @@ class HermesStreamingApp(App):
                 self._set_voice_state(VOICE_ERROR)
                 thinking_activity_active = False
                 self._append_block(f"[error] {event['error']}", role="error")
+                finalize_failed_turn()
                 if self._pending_prompt is not None:
                     self._pending_prompt = None
                     self._refresh_prompt_panel()
                 return False
             elif kind == "turn_interrupted":
+                finalize_failed_turn()
                 await self._close_player(abort=True)
                 complete_thinking()
                 self.transcript.finish_stream()
@@ -4151,6 +4196,7 @@ class HermesStreamingApp(App):
             )
             self._set_voice_state(VOICE_ERROR)
             self._append_block(f"[error] {error_text}", role="error")
+            finalize_failed_turn()
             turn_failed = True
 
         return turn_completed and not turn_failed
