@@ -1,0 +1,137 @@
+# EXPERIMENT (story 3, session 17): isolated test of whether flashing the
+# reSpeaker Lite's onboard XMOS XU316 DSP with the specific firmware
+# version formatBCE's proven-working reference config depends on
+# (respeaker_lite_i2s_dfu_firmware_48k_v1.1.0.bin) changes wake-word
+# detection behavior with the pretrained community models (hey_jarvis,
+# okay_nabu) that already failed on this device (session 10's
+# cross-validation concluded "acoustic mismatch" from *this project's own*
+# internal pipeline comparison -- this test checks against an external
+# known-working reference instead, per the user's direct question about
+# why community ESPHome tutorials show this board working).
+#
+# Deliberately minimal: same proven-correct audio path (vendored,
+# anti-aliasing-patched i2s_audio; vendored, diagnostic-patched
+# micro_wake_word) as the main respeaker-lite.yaml, MINUS all the
+# training-data-capture infrastructure (pcm_capture, http_request upload)
+# which is irrelevant to this specific question. The only real addition is
+# the `respeaker_lite:` component and its XMOS DFU firmware block.
+#
+# Do NOT merge into respeaker-lite.yaml until the result is known -- this
+# is a standalone experiment, not yet a decided direction.
+
+esphome:
+  name: respeaker-lite-xmos-test
+  friendly_name: "Hermes Puck (XMOS firmware test)"
+  on_boot:
+    - priority: -100
+      then:
+        - micro_wake_word.start
+        - micro_wake_word.enable_model: okay_nabu
+
+esp32:
+  board: seeed_xiao_esp32s3
+  variant: esp32s3
+  flash_size: 8MB
+  framework:
+    type: esp-idf
+    version: recommended
+
+psram:
+  mode: octal
+
+logger:
+  level: DEBUG
+
+api:
+  encryption:
+    key: !secret api_encryption_key
+
+ota:
+  - platform: esphome
+    password: !secret ota_password
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+  ap:
+    ssid: "Respeaker-Lite Fallback"
+    password: !secret ap_fallback_password
+
+# Required by respeaker_lite: for talking to the XMOS chip to perform the
+# DFU firmware update. Pins/frequency match formatBCE's reference
+# (config/common/respeaker-satellite-base.yaml).
+i2c:
+  - id: internal_i2c
+    sda: GPIO5
+    scl: GPIO6
+    frequency: 400kHz
+
+# The experiment: flash the XMOS DSP's own onboard firmware to the exact
+# version formatBCE's proven-working setup uses. reset_pin and firmware
+# URL/version/md5 are verbatim from their reference config, not invented.
+respeaker_lite:
+  id: respeaker
+  reset_pin: GPIO2
+  firmware:
+    url: https://github.com/formatBCE/Respeaker-Lite-ESPHome-integration/raw/refs/heads/main/respeaker_lite_i2s_dfu_firmware_48k_v1.1.0.bin
+    version: "1.1.0"
+    md5: 9297155d1bf3eb21a9d4db52a89ea0c6
+
+external_components:
+  - source:
+      type: local
+      path: components
+    components:
+      - i2s_audio
+      - micro_wake_word
+      - respeaker_lite
+
+i2s_audio:
+  - id: i2s_bus
+    i2s_lrclk_pin: GPIO7
+    i2s_bclk_pin: GPIO8
+    i2s_mclk_pin: GPIO9
+
+microphone:
+  - platform: i2s_audio
+    id: puck_mic
+    i2s_audio_id: i2s_bus
+    i2s_din_pin: GPIO44
+    adc_type: external
+    pdm: false
+    sample_rate: 48000
+    bits_per_sample: 32bit
+    i2s_mode: secondary
+    channel: stereo
+
+# Same models that already failed pre-DFU -- if the XMOS firmware update
+# changes anything, these should start responding to real speech.
+micro_wake_word:
+  id: mww
+  microphone:
+    microphone: puck_mic
+    channels: 1
+    gain_factor: 4
+  models:
+    - model: wake_models/hey_jarvis.json
+      id: hey_jarvis
+    - model: wake_models/stop.json
+      id: stop
+      internal: true
+    - model: wake_models/okay_nabu.json
+      id: okay_nabu
+  vad:
+    model: wake_models/vad.json
+    probability_cutoff: 0.05
+
+# Same diagnostic pattern used throughout this story: poll is_running/
+# vad_state periodically (catches the state even if logs attach late),
+# and log raw per-model probability so a near-miss is visible, not just
+# a binary detected/not-detected.
+interval:
+  - interval: 2s
+    then:
+      - lambda: |-
+          ESP_LOGI("mww_diag", "mww is_running: %s, vad_state: %s",
+                   id(mww).is_running() ? "true" : "false",
+                   id(mww).get_vad_state() ? "true" : "false");

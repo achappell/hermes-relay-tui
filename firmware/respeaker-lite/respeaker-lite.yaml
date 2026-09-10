@@ -25,6 +25,11 @@
 esphome:
   name: respeaker-lite
   friendly_name: "Hermes Puck (reSpeaker Lite)"
+  # TEMPORARY: raw PCM capture for a human to actually listen to (story 3
+  # follow-up) -- see pcm_capture.h for why this design avoids the two
+  # patterns that crash-looped the device in a prior session.
+  includes:
+    - pcm_capture.h
   # micro_wake_word does not start listening on its own -- MicroWakeWord::setup()
   # never calls start(), and its own data callback explicitly drops audio while
   # state_ == STOPPED. Without a voice_assistant: component (which normally
@@ -32,9 +37,31 @@ esphome:
   # stopped -- exactly matching every symptom seen debugging this story
   # (zero mic activity, zero detections, at any log verbosity).
   on_boot:
-    priority: -100  # run after all components finish setup(), not during boot
-    then:
-      - micro_wake_word.start
+    - priority: -100  # run after all components finish setup(), not during boot
+      then:
+        - micro_wake_word.start
+        # TEMPORARY (story 3 differential diagnostic): only the first model
+        # in `models:` is enabled by default (see __init__.py's
+        # "default_enabled = i == 0") -- okay_nabu, listed second, was
+        # silently never invoked without this.
+        - micro_wake_word.enable_model: okay_nabu
+        - lambda: pcm_capture::setup();
+    - priority: -200  # after the capture buffer is allocated above
+      then:
+        - lambda: pcm_capture::start();
+    # TEMPORARY (story 3 diagnostic): mww_shape logs once per model, at
+    # first load, which happens too early (~1-2s post-boot) to reliably
+    # catch before `esphome logs` finishes attaching to the serial port.
+    # Force a fresh, guaranteed-observable reload well after logs are
+    # attached by disabling then re-enabling both wake-word models.
+    - priority: -201
+      then:
+        - delay: 5s
+        - micro_wake_word.disable_model: hey_jarvis
+        - micro_wake_word.disable_model: okay_nabu
+        - delay: 500ms
+        - micro_wake_word.enable_model: hey_jarvis
+        - micro_wake_word.enable_model: okay_nabu
 
 esp32:
   board: seeed_xiao_esp32s3
@@ -43,6 +70,17 @@ esp32:
   framework:
     type: esp-idf
     version: recommended
+
+# TEMPORARY, isolation step 1 of the safer PCM-capture redesign (story 3
+# follow-up): enable PSRAM alone, with no capture/buffer logic yet, to
+# test in isolation whether PSRAM enablement itself was the cause of the
+# prior session's crash-loop (that attempt combined psram: + a resized
+# fixed buffer in on_boot and crashed within ~1s -- ambiguous which of the
+# two caused it). If this boots clean, PSRAM itself is not the trigger and
+# a raw heap_caps_malloc-based capture buffer (no vector, no resize) is
+# safe to add next.
+psram:
+  mode: octal
 
 logger:
   level: DEBUG
@@ -55,6 +93,13 @@ api:
 ota:
   - platform: esphome
     password: !secret ota_password
+
+# Training-data pipeline (story 3 follow-up): POSTs each rolling capture
+# window to a local server on the dev Mac, replacing the far-too-slow
+# serial/base64 dump path. See pcm_capture.h.
+http_request:
+  id: http_client
+  timeout: 5s
 
 wifi:
   ssid: !secret wifi_ssid
@@ -73,17 +118,67 @@ wifi:
 # Accepted as a trusted build dependency for this board — see the
 # mid-implementation Decision in this story's spec file
 # (_bmad-output/specs/spec-hermes-relay-tui/stories/3-implement-on-device-wake-word-detection.md).
+#
+# Vendored locally (components/i2s_audio/, a verbatim copy of
+# formatBCE/esphome at the previously-pinned commit
+# eedcdbee335dbe296d432b3e6421da0469907365) rather than pulled from git.
+# Session 6 patched the 48kHz->16kHz decimation here with a proper
+# anti-aliasing FIR filter, reasoning that the upstream fork's naive
+# nearest-sample-drop decimation (confirmed via spectrogram to alias) was
+# the cause of this story's wake-word non-detection problem. Session 17
+# proved that reasoning backwards: building formatBCE's actual unmodified
+# reference config side-by-side showed wake-word detection working
+# cleanly with the stock, unfiltered decimation, and *not* working with
+# this project's "improved" filter. Reverted back to the stock nearest-
+# sample-drop (no filtering) -- see the decimation loop in
+# components/i2s_audio/microphone/i2s_audio_microphone.cpp for the full
+# explanation and story 3's session 17 notes for the investigation.
+# Also vendors `micro_wake_word` locally (components/micro_wake_word/, a
+# verbatim copy of this project's installed ESPHome 2026.8.2 package) to
+# add a raw-probability diagnostic in streaming_model.cpp -- the stock
+# component only ever logs a binary detected/not-detected outcome, which
+# after three failed audio-pipeline fixes (gain, boxcar filter, proper FIR
+# filter -- see story 3) never told us how close probability actually got
+# to the cutoff. See streaming_model.cpp's perform_streaming_inference.
 external_components:
   - source:
-      type: git
-      url: https://github.com/formatBCE/esphome
-      # Pinned to a commit, not the mutable `respeaker_microphone` branch --
-      # a trusted-third-party build dependency should not silently change
-      # under this project when upstream pushes to that branch. Re-pin
-      # deliberately (new SHA + a note why) rather than tracking the branch.
-      ref: eedcdbee335dbe296d432b3e6421da0469907365
+      type: local
+      path: components
     components:
       - i2s_audio
+      - micro_wake_word
+      - respeaker_lite
+
+# Required by respeaker_lite: below, to talk to the XMOS chip for the DFU
+# firmware update. Pins/frequency match formatBCE's reference config.
+i2c:
+  - id: internal_i2c
+    sda: GPIO5
+    scl: GPIO6
+    frequency: 400kHz
+
+# Session 17 (story 3): flashes the reSpeaker Lite's onboard XMOS XU316
+# DSP with the specific firmware version formatBCE's proven-working
+# reference config depends on. This unit shipped with XMOS firmware
+# 1.0.8; the reference (and Seeed's own official setup wiki,
+# wiki.seeedstudio.com/respeaker_lite_ha/) specifies 1.1.0. Wired in
+# permanently, not as a one-time manual step, so flashing this firmware
+# onto any reSpeaker Lite unit -- not just the one already updated this
+# session -- brings its XMOS firmware to the matching version
+# automatically. Idempotent: the component checks the XMOS chip's current
+# version against this one and only performs the DFU update if they
+# differ, so this is a harmless no-op on a unit already at 1.1.0.
+# firmware URL/version/md5 verbatim from formatBCE's reference, not
+# invented. Vendored locally at components/respeaker_lite/ (pinned commit
+# 3136cf7) with two environment-specific fixes documented in that
+# component's own comments -- neither changes DFU/audio behavior.
+respeaker_lite:
+  id: respeaker
+  reset_pin: GPIO2
+  firmware:
+    url: https://github.com/formatBCE/Respeaker-Lite-ESPHome-integration/raw/refs/heads/main/respeaker_lite_i2s_dfu_firmware_48k_v1.1.0.bin
+    version: "1.1.0"
+    md5: 9297155d1bf3eb21a9d4db52a89ea0c6
 
 # I2S audio bus from the XU316 DSP into the XIAO ESP32-S3's host-side ADC
 # input. Pin assignments sourced from Seeed's own wiki tutorial for this
@@ -111,21 +206,40 @@ microphone:
     # TEMPORARY diagnostic for the "zero audio pipeline activity" mystery --
     # logs raw amplitude every ~1s, independent of micro_wake_word, to prove
     # whether any signal reaches the ESP32 at all. Remove once resolved.
+    #
+    # Split per channel (ch0/ch1), not combined: micro_wake_word's
+    # `channels: 1` selects channel index 1 only (matching this board's
+    # documented ch1-fits-wake-word split -- see README), but the prior
+    # combined diagnostic walked every 4-byte sample regardless of channel,
+    # so a loud ch0 (ASR-optimized) signal could mask a silent/garbage ch1
+    # and still show "peak amplitude" without proving the wake-word engine's
+    # actual input channel ever received anything. This never got checked
+    # before now -- see story 3's "one unexplained detail" note.
     on_data:
       - lambda: |-
           static uint32_t last_log_ms = 0;
-          static int32_t running_max = 0;
-          for (size_t i = 0; i + 3 < x.size(); i += 4) {
-            int32_t sample = (int32_t)(x[i] | (x[i+1] << 8) | (x[i+2] << 16) | (x[i+3] << 24));
-            int32_t abs_sample = sample < 0 ? -sample : sample;
-            if (abs_sample > running_max) running_max = abs_sample;
+          static int32_t running_max_ch0 = 0;
+          static int32_t running_max_ch1 = 0;
+          // Stereo, 32-bit: each frame is 8 bytes -- ch0 first 4 bytes, ch1 next 4.
+          for (size_t i = 0; i + 7 < x.size(); i += 8) {
+            int32_t sample0 = (int32_t)(x[i] | (x[i+1] << 8) | (x[i+2] << 16) | (x[i+3] << 24));
+            int32_t sample1 = (int32_t)(x[i+4] | (x[i+5] << 8) | (x[i+6] << 16) | (x[i+7] << 24));
+            int32_t abs0 = sample0 < 0 ? -sample0 : sample0;
+            int32_t abs1 = sample1 < 0 ? -sample1 : sample1;
+            if (abs0 > running_max_ch0) running_max_ch0 = abs0;
+            if (abs1 > running_max_ch1) running_max_ch1 = abs1;
           }
           uint32_t now = millis();
           if (now - last_log_ms > 1000) {
-            ESP_LOGI("mic_diag", "peak amplitude last ~1s: %d (bytes this callback: %d)", (int) running_max, (int) x.size());
-            running_max = 0;
+            ESP_LOGI("mic_diag", "peak amplitude last ~1s -- ch0: %d, ch1: %d (bytes this callback: %d)",
+                     (int) running_max_ch0, (int) running_max_ch1, (int) x.size());
+            running_max_ch0 = 0;
+            running_max_ch1 = 0;
             last_log_ms = now;
           }
+      # Bounded memcpy into a buffer sized once at boot -- no allocation
+      # or growth here. See pcm_capture.h.
+      - lambda: pcm_capture::write(x.data(), x.size());
 # On-device wake-word detection. Wake phrase is the pretrained community
 # model `hey_jarvis` (bundled with micro_wake_word, zero training
 # required) — NOT "hey hermes"; see README.md. The `stop` model is
@@ -136,6 +250,11 @@ micro_wake_word:
   microphone:
     microphone: puck_mic
     channels: 1
+    # gain_factor 4 (Seeed's tutorial value): tested and ruled out as the
+    # cause of the non-detection problem below -- dropping this to 1
+    # (no clipping, verified against raw mic_diag amplitudes) still
+    # produced zero detections on live speech. See README's Known
+    # Limitation and story 3's Implementation Notes for the full record.
     gain_factor: 4
   models:
     - model: wake_models/hey_jarvis.json
@@ -143,6 +262,37 @@ micro_wake_word:
     - model: wake_models/stop.json
       id: stop
       internal: true
+    # TEMPORARY differential diagnostic (story 3 follow-up): hey_jarvis's
+    # raw probability flatlined at 0/255 across a whole loud-speech test
+    # while the VAD model, fed the identical shared audio features,
+    # responded normally -- ruling out the audio pipeline. Added to test
+    # whether ANY wake-word-class model flatlines the same way (a generic
+    # WakeWordModel bug) or if it's specific to hey_jarvis.
+    - model: wake_models/okay_nabu.json
+      id: okay_nabu
   vad:
     model: wake_models/vad.json
     probability_cutoff: 0.05
+
+# TEMPORARY diagnostic: mww's on_boot state-transition log (STOPPED ->
+# STARTING -> DETECTING_WAKE_WORD) only fires once, right at boot, and is
+# easy to miss if `esphome logs` attaches even a second late. This makes
+# the same fact (is_running(), plus vad_state_ so we can see VAD react to
+# speech even if wake-word inference itself never fires) pollable at any
+# time without needing to catch a fresh boot. Remove once resolved.
+interval:
+  - interval: 2s
+    then:
+      - lambda: |-
+          ESP_LOGI("mww_diag", "mww is_running: %s, vad_state: %s",
+                   id(mww).is_running() ? "true" : "false",
+                   id(mww).get_vad_state() ? "true" : "false");
+  # Training-data capture (session 16): serial-dump safety test, NOT the
+  # WiFi upload path (pcm_capture::upload_and_restart, still defined in
+  # pcm_capture.h but not called here). Polls a cheap already-dumped guard
+  # every 200ms and fires exactly once, no re-arm -- see pcm_capture.h's
+  # dump_over_serial() for why this is deliberately small and one-shot.
+  - interval: 200ms
+    then:
+      - lambda: |-
+          pcm_capture::dump_over_serial();

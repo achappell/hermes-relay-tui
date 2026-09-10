@@ -139,8 +139,8 @@ venv-firmware/bin/esphome logs firmware/respeaker-lite/respeaker-lite.yaml --dev
    detection log line (wake word id `hey_jarvis`) should appear shortly
    after — this is the actual on-hardware proof that the I2S audio path and
    wake engine work, not just that the firmware compiles. **This step is
-   currently unverified** — see Known Limitation below; do not assume it
-   passes without running it yourself.
+   now verified working** (session 17) — see Known Limitation below for
+   the full resolution.
 
 ## Known Limitation
 
@@ -210,6 +210,177 @@ PSRAM-backed fixed buffer resized in `on_boot`) without first
 understanding why they aborted. See the story file's Implementation Notes
 for the complete, attempt-by-attempt record. Resolving this remains this
 story's one open follow-up, not silently declared working.
+
+**Follow-up session 3 ruled out two more hypotheses with direct hardware
+evidence, still unresolved:** split the amplitude diagnostic per channel
+and confirmed `ch0`/`ch1` are byte-for-byte identical on every sample —
+`channels: 1` is not silently reading a dead channel. Also formed and
+tested a gain-clipping hypothesis (`gain_factor: 4` overflowing the Q25
+fixed-point range on loud speech, confirmed by the actual math on an
+833M-amplitude live sample) by dropping gain to 1 and retesting with
+un-clipped, still-loud speech — still zero detections, so that's ruled out
+too and gain is back at 4. The wake-word engine is confirmed alive
+(`is_running: true` throughout) and receiving real, matching-channel,
+un-clipped, genuinely loud audio, and still never fires. See the story
+file's Implementation Notes for the full record. The most promising
+unblocked next step is still getting an actual PCM recording off the
+device for a human to listen to, via a safer redesign (queue from
+`on_data` to a separate `interval:`-driven consumer) than the two crashing
+attempts above — not yet attempted.
+
+**Follow-up session 4 built that safer capture and actually looked at the
+audio:** a single `heap_caps_malloc` PSRAM buffer (no vector, no resize),
+filled by a bounded `memcpy` in the real-time callback and drained via
+base64 dump from a slow `interval:` tick. Crash-free. Reconstructing and
+spectrogram-inspecting the captured PCM showed real, syllable-timed speech
+energy, but broadband and static across the spectrum instead of the
+smoothly-sweeping formant bands real speech should show — the signature of
+severe aliasing from the fork's unfiltered 48kHz→16kHz decimation.
+
+**Follow-up session 5 fixed that decimation** — vendored the `i2s_audio`
+component locally (`components/i2s_audio/`, no longer pulled from git) and
+replaced the nearest-sample-drop with a 3-tap boxcar anti-aliasing filter.
+Spectrogram comparison confirmed the fix works as intended (the static
+comb-banding is gone, replaced by a natural-looking low-frequency-weighted
+decay) — but **wake-word detection still doesn't fire**, even with
+confirmed loud, sustained, correctly-filtered speech reaching the model.
+Aliasing was very likely real and worth fixing, but not the sole cause.
+See the story file's Implementation Notes for the full record and the
+concrete next step (a steeper filter, or a reference-recording
+comparison).
+
+**Follow-up session 6 tried the steeper filter** — a proper 31-tap
+windowed-sinc FIR replacing the boxcar, verified via spectrogram to
+further clean up the signal. Tested against the loudest, most sustained
+speech of the whole investigation (confirmed amplitude peaks up to 1.45-
+1.6 billion, near the hardware's clipping ceiling) via live monitoring,
+not just the fixed capture window. **Still zero detections.** This is no
+longer plausibly an audio-quality problem — three independently-tested
+audio-pipeline fixes (gain, boxcar filter, proper FIR filter) have all
+failed to produce a single detection against audio that is now about as
+clean and loud as this hardware can produce. Per the project's own
+debugging discipline, three failed fix attempts means stop tuning the
+front end and question the architecture instead. Next places to look:
+whether the vendored `hey_jarvis`/`stop` TFLite model files are intact and
+version-compatible with this ESPHome release, and the TFLite
+feature-extraction frontend inside `micro_wake_word.cpp` itself (never
+directly inspected across any session so far). See the story file.
+
+**Follow-up session 7 checked both.** Model files: fetched fresh from
+upstream and diffed by SHA-256 -- byte-identical, not corrupted. The
+inference pipeline: added a raw-probability diagnostic (never logged
+before, only a binary detected/not-detected outcome) and found `hey_jarvis`
+flatlined at a literal 0/255 across a full loud-speech test, while VAD
+(fed the *same shared audio features*) responded normally. A second,
+independently-trained wake-word model (`okay_nabu`) showed the same
+near-zero flatline, ruling out a single corrupted model. Tensor
+shape/stride/arena size for both models checked and came back completely
+normal. **Net conclusion: this is no longer explainable by the audio
+pipeline, model files, or tensor structure — something is different
+between how `WakeWordModel`-class instances process the shared features
+and how the lenient VAD model does**, most likely a level/dynamic-range
+mismatch between this hardware's audio and what these strict-threshold
+pretrained models expect. Also found and fixed a real, previously
+undocumented bug along the way: only the first model in `models:` is
+enabled by default (`default_enabled = i == 0` in ESPHome's own
+`micro_wake_word/__init__.py`) — anything listed after it silently never
+runs unless explicitly enabled. See the story file for the full record and
+the next concrete step (logging the actual feature vector, not just the
+model's output).
+
+**Important caveat, found right after that (session 8):** the device's
+test room changed mid-session (moved rooms), and a later attempted
+silence-then-one-utterance test showed no quiet baseline at all —
+amplitude stayed pinned at 150M-2.1B continuously, even during intended
+silence, a dramatic change from the ~5-20M ambient baseline earlier in the
+same session. **Session 7's "both wake-word models flatline while VAD
+responds" finding was measured after this room change**, so it may
+reflect a genuinely noisy test environment rather than a deep code/model
+bug — these strict-threshold pretrained models need a real quiet-vs-speech
+contrast that a persistently loud room may never provide, while VAD's much
+more lenient threshold would still respond to any activity regardless. The
+anti-aliasing fix and the default-disabled-model bug are real, verified
+fixes independent of this; only the *interpretation* of session 7's
+flatline finding is now uncertain.
+
+**Session 9 redid it properly and got the sharpest result of the whole
+investigation.** Confirmed a genuinely quiet baseline directly, then a
+clean isolated-utterance retest reproduced session 7's flatline finding —
+ruling the room-noise theory back out. Tightened the diagnostics 10x
+(100ms instead of 1s) to see a full spoken word instead of one lucky
+sample: **the feature generator works correctly** (mean visibly rose from
+~-100 to +6.2 during real speech, a clearly well-formed feature vector,
+not noise), but **the model's own probability output never moved off
+0/255 through that same well-formed window.** The break is narrower now:
+audio, model files, tensor shapes, and feature generation are all
+confirmed correct — something specific to how the model's own weights
+interpret otherwise-correct features is the remaining suspect (most
+likely a representation mismatch like filterbank channel ordering, not
+visible to a range/statistics check). Next step: diff this pipeline's
+feature output against a reference Python implementation on identical
+captured PCM. See the story file.
+
+**Session 10 did exactly that, and it's decisive.** Built an independent
+offline test harness (`pymicro-features` + `ai-edge-litert`, the same
+underlying feature-extraction library and the actual `.tflite` model,
+completely outside ESPHome) and reproduced the flat-zero result on real
+captured Puck audio. Then ran a positive control — clean synthetic "Hey
+Jarvis" TTS speech through the identical pipeline — which detected
+correctly (probability climbed to 255, decisively over the 247 cutoff).
+**This means every stage of the pipeline is now verified correct, and the
+remaining problem is very likely the actual acoustic content the XU316's
+onboard DSP produces** — not a fixable software bug in this repo. The two
+real next steps are a genuinely different scope of work: training a
+custom wake-word model on audio captured through this exact hardware (the
+`microWakeWord` project explicitly supports this), or investigating
+whether a different XMOS DSP firmware variant with less aggressive
+processing is available for this board. See the story file for the full
+record.
+
+**Session 17 solved it. This conclusion was wrong** — not because the
+reasoning at the time was unsound, but because it was never tested
+against an actual known-working external reference, only validated
+internally against this project's own pipeline. Two real findings:
+
+1. **This unit's XMOS DSP firmware was version 1.0.8; the community
+   reference this firmware is modeled on (`formatBCE/Respeaker-Lite-
+   ESPHome-integration`) depends on 1.1.0.** Flashed the correct version
+   via the `respeaker_lite:` component's DFU mechanism (now vendored at
+   `components/respeaker_lite/`) — genuinely necessary, permanent, and
+   worth keeping, but **on its own this did not fix detection.** A direct
+   test immediately after (18 "hey jarvis" TTS plays against the upgraded
+   firmware) still came back flat 0/255, VAD included.
+2. **The actual cause: session 6's "proper" 31-tap windowed-sinc
+   anti-aliasing FIR filter, not the naive decimation it replaced.**
+   Built formatBCE's complete, faithful stock config side-by-side
+   (`respeaker-lite-stock-test.yaml`, using their unmodified `i2s_audio`
+   fork verbatim, vendored at `components_stock/`) and found `hey_jarvis`
+   fires cleanly and repeatedly (255/255, cutoff 247) on real speech, with
+   correct rejection of non-wake phrases and a real VAD curve (climbing
+   to 200+/255 during speech, baseline ~1-14 otherwise) — the first time
+   in this story's entire history any of that worked. Reverted
+   `components/i2s_audio`'s decimation back to the naive nearest-sample-
+   drop (no filtering) to confirm, then re-verified on the actual
+   production `respeaker-lite.yaml`: same clean 255/255 detections.
+   **The mathematically "more correct" anti-aliasing filter was
+   measurably worse for this specific pretrained model** — most likely
+   because its steeper cutoff removed spectral content (e.g. 7-8kHz
+   energy) the model actually relies on, not because the naive decimation
+   was somehow fine after all. Sessions 4-6's aliasing diagnosis (real,
+   confirmed by spectrogram) was correct; the fix for it was the actual
+   bug.
+
+**Wake-word detection works on this hardware with the pretrained
+`hey_jarvis` model, using formatBCE's stock XMOS firmware (1.1.0) and
+formatBCE's stock (unfiltered) decimation.** The custom-training work
+from steps 1-3 (data collection pipeline, 30-clip dataset, first trained
+model) remains fully working and banked, but is no longer the only path
+to on-device detection — it's now optional future work for improving
+robustness/vocabulary, not a requirement. See the story file's session 17
+entries for the complete investigation, including the real environment
+bugs found and fixed along the way (an ESP-IDF toolchain segfault from a
+redundant `requests` HTTP round-trip, and a null-pointer crash in the DFU
+version-check code).
 
 **If you raise `logger: level:` above `DEBUG` while debugging this:**
 `VERY_VERBOSE` logs the configured WiFi password in cleartext (found and
