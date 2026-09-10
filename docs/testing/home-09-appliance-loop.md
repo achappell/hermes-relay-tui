@@ -134,8 +134,11 @@ When the display is connected and idle:
    confirm recognition stays paused while the answer is thinking, buffering,
    and speaking.
 4. During the one follow-up window, ask a second question without the wake
-   phrase. Confirm exactly one more turn. Stay silent until the default
-   eight-second window closes; no third capture or turn may occur.
+   phrase. Confirm exactly one more turn. The browser primes the microphone
+   once and retries a silent Safari post-playback recognition start within the
+   bounded window. Stay silent until the default eight-second window closes;
+   no third capture or turn may occur. If Safari cannot recover, the page
+   returns to wake-ready without replaying or sending an uncertain transcript.
 5. Repeat the initial and follow-up captures with exactly `stop` (including
    ordinary terminal punctuation). Both must close silently: no Hermes turn,
    capture-complete signal, or replay.

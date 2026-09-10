@@ -5627,6 +5627,15 @@ function defaultRecognitionFactory() {
   }
   return new Constructor();
 }
+async function defaultRecognitionPreparer() {
+  var _a2;
+  if (typeof navigator === "undefined" || !((_a2 = navigator.mediaDevices) == null ? void 0 : _a2.getUserMedia)) return;
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    for (const track of stream.getTracks()) track.stop();
+  } catch {
+  }
+}
 class BrowserVoiceController {
   constructor(options) {
     __publicField(this, "sendText");
@@ -5736,6 +5745,9 @@ class BrowserVoiceController {
 }
 const DEFAULT_HANDS_FREE_SECONDS = 8;
 const MAX_HANDS_FREE_TIMER_SECONDS = 2147483647e-3;
+const FOLLOW_UP_START_TIMEOUT_MS = 1e3;
+const FOLLOW_UP_ACTIVITY_TIMEOUT_MS = 3500;
+const FOLLOW_UP_RETRY_DELAYS_MS = [300, 1e3, 2e3, 3500];
 function normaliseSpeech(text) {
   return text.trim().replace(/\s+/g, " ");
 }
@@ -5775,6 +5787,7 @@ class BrowserHandsFreeController {
     __publicField(this, "onState");
     __publicField(this, "onError");
     __publicField(this, "recognitionFactory");
+    __publicField(this, "prepareRecognition");
     __publicField(this, "language");
     __publicField(this, "phase", "off");
     __publicField(this, "armed", false);
@@ -5783,6 +5796,9 @@ class BrowserHandsFreeController {
     __publicField(this, "captureTimer", null);
     __publicField(this, "heardTimer", null);
     __publicField(this, "restartTimer", null);
+    __publicField(this, "followUpRetryTimer", null);
+    __publicField(this, "followUpWatchdogTimer", null);
+    __publicField(this, "followUpAttempt", 0);
     __publicField(this, "followUpEligible", false);
     __publicField(this, "turnInFlight", false);
     this.sendText = options.sendText;
@@ -5794,6 +5810,7 @@ class BrowserHandsFreeController {
     this.onError = options.onError ?? (() => {
     });
     this.recognitionFactory = options.recognitionFactory ?? defaultRecognitionFactory;
+    this.prepareRecognition = options.prepareRecognition ?? defaultRecognitionPreparer;
     this.language = options.language ?? "en-US";
   }
   configure(options) {
@@ -5891,13 +5908,33 @@ class BrowserHandsFreeController {
     } catch {
       return false;
     }
-    recognition.onresult = (event2) => this.handleResult(event2, generation);
+    let started = false;
+    recognition.onstart = () => {
+      if (!this.isCurrent(generation) || this.recognition !== recognition) return;
+      started = true;
+      if (this.phase === "follow_up") {
+        this.scheduleFollowUpWatchdog(
+          generation,
+          recognition,
+          FOLLOW_UP_ACTIVITY_TIMEOUT_MS
+        );
+      }
+    };
+    recognition.onresult = (event2) => {
+      this.clearFollowUpWatchdog();
+      this.handleResult(event2, generation);
+    };
     recognition.onerror = (event2) => {
       var _a2;
       if (!this.isCurrent(generation) || this.recognition !== recognition) return;
       const code = (_a2 = event2.error) == null ? void 0 : _a2.toLocaleLowerCase();
       if (code === "no-speech" || code === "aborted") {
-        this.scheduleRecognitionRestart(generation);
+        if (this.phase === "follow_up") {
+          this.stopRecognition();
+          this.scheduleFollowUpRetry(generation);
+        } else {
+          this.scheduleRecognitionRestart(generation);
+        }
         return;
       }
       this.fail("Microphone or speech recognition is unavailable");
@@ -5905,15 +5942,28 @@ class BrowserHandsFreeController {
     recognition.onend = () => {
       if (!this.isCurrent(generation) || this.recognition !== recognition) return;
       this.recognition = null;
+      this.clearFollowUpWatchdog();
       if (this.phase === "submitting") return;
-      this.scheduleRecognitionRestart(generation);
+      if (this.phase === "follow_up") {
+        this.scheduleFollowUpRetry(generation);
+      } else {
+        this.scheduleRecognitionRestart(generation);
+      }
     };
     this.recognition = recognition;
     try {
       recognition.start();
+      if (this.phase === "follow_up" && !started && this.recognition === recognition) {
+        this.scheduleFollowUpWatchdog(
+          generation,
+          recognition,
+          FOLLOW_UP_START_TIMEOUT_MS
+        );
+      }
       return true;
     } catch {
       this.recognition = null;
+      this.clearFollowUpWatchdog();
       return false;
     }
   }
@@ -5967,14 +6017,48 @@ class BrowserHandsFreeController {
   beginFollowUp(generation) {
     if (!this.isCurrent(generation)) return;
     this.phase = "follow_up";
+    this.followUpAttempt = 0;
     this.emit("follow_up");
     this.startCaptureTimer(generation, this.followUpSeconds);
-    if (!this.startRecognition(generation)) {
-      this.scheduleRecognitionRestart(generation);
+    void this.prepareAndStartFollowUp(generation);
+  }
+  async prepareAndStartFollowUp(generation) {
+    try {
+      await this.prepareRecognition();
+    } catch {
     }
+    if (!this.isCurrent(generation) || this.phase !== "follow_up") return;
+    if (!this.startRecognition(generation)) this.scheduleFollowUpRetry(generation);
+  }
+  scheduleFollowUpRetry(generation) {
+    if (!this.isCurrent(generation) || this.phase !== "follow_up" || this.followUpRetryTimer !== null) return;
+    const nextAttempt = this.followUpAttempt + 1;
+    const delay = FOLLOW_UP_RETRY_DELAYS_MS[nextAttempt - 1];
+    if (delay === void 0) {
+      this.fail("Speech recognition could not resume after playback");
+      return;
+    }
+    this.followUpRetryTimer = setTimeout(() => {
+      this.followUpRetryTimer = null;
+      if (!this.isCurrent(generation) || this.phase !== "follow_up") return;
+      this.followUpAttempt = nextAttempt;
+      if (!this.startRecognition(generation)) {
+        this.scheduleFollowUpRetry(generation);
+      }
+    }, delay);
+  }
+  scheduleFollowUpWatchdog(generation, recognition, delay) {
+    this.clearFollowUpWatchdog();
+    this.followUpWatchdogTimer = setTimeout(() => {
+      this.followUpWatchdogTimer = null;
+      if (!this.isCurrent(generation) || this.phase !== "follow_up" || this.recognition !== recognition) return;
+      this.stopRecognition();
+      this.scheduleFollowUpRetry(generation);
+    }, delay);
   }
   enterWakeReady(generation, deferRecognition = false) {
     if (!this.isCurrent(generation)) return;
+    this.clearFollowUpRetryTimer();
     this.phase = "wake_ready";
     this.clearHeardTimer();
     this.emit("wake_ready");
@@ -6002,6 +6086,7 @@ class BrowserHandsFreeController {
     const isFollowUp = this.phase === "follow_up";
     this.clearCaptureTimer();
     this.clearHeardTimer();
+    this.clearFollowUpRetryTimer();
     this.stopRecognition();
     this.phase = "submitting";
     this.followUpEligible = !isFollowUp;
@@ -6051,11 +6136,27 @@ class BrowserHandsFreeController {
       clearTimeout(this.restartTimer);
       this.restartTimer = null;
     }
+    this.clearFollowUpRetryTimer();
+    this.clearFollowUpWatchdog();
+  }
+  clearFollowUpRetryTimer() {
+    if (this.followUpRetryTimer !== null) {
+      clearTimeout(this.followUpRetryTimer);
+      this.followUpRetryTimer = null;
+    }
+  }
+  clearFollowUpWatchdog() {
+    if (this.followUpWatchdogTimer !== null) {
+      clearTimeout(this.followUpWatchdogTimer);
+      this.followUpWatchdogTimer = null;
+    }
   }
   stopRecognition() {
+    this.clearFollowUpWatchdog();
     const recognition = this.recognition;
     this.recognition = null;
     if (recognition === null) return;
+    recognition.onstart = null;
     recognition.onresult = null;
     recognition.onerror = null;
     recognition.onend = null;
