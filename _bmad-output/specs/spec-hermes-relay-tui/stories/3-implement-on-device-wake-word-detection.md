@@ -12,6 +12,104 @@ context:
   - firmware/respeaker-lite/README.md
 ---
 
+## RESUME HERE (2026-09-09, end of session 17 -- major finding, read first)
+
+**Session 17's premise, raised directly by the user: sessions 3-10's
+"acoustic mismatch, unfixable" conclusion was reached entirely by
+*internal* cross-validation (synthetic vs. real audio through this
+project's own pipeline) -- never by testing against an actual
+known-working reference, despite this project's own firmware being
+closely modeled on one (`formatBCE/Respeaker-Lite-ESPHome-integration`).
+That gap turned out to be real and significant.**
+
+- **Found the real gap:** formatBCE's actual reference config
+  (`config/common/respeaker-satellite-base.yaml`) does something this
+  project's firmware never did -- flashes **custom firmware onto the
+  reSpeaker Lite's onboard XMOS XU316 DSP itself** (a `respeaker_lite:`
+  ESPHome component, I2C-based DFU, independent of whatever's flashed to
+  the ESP32) via `respeaker_lite_i2s_dfu_firmware_48k_v1.1.0.bin`. Every
+  session's diagnosis was implicitly comparing against whatever XMOS
+  firmware this specific unit shipped with -- never verified to match
+  the version the "it works on other people's units" evidence (the
+  videos the user watched) was actually produced with.
+- **Confirmed on real hardware: this unit's shipped XMOS firmware was
+  version 1.0.8, not 1.1.0.** Vendored `formatBCE`'s `respeaker_lite`
+  component locally (`components/respeaker_lite/`, pinned at commit
+  `3136cf7`, same pattern as this story's existing `i2s_audio`/
+  `micro_wake_word` vendoring) and built a standalone experiment config
+  (`respeaker-lite-xmos-test.yaml`) reusing this story's already-proven
+  audio path plus the DFU block, deliberately not merged into the main
+  `respeaker-lite.yaml` until the result was known.
+- **A long, genuinely difficult environment bug blocked compiling this
+  for most of the session -- fully root-caused, not worked around
+  blindly.** Every compile attempt that included the `firmware:` block
+  crashed the ESP-IDF toolchain subprocess with a native SIGSEGV
+  (`_yaml`'s C extension, per a macOS crash report), 100% reproducible,
+  regardless of firmware size (even truncated to 200 bytes), swap/memory
+  pressure (ruled out: freed 25GB disk, still crashed), or a full OS
+  restart (also ruled out: 0 swap used, 60GB free disk, still crashed
+  identically). **Actual root cause: `external_files.download_content()`
+  does a deferred `import requests` on every call, even when a
+  correctly-cached copy already exists on disk** -- isolated by testing
+  every combination (bare component, +i2c, +respeaker_lite-without-
+  firmware, +firmware truncated to 200 bytes) until only the presence of
+  that one call correlated with the crash. Fixed in the vendored
+  component by skipping `download_content()` entirely when
+  `_compute_local_file_path()`'s cache file already exists on disk --
+  the file was already downloaded and MD5-verified earlier in the
+  session, so this isn't a coverage gap, just avoiding a redundant
+  network round-trip that happens to trigger a real crash in this
+  environment. Root cause of *why* that import specifically segfaults
+  was not chased further (plausibly a memory-layout collision with a
+  later subprocess's shared-library load) -- the fix avoids it
+  regardless of the deeper mechanism.
+- **A second, unrelated real bug found and fixed the same way: a null
+  pointer dereference.** `respeaker_lite.cpp`'s `dfu_get_version_()`
+  unconditionally calls `this->firmware_version_->publish_state(...)`,
+  but that pointer is only set when the optional `firmware_version:`
+  text_sensor is configured -- crashed with `Guru Meditation Error
+  (LoadProhibited)` in a genuine boot loop on real hardware the moment
+  DFU version-checking ran. Fixed with the same null-guard pattern
+  already used for `mute_state_` elsewhere in the same file.
+- **With both fixes, the DFU update ran for real on the physical device
+  and succeeded:** `Expected XMOS version: 1.1.0; found: 1.0.8.
+  Updating...` -> progress to 100% -> `DFU version: 1.1.0` -> `Update
+  complete`. The XMOS chip's own firmware is now permanently at 1.1.0
+  (independent of whatever's flashed to the ESP32 afterward).
+- **A third, still-unresolved bug appeared immediately after: the
+  minimal test config's `mic_task` hangs and trips ESPHome's own
+  loopTask watchdog on every subsequent boot**, landing the device in a
+  boot loop that correctly escalated into ESPHome's built-in Safe Mode
+  after 10 failed attempts (not bricked -- a designed, recoverable
+  failure mode: 300s safe window, OTA/API still reachable). Not
+  root-caused this session.
+- **Critical, reassuring check performed before ending the session:
+  reflashed the actual proven `respeaker-lite.yaml` (this story's real
+  serial-dump/training-capture firmware) and confirmed it boots and
+  runs completely normally against the now-permanently-updated XMOS
+  1.1.0 firmware** -- real `PCMDUMP` output streaming, zero crash
+  markers, exactly as before. **The mic_task hang is specific to
+  something in the minimal `respeaker-lite-xmos-test.yaml` test config,
+  not a general incompatibility between this story's existing
+  microphone driver and XMOS firmware 1.1.0.** The device is left in a
+  known-good, working state -- not blocked, not bricked -- with the XMOS
+  firmware upgrade already banked as a permanent hardware-side change.
+- **What this means for the story's overall direction:** the
+  "acoustic mismatch, unfixable, must train a custom model" conclusion
+  from sessions 3-10 is now genuinely uncertain rather than settled --
+  this unit really was running different XMOS firmware than the
+  reference implementation the "it works" evidence is based on, which is
+  exactly the kind of confound that theory never ruled out. **Next real
+  step, not attempted: once the mic_task hang in the DFU-test config is
+  fixed, actually test whether the pretrained community models
+  (`hey_jarvis`, `okay_nabu`, already wired into this story's firmware)
+  detect real speech now that this device has the same XMOS firmware
+  version as the reference.** If they do, the custom-training path
+  (steps 1-3, still fully working and banked) becomes optional
+  polish/fallback rather than the only path forward. If they still
+  don't, that's much stronger evidence for the original acoustic-
+  mismatch theory than anything sessions 3-10 established alone.
+
 ## RESUME HERE (2026-09-09, end of session 16, sixth update -- step 3 done)
 
 **Sixth update, same session: ran microWakeWord's training pipeline

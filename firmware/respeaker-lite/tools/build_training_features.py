@@ -59,6 +59,23 @@ WORK_DIR = "/tmp/mww_smoke_run"
 POSITIVE_CLIPS_DIR = "/tmp/training_clips/positive"
 NEGATIVE_CLIPS_DIR = "/tmp/training_clips/negative"
 
+# Pre-generated ambient-negative spectrogram datasets from
+# https://huggingface.co/datasets/kahrendt/microwakeword (real background
+# noise, dinner-party conversation, and non-wake speech) -- optional. If
+# present, wired into training_parameters.yaml so false-accept-rate
+# evaluation uses real ambient audio instead of coming back nan/nan for
+# lack of any negative set beyond our own 15 clips. Not committed to this
+# repo (several GB); download per microWakeWord's own notebook (cell 8) or
+# this project's story doc session 16 notes.
+NEGATIVE_DATASETS_DIR = "/tmp/negative_datasets"
+HF_NEGATIVE_FEATURES = [
+    # (subdir, sampling_weight, truncation_strategy)
+    ("speech", 10.0, "random"),
+    ("dinner_party", 10.0, "random"),
+    ("no_speech", 5.0, "random"),
+    ("dinner_party_eval", 0.0, "split"),  # validation/testing only
+]
+
 
 def load_wav_int16(path: str) -> np.ndarray:
     with wave.open(path, "rb") as w:
@@ -121,38 +138,54 @@ def main():
 
     import yaml
 
+    features = [
+        {
+            "features_dir": positive_features,
+            "sampling_weight": 2.0,
+            "penalty_weight": 1.0,
+            "truth": True,
+            "truncation_strategy": "truncate_start",
+            "type": "mmap",
+        },
+        {
+            "features_dir": negative_features,
+            "sampling_weight": 2.0,
+            "penalty_weight": 1.0,
+            "truth": False,
+            "truncation_strategy": "random",
+            "type": "mmap",
+        },
+    ]
+
+    for subdir, sampling_weight, truncation_strategy in HF_NEGATIVE_FEATURES:
+        feature_dir = os.path.join(NEGATIVE_DATASETS_DIR, subdir)
+        if os.path.isdir(feature_dir):
+            features.append({
+                "features_dir": feature_dir,
+                "sampling_weight": sampling_weight,
+                "penalty_weight": 1.0,
+                "truth": False,
+                "truncation_strategy": truncation_strategy,
+                "type": "mmap",
+            })
+            print(f"Wired in HF negative dataset: {feature_dir}")
+        else:
+            print(f"Skipping HF negative dataset (not found): {feature_dir}")
+
     config = {
         "window_step_ms": 10,
         "train_dir": os.path.join(WORK_DIR, "trained_model"),
-        "features": [
-            {
-                "features_dir": positive_features,
-                "sampling_weight": 2.0,
-                "penalty_weight": 1.0,
-                "truth": True,
-                "truncation_strategy": "truncate_start",
-                "type": "mmap",
-            },
-            {
-                "features_dir": negative_features,
-                "sampling_weight": 2.0,
-                "penalty_weight": 1.0,
-                "truth": False,
-                "truncation_strategy": "random",
-                "type": "mmap",
-            },
-        ],
-        # Smoke test only -- real training would use thousands of steps.
-        "training_steps": [200],
+        "features": features,
+        "training_steps": [2000],
         "positive_class_weight": [1],
-        "negative_class_weight": [1],
+        "negative_class_weight": [20],
         "learning_rates": [0.001],
-        "batch_size": 16,
+        "batch_size": 128,
         "time_mask_max_size": [0],
         "time_mask_count": [0],
         "freq_mask_max_size": [0],
         "freq_mask_count": [0],
-        "eval_step_interval": 50,
+        "eval_step_interval": 200,
         "clip_duration_ms": 1500,
         "target_minimization": 0.9,
         "minimization_metric": None,
