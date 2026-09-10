@@ -61,14 +61,29 @@ def test_a_disconnected_session_refuses_wake_before_acknowledgement_or_capture()
         capture=lambda: captures.append(True) or "should not be captured",
         send=lambda text: session.send_turn(text),
         acknowledge=lambda: events.append("acknowledge"),
+        on_unavailable=lambda: events.append("unavailable"),
     )
 
     assert coordinator.on_wake() is False
 
-    assert events == []
+    assert events == ["unavailable"]
     assert captures == []
     assert session.turns == []
     assert coordinator.state == handsfree.IDLE
+
+
+def test_an_unavailable_wake_reports_the_failed_readiness_gate():
+    session = FakeSession(connected=False)
+    unavailable = []
+    coordinator = handsfree.HandsFreeCoordinator(
+        session,
+        capture=lambda: "should not be captured",
+        send=lambda text: session.send_turn(text),
+        on_unavailable=lambda: unavailable.append(True),
+    )
+
+    assert coordinator.on_wake() is False
+    assert unavailable == [True]
 
 
 def test_connection_loss_during_acknowledgement_does_not_open_capture():
