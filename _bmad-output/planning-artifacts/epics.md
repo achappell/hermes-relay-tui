@@ -300,11 +300,23 @@ the named surface; another surface's implementation is evidence, not closure.
 
 | Surface story key | Surface | Scope |
 |---|---|---|
-| `I-1` to `I-3` | iOS | Authorized initiation; honest phases with response/audio delivery; fresh recovery without replay. |
-| `P-1` to `P-4` | ReSpeaker Puck | Authorized wake/capture; status and response audio; bounded follow-up/`stop`; recovery. |
-| `E-1` to `E-5` | ESP32 Touch Display | Authorized voice capture; native phase and streamed-response rendering; response audio delivery; bounded follow-up/`stop`; recovery without replay. |
+| `I-1` | iOS | Authorized initiation. |
+| `I-2` | iOS | Honest phases with response/audio delivery. |
+| `I-3` | iOS | Fresh recovery without replay. |
+| `P-1` | ReSpeaker Puck | Authorized wake and capture. |
+| `P-2` | ReSpeaker Puck | Status and response-audio delivery. |
+| `P-3` | ReSpeaker Puck | Bounded follow-up and exact `stop`. |
+| `P-4` | ReSpeaker Puck | Recovery without replay. |
+| `E-1` | ESP32 Touch Display | Authorized voice capture. |
+| `E-2` | ESP32 Touch Display | Native phases and streamed-response rendering. |
+| `E-3` | ESP32 Touch Display | Response-audio delivery. |
+| `E-4` | ESP32 Touch Display | Bounded follow-up and exact `stop`. |
+| `E-5` | ESP32 Touch Display | Recovery without replay. |
 | `WK-1` | Web/iPad | One shared W/K browser voice-plus-display surface for authorized capture, honest phases, streamed/completed response text, response audio, and delivery/error state. iPad is a deployment target, not a separate surface. |
-| `T-1` to `T-4` | TUI | Existing local TUI authorization, phase/delivery, follow-up, and recovery slices. The historical numeric artifacts 1.1–1.4 remain stable aliases for these stories. |
+| `T-1` | TUI | Authorized initiation. The historical numeric artifact 1.1 remains its stable local alias. |
+| `T-2` | TUI | Honest phases and response delivery. The historical numeric artifact 1.2 remains its stable local alias. |
+| `T-3` | TUI | Bounded follow-up and exact `stop`. The historical numeric artifact 1.3 remains its stable local alias. |
+| `T-4` | TUI | Recovery without replay. The historical numeric artifact 1.4 remains its stable local alias. |
 
 The ESP32 Touch stories cannot be closed by the existing `DisplaySnapshot`
 transport alone. The surface must capture voice and deliver response audio as
@@ -314,8 +326,12 @@ explicit; firmware must not become a second Hermes authority. The current
 snapshot/action firmware path is foundation evidence only.
 
 The following four numeric stories are retained as the local TUI delivery
-record. New surface work must use the ownership map above rather than treating
-one TUI story as global Epic 1 completion.
+record and are stable aliases for T-1 through T-4. New surface work must use
+the ownership map above rather than treating one TUI story as global Epic 1
+completion. For sprint tracking, the surface-map rows are the delivery
+identities; the generic numeric Stories 2.1–5.2 below are acceptance templates,
+not additional backlog entries, unless a matching owning story artifact makes
+one an explicit local alias.
 
 ### Story 1.1: Start an authorized Hermes turn
 

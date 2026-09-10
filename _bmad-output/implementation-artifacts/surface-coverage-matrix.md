@@ -7,6 +7,9 @@ sources:
   - _bmad-output/planning-artifacts/epics.md
   - _bmad-output/implementation-artifacts/sprint-status.yaml
   - _bmad-output/implementation-artifacts/epic-1-context.md
+  - _bmad-output/implementation-artifacts/spec-5-stream-audio-to-host-after-a-validated-wake.md
+  - _bmad-output/implementation-artifacts/deferred-work.md
+  - docs/friction-log.md
   - shared/display/README.md
   - docs/bmad-upstream.md
   - ../hermes-relay-ios/_bmad-output/implementation-artifacts/epic-1-context.md
@@ -70,7 +73,7 @@ Python host / DisplaySnapshot contract
 | Surface | Story IDs | Owner | Evidence or dependency |
 |---|---|---|---|
 | I | `I-1`–`I-3` | `hermes-relay-ios` | Implementation and device-validation evidence exists in the sibling repository. |
-| P | `P-1`–`P-4` | Puck delivery work | Open delivery gap; the Puck owns wake, capture, status/audio, bounded follow-up, and recovery. |
+| P | `P-1`–`P-4` | Puck delivery work | The audio bridge has real-device evidence for wake, VAD-gated capture, chunked upload, host transcription, and host response playback. A full spoken Hermes round trip remains unverified at the observed -89 to -90 dB Wi-Fi signal; Puck-side response playback, distinct bridge session identity, and the remaining bounded/recovery validation stay open in the implementation record. |
 | E | `E-1`–`E-5` | `hermes-relay-tui` / firmware | Native display/reducer evidence exists for parts of E-2/E-5; voice capture and response-audio adapter work remains. |
 | W/K | `WK-1` | `hermes-relay-tui` / web | Browser voice/display foundation exists; kiosk, accessibility, device, and delivery validation remain. |
 | T | `T-1`–`T-4` | `hermes-relay-tui` | Local implementation artifacts and regression evidence exist; formal status remains in the TUI tracker. |
