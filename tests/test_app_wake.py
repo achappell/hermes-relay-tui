@@ -117,6 +117,7 @@ class WakeFakes:
             capture_finished=kwargs.get("capture_finished"),
             on_state_change=kwargs.get("on_state_change"),
             is_ready=kwargs.get("is_ready"),
+            on_unavailable=kwargs.get("on_unavailable"),
         )
         self.listener = listener
         self.coordinator = coordinator
@@ -1426,6 +1427,38 @@ async def test_connection_loss_disarms_wake_mode_and_releases_the_microphone():
         assert fakes.listener.stopped is True
         assert recorder.shutdowns == 1
         assert recorder.listening is False
+        assert session.closed is True
+        assert "wake mode off — connection lost" in transcript_text(app)
+
+
+async def test_wake_readiness_loss_is_reported_and_disarms_the_listener():
+    app, fakes, session = make_app()
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await app._handle_wake_command("on")
+        recorder = fakes.recorders[-1]
+        session.connected = False
+
+        done = threading.Event()
+
+        def fire_wake():
+            try:
+                fakes.coordinator.on_wake("hey hermes")
+            finally:
+                done.set()
+
+        threading.Thread(target=fire_wake, daemon=True).start()
+        assert await asyncio.to_thread(done.wait, 1.0)
+        for _ in range(100):
+            await pilot.pause()
+            if not app.wake_armed and app.connection_state == app_module.CONNECTION_DISCONNECTED:
+                break
+
+        assert app.wake_armed is False
+        assert app.connection_state == app_module.CONNECTION_DISCONNECTED
+        assert app.voice_state == app_module.VOICE_DISCONNECTED
+        assert recorder.shutdowns == 1
         assert session.closed is True
         assert "wake mode off — connection lost" in transcript_text(app)
 

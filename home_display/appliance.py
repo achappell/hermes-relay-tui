@@ -681,6 +681,25 @@ class Appliance:
         if display is not None:
             self._publish(display)
 
+    def _on_wake_unavailable(self) -> None:
+        """Return a listener that lost its session to the reconnect path."""
+        loop = self._loop
+        if loop is None:
+            self._handle_wake_unavailable()
+            return
+        try:
+            loop.call_soon_threadsafe(self._handle_wake_unavailable)
+        except RuntimeError:
+            return
+
+    def _handle_wake_unavailable(self) -> None:
+        if self._stopping.is_set() or not self._connected:
+            return
+        self._connected = False
+        self._publish("disconnected")
+        self._set_listening()
+        self._request_reconnect()
+
     # ---- acknowledgement -----------------------------------------------
 
     def _acknowledge_wake(self) -> None:
@@ -1347,6 +1366,7 @@ class Appliance:
             "stop_playback": self._abort_player,
             "acknowledge": self._acknowledge_wake,
             "capture_finished": self._acknowledge_capture,
+            "on_unavailable": self._on_wake_unavailable,
         }
         import inspect
 
@@ -1364,10 +1384,15 @@ class Appliance:
                 p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values()
             ):
                 kwargs["is_ready"] = self._session_is_ready
+            if "on_unavailable" in params or any(
+                p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values()
+            ):
+                kwargs["on_unavailable"] = self._on_wake_unavailable
         except (ValueError, TypeError):
             kwargs["capture"] = self._capture_voice
             kwargs["route_wake"] = self._route_wake
             kwargs["is_ready"] = self._session_is_ready
+            kwargs["on_unavailable"] = self._on_wake_unavailable
 
         hands_free_args = self.args
         if getattr(self.args, "wake_phrases", None) is None:

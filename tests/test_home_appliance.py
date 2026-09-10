@@ -38,16 +38,18 @@ class FakeSession:
         self.turn_index = 0
         self.capture_timeouts = []
         self.follow_up = ""
+        self.connected = True
 
     async def connect(self):
         self.connects += 1
         if self.connect_errors > 0:
             self.connect_errors -= 1
             raise ConnectionError("relay is down")
+        self.connected = True
         return {"type": "hello_ack"}
 
     def is_connected(self) -> bool:
-        return True
+        return self.connected
 
     def send_turn(self, text: str, *, stt_source: str = "local"):
         self.turns.append(text)
@@ -232,6 +234,7 @@ def _build(appliance_state: dict):
         capture_finished=None,
         route_wake=None,
         is_ready=None,
+        on_unavailable=None,
         **kwargs,
     ):
         listener = FakeListener()
@@ -250,6 +253,7 @@ def _build(appliance_state: dict):
             on_state_change=on_state_change,
             route_wake=route_wake,
             is_ready=is_ready,
+            on_unavailable=on_unavailable,
             now=appliance_state.get("clock", None) or (lambda: 0.0),
         )
         appliance_state["listener"] = listener
@@ -372,6 +376,21 @@ async def test_wake_to_spoken_answer_walks_the_display_through_the_real_states()
     assert ordered[-1] == "idle"
     spoken = [entry for entry in publisher.history if entry[0] == "speaking"]
     assert spoken[-1][1] == "Sunny and warm."
+
+
+@pytest.mark.asyncio
+async def test_appliance_turn_entry_guards_all_capture_and_send_paths():
+    session = FakeSession()
+    appliance, _state = make_appliance(session=session)
+    appliance._connected = True
+    appliance._loop = asyncio.get_running_loop()
+    session.connected = False
+
+    assert appliance._capture_voice() == ""
+    assert appliance._capture_follow_up() == ""
+    assert appliance._send("should not go anywhere") is False
+    assert session.capture_timeouts == []
+    assert session.turns == []
 
 
 @pytest.mark.asyncio

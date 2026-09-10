@@ -4,7 +4,7 @@ type: 'feature'
 created: '2026-09-08'
 status: 'done'
 route: 'dispatch'
-review_loop_iteration: 0
+review_loop_iteration: 1
 baseline_commit: '25c332b7e32b0801f19c4c08a7fbcad1a14c3283'
 context:
   - '{project-root}/_bmad-output/implementation-artifacts/epic-1-context.md'
@@ -90,6 +90,7 @@ laptop microphone or built-in speaker when explicitly authorized.
 ## Spec Change Log
 
 - 2026-09-09: Completed the authorized MacBook speaker smoke; playback succeeded on output device 2 with no Puck involvement. Merge remains the final release gate.
+- 2026-09-10: Applied all ten Story 1.1 review patches: readiness-failure reporting, profile visibility, prompt and stream cleanup, connection-loss handling, and focused regression coverage. The complete suite passes (`900 passed`).
 
 ## Review Triage Log
 
@@ -112,6 +113,37 @@ laptop microphone or built-in speaker when explicitly authorized.
 | 15 | edge-case-hunter | false | Profile switching is rejected while `_voice_capture_task` is live; the task is assigned synchronously before the next await, so the cited interleaving cannot occur through the Textual event loop. |
 | 16 | edge-case-hunter | false | The second readiness check refuses capture when the session is no longer verified, which is the desired fail-closed result; there is no event-loop interleave between `_connect()` returning and that check. |
 | 17 | edge-case-hunter | medium / patch | The close-time race was real; `_hello_verified` is cleared at `close()` entry before cancellation or cleanup can yield. |
+
+### Review Findings
+
+The following findings came from the Story 1.1 review run against the scoped
+implementation diff (`25c332b` → `4bd8490`) and the current delivery tree.
+
+Patch findings:
+
+- [x] [Review][Patch] Cover prompt-write exceptions as a retryable UI/domain path [app.py:2117]
+- [x] [Review][Patch] Exercise appliance capture, follow-up, and send guards when the session drops [home_display/appliance.py:710]
+- [x] [Review][Patch] Prove readiness is cleared at close entry while asynchronous cleanup is still pending [session.py:246]
+- [x] [Review][Patch] Add an app-level invalid/stale event regression for transcript and playback isolation [app.py:3759]
+- [x] [Review][Patch] Show the active `default` profile in legacy TUI headers [app.py:887]
+- [x] [Review][Patch] Surface a wake readiness failure as disconnected/unavailable and stop the stale listener [handsfree.py:186]
+- [x] [Review][Patch] Avoid duplicating the already-rendered user prompt on a pre-wire readiness race [app.py:3422]
+- [x] [Review][Patch] Clear the active domain turn when a stream ends without a terminal event [app.py:4111]
+- [x] [Review][Patch] Abort invalid event streams cleanly so a later terminal frame cannot strand the turn [app.py:3760]
+- [x] [Review][Patch] Treat an explicit normalized connection-loss event as a connection loss in the TUI [app.py:3759]
+
+Rejected findings:
+
+- `false` (blind-hunter): routed TUI and appliance callbacks use dynamic session/readiness seams; the cited stale-session path is not present in the scoped consumers.
+- `false` (blind-hunter): wake result propagation is returned through `_send_wake_turn()` and consumed by the coordinator; the reported discarded result is already fixed in the current tree.
+- `false` (blind-hunter): `_run_turn()` records `PROMPT_COMPLETED` only when `_consume_turn()` reports a completed turn; protocol failures remain ambiguous.
+- `false` (blind-hunter): local voice turns enter `VOICE_THINKING` through the shared `_run_single_turn()` path; the reported missing presentation transition is already fixed.
+- `false` (blind-hunter): empty capture applies the domain `capture_empty` event before returning the TUI to ready; the reported stuck listening phase is already fixed.
+- `low` (blind-hunter): an atomic readiness-to-microphone guarantee would require a broader capture/connection lock; both TUI and appliance recheck readiness immediately before capture, which satisfies the story gate.
+- `low` (blind-hunter): requiring every `SessionProtocol` fake to expose `active_turn_id` would add a public contract for a case already protected by the per-turn generation and client-side event filtering.
+- `low` (blind-hunter): the concurrent same-instance handshake/close resurrection is not reachable through the app's serialized connection lifecycle, and a safe general fix would expand the session ownership contract beyond this story.
+- `low` (edge-case-hunter): the follow-up readiness race is covered by the coordinator's pre-claim and pre-capture checks; making the check and native microphone open atomic would require a broader ownership lock.
+
 
 ## Verification
 

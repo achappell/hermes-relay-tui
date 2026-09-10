@@ -118,6 +118,32 @@ describe("DisplayBridge", () => {
     bridge.stop();
   });
 
+  it("uses the default TypeScript reducer to emit normalized views", () => {
+    const socket = new FakeSocket();
+    const onView = vi.fn();
+    const bridge = new DisplayBridge({
+      url: "ws://display.test/state",
+      onView,
+      onConnectionState: () => {},
+      socketFactory: () => socket,
+    });
+
+    bridge.start();
+    socket.open();
+    socket.message(JSON.stringify(snapshot));
+
+    expect(onView).toHaveBeenCalledOnce();
+    expect(onView).toHaveBeenCalledWith(expect.objectContaining({
+      sequence: snapshot.sequence,
+      state: "prompt",
+      can_choose: true,
+      can_dismiss: true,
+      is_busy: false,
+      connection_healthy: true,
+    }));
+    bridge.stop();
+  });
+
   it("sends browser voice text and routes streamed PCM frames", async () => {
     const socket = new FakeSocket();
     const audioEvents: DisplayAudioEvent[] = [];
@@ -330,7 +356,10 @@ describe("DisplayBridge", () => {
 
     expect(fetchSpy).toHaveBeenCalledWith(
       "/action?action_id=set+home&choice=yes%2Fno",
-      { method: "POST" },
+      expect.objectContaining({
+        method: "POST",
+        signal: expect.any(AbortSignal),
+      }),
     );
   });
 

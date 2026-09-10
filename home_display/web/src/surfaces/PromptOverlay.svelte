@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { onDestroy } from "svelte";
   import type { DisplayAction, DisplayPrompt, PromptOption } from "../state/protocol";
 
   export let prompt: DisplayPrompt;
@@ -6,23 +7,57 @@
   export let account: string | null = null;
   /** The bridge-owned domain action handler. Standalone use keeps HTTP compatibility. */
   export let onAction: ((action: DisplayAction) => Promise<boolean> | boolean | void) | null = null;
+  /** Safe action failure text supplied by the owning bridge, when available. */
+  export let errorMessage: string | null = null;
 
+  const ACTION_TIMEOUT_MS = 10_000;
+  const MAX_PROMPT_TIMEOUT_SECONDS = 2_147_483.647;
   let dismissed = false;
   let submitting = false;
+  let localError: string | null = null;
   let timeoutId: ReturnType<typeof setTimeout> | null = null;
+  let timeoutKey: string | null = null;
 
   // Auto-dismiss: choose the first option after timeout_seconds.
   $: {
-    if (timeoutId !== null) {
-      clearTimeout(timeoutId);
-      timeoutId = null;
+    const nextTimeoutKey = JSON.stringify({
+      action_id: prompt.action_id,
+      timeout_seconds: prompt.timeout_seconds,
+      default_choice: prompt.options[0]?.id ?? "no",
+    });
+    if (nextTimeoutKey !== timeoutKey) {
+      timeoutKey = nextTimeoutKey;
+      if (timeoutId !== null) {
+        clearTimeout(timeoutId);
+        timeoutId = null;
+      }
+      if (prompt.timeout_seconds !== null && prompt.timeout_seconds > 0 && !dismissed) {
+        const defaultChoice = prompt.options[0]?.id ?? "no";
+        timeoutId = setTimeout(() => {
+          void sendAction(prompt.action_id, defaultChoice);
+        }, Math.min(prompt.timeout_seconds, MAX_PROMPT_TIMEOUT_SECONDS) * 1000);
+      }
     }
-    if (prompt.timeout_seconds !== null && prompt.timeout_seconds > 0 && !dismissed) {
-      const defaultChoice = prompt.options[0]?.id ?? "no";
-      timeoutId = setTimeout(() => {
-        void sendAction(prompt.action_id, defaultChoice);
-      }, prompt.timeout_seconds * 1000);
-    }
+  }
+
+  onDestroy(() => {
+    if (timeoutId !== null) clearTimeout(timeoutId);
+  });
+
+  function withTimeout<T>(value: PromiseLike<T> | T): Promise<T> {
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error("display action timed out")), ACTION_TIMEOUT_MS);
+      Promise.resolve(value).then(
+        (result) => {
+          clearTimeout(timer);
+          resolve(result);
+        },
+        (error) => {
+          clearTimeout(timer);
+          reject(error);
+        },
+      );
+    });
   }
 
   async function sendAction(actionId: string, choice: string): Promise<void> {
@@ -38,12 +73,18 @@
     let accepted = true;
     try {
       if (onAction !== null) {
-        accepted = (await onAction(action)) !== false;
+        accepted = (await withTimeout(onAction(action))) !== false;
       } else {
         const url =
           `/action?action_id=${encodeURIComponent(actionId)}&choice=${encodeURIComponent(choice)}`;
-        const response = await fetch(url, { method: "POST" });
-        accepted = response.ok;
+        const controller = new AbortController();
+        const requestTimeoutId = setTimeout(() => controller.abort(), ACTION_TIMEOUT_MS);
+        try {
+          const response = await fetch(url, { method: "POST", signal: controller.signal });
+          accepted = response.ok;
+        } finally {
+          clearTimeout(requestTimeoutId);
+        }
       }
     } catch {
       accepted = false;
@@ -51,10 +92,12 @@
 
     if (!accepted) {
       submitting = false;
+      localError = "Display action could not be sent";
       return;
     }
 
     dismissed = true;
+    localError = null;
     submitting = false;
     if (timeoutId !== null) {
       clearTimeout(timeoutId);
@@ -67,29 +110,35 @@
   }
 </script>
 
-<div class="prompt-overlay" role="dialog" aria-modal="true" aria-labelledby="prompt-title">
-  <div class="ambient-canvas" aria-hidden="true"></div>
+{#if !dismissed}
+  <div class="prompt-overlay" role="dialog" aria-modal="true" aria-labelledby="prompt-title">
+    <div class="ambient-canvas" aria-hidden="true"></div>
 
-  <div class="prompt-card">
-    {#if account}
-      <div class="prompt-account">{account}</div>
-    {/if}
+    <div class="prompt-card">
+      {#if account}
+        <div class="prompt-account">{account}</div>
+      {/if}
 
-    <h1 class="prompt-title" id="prompt-title">{prompt.title}</h1>
-    <p class="prompt-body">{prompt.body}</p>
+      <h1 class="prompt-title" id="prompt-title">{prompt.title}</h1>
+      <p class="prompt-body">{prompt.body}</p>
+      {#if errorMessage ?? localError}
+        <p class="prompt-error" data-action-error role="alert">{errorMessage ?? localError}</p>
+      {/if}
 
-    <div class="prompt-actions">
-      {#each prompt.options as option (option.id)}
-        <button
-          class="prompt-btn prompt-btn--{option.id}"
-          on:click={() => handleOption(option)}
-        >
-          {option.label}
-        </button>
-      {/each}
+      <div class="prompt-actions">
+        {#each prompt.options as option (option.id)}
+          <button
+            class="prompt-btn prompt-btn--{option.id}"
+            disabled={submitting}
+            on:click={() => handleOption(option)}
+          >
+            {option.label}
+          </button>
+        {/each}
+      </div>
     </div>
   </div>
-</div>
+{/if}
 
 <style>
   .prompt-overlay {
@@ -147,6 +196,11 @@
     color: var(--ink-secondary);
     font-size: clamp(1rem, 2.5vw, 1.5rem);
     line-height: 1.5;
+    margin: 0;
+  }
+
+  .prompt-error {
+    color: var(--signal-error);
     margin: 0;
   }
 

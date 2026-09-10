@@ -78,6 +78,39 @@ async def test_session_is_not_connected_until_hello_ack_is_verified(monkeypatch)
     assert session.is_connected() is True
 
 
+async def test_session_becomes_unready_at_close_entry_before_cleanup_finishes(monkeypatch):
+    websocket = FakeWebSocket(
+        [json.dumps({"type": "hello_ack", "chat_id": "chat"})]
+    )
+    exit_started = asyncio.Event()
+    release_exit = asyncio.Event()
+
+    class BlockingContextManager(FakeContextManager):
+        async def __aexit__(self, exc_type, exc, tb):
+            exit_started.set()
+            await release_exit.wait()
+
+    monkeypatch.setattr(
+        config,
+        "connect_factory",
+        lambda: lambda *args, **kwargs: BlockingContextManager(websocket),
+    )
+    session = HermesSession(make_args())
+    await session.connect()
+
+    closing = asyncio.create_task(session.close())
+    await exit_started.wait()
+
+    assert session.is_connected() is False
+    with pytest.raises(SessionNotReadyError):
+        session.send_turn("must not send during close")
+    assert session.turn_index == 0
+    assert all(json.loads(frame)["type"] != "turn" for frame in websocket.sent)
+
+    release_exit.set()
+    await closing
+
+
 def test_session_rejects_turn_before_a_verified_connection():
     session = HermesSession(make_args())
 
