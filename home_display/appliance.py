@@ -47,7 +47,7 @@ from timing import (
     visible_text,
 )
 
-from .server import DisplayServer
+from .server import DisplayServer, load_tls_context
 from .state import (
     DisplayCapabilities,
     DisplayPrompt,
@@ -1292,9 +1292,24 @@ class Appliance:
 
     # ---- lifecycle -----------------------------------------------------
 
+    def _display_tls_context(self):
+        certificate = getattr(self.args, "display_tls_cert", None)
+        private_key = getattr(self.args, "display_tls_key", None)
+        if certificate is None and private_key is None:
+            return None
+        if not getattr(self.args, "browser_voice", False):
+            raise RuntimeError(
+                "display TLS requires --browser-voice; the physical display uses plain ws"
+            )
+        try:
+            return load_tls_context(certificate, private_key)
+        except ValueError as error:
+            raise RuntimeError(str(error)) from error
+
     def _build(self) -> None:
         if self._session is None:
             self._session = self._create_session_for_profile(self._active_profile)
+        tls_context = self._display_tls_context()
         if getattr(self.args, "browser_voice", False):
             if self._server is None:
                 self._server = DisplayServer(
@@ -1305,6 +1320,7 @@ class Appliance:
                     allow_remote=getattr(self.args, "display_remote", False),
                     on_action=self._on_action,
                     on_voice_turn=self._on_browser_voice_turn,
+                    ssl_context=tls_context,
                 )
             return
         if self._player is None:
@@ -1674,6 +1690,20 @@ def build_arg_parser(argv: list[str] | None = None) -> argparse.ArgumentParser:
         "--display-remote",
         action="store_true",
         help="allow the display server to bind beyond loopback for a LAN appliance",
+    )
+    parser.add_argument(
+        "--display-tls-cert",
+        type=Path,
+        default=None,
+        metavar="PATH",
+        help="PEM certificate for an HTTPS browser display",
+    )
+    parser.add_argument(
+        "--display-tls-key",
+        type=Path,
+        default=None,
+        metavar="PATH",
+        help="PEM private key for an HTTPS browser display",
     )
     parser.add_argument(
         "--browser-voice",

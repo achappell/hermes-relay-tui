@@ -29,6 +29,12 @@ A token must be resolvable: `--token`, `VOICE_SESSION_TOKEN`, or the profile
 `.env`. Grant the terminal microphone permission in System Settings → Privacy &
 Security → Microphone.
 
+For the iPad browser smoke, Safari speech recognition needs a trusted HTTPS
+origin. The display server's TLS mode is optional and browser-only; the normal
+HTTP loopback mode and the physical ESP display's plain WebSocket path are
+unchanged. Keep the private key on the ops Mac and transfer only the public CA
+certificate to the iPad.
+
 ## Run it
 
 ```bash
@@ -64,16 +70,58 @@ This is the web equivalent of the household loop. It must be run in a Safari
 browser tab on the target iPad, with Guided Access enabled; a desktop browser
 run does not satisfy the iPad gate.
 
+If the local certificate does not exist yet, create a small private CA and an
+IP-address certificate. Replace `192.168.0.35` everywhere with the ops Mac's
+current LAN address; the IP must be in the server certificate's SAN:
+
+```bash
+mkdir -p ~/.hermes-relay-tui/certs
+openssl genrsa -out ~/.hermes-relay-tui/certs/display-ca-key.pem 4096
+openssl req -x509 -new -nodes \
+    -key ~/.hermes-relay-tui/certs/display-ca-key.pem \
+    -sha256 -days 3650 \
+    -out ~/.hermes-relay-tui/certs/display-ca.pem \
+    -subj "/CN=Hermes Home Display Local CA"
+openssl req -new -newkey rsa:2048 -nodes \
+    -keyout ~/.hermes-relay-tui/certs/display-key.pem \
+    -out ~/.hermes-relay-tui/certs/display.csr \
+    -subj "/CN=192.168.0.35"
+printf '%s\n' \
+    'subjectAltName = IP:192.168.0.35' \
+    'extendedKeyUsage = serverAuth' \
+    > ~/.hermes-relay-tui/certs/display-ext.cnf
+openssl x509 -req \
+    -in ~/.hermes-relay-tui/certs/display.csr \
+    -CA ~/.hermes-relay-tui/certs/display-ca.pem \
+    -CAkey ~/.hermes-relay-tui/certs/display-ca-key.pem \
+    -CAcreateserial \
+    -out ~/.hermes-relay-tui/certs/display-cert.pem \
+    -days 825 -sha256 \
+    -extfile ~/.hermes-relay-tui/certs/display-ext.cnf
+openssl x509 -in ~/.hermes-relay-tui/certs/display-ca.pem \
+    -outform der -out ~/.hermes-relay-tui/certs/display-ca.cer
+chmod 600 ~/.hermes-relay-tui/certs/display-ca-key.pem \
+    ~/.hermes-relay-tui/certs/display-key.pem
+```
+
 Build and launch the browser-enabled appliance:
 
 ```bash
 npm --prefix home_display/web run build
 venv/bin/python -m home_display.appliance --browser-voice \
-    --display-host 192.168.1.20 --display-remote --display-port 8765
+    --display-host 192.168.0.35 --display-remote --display-port 8765 \
+    --display-tls-cert ~/.hermes-relay-tui/certs/display-cert.pem \
+    --display-tls-key ~/.hermes-relay-tui/certs/display-key.pem
 ```
 
-Open the printed URL in Safari. Replace the address with the ops machine's LAN
-address when necessary, and keep the same origin for the page and WebSocket.
+Before opening the page, transfer only `display-ca.cer` to the iPad (AirDrop
+or Files), install the downloaded profile, then enable the installed root in
+Settings → General → About → Certificate Trust Settings. Do not transfer
+`display-ca-key.pem`, `display-key.pem`, or any `.csr`/serial material.
+
+Open `https://192.168.0.35:8765/` in Safari, replacing the address as needed,
+and keep the same origin for the page and WebSocket. The page derives `wss://`
+from its HTTPS origin; do not type a separate WebSocket URL.
 When the display is connected and idle:
 
 1. Tap **Enable hands-free** once and grant Safari microphone/speech permission.

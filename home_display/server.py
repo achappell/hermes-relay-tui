@@ -4,6 +4,7 @@ import asyncio
 import ipaddress
 import json
 import mimetypes
+import ssl
 from dataclasses import dataclass
 from http import HTTPStatus
 from pathlib import Path, PurePosixPath
@@ -25,18 +26,39 @@ if TYPE_CHECKING:
 class DisplayServerInfo:
     host: str
     port: int
+    secure: bool = False
 
     @property
     def http_url(self) -> str:
-        return f"http://{_format_url_host(self.host)}:{self.port}/"
+        scheme = "https" if self.secure else "http"
+        return f"{scheme}://{_format_url_host(self.host)}:{self.port}/"
 
     @property
     def websocket_url(self) -> str:
-        return f"ws://{_format_url_host(self.host)}:{self.port}/state"
+        scheme = "wss" if self.secure else "ws"
+        return f"{scheme}://{_format_url_host(self.host)}:{self.port}/state"
 
 
 def _format_url_host(host: str) -> str:
     return f"[{host}]" if ":" in host else host
+
+
+def load_tls_context(
+    certificate: Path | str | None,
+    private_key: Path | str | None,
+) -> ssl.SSLContext | None:
+    """Load an optional server certificate without inventing one at runtime."""
+    if (certificate is None) != (private_key is None):
+        raise ValueError("display TLS certificate and private key must be supplied together")
+    if certificate is None or private_key is None:
+        return None
+
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    try:
+        context.load_cert_chain(certfile=certificate, keyfile=private_key)
+    except (OSError, ValueError, ssl.SSLError) as error:
+        raise ValueError(f"could not load display TLS certificate/key: {error}") from error
+    return context
 
 
 class DisplayServer:
@@ -50,6 +72,7 @@ class DisplayServer:
         allow_remote: bool = False,
         on_action: Callable[[str, str], Awaitable[None]] | None = None,
         on_voice_turn: Callable[[str], Awaitable[None]] | None = None,
+        ssl_context: ssl.SSLContext | None = None,
     ) -> None:
         """Create a display server.
 
@@ -73,6 +96,7 @@ class DisplayServer:
         self._port = port
         self._on_action = on_action
         self._on_voice_turn = on_voice_turn
+        self._ssl_context = ssl_context
         self._server: Server | None = None
         self._info: DisplayServerInfo | None = None
         self._state_connections: set[ServerConnection] = set()
@@ -87,10 +111,13 @@ class DisplayServer:
             self._host,
             self._port,
             process_request=self._serve_http_request,
+            ssl=self._ssl_context,
         )
         socket = self._server.sockets[0]
         bound_host, bound_port = socket.getsockname()[:2]
-        self._info = DisplayServerInfo(host=str(bound_host), port=bound_port)
+        self._info = DisplayServerInfo(
+            host=str(bound_host), port=bound_port, secure=self._ssl_context is not None
+        )
         return self._info
 
     async def close(self) -> None:
@@ -288,7 +315,7 @@ class DisplayServer:
         except ValueError:
             return False
         return (
-            parsed_origin.scheme == "http"
+            parsed_origin.scheme == ("https" if self._ssl_context is not None else "http")
             and parsed_origin.hostname == self._info.host
             and origin_port == self._info.port
             and parsed_origin.username is None

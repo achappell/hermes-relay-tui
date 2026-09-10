@@ -1225,6 +1225,39 @@ def test_display_remote_bind_is_opt_in():
     assert remote.display_remote is True
 
 
+def test_display_tls_options_are_optional_paths():
+    from home_display import appliance
+
+    defaults = appliance.build_arg_parser([]).parse_args([])
+    tls = appliance.build_arg_parser([]).parse_args(
+        [
+            "--display-tls-cert",
+            "cert.pem",
+            "--display-tls-key",
+            "key.pem",
+        ]
+    )
+
+    assert defaults.display_tls_cert is None
+    assert defaults.display_tls_key is None
+    assert str(tls.display_tls_cert) == "cert.pem"
+    assert str(tls.display_tls_key) == "key.pem"
+
+
+def test_display_tls_is_restricted_to_browser_voice(tmp_path):
+    from home_display import appliance
+
+    relay, _state = make_appliance(
+        args=_args(
+            display_tls_cert=tmp_path / "cert.pem",
+            display_tls_key=tmp_path / "key.pem",
+        )
+    )
+
+    with pytest.raises(RuntimeError, match="requires --browser-voice"):
+        relay._build()
+
+
 @pytest.mark.asyncio
 async def test_speaking_waits_for_audio_that_can_actually_be_heard():
     """`audio_start` is a header, not a sound. Against a live gateway the

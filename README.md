@@ -613,14 +613,22 @@ off; it never replays an uncertain transcript. The browser reconnects to the
 same-origin state channel after an ops/container restart:
 
 ```bash
-hermes-relay-home --browser-voice --display-host 192.168.1.20 --display-remote --display-port 8765
+hermes-relay-home --browser-voice \
+  --display-host 192.168.1.20 --display-remote --display-port 8765 \
+  --display-tls-cert ~/.hermes-relay-tui/certs/display-cert.pem \
+  --display-tls-key ~/.hermes-relay-tui/certs/display-key.pem
 ```
 
 Replace `192.168.1.20` with the ops machine's LAN address; the browser must
 open the same address so the display server's same-origin check accepts the
-WebSocket and action requests. For this story, validate the page in that
-Safari tab under Guided Access. Home Screen/PWA packaging is not included until
-it has passed a physical iPad gate.
+WebSocket and action requests. Safari speech recognition requires a secure
+origin, so the certificate must include that LAN IP as an IP subject-alternate
+name and its local CA must be trusted on the iPad. The complete local
+certificate and iPad trust procedure is in the [HOME-09 smoke procedure](docs/testing/home-09-appliance-loop.md).
+The private key stays on the ops Mac; transfer only the public CA certificate
+to the iPad. For this story, validate the page in that Safari tab under Guided
+Access. Home Screen/PWA packaging is not included until it has passed a
+physical iPad gate.
 
 **A plain install does not include this.** `pip install hermes-relay-tui` and
 `brew install hermes-relay-tui` give you the typed client and the
