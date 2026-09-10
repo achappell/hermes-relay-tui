@@ -39,7 +39,8 @@ context:
 - Implemented the one-time `getUserMedia` prime, `onstart` watchdog, and escalating replacement-recognition retries. Stale callbacks are detached, retry timers are generation-safe, and the configured follow-up deadline remains the outer bound.
 - Added focused browser coverage for silent recovery, prime ordering, temporary-stream cleanup, and the existing follow-up/stop paths. Updated `docs/testing/home-09-appliance-loop.md` with the Safari recovery expectation.
 - Verification so far: 154 browser tests pass, `npm run check` reports zero errors and warnings, `npm run build` serves the rebuilt bundle, `git diff --check` is clean, and the complete Python suite passes 891 tests with one existing websockets deprecation warning.
-- Final verification: 154 browser tests pass after covering the `onstart`-without-result Safari variant. The live HTTPS host serves the new bundle; the remaining physical iPad retry is the release gate, not a claimed automated result.
+- Final verification: 154 browser tests pass after covering the `onstart`-without-result Safari variant. The live HTTPS host serves the new bundle.
+- Physical iPad Safari smoke on 2026-09-09: Amanda confirmed the refreshed HTTPS page now accepts the hands-free follow-up after playback. The previously observed "listens but ignores me" failure did not recur; the physical recovery gate passed.
 
 ## Review Triage Log
 

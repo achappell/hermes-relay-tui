@@ -147,6 +147,10 @@ When the display is connected and idle:
    **Enable hands-free** control remains available only after a fresh connected,
    idle state and an explicit tap.
 
+Physical evidence recorded on 2026-09-09: Amanda confirmed the refreshed HTTPS
+page on the iPad accepted the hands-free follow-up after playback. The prior
+"listens but ignores me" failure did not recur.
+
 Record the iPadOS and Safari versions, LAN origin, permission result, wake
 phrase, initial/follow-up counts, both stop cases, the disconnect/recovery
 result, and any recognition or playback interruption. If Safari cannot grant
