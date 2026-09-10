@@ -387,3 +387,90 @@ version-check code).
 reverted during this story's own debugging). Never leave the device
 flashed at that log level with real household credentials in
 `secrets.yaml` — drop back to `DEBUG` before shipping any build.
+
+---
+
+## Story 5: Wake-to-Upload and the Host Bridge
+
+Story 3 got wake-word detection working; story 5 makes a validated wake
+actually *do* something. `on_wake_word_detected:` (under `micro_wake_word:`)
+now starts a bounded, VAD-gated, single-shot capture into a dedicated ~8s
+PSRAM buffer (`pcm_capture::wake_capture`, in `pcm_capture.h`) — separate
+from the pre-existing training-data capture buffer, which is unchanged.
+A fast (100ms) `interval:` tick watches `micro_wake_word`'s own VAD state
+(`id(mww).get_vad_state()`, already proven responsive by story 3's
+`vad: probability_cutoff: 0.05`) and ends the capture window once VAD has
+reported silence for 800ms — not a fixed timer. A slower (1s) `interval:`
+tick then uploads the finished capture, chunked, over the same wire shape
+`tools/receiver.py` already proved out for training data
+(`POST /upload?seq=N&chunk=C&total=T`, 16KB chunk bodies) — reusing that
+function's heap-watermark reboot circuit breaker, 2-consecutive-failure
+abandonment, and 30ms inter-chunk delay unchanged. Unlike the training
+pipeline's `upload_and_restart()`, this capture does **not** re-arm itself
+when the upload finishes — one wake, one upload, then it waits for the next
+`on_wake_word_detected` trigger. No continuous rolling capture.
+
+Each chunk POST carries an `X-Puck-Token` header — the hardcoded shared
+token (`puck_device_token` in `secrets.yaml`) standing in for Story 4's
+still-blocked real per-device credential system (Epic 3's
+`DEVICE-01`/`02`/`06` have not landed). **This is not a security boundary.**
+Treat it like a shared household WiFi password, not an individually
+revocable credential — Story 4 replaces it once it exists.
+
+### The host bridge (`puck_bridge/`)
+
+The upload's landing point is a new, standalone Python package,
+`puck_bridge/`, at the repo root (not under `firmware/`) — deliberately its
+own process, not wired into `app.py` or `home_display/appliance.py`, so it
+cannot regress either existing front end:
+
+- `puck_bridge/receiver.py` — the chunked-upload HTTP/1.1 receiver
+  (`protocol_version = "HTTP/1.1"`, matching `tools/receiver.py`'s own
+  documented reason: ESP-IDF's `http_request` component depends on
+  connection reuse across chunks). Checks the `X-Puck-Token` header before
+  touching any capture state (fail closed — a missing or wrong token never
+  produces a turn, even a partial one), reassembles chunks per `seq`, then
+  converts the raw stereo/32-bit/16kHz capture into a mono 16kHz WAV using
+  the exact Q31→Q25→gain→16-bit conversion already validated in
+  `tools/label_captures.py`'s `process_frame_sample()`, and calls
+  `voice.py:transcribe()` unchanged.
+- `puck_bridge/turn.py` — `TurnRunner`, which directly constructs
+  `handsfree.HandsFreeCoordinator` (not `build_hands_free()`, which
+  unconditionally builds a local wake-word engine this pipeline doesn't
+  need — the Puck's own on-device wake already decided this moment
+  happened) against a real `session.py:SessionProtocol`, and plays the
+  response on **this host machine's own speakers** via `audio.PCMPlayer`
+  (no Puck-side response playback yet — tracked separately, see the
+  friction log's 2026-09-09 entry, candidate `PUCK-01.7`).
+- `puck_bridge/server.py` — wires the two together, resolving the Hermes
+  session's connection settings through this project's existing
+  `config.py` relay-profile machinery (same profiles the TUI and household
+  appliance already use) and the new `PUCK_DEVICE_TOKEN` env-indirected
+  token alongside them.
+
+Run it with:
+
+```bash
+export PUCK_DEVICE_TOKEN=choose-a-shared-puck-token  # or set it in ~/.hermes-relay-tui/.env
+venv/bin/python -m puck_bridge --port 8766
+```
+
+Raw Puck audio stays transient end-to-end (NFR3): the receiver's in-memory
+chunk buffer for a capture is discarded as soon as it is reassembled, and
+the WAV file is deleted immediately after transcription, success or
+failure — no audio or transcript archive by default.
+
+### Verification
+
+```bash
+venv/bin/pytest tests/test_puck_bridge.py -v
+../../venv-firmware/bin/esphome compile firmware/respeaker-lite/respeaker-lite.yaml
+```
+
+The pytest suite covers the conversion math, the token/reassembly wire
+protocol (over a real loopback socket), and the turn runner, all against
+fakes — no live Hermes endpoint or hardware required. The actual acceptance
+evidence for the wake-to-upload firmware path and the audible response
+remains a live hardware smoke test: speak "hey jarvis" near the physical
+Puck with the bridge running, and confirm one upload, a correct transcript,
+one completed Hermes turn, and an audible response on the host speakers.

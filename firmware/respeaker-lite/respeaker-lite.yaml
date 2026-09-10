@@ -22,6 +22,16 @@
 # firmware/esp32-s3-touch-lcd-7/platformio.ini of keeping installation
 # values out of version control.
 
+# Story 5: where the host bridge (puck_bridge/, a standalone process on the
+# dev/household Mac) listens, and the hardcoded shared token this story
+# stands in for Story 4's real per-device credential system. All three are
+# installation-specific and gitignored via secrets.yaml, per this file's
+# existing convention for WiFi/API/OTA values below.
+substitutions:
+  puck_bridge_host: !secret puck_bridge_host
+  puck_bridge_port: !secret puck_bridge_port
+  puck_device_token: !secret puck_device_token
+
 esphome:
   name: respeaker-lite
   friendly_name: "Hermes Puck (reSpeaker Lite)"
@@ -46,6 +56,9 @@ esphome:
         # silently never invoked without this.
         - micro_wake_word.enable_model: okay_nabu
         - lambda: pcm_capture::setup();
+        # Story 5: the VAD-gated, single-shot, wake-triggered capture
+        # buffer, separate from the training-data capture buffer above.
+        - lambda: pcm_capture::wake_capture::setup();
     - priority: -200  # after the capture buffer is allocated above
       then:
         - lambda: pcm_capture::start();
@@ -240,6 +253,9 @@ microphone:
       # Bounded memcpy into a buffer sized once at boot -- no allocation
       # or growth here. See pcm_capture.h.
       - lambda: pcm_capture::write(x.data(), x.size());
+      # Story 5: same bounded-memcpy shape, into the separate VAD-gated
+      # wake-capture buffer. A no-op whenever a wake capture isn't active.
+      - lambda: pcm_capture::wake_capture::write(x.data(), x.size());
 # On-device wake-word detection. Wake phrase is the pretrained community
 # model `hey_jarvis` (bundled with micro_wake_word, zero training
 # required) — NOT "hey hermes"; see README.md. The `stop` model is
@@ -273,6 +289,16 @@ micro_wake_word:
   vad:
     model: wake_models/vad.json
     probability_cutoff: 0.05
+  # Story 5: turns a validated on-device wake into an actual outbound audio
+  # payload for the first time. `wake_word` is the automation variable this
+  # component's own trigger provides (see components/micro_wake_word/
+  # __init__.py's `get_wake_word_detected_trigger()` build). Starting the
+  # capture here, rather than immediately uploading, is what makes the
+  # upload VAD-gated instead of firing on the wake phrase alone -- the
+  # capture window still has to close (see the fast interval below) before
+  # there is anything to upload.
+  on_wake_word_detected:
+    - lambda: pcm_capture::wake_capture::start(wake_word);
 
 # TEMPORARY diagnostic: mww's on_boot state-transition log (STOPPED ->
 # STARTING -> DETECTING_WAKE_WORD) only fires once, right at boot, and is
@@ -296,3 +322,21 @@ interval:
     then:
       - lambda: |-
           pcm_capture::dump_over_serial();
+  # Story 5: ends the VAD-gated wake capture window on debounced silence.
+  # 100ms keeps the end-of-utterance round-trip snappy without adding real
+  # load -- this is a cheap boolean check, a no-op whenever no wake capture
+  # is active (see pcm_capture::wake_capture::tick()).
+  - interval: 100ms
+    then:
+      - lambda: |-
+          pcm_capture::wake_capture::tick(id(mww).get_vad_state());
+  # Story 5: the actual outbound upload, from a slow tick (never the
+  # real-time audio path or the fast VAD-tick above) -- matches
+  # `upload_and_restart`'s existing convention of only ever blocking on a
+  # POST from a slow interval. A no-op until `tick()` above has closed a
+  # capture window.
+  - interval: 1s
+    then:
+      - lambda: |-
+          pcm_capture::wake_capture::upload(id(http_client), "http://${puck_bridge_host}:${puck_bridge_port}/upload",
+                                             "${puck_device_token}");

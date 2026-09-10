@@ -5,6 +5,7 @@ import pytest
 from config import (
     DEFAULT_URL,
     DEFAULT_PROFILE_ENV,
+    PUCK_DEVICE_TOKEN_ENV,
     _env_choice,
     _env_float,
     _env_int,
@@ -13,6 +14,7 @@ from config import (
     build_arg_parser,
     ensure_default_config_file,
     load_config_file,
+    resolve_puck_device_token,
 )
 
 
@@ -427,3 +429,32 @@ def test_silencing_earcons_does_not_disable_the_wake_word(tmp_path):
 
     assert args.earcons is False
     assert args.wake_enabled is True
+
+
+def test_resolve_puck_device_token_is_empty_without_configuration(
+    tmp_path, monkeypatch
+):
+    monkeypatch.delenv(PUCK_DEVICE_TOKEN_ENV, raising=False)
+    assert resolve_puck_device_token(tmp_path / ".env") == ""
+
+
+def test_resolve_puck_device_token_reads_the_environment(monkeypatch, tmp_path):
+    monkeypatch.setenv(PUCK_DEVICE_TOKEN_ENV, "from-env")
+    assert resolve_puck_device_token(tmp_path / ".env") == "from-env"
+
+
+def test_resolve_puck_device_token_falls_back_to_the_profile_env_file(
+    tmp_path, monkeypatch
+):
+    """Same token_env indirection as the relay-profile tokens: the secret
+    lives in the profile .env file, never a literal in committed config."""
+    monkeypatch.delenv(PUCK_DEVICE_TOKEN_ENV, raising=False)
+    env_path = tmp_path / ".env"
+    env_path.write_text(f'{PUCK_DEVICE_TOKEN_ENV}="from-file"\n', encoding="utf-8")
+
+    assert resolve_puck_device_token(env_path) == "from-file"
+
+
+def test_resolve_puck_device_token_defaults_to_the_default_profile_env(monkeypatch):
+    monkeypatch.setenv(PUCK_DEVICE_TOKEN_ENV, "from-env-default-path")
+    assert resolve_puck_device_token(None) == "from-env-default-path"
