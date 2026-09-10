@@ -121,13 +121,18 @@ wifi:
 #
 # Vendored locally (components/i2s_audio/, a verbatim copy of
 # formatBCE/esphome at the previously-pinned commit
-# eedcdbee335dbe296d432b3e6421da0469907365) rather than pulled from git,
-# because the 48kHz->16kHz decimation in
-# components/i2s_audio/microphone/i2s_audio_microphone.cpp is patched here
-# with a real anti-aliasing filter -- the upstream fork's version has none
-# (nearest-sample drop), which spectrogram analysis of a real captured
-# utterance showed producing static, non-sweeping frequency bands instead
-# of natural speech formants. See story 3's Implementation Notes.
+# eedcdbee335dbe296d432b3e6421da0469907365) rather than pulled from git.
+# Session 6 patched the 48kHz->16kHz decimation here with a proper
+# anti-aliasing FIR filter, reasoning that the upstream fork's naive
+# nearest-sample-drop decimation (confirmed via spectrogram to alias) was
+# the cause of this story's wake-word non-detection problem. Session 17
+# proved that reasoning backwards: building formatBCE's actual unmodified
+# reference config side-by-side showed wake-word detection working
+# cleanly with the stock, unfiltered decimation, and *not* working with
+# this project's "improved" filter. Reverted back to the stock nearest-
+# sample-drop (no filtering) -- see the decimation loop in
+# components/i2s_audio/microphone/i2s_audio_microphone.cpp for the full
+# explanation and story 3's session 17 notes for the investigation.
 # Also vendors `micro_wake_word` locally (components/micro_wake_word/, a
 # verbatim copy of this project's installed ESPHome 2026.8.2 package) to
 # add a raw-probability diagnostic in streaming_model.cpp -- the stock
@@ -142,6 +147,38 @@ external_components:
     components:
       - i2s_audio
       - micro_wake_word
+      - respeaker_lite
+
+# Required by respeaker_lite: below, to talk to the XMOS chip for the DFU
+# firmware update. Pins/frequency match formatBCE's reference config.
+i2c:
+  - id: internal_i2c
+    sda: GPIO5
+    scl: GPIO6
+    frequency: 400kHz
+
+# Session 17 (story 3): flashes the reSpeaker Lite's onboard XMOS XU316
+# DSP with the specific firmware version formatBCE's proven-working
+# reference config depends on. This unit shipped with XMOS firmware
+# 1.0.8; the reference (and Seeed's own official setup wiki,
+# wiki.seeedstudio.com/respeaker_lite_ha/) specifies 1.1.0. Wired in
+# permanently, not as a one-time manual step, so flashing this firmware
+# onto any reSpeaker Lite unit -- not just the one already updated this
+# session -- brings its XMOS firmware to the matching version
+# automatically. Idempotent: the component checks the XMOS chip's current
+# version against this one and only performs the DFU update if they
+# differ, so this is a harmless no-op on a unit already at 1.1.0.
+# firmware URL/version/md5 verbatim from formatBCE's reference, not
+# invented. Vendored locally at components/respeaker_lite/ (pinned commit
+# 3136cf7) with two environment-specific fixes documented in that
+# component's own comments -- neither changes DFU/audio behavior.
+respeaker_lite:
+  id: respeaker
+  reset_pin: GPIO2
+  firmware:
+    url: https://github.com/formatBCE/Respeaker-Lite-ESPHome-integration/raw/refs/heads/main/respeaker_lite_i2s_dfu_firmware_48k_v1.1.0.bin
+    version: "1.1.0"
+    md5: 9297155d1bf3eb21a9d4db52a89ea0c6
 
 # I2S audio bus from the XU316 DSP into the XIAO ESP32-S3's host-side ADC
 # input. Pin assignments sourced from Seeed's own wiki tutorial for this

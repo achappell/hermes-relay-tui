@@ -12,6 +12,52 @@ context:
   - firmware/respeaker-lite/README.md
 ---
 
+## RESUME HERE (2026-09-09, end of session 17, fourth update -- loose ends closed)
+
+**Fourth update, same session: closed both loose ends from the third
+update.**
+
+- **`okay_nabu` verified working.** A fresh hard reset was needed first
+  -- the device had been sitting idle through ~15 minutes of
+  documentation/commit work between the third update's test and this
+  one, and came back with `mww is_running: false` (not a crash marker,
+  just a stale/idle state; a hard reset via `esptool.py --after
+  hard_reset chip_id` immediately restored `is_running: true`). With a
+  fresh boot, 10 "okay nabu" TTS plays produced 21 high-confidence
+  readings (166-255/255 against cutoff 247), each correlated with a
+  simultaneous VAD spike and clean returns to baseline between
+  utterances -- same clean, reliable pattern as `hey_jarvis`. Both
+  pretrained wake-word models work.
+- **Wired the XMOS DFU update permanently into the production
+  `respeaker-lite.yaml`** (`i2c:` bus + `respeaker_lite:` block, matching
+  the already-vendored, already-fixed component from earlier this
+  session), rather than leaving it a one-time manual step specific to
+  this physical unit. Reasoning: this firmware is meant to be flashed
+  onto *a* reSpeaker Lite, not only the one unit already updated tonight
+  -- a fresh unit would ship with whatever XMOS firmware Seeed's factory
+  process put on it (1.0.8 on this unit), and without this wired in,
+  wake-word detection would silently fail again on that unit with no
+  obvious cause pointing back to firmware version. The DFU check is
+  idempotent (compares current vs. expected version, only flashes on a
+  real mismatch), confirmed on this already-updated unit: `DFU version:
+  1.1.0` logged with no `Updating...` step, clean boot, zero crash
+  markers.
+- **Re-verified the fully integrated production firmware end-to-end**:
+  compiled, flashed, fresh boot, DFU no-op confirmed, then 6 more
+  wake-word plays (5x "hey jarvis" + 1x "okay nabu") all produced clean
+  255/255 (and 246/255) readings with zero crashes. This is the actual
+  shipped firmware now, not a separate test config.
+- Also corrected a now-stale comment in `respeaker-lite.yaml` that still
+  claimed the vendored `i2s_audio` has "a real anti-aliasing filter" --
+  updated to explain the revert and point at the decimation loop's own
+  comment for the full story.
+- **Net: PUCK-01.3 is complete.** Both loose ends from the third update
+  are closed with real hardware verification, not just asserted. The
+  shipped `respeaker-lite.yaml` now: flashes the correct XMOS firmware
+  automatically on any unit, uses stock (unfiltered) decimation, and
+  reliably detects both `hey_jarvis` and `okay_nabu` on real speech with
+  proper rejection of non-wake phrases.
+
 ## RESUME HERE (2026-09-09, end of session 17, third update -- SOLVED)
 
 **Third update, same session: wake-word detection works. This is the
