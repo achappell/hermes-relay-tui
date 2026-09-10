@@ -251,31 +251,6 @@ void I2SAudioMicrophone::mic_task(void *params) {
           this_microphone->fix_dc_offset_(samples);
         }
 
-        // 48kHz -> 16kHz decimation: keep the first stereo frame out of
-        // every 3, drop the other two. No anti-aliasing filter -- this
-        // is formatBCE's original, unmodified upstream behavior.
-        //
-        // Session 17 (story 3) history: an earlier session replaced this
-        // with a proper 31-tap windowed-sinc anti-aliasing FIR (and,
-        // before that, a weaker 3-tap boxcar), reasoning that the naive
-        // drop-two-of-three approach was textbook aliasing and therefore
-        // a likely cause of this story's wake-word non-detection problem.
-        // That reasoning was wrong in practice: session 17 built the
-        // *actual* out-of-the-box reference config (formatBCE's stock
-        // i2s_audio, unmodified) side-by-side with this project's FIR-
-        // filtered version and found the FIR filter -- not the naive
-        // decimation -- was the real cause of non-detection. With this
-        // exact stock decimation, hey_jarvis fires cleanly (255/255,
-        // cutoff 247) on real "hey jarvis" speech and correctly stays at
-        // 0 on other phrases; with the FIR filter, it never fired at all
-        // on any real speech tested across many prior sessions. The
-        // FIR's steeper cutoff most likely removed spectral content
-        // (e.g. 7-8kHz energy, or reshaped formant-adjacent frequencies)
-        // that this specific pretrained model actually relies on --
-        // mathematically "more correct" anti-aliasing, empirically worse
-        // for this model. Do not reintroduce filtering here without
-        // re-verifying detection still works on real hardware, not just
-        // spectrogram inspection.
         std::vector<uint8_t> each_third_sample;
         size_t block_size = 24;
         size_t copy_size = 8;

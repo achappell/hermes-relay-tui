@@ -139,8 +139,8 @@ venv-firmware/bin/esphome logs firmware/respeaker-lite/respeaker-lite.yaml --dev
    detection log line (wake word id `hey_jarvis`) should appear shortly
    after — this is the actual on-hardware proof that the I2S audio path and
    wake engine work, not just that the firmware compiles. **This step is
-   currently unverified** — see Known Limitation below; do not assume it
-   passes without running it yourself.
+   now verified working** (session 17) — see Known Limitation below for
+   the full resolution.
 
 ## Known Limitation
 
@@ -336,6 +336,51 @@ custom wake-word model on audio captured through this exact hardware (the
 whether a different XMOS DSP firmware variant with less aggressive
 processing is available for this board. See the story file for the full
 record.
+
+**Session 17 solved it. This conclusion was wrong** — not because the
+reasoning at the time was unsound, but because it was never tested
+against an actual known-working external reference, only validated
+internally against this project's own pipeline. Two real findings:
+
+1. **This unit's XMOS DSP firmware was version 1.0.8; the community
+   reference this firmware is modeled on (`formatBCE/Respeaker-Lite-
+   ESPHome-integration`) depends on 1.1.0.** Flashed the correct version
+   via the `respeaker_lite:` component's DFU mechanism (now vendored at
+   `components/respeaker_lite/`) — genuinely necessary, permanent, and
+   worth keeping, but **on its own this did not fix detection.** A direct
+   test immediately after (18 "hey jarvis" TTS plays against the upgraded
+   firmware) still came back flat 0/255, VAD included.
+2. **The actual cause: session 6's "proper" 31-tap windowed-sinc
+   anti-aliasing FIR filter, not the naive decimation it replaced.**
+   Built formatBCE's complete, faithful stock config side-by-side
+   (`respeaker-lite-stock-test.yaml`, using their unmodified `i2s_audio`
+   fork verbatim, vendored at `components_stock/`) and found `hey_jarvis`
+   fires cleanly and repeatedly (255/255, cutoff 247) on real speech, with
+   correct rejection of non-wake phrases and a real VAD curve (climbing
+   to 200+/255 during speech, baseline ~1-14 otherwise) — the first time
+   in this story's entire history any of that worked. Reverted
+   `components/i2s_audio`'s decimation back to the naive nearest-sample-
+   drop (no filtering) to confirm, then re-verified on the actual
+   production `respeaker-lite.yaml`: same clean 255/255 detections.
+   **The mathematically "more correct" anti-aliasing filter was
+   measurably worse for this specific pretrained model** — most likely
+   because its steeper cutoff removed spectral content (e.g. 7-8kHz
+   energy) the model actually relies on, not because the naive decimation
+   was somehow fine after all. Sessions 4-6's aliasing diagnosis (real,
+   confirmed by spectrogram) was correct; the fix for it was the actual
+   bug.
+
+**Wake-word detection works on this hardware with the pretrained
+`hey_jarvis` model, using formatBCE's stock XMOS firmware (1.1.0) and
+formatBCE's stock (unfiltered) decimation.** The custom-training work
+from steps 1-3 (data collection pipeline, 30-clip dataset, first trained
+model) remains fully working and banked, but is no longer the only path
+to on-device detection — it's now optional future work for improving
+robustness/vocabulary, not a requirement. See the story file's session 17
+entries for the complete investigation, including the real environment
+bugs found and fixed along the way (an ESP-IDF toolchain segfault from a
+redundant `requests` HTTP round-trip, and a null-pointer crash in the DFU
+version-check code).
 
 **If you raise `logger: level:` above `DEBUG` while debugging this:**
 `VERY_VERBOSE` logs the configured WiFi password in cleartext (found and

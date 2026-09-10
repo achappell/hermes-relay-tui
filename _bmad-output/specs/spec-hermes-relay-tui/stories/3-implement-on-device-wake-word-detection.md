@@ -12,6 +12,105 @@ context:
   - firmware/respeaker-lite/README.md
 ---
 
+## RESUME HERE (2026-09-09, end of session 17, third update -- SOLVED)
+
+**Third update, same session: wake-word detection works. This is the
+resolution of this story's core, months-long blocker.**
+
+- The user directly challenged the second update's negative result:
+  "supposedly ESPHome works out of the box on this device," pointing at
+  Seeed's own official wiki (`wiki.seeedstudio.com/respeaker_lite_ha/`).
+  Fetched it directly -- it specifies the exact same XMOS firmware
+  version (1.1.0), `gain_factor: 4`, and VAD `probability_cutoff: 0.05`
+  already tested. Nothing new there on its own, but the user asked for
+  the complete stock config to be built and tested as faithfully as
+  possible, not just the XMOS DFU piece layered onto this project's own
+  pipeline -- and that turned out to be exactly the right call.
+- **Built formatBCE's actual full reference config**
+  (`respeaker-lite-stock-test.yaml`, copied from
+  `config/common/respeaker-satellite-base.yaml` almost verbatim -- only
+  added `esphome.name`, `wifi.ssid/password`, `api.encryption.key` via
+  secrets, and a lab-only supplementary `micro_wake_word.start` trigger
+  at `priority: -300` since the stock trigger requires a live Home
+  Assistant connection this lab doesn't have). Critically, used a
+  **freshly vendored, byte-for-byte unmodified copy of `i2s_audio`**
+  (`components_stock/i2s_audio/`, cloned fresh from
+  `formatBCE/esphome@respeaker_microphone`) instead of this story's own
+  `components/i2s_audio/`, because that one has a deliberate anti-
+  aliasing FIR filter improvement from session 6 -- reusing it would have
+  tested this project's own pipeline again, not the actual out-of-the-
+  box reference.
+- **Hit and fixed the same class of environment crash again, more
+  generally this time.** The stock config's ~12 remote files (sound
+  effects, `okay_nabu`/`kenobi`/`hey_mycroft`/`stop` model downloads)
+  each independently trigger `external_files.download_content()`, and
+  ESPHome's own mainline version of that function (unlike the
+  respeaker_lite-specific one patched earlier this session) always
+  attempts a live network call regardless of cache state -- so the same
+  SIGSEGV recurred via 11+ other call sites the earlier, narrower fix
+  didn't cover. Pre-importing `requests` earlier in the same process did
+  *not* help (directly falsifies the "first import" theory from the
+  first update -- the real trigger is calling `download_content()`
+  itself, not importing its dependency). Fixed properly this time with a
+  general monkeypatch (`external_files.download_content` skips the
+  network call whenever the cache file already exists) applied via a
+  small wrapper script, rather than patching every individual call site.
+- **Result: `hey_jarvis` fires cleanly and repeatedly** -- 255/255
+  against a cutoff of 247, correlated exactly with 10 "hey jarvis" TTS
+  plays, with proper return to near-zero baseline between utterances
+  (real temporal discrimination, not a stuck-high fault). **VAD showed a
+  genuine, clean speech-detection curve for the first time in this
+  story's entire history** -- climbing from a baseline of ~1-14/255 to
+  200+/255 during speech and decaying back down, where every previous
+  session (including this same session's second update, on this
+  project's own pipeline) saw it pinned near zero regardless of
+  confirmed loud audio reaching the mic. **Negative control confirmed
+  real discrimination, not just voice-activity triggering**: three
+  plays of "what time is it" produced a real VAD response (climbing to
+  184/255) but `hey_jarvis`/`okay_nabu` correctly stayed at 0/255
+  throughout.
+- **Root cause, found by diffing the stock and patched `i2s_audio`
+  microphone implementations: session 6's 31-tap windowed-sinc anti-
+  aliasing FIR filter -- not the naive nearest-sample-drop decimation it
+  replaced -- was the actual cause of every non-detection result across
+  sessions 3-17.** The naive decimation is textbook aliasing and was a
+  real, correctly-diagnosed problem (confirmed by spectrogram inspection
+  in session 4); fixing it was reasonable engineering. But the fix itself
+  broke the very thing it was meant to help: the FIR's steeper 7kHz
+  cutoff most likely removes spectral content (plausibly 7-8kHz energy,
+  or reshapes formant-adjacent frequencies) that this specific pretrained
+  model actually relies on. Mathematically more correct anti-aliasing;
+  empirically worse for this model. Nobody re-verified live wake-word
+  detection immediately after adding the steeper filter in session 6 in
+  a way that isolated it from the other simultaneous changes -- by the
+  time detection was retested, several other variables had also changed.
+- **Reverted `components/i2s_audio`'s decimation back to the stock naive
+  nearest-sample-drop** (with a detailed comment explaining why, so a
+  future session doesn't reintroduce the same regression without
+  re-verifying on real hardware first) and **re-verified on the actual
+  production `respeaker-lite.yaml`** (not just the stock-test config):
+  same clean, repeated 255/255 detections, zero crashes. This is the
+  real firmware this story ships, now actually working.
+- **Net effect on the story: PUCK-01.3's actual goal -- on-device
+  wake-word detection -- is achieved**, using the pretrained community
+  `hey_jarvis` model, formatBCE's XMOS firmware (1.1.0), and stock
+  (unfiltered) 48kHz->16kHz decimation. The custom-training pipeline from
+  steps 1-3 (data collection, 30-clip dataset, first trained `.tflite`)
+  remains fully working and committed, but is no longer required for
+  basic detection -- it's future work for improving accuracy/vocabulary/
+  false-accept rate, not a blocker.
+- **What's not yet done:** `okay_nabu` never produced a high-confidence
+  reading in this session's tests (stayed in the 1-6/255 range even
+  during clear speech) -- worth a dedicated test with that exact phrase
+  before assuming it also works. The `respeaker-lite-stock-test.yaml`/
+  `components_stock/` artifacts are kept as committed reference/evidence
+  for this finding, not meant for ongoing use. The real remaining
+  question for closing out this story is whether to keep the
+  `respeaker_lite:`/XMOS-DFU component wired into the shipped
+  `respeaker-lite.yaml` permanently (recommended -- it's what makes the
+  firmware match a known-working reference) or leave it as a one-time
+  manual step, and whether `okay_nabu` needs its own verification pass.
+
 ## RESUME HERE (2026-09-09, end of session 17, second update -- the decisive test)
 
 **Second update, same session: tested whether the corrected XMOS firmware
