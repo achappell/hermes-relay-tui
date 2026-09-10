@@ -428,6 +428,30 @@ async def test_browser_voice_turn_uses_ops_session_and_streams_pcm_without_local
 
 
 @pytest.mark.asyncio
+async def test_browser_voice_turn_keeps_speaking_state_for_late_text_delta():
+    publisher = RecordingPublisher()
+    appliance = Appliance(
+        _args(browser_voice=True, wake_enabled=False),
+        session=FakeSession(
+            [
+                {"type": "audio_start", "sample_rate": 24000, "channels": 1, "sample_width": 2},
+                {"type": "text_delta", "text": "A late caption."},
+                {"type": "audio_chunk", "data": b"\x01\x02"},
+                {"type": "audio_end"},
+                {"type": "turn_end"},
+            ]
+        ),
+        server=FakeServer(),
+        publisher=publisher,
+    )
+    appliance._connected = True
+
+    assert await appliance._run_browser_turn("test late caption") is True
+    assert publisher.sequence == ["thinking", "speaking", "speaking", "idle"]
+    assert publisher.history[-1][1] == "A late caption."
+
+
+@pytest.mark.asyncio
 async def test_browser_hands_free_capability_is_safe_for_invalid_profile_metadata():
     publisher = RecordingPublisher()
     appliance = Appliance(

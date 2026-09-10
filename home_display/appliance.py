@@ -520,7 +520,7 @@ class Appliance:
                 kind = event.get("type")
                 if kind == "text_delta":
                     response += str(event.get("text") or "")
-                    publish_response()
+                    publish_response("speaking" if audio_active else "thinking")
                 elif kind == "text_replace":
                     response = str(event.get("text") or "")
                     publish_response("speaking" if audio_active else "thinking")
