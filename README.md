@@ -14,6 +14,7 @@ This is a client for the existing Hermes voice-session channel. It does not run 
 - WAV output when playback is disabled or `--output` is supplied.
 - Session create/resume through `--session-id`.
 - Bounded reconnect attempts with visible connection state and local prompt preservation.
+- Explicit reconnect recovery that creates a fresh session without replaying an uncertain turn.
 - Structured thinking, status, tool, notification, and background activity rendering with unsupported-event diagnostics.
 - Typed Markdown transcript rendering with `/details [show|hide]` and `--hide-thinking` controls.
 - Connection, timeout, and turn errors shown in the UI instead of crashing the app.
@@ -409,6 +410,7 @@ whether a crash report exists and its path.
 | `/save [path]` | Save the visible transcript locally without overwriting files |
 | `/copy` | Copy the visible transcript to the system clipboard |
 | `/logs` | Show local debug and crash logging status and paths |
+| `/reconnect` | Reconnect with a fresh Hermes session without sending a prompt |
 | `/retry` | Retry a prompt only when it was proven not to reach Hermes |
 | `/undo` | Remove an unsent local prompt from the queue |
 | Mouse drag | Select transcript text; release to copy it automatically and show a brief toast |
@@ -437,7 +439,7 @@ above the composer lists matching commands and their args/description as you
 type, and disappears once you've typed a space or the text no longer looks
 like a command. `Tab` fills in a uniquely-matching command name without
 moving focus out of the composer. The initial commands
-are `/help`, `/clear`, `/status`, `/profile`, `/queue`, `/busy`, `/details`, `/voice`, `/wake`, `/audio`, `/image`, `/history`, `/save`, `/copy`, `/logs`, `/retry`, `/undo`, `/usage`, `/compress`, and `/quit`;
+are `/help`, `/clear`, `/status`, `/profile`, `/queue`, `/busy`, `/details`, `/voice`, `/wake`, `/audio`, `/image`, `/history`, `/save`, `/copy`, `/logs`, `/reconnect`, `/retry`, `/undo`, `/usage`, `/compress`, and `/quit`;
 `/queue`
 also supports `list`, `edit <number> <replacement>`, `drop <number>`, and
 `clear`. `/busy [queue|steer|interrupt]` changes the mode for the current
@@ -463,7 +465,12 @@ hidden token input or deletion confirmation.
 thinking and tool detail is excluded while `/details show` includes it. `/save`
 defaults to `hermes-transcript-YYYYMMDD-HHMMSS.txt` in the current directory and
 never overwrites an existing file. `/retry` refuses a turn that may have reached
-Hermes; `/undo` only removes a prompt that is still local and unsent.
+Hermes and can resend only a prompt proven never to have been sent. `/reconnect`
+is the separate recovery action: it closes the failed session, creates a fresh
+verified session, leaves partial text visible, and leaves queued prompts in FIFO
+order without sending or replaying any prompt. After it succeeds, submit a
+fresh prompt explicitly. `/undo` only removes a prompt that is still local and
+unsent.
 
 Drag across any visible transcript text to select an individual message or
 range. Releasing the mouse copies that selection through the native system
@@ -500,7 +507,9 @@ Connection setup retries up to three additional times by default, using an
 exponential delay capped at eight seconds. Override this with
 `--connect-retries` and `--connect-retry-delay`. If a connection is unavailable,
 the submitted prompt remains in the local queue and newer prompts wait behind
-it. A turn that may already have reached Hermes is never replayed automatically.
+it. Use `/reconnect` to perform a reconnect-only recovery; it does not drain
+that queue or reopen wake mode. A turn that may already have reached Hermes is
+never replayed automatically.
 
 ## Useful options
 
@@ -545,7 +554,7 @@ prepared when `--no-check` is used.
 
 ## Audio output
 
-By default, the app plays supported 16-bit PCM as it arrives. If playback is unavailable, it reports the failure and continues buffering the turn. Use `--audio-output-device` or `/audio output <device>` to select a speaker, and `--no-play --output response.wav` to capture audio without using one.
+By default, the app plays supported 16-bit PCM as it arrives. If playback is unavailable, it reports `audio unavailable`, keeps the completed text response readable, and continues collecting audio for an optional WAV fallback. Use `--audio-output-device` or `/audio output <device>` to select a speaker, and `--no-play --output response.wav` to capture audio without using one.
 
 When `--output` is set, the first turn uses that path and later turns use numbered suffixes such as `response-1.wav`. Without `--output`, audio that was not played live is written to the current directory as `hybrid-tui-<turn-id>.wav`.
 

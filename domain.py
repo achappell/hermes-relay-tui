@@ -423,6 +423,7 @@ class TuiDomain:
 
         raw_state = raw_state.rstrip("…")
         mapping = {
+            "heard": TurnPhase.HEARD,
             "listening": TurnPhase.LISTENING,
             "transcribing": TurnPhase.TRANSCRIBING,
             "thinking": TurnPhase.THINKING,
@@ -517,6 +518,8 @@ class TuiDomain:
             return self._transition(TurnPhase.HEARD if event_type == "wake_heard" else TurnPhase.LISTENING)
         if event_type in {"capture_finished", "transcription_started"}:
             return self._transition(TurnPhase.TRANSCRIBING)
+        if event_type in {"capture_cancelled", "capture_empty"}:
+            return self._transition(TurnPhase.IDLE)
         if event_type in {"connection_lost", "disconnected"}:
             return self.set_connection_state("disconnected")
 

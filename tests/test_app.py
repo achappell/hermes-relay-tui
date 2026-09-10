@@ -468,6 +468,207 @@ async def test_connect_exhaustion_keeps_app_open_and_reports_bound():
         assert "unable to connect after 3 attempt(s)" in transcript_of(app)
 
 
+async def test_reconnect_closes_old_session_and_preserves_queue_without_sending():
+    old_session = FakeSession(session_id="old-session")
+    fresh_session = FakeSession(
+        session_id="fresh-session",
+        hello={
+            "chat_id": "chat-1",
+            "history": [{"role": "assistant", "content": "server history"}],
+        },
+    )
+    sessions = iter((old_session, fresh_session))
+    app = HermesStreamingApp(
+        args=make_args(),
+        session_factory=lambda: next(sessions),
+    )
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app._queued_prompts = ["first queued", "second queued"]
+        app._refresh_queue_shelf()
+        app.wake_armed = True
+        app._refresh_voice_status()
+        assert app.domain.begin_turn("old-turn", generation=1).accepted
+        assert app.domain.apply_event(
+            {
+                "type": "text_delta",
+                "turn_id": "old-turn",
+                "session_id": "old-session",
+                "text": "old partial",
+            },
+            generation=1,
+        ).accepted
+
+        await app._handle_command(parse_slash_command("/reconnect"))
+        rendered = transcript_of(app)
+
+    assert old_session.closed is True
+    assert app.session is fresh_session
+    assert fresh_session.connect_calls == 1
+    assert fresh_session.sent_turns == []
+    assert app.connection_state == app_module.CONNECTION_CONNECTED
+    assert app.domain.state.session_id == "fresh-session"
+    assert app.domain.state.turn_active is False
+    assert app.domain.state.response_text == ""
+    assert app._queued_prompts == ["first queued", "second queued"]
+    assert app.wake_armed is False
+    assert "reconnected; no prompt was sent" in rendered
+    assert "server history" not in rendered
+
+
+async def test_reconnect_preserves_an_interactively_selected_input_device():
+    old_session = FakeSession(session_id="old-session")
+    fresh_session = FakeSession(session_id="fresh-session")
+    sessions = iter((old_session, fresh_session))
+    app = HermesStreamingApp(
+        args=make_args(),
+        session_factory=lambda: next(sessions),
+    )
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await app._handle_audio_command("input USB Microphone")
+        await app._handle_command(parse_slash_command("/reconnect"))
+
+    assert app.audio_input_device == "USB Microphone"
+    assert app._audio_input_touched is True
+    assert getattr(fresh_session, "input_device", None) == "USB Microphone"
+
+
+async def test_reconnect_is_refused_while_a_turn_is_active():
+    old_session = FakeSession(session_id="old-session")
+    app = HermesStreamingApp(args=make_args(), session_factory=lambda: old_session)
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app._turn_in_flight = True
+        await app._handle_command(parse_slash_command("/reconnect"))
+        rendered = transcript_of(app)
+        assert app.session is old_session
+        assert old_session.closed is False
+        assert app._reconnect_in_flight is False
+
+    assert "Cannot reconnect while a turn" in rendered
+
+
+async def test_reconnect_is_single_flight():
+    class GatedConnectSession(FakeSession):
+        def __init__(self):
+            super().__init__(session_id="fresh-session", connected=False)
+            self.connect_started = asyncio.Event()
+            self.connect_release = asyncio.Event()
+
+        async def connect(self):
+            self.connect_calls += 1
+            self.connect_started.set()
+            await self.connect_release.wait()
+            self.connected = True
+            return self.hello
+
+    old_session = FakeSession(session_id="old-session")
+    fresh_session = GatedConnectSession()
+    sessions = iter((old_session, fresh_session))
+    app = HermesStreamingApp(
+        args=make_args(),
+        session_factory=lambda: next(sessions),
+    )
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        first = asyncio.create_task(
+            app._handle_command(parse_slash_command("/reconnect"))
+        )
+        await fresh_session.connect_started.wait()
+
+        assert await app._run_turn("during recovery") is False
+        assert app._queued_prompts == ["during recovery"]
+        assert fresh_session.sent_turns == []
+
+        await app._handle_command(parse_slash_command("/reconnect"))
+        assert app.session is fresh_session
+        assert fresh_session.connect_calls == 1
+        assert "reconnect is already in progress" in transcript_of(app)
+
+        fresh_session.connect_release.set()
+        await first
+
+    assert app.session is fresh_session
+    assert fresh_session.connect_calls == 1
+
+
+async def test_reconnect_failure_stays_disconnected_and_keeps_queue_intact():
+    old_session = FakeSession(session_id="old-session")
+    fresh_session = FlakyConnectSession(99, session_id="fresh-session")
+    sessions = iter((old_session, fresh_session))
+    app = HermesStreamingApp(
+        args=make_args(connect_retries=1, connect_retry_delay=0),
+        session_factory=lambda: next(sessions),
+    )
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app._queued_prompts = ["do not drain"]
+        app._refresh_queue_shelf()
+        app.wake_armed = True
+        app._refresh_voice_status()
+
+        await app._handle_command(parse_slash_command("/reconnect"))
+        disconnected_class = app.query_one("#voice-status", Static).has_class(
+            "-disconnected"
+        )
+        rendered = transcript_of(app)
+
+    assert old_session.closed is True
+    assert app.session is fresh_session
+    assert fresh_session.connect_calls == 2
+    assert fresh_session.sent_turns == []
+    assert app.connection_state == app_module.CONNECTION_DISCONNECTED
+    assert disconnected_class
+    assert app._queued_prompts == ["do not drain"]
+    assert app.wake_armed is False
+    assert "reconnect failed; no prompt was sent" in rendered
+
+
+async def test_reconnect_does_not_replay_an_uncertain_turn_or_hide_partial_text():
+    class UncertainSession(FakeSession):
+        def send_turn(self, text, *, stt_source="local"):
+            self.sent_turns.append((text, stt_source))
+            self.turn_index += 1
+
+            async def stream():
+                yield {"type": "text_delta", "text": "partial answer"}
+                self.connected = False
+                raise ConnectionResetError("socket went away")
+                yield  # pragma: no cover - makes this an async generator
+
+            return stream()
+
+    old_session = UncertainSession(session_id="old-session")
+    fresh_session = FakeSession(session_id="fresh-session")
+    sessions = iter((old_session, fresh_session))
+    app = HermesStreamingApp(
+        args=make_args(),
+        session_factory=lambda: next(sessions),
+    )
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await app._run_turn("possibly sent")
+        assert app._last_prompt_status == app_module.PROMPT_AMBIGUOUS
+        assert "partial answer" in transcript_of(app)
+
+        await app._handle_command(parse_slash_command("/reconnect"))
+        rendered = transcript_of(app)
+
+    assert old_session.sent_turns == [("possibly sent", "local")]
+    assert fresh_session.sent_turns == []
+    assert app._last_prompt == "possibly sent"
+    assert app._last_prompt_status == app_module.PROMPT_AMBIGUOUS
+    assert "partial answer" in rendered
+    assert app.connection_state == app_module.CONNECTION_CONNECTED
+
+
 async def test_prompt_is_kept_in_queue_when_recovery_is_exhausted():
     session = FlakyConnectSession(99)
     app = HermesStreamingApp(args=make_args(), session_factory=lambda: session)
@@ -533,6 +734,13 @@ async def test_dropped_turn_is_not_replayed_but_next_prompt_recovers():
         assert session.sent_turns == [("first", "local")]
         assert app.connection_state == "disconnected"
         assert "partial" in transcript_of(app)
+        assert app.voice_state == app_module.VOICE_ERROR
+        assert app.transcript._streaming_message is None
+        assert [
+            message.text
+            for message in app.transcript.messages
+            if message.role == "assistant"
+        ] == ["partial"]
 
         await app._submit_text("second")
 
@@ -1046,6 +1254,9 @@ async def test_status_and_error_events_render_on_their_own_lines():
         assert "hermes: working" in lines
         assert "[thinking]" in lines
         assert "[error] model hiccup" in lines
+        assert app.voice_state == app_module.VOICE_ERROR
+        assert app.transcript._streaming_message is None
+        assert app.domain.state.response_text == "working"
 
 
 async def test_repeated_activity_updates_replace_one_line_before_final_text():
@@ -1125,6 +1336,42 @@ async def test_unknown_server_events_are_visible_in_the_transcript():
 
         assert "[unhandled server event: approval.request]" in transcript_of(app)
         assert "hermes: answer" in transcript_of(app)
+
+
+async def test_voice_turn_reaches_thinking_before_the_first_remote_event():
+    observed_remote_phase = []
+
+    class ObservingSession(FakeSession):
+        def send_turn(self, text, *, stt_source="local"):
+            self.sent_turns.append((text, stt_source))
+            self.turn_index += 1
+
+            async def stream():
+                observed_remote_phase.append(app.voice_state)
+                yield {"type": "text_delta", "text": "spoken answer"}
+                yield {"type": "turn_end", "turn_id": "voice-phase"}
+
+            return stream()
+
+    session = ObservingSession()
+    app = HermesStreamingApp(args=make_args(), session_factory=lambda: session)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        phase_history = []
+        original_set_voice_state = app._set_voice_state
+
+        def record_voice_state(state):
+            phase_history.append(state)
+            original_set_voice_state(state)
+
+        app._set_voice_state = record_voice_state
+        await app._capture_voice_turn()
+
+        assert session.sent_turns == [("spoken words", "local-faster-whisper")]
+        assert observed_remote_phase == [app_module.VOICE_THINKING]
+        assert phase_history.index(app_module.VOICE_LISTENING) < phase_history.index(
+            app_module.VOICE_TRANSCRIBING
+        ) < phase_history.index(app_module.VOICE_THINKING)
 
 
 async def test_voice_turn_streams_with_the_voice_stt_source():
@@ -1458,12 +1705,12 @@ async def test_composer_remains_submitable_while_a_turn_is_responding():
         composer = app.query_one("#composer", Composer)
         composer.text = "first"
         first_press = asyncio.create_task(pilot.press("enter"))
-        await asyncio.sleep(0.05)
+        await pilot.pause()
         assert app._turn_in_flight
 
         composer.text = "second"
         second_press = asyncio.create_task(pilot.press("enter"))
-        await asyncio.sleep(0.05)
+        await pilot.pause()
 
         assert composer.text == ""
         assert app._queued_prompts == ["second"]
@@ -1905,6 +2152,8 @@ async def test_no_play_audio_keeps_streamed_text_complete_without_a_playback_clo
 
         gate.set()
         await turn
+        assert voice_status_of(app) == "● ready · audio unavailable"
+        assert "speaking" not in voice_status_of(app)
 
 
 async def test_interrupted_timing_turn_does_not_leave_timing_as_an_unhandled_event():
@@ -2576,6 +2825,7 @@ async def test_audio_write_failure_preserves_a_recovery_wav(tmp_path, monkeypatc
         events=[
             {"type": "audio_start", "sample_rate": 24000, "channels": 1, "sample_width": 2},
             {"type": "audio_chunk", "data": b"\x00\x01\x02\x03"},
+            {"type": "text_delta", "text": "Text survives speaker failure."},
             {"type": "audio_end"},
             {"type": "turn_end", "turn_id": "speaker-failed"},
         ]
@@ -2585,6 +2835,8 @@ async def test_audio_write_failure_preserves_a_recovery_wav(tmp_path, monkeypatc
         await pilot.pause()
         app.player = FailingPlayer()
         await app._run_turn("hi")
+        assert voice_status_of(app) == "● ready · audio unavailable"
+        assert "hermes: Text survives speaker failure." in transcript_of(app)
 
     recovery_wav = tmp_path / "hybrid-tui-speaker-failed.wav"
     assert recovery_wav.exists()
@@ -2708,6 +2960,115 @@ async def test_audio_status_gets_its_own_line_before_assistant_response():
         transcript = transcript_of(app)
         assert "hermes: Good. One of me is plenty." in transcript
         assert "[audio streaming]" not in transcript
+        assert voice_status_of(app) == "● ready"
+
+
+async def test_status_and_tool_activity_cannot_regress_a_speaking_turn():
+    observed_states = []
+
+    class ActivePlayer:
+        enabled = True
+        active = False
+        playing = False
+        failure = None
+
+        def start(self, audio_format):  # noqa: ARG002 - mirrors PCMPlayer
+            self.active = True
+            self.playing = True
+
+        def close(self):
+            self.active = False
+            self.playing = False
+
+    class ObservingSession(FakeSession):
+        def send_turn(self, text, *, stt_source="local"):
+            self.sent_turns.append((text, stt_source))
+            self.turn_index += 1
+
+            async def stream():
+                yield {"type": "text_delta", "text": "One coherent answer."}
+                yield {
+                    "type": "audio_start",
+                    "sample_rate": 24000,
+                    "channels": 1,
+                    "sample_width": 2,
+                }
+                observed_states.append(("audio", app.voice_state))
+                yield {"type": "status", "text": "working"}
+                observed_states.append(("status", app.voice_state))
+                yield {"type": "tool_start", "name": "search"}
+                observed_states.append(("tool", app.voice_state))
+                yield {"type": "turn_end", "turn_id": "speaking-phase"}
+
+            return stream()
+
+    session = ObservingSession()
+    app = HermesStreamingApp(args=make_args(no_play=False), session_factory=lambda: session)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.player = ActivePlayer()
+        await app._run_turn("hi")
+
+        assert observed_states == [
+            ("audio", app_module.VOICE_SPEAKING),
+            ("status", app_module.VOICE_SPEAKING),
+            ("tool", app_module.VOICE_SPEAKING),
+        ]
+        assistant_messages = [
+            message.text
+            for message in app.transcript.messages
+            if message.role == "assistant"
+        ]
+        assert assistant_messages == ["One coherent answer."]
+        assert "[working]" in transcript_of(app)
+        assert "[tool: search…]" in transcript_of(app)
+
+
+async def test_activity_does_not_promote_prebuffered_audio_to_speaking():
+    observed_states = []
+
+    class PrebufferingPlayer:
+        enabled = True
+        active = False
+        playing = False
+        failure = None
+
+        def start(self, audio_format):  # noqa: ARG002 - mirrors PCMPlayer
+            self.active = True
+
+        def close(self):
+            self.active = False
+
+    class ObservingSession(FakeSession):
+        def send_turn(self, text, *, stt_source="local"):
+            self.sent_turns.append((text, stt_source))
+            self.turn_index += 1
+
+            async def stream():
+                yield {
+                    "type": "audio_start",
+                    "sample_rate": 24000,
+                    "channels": 1,
+                    "sample_width": 2,
+                }
+                observed_states.append(("audio", app.voice_state))
+                yield {"type": "status", "text": "working"}
+                observed_states.append(("status", app.voice_state))
+                yield {"type": "turn_end", "turn_id": "prebuffering-phase"}
+
+            return stream()
+
+    session = ObservingSession()
+    app = HermesStreamingApp(args=make_args(no_play=False), session_factory=lambda: session)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.player = PrebufferingPlayer()
+        await app._run_turn("hi")
+
+        assert observed_states == [
+            ("audio", app_module.VOICE_BUFFERING),
+            ("status", app_module.VOICE_BUFFERING),
+        ]
         assert voice_status_of(app) == "● ready"
 
 
