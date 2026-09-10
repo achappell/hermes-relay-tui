@@ -12,6 +12,61 @@ context:
   - firmware/respeaker-lite/README.md
 ---
 
+## RESUME HERE (2026-09-09, end of session 17, second update -- the decisive test)
+
+**Second update, same session: tested whether the corrected XMOS firmware
+actually fixes wake-word detection. It doesn't. This is a real, well-
+controlled negative result -- not a retreat to the old untested
+assumption, but the same experiment sessions 3-10 never got to run,
+now actually run.**
+
+- Skipped debugging the mic_task boot-loop bug in the minimal DFU-test
+  config entirely -- it wasn't needed. The XMOS firmware upgrade to
+  1.1.0 is permanent, independent of whatever's flashed to the ESP32, so
+  reflashed the already-proven `respeaker-lite.yaml` (confirmed working
+  in the first update) and tested wake-word detection directly with it,
+  since it already has `hey_jarvis`/`okay_nabu`/`vad` wired in.
+- **Played "hey jarvis" via macOS TTS near the device 18 times total
+  across two rounds** (3 then 15 more), watching the live raw-probability
+  diagnostic the whole time. Confirmed real, strong audio was reaching
+  the mic throughout via the existing `mic_diag` amplitude log (ch0 in
+  the hundreds of millions, ch1 in the low millions -- consistent with
+  the documented ch0-loud/ch1-quieter split, not silence or a dead
+  channel).
+- **Result: `hey_jarvis` and `okay_nabu` stayed flat at 0/255 through
+  every single reading, and -- more tellingly -- so did `vad`, sitting
+  at 0-2/255 against a cutoff of 12 throughout, despite being described
+  in this story's own prior sessions as "much more lenient" and expected
+  to react to almost any loud sound.** VAD not responding at all to
+  confirmed strong audio is a stronger signal than the wake-word models
+  themselves staying flat -- it suggests whatever's wrong isn't specific
+  to `hey_jarvis`/`okay_nabu`'s learned weights, but to the audio
+  characteristics on the channel micro_wake_word consumes, full stop.
+- **Conclusion: the XMOS firmware version was a real, confirmed gap
+  (this unit genuinely was running the wrong version, and updating it
+  works), but it was not the cause of the wake-word detection failure.**
+  Sessions 3-10's "acoustic mismatch" theory is now on much firmer
+  ground than before this session -- not because it went untested again,
+  but because the one major untested confound (firmware version vs. a
+  known-working reference) has now actually been eliminated, with
+  hardware evidence, rather than assumed away.
+- **What's still open:** *why* the XU316's processed audio doesn't
+  suit these models is still not root-caused at the signal level (only
+  proven-not-caused-by: audio pipeline math, model files, tensor shapes,
+  feature generation, and now firmware version). A genuinely deeper dig
+  would compare a captured ch1 spectrogram against what these models
+  were actually trained on, but that's a new investigation, not a
+  quick follow-up.
+- **Net effect on the story's direction: back to steps 1-3's custom-
+  training path as the real way forward, now with much stronger
+  confidence that it's actually necessary** (not just the untested
+  default when a simpler theory hadn't been fully checked). The
+  mic_task boot-loop bug in the DFU-test config remains unfixed and
+  low-priority -- it blocks nothing now that the firmware-version
+  question is settled either way.
+- **Device left in its known-good state**: `respeaker-lite.yaml`
+  flashed and running normally, XMOS firmware permanently at 1.1.0.
+
 ## RESUME HERE (2026-09-09, end of session 17 -- major finding, read first)
 
 **Session 17's premise, raised directly by the user: sessions 3-10's
