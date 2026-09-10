@@ -2,24 +2,35 @@
 
 The HOME-03 display demo is a local fake-state source. It does not connect to
 Hermes, use audio or hardware, or load photos or YouTube. The visible browser
-surface is the compiled shared C/LVGL display, with prompt touch actions sent
-through the local `/action` adapter.
+surface is the DOM-first Svelte display. It starts the normalized
+`DisplayBridge`, renders the observed state/response stream, and presents
+touch-capable prompt actions through the local `/action` adapter only for a
+direct-use prompt. Passive state consumers remain read-only.
 
 ## Build the browser shell
 
 Run these commands from the repository root:
 
 ```bash
-source build/display-wasm/emsdk/emsdk_env.sh
-bash scripts/build_display_wasm.sh --check
-bash scripts/build_display_wasm.sh
 npm --prefix home_display/web install
+npm --prefix home_display/web test -- --run
 npm --prefix home_display/web run check
 npm --prefix home_display/web run build
 ```
 
-The build writes the static browser shell to `home_display/static/`. Node is a
-build-time dependency only; the demo itself runs with Python.
+These commands require Node packages but no Emscripten setup. The build writes
+the static browser shell to `home_display/static/`; generated WASM files are
+optional assets and are not loaded by the DOM-first page.
+
+To exercise the optional shared C/LVGL target independently, run its checks
+when the pinned Emscripten toolchain is available:
+
+```bash
+source build/display-wasm/emsdk/emsdk_env.sh
+bash scripts/build_display_wasm.sh --check
+bash scripts/build_display_wasm.sh
+npm --prefix home_display/web test -- --run src/state/wasm.test.ts src/surfaces/WasmCanvas.test.ts src/state/canvas.test.ts
+```
 
 ## Run the local demo
 
@@ -35,11 +46,20 @@ Stop it with `Ctrl+C`. The browser should show its disconnected state after the
 host stops, and should reconnect and hydrate from the current snapshot after a
 restart.
 
-For a prompt-action check, serve a snapshot with `state: "prompt"`, one or more
-options, and `capabilities.actions: ["prompt.choose"]`. Tap the corresponding
-button on the canvas and verify the server receives the normalized
-`action_id`/`choice` pair. The shared LVGL layout is 1024x600; the host scales
-the backing canvas for device-pixel ratio and maps touches from its CSS bounds.
+For a repeatable prompt-action check, start the built-in direct-use fixture in a
+second terminal:
+
+```bash
+venv/bin/python -m home_display.demo --prompt --interval 30
+```
+
+Open its printed URL, tap one DOM button, and verify the terminal reports exactly
+one normalized `action_id`/`choice` pair. A failed action must leave the prompt
+available. A passive mirror or a snapshot without the advertised action must not
+expose prompt buttons.
+
+The optional LVGL target keeps its 1024x600 canvas layout and maps touches from
+its CSS bounds; it is not part of the direct-use browser startup path.
 
 ## Re-verification evidence — 2026-09-07 (CDT)
 

@@ -98,6 +98,17 @@ pio device monitor
 
 ## ESP-02 Shared Display Shell
 
+The ESP32 touch unit is a first-class Epic 1 voice-plus-display surface. The
+target product contract includes local voice capture, native response/phase
+rendering, and response-audio delivery. It must use one bounded session/audio
+adapter and must not invent Hermes responses or replay an uncertain turn.
+
+The current ESP-02 implementation is the display foundation: it receives
+`DisplaySnapshot` state and sends normalized touch actions. It does not yet
+implement the microphone or response-audio transport. That missing path is
+tracked as the ESP32 Touch Epic 1 surface work; it is not silently covered by
+the display WebSocket.
+
 The firmware and native simulator consume the same bounded C snapshot model
 (`ui_snapshot`), portable reducer (`shared/display/display_rules`), and LVGL
 surface (`ui_display`). The JSON parser accepts the schema-1 `DisplaySnapshot`

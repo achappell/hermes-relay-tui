@@ -613,6 +613,7 @@ class HermesStreamingApp(App):
         self._wake_start_cancelled = False
         self._wake_opening = False
         self._wake_start_task: Optional[asyncio.Task[Any]] = None
+        self._wake_unavailable_reported = False
         self._earcons = earcons_module.EarconPlayer(
             enabled=getattr(args, "earcons", True) and not (args and args.no_play),
             output_device=getattr(args, "audio_output_device", None),
@@ -886,7 +887,7 @@ class HermesStreamingApp(App):
         )
         profile_part = (
             f" · profile {self._active_profile_name}"
-            if self._profiles_configured and self._active_profile_name
+            if self._active_profile_name
             else ""
         )
         line = f"{symbol} {self.connection_state}{profile_part} · session {session_id}{model_part}"
@@ -1410,6 +1411,7 @@ class HermesStreamingApp(App):
         self._wake_start_task = start_task
         self._wake_starting = True
         self._wake_start_cancelled = False
+        self._wake_unavailable_reported = False
         self._set_voice_state(VOICE_STARTING)
         self._append_block("wake mode starting — loading wake model…")
 
@@ -1434,6 +1436,7 @@ class HermesStreamingApp(App):
                 acknowledge=self._acknowledge_wake,
                 capture_finished=self._acknowledge_capture,
                 on_state_change=self._wake_state_changed,
+                on_unavailable=self._wake_unavailable,
             )
             diagnostic_logger.debug(
                 "wake.start stage=model complete elapsed=%.3f",
@@ -1846,6 +1849,25 @@ class HermesStreamingApp(App):
             # Teardown can close the loop between reading the reference and
             # scheduling the repaint. Disarm already refreshed the surface.
             return
+
+    def _wake_unavailable(self) -> None:
+        """Move a listener that lost authorization onto the recovery path."""
+        loop = self._wake_loop
+        if loop is None:
+            return
+        try:
+            loop.call_soon_threadsafe(self._handle_wake_unavailable)
+        except RuntimeError:
+            # Teardown can close the loop between reading the reference and
+            # scheduling the recovery repaint.
+            return
+
+    def _handle_wake_unavailable(self) -> None:
+        """Report one wake readiness failure and release its microphone."""
+        if not self.wake_armed or self._wake_unavailable_reported:
+            return
+        self._wake_unavailable_reported = True
+        self._track_cleanup_task(asyncio.create_task(self._mark_connection_lost()))
 
     def _apply_wake_state(self, state: str) -> None:
         """Apply a worker-reported wake phase on Textual's event loop."""
@@ -3419,7 +3441,6 @@ class HermesStreamingApp(App):
         except SessionNotReadyError:
             await self._mark_connection_lost()
             self._last_prompt_status = PROMPT_NOT_SENT
-            self._append_block(f"you> {text}")
             self._append_block("[error] not connected; prompt kept in queue")
             return False
         except asyncio.CancelledError:
@@ -3769,12 +3790,26 @@ class HermesStreamingApp(App):
                     "stale_session_event",
                     "stale_prompt",
                 }:
+                    error_text = (
+                        "invalid turn event: "
+                        + (domain_result.reason or "rejected")
+                    )
+                    self.domain.apply_event(
+                        {"type": "error", "error": error_text},
+                        generation=generation,
+                    )
+                    turn_failed = True
                     self._set_voice_state(VOICE_ERROR)
                     self._append_block(
-                        f"[error] invalid turn event: {domain_result.reason or 'rejected'}",
+                        f"[error] {error_text}",
                         role="error",
                     )
+                    return False
                 continue
+            if kind in {"connection_lost", "disconnected"}:
+                await self._mark_connection_lost()
+                turn_failed = True
+                return False
             if kind not in {"audio_start", "turn_end"}:
                 self._sync_voice_state_from_domain(domain_result.state.phase)
             if kind in {"text_delta", "text_replace"}:
@@ -4107,6 +4142,16 @@ class HermesStreamingApp(App):
                 )
                 turn_completed = True
                 self._set_voice_state(VOICE_READY)
+
+        if not turn_completed and not turn_failed:
+            error_text = "turn ended without a completion event"
+            self.domain.apply_event(
+                {"type": "error", "error": error_text},
+                generation=generation,
+            )
+            self._set_voice_state(VOICE_ERROR)
+            self._append_block(f"[error] {error_text}", role="error")
+            turn_failed = True
 
         return turn_completed and not turn_failed
 

@@ -2,8 +2,8 @@ var __defProp = Object.defineProperty;
 var __typeError = (msg) => {
   throw TypeError(msg);
 };
-var __defNormalProp = (obj, key, value) => key in obj ? __defProp(obj, key, { enumerable: true, configurable: true, writable: true, value }) : obj[key] = value;
-var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "symbol" ? key + "" : key, value);
+var __defNormalProp = (obj, key2, value) => key2 in obj ? __defProp(obj, key2, { enumerable: true, configurable: true, writable: true, value }) : obj[key2] = value;
+var __publicField = (obj, key2, value) => __defNormalProp(obj, typeof key2 !== "symbol" ? key2 + "" : key2, value);
 var __accessCheck = (obj, member, msg) => member.has(obj) || __typeError("Cannot " + msg);
 var __privateGet = (obj, member, getter) => (__accessCheck(obj, member, "read from private field"), getter ? getter.call(obj) : member.get(obj));
 var __privateAdd = (obj, member, value) => member.has(obj) ? __typeError("Cannot add the same private member more than once") : member instanceof WeakSet ? member.add(obj) : member.set(obj, value);
@@ -189,7 +189,7 @@ function lifecycle_legacy_only(name) {
     throw new Error(`https://svelte.dev/e/lifecycle_legacy_only`);
   }
 }
-function props_invalid_value(key) {
+function props_invalid_value(key2) {
   {
     throw new Error(`https://svelte.dev/e/props_invalid_value`);
   }
@@ -1724,13 +1724,13 @@ function proxy(value) {
       },
       ownKeys(target2) {
         get(version);
-        var own_keys = Reflect.ownKeys(target2).filter((key2) => {
-          var source3 = sources.get(key2);
+        var own_keys = Reflect.ownKeys(target2).filter((key3) => {
+          var source3 = sources.get(key3);
           return source3 === void 0 || source3.v !== UNINITIALIZED;
         });
-        for (var [key, source2] of sources) {
-          if (source2.v !== UNINITIALIZED && !(key in target2)) {
-            own_keys.push(key);
+        for (var [key2, source2] of sources) {
+          if (source2.v !== UNINITIALIZED && !(key2 in target2)) {
+            own_keys.push(key2);
           }
         }
         return own_keys;
@@ -2626,8 +2626,8 @@ function deep_read_state(value) {
   if (STATE_SYMBOL in value) {
     deep_read(value);
   } else if (!Array.isArray(value)) {
-    for (let key in value) {
-      const prop2 = value[key];
+    for (let key2 in value) {
+      const prop2 = value[key2];
       if (typeof prop2 === "object" && prop2 && STATE_SYMBOL in prop2) {
         deep_read(prop2);
       }
@@ -2641,17 +2641,17 @@ function deep_read(value, visited = /* @__PURE__ */ new Set()) {
     if (value instanceof Date) {
       value.getTime();
     }
-    for (let key in value) {
+    for (let key2 in value) {
       try {
-        deep_read(value[key], visited);
+        deep_read(value[key2], visited);
       } catch (e) {
       }
     }
     const proto = get_prototype_of(value);
     if (proto !== Object.prototype && proto !== Array.prototype && proto !== Map.prototype && proto !== Set.prototype && proto !== Date.prototype) {
       const descriptors = get_descriptors(proto);
-      for (let key in descriptors) {
-        const get2 = descriptors[key].get;
+      for (let key2 in descriptors) {
+        const get2 = descriptors[key2].get;
         if (get2) {
           try {
             get2.call(value);
@@ -3463,20 +3463,20 @@ class BranchManager {
      */
     __privateAdd(this, _commit, (batch) => {
       if (!__privateGet(this, _batches).has(batch)) return;
-      var key = (
+      var key2 = (
         /** @type {Key} */
         __privateGet(this, _batches).get(batch)
       );
-      var onscreen = __privateGet(this, _onscreen).get(key);
+      var onscreen = __privateGet(this, _onscreen).get(key2);
       if (onscreen) {
         resume_effect(onscreen);
-        __privateGet(this, _outroing).delete(key);
+        __privateGet(this, _outroing).delete(key2);
       } else {
-        var offscreen = __privateGet(this, _offscreen).get(key);
+        var offscreen = __privateGet(this, _offscreen).get(key2);
         if (offscreen) {
           resume_effect(offscreen.effect);
-          __privateGet(this, _onscreen).set(key, offscreen.effect);
-          __privateGet(this, _offscreen).delete(key);
+          __privateGet(this, _onscreen).set(key2, offscreen.effect);
+          __privateGet(this, _offscreen).delete(key2);
           offscreen.fragment.lastChild.remove();
           this.anchor.before(offscreen.fragment);
           onscreen = offscreen.effect;
@@ -3494,7 +3494,7 @@ class BranchManager {
         }
       }
       for (const [k, effect2] of __privateGet(this, _onscreen)) {
-        if (k === key || __privateGet(this, _outroing).has(k)) continue;
+        if (k === key2 || __privateGet(this, _outroing).has(k)) continue;
         const on_destroy = () => {
           const keys = Array.from(__privateGet(this, _batches).values());
           if (keys.includes(k)) {
@@ -3537,39 +3537,39 @@ class BranchManager {
    * @param {any} key
    * @param {null | ((target: TemplateNode) => void)} fn
    */
-  ensure(key, fn) {
+  ensure(key2, fn) {
     var batch = (
       /** @type {Batch} */
       current_batch
     );
     var defer = should_defer_append();
-    if (fn && !__privateGet(this, _onscreen).has(key) && !__privateGet(this, _offscreen).has(key)) {
+    if (fn && !__privateGet(this, _onscreen).has(key2) && !__privateGet(this, _offscreen).has(key2)) {
       if (defer) {
         var fragment = document.createDocumentFragment();
         var target2 = create_text();
         fragment.append(target2);
-        __privateGet(this, _offscreen).set(key, {
+        __privateGet(this, _offscreen).set(key2, {
           effect: branch(() => fn(target2)),
           fragment
         });
       } else {
         __privateGet(this, _onscreen).set(
-          key,
+          key2,
           branch(() => fn(this.anchor))
         );
       }
     }
-    __privateGet(this, _batches).set(batch, key);
+    __privateGet(this, _batches).set(batch, key2);
     if (defer) {
       for (const [k, effect2] of __privateGet(this, _onscreen)) {
-        if (k === key) {
+        if (k === key2) {
           batch.unskip_effect(effect2);
         } else {
           batch.skip_effect(effect2);
         }
       }
       for (const [k, branch2] of __privateGet(this, _offscreen)) {
-        if (k === key) {
+        if (k === key2) {
           batch.unskip_effect(branch2.effect);
         } else {
           batch.skip_effect(branch2.effect);
@@ -3592,19 +3592,36 @@ _discard = new WeakMap();
 function if_block(node, fn, elseif = false) {
   var branches = new BranchManager(node);
   var flags2 = elseif ? EFFECT_TRANSPARENT : 0;
-  function update_branch(key, fn2) {
-    branches.ensure(key, fn2);
+  function update_branch(key2, fn2) {
+    branches.ensure(key2, fn2);
   }
   block(() => {
     var has_branch = false;
-    fn((fn2, key = 0) => {
+    fn((fn2, key2 = 0) => {
       has_branch = true;
-      update_branch(key, fn2);
+      update_branch(key2, fn2);
     });
     if (!has_branch) {
       update_branch(-1, null);
     }
   }, flags2);
+}
+const NAN = Symbol("NaN");
+function key(node, get_key, render_fn2) {
+  var branches = new BranchManager(node);
+  var legacy = !is_runes();
+  block(() => {
+    var key2 = get_key();
+    if (key2 !== key2) {
+      key2 = /** @type {any} */
+      NAN;
+    }
+    if (legacy && key2 !== null && typeof key2 === "object") {
+      key2 = /** @type {V} */
+      {};
+    }
+    branches.ensure(key2, render_fn2);
+  });
 }
 function index(_, i) {
   return i;
@@ -3669,10 +3686,10 @@ function destroy_effects(state2, to_destroy, remove_dom = true) {
   if (state2.pending.size > 0) {
     preserved_effects = /* @__PURE__ */ new Set();
     for (const keys of state2.pending.values()) {
-      for (const key of keys) {
+      for (const key2 of keys) {
         preserved_effects.add(
           /** @type {EachItem} */
-          state2.items.get(key).e
+          state2.items.get(key2).e
         );
       }
     }
@@ -3747,8 +3764,8 @@ function each(node, flags2, get_collection, get_key, render_fn2, fallback_fn = n
     var defer = should_defer_append();
     for (var index2 = 0; index2 < length; index2 += 1) {
       var value = array[index2];
-      var key = get_key(value, index2);
-      var item = first_run ? null : items.get(key);
+      var key2 = get_key(value, index2);
+      var item = first_run ? null : items.get(key2);
       if (item) {
         if (item.v) internal_set(item.v, value);
         if (item.i) internal_set(item.i, index2);
@@ -3760,7 +3777,7 @@ function each(node, flags2, get_collection, get_key, render_fn2, fallback_fn = n
           items,
           first_run ? anchor : offscreen_anchor ?? (offscreen_anchor = create_text()),
           value,
-          key,
+          key2,
           index2,
           render_fn2,
           flags2,
@@ -3769,9 +3786,9 @@ function each(node, flags2, get_collection, get_key, render_fn2, fallback_fn = n
         if (!first_run) {
           item.e.f |= EFFECT_OFFSCREEN;
         }
-        items.set(key, item);
+        items.set(key2, item);
       }
-      keys.add(key);
+      keys.add(key2);
     }
     if (length === 0 && fallback_fn && !fallback) {
       if (first_run) {
@@ -3789,8 +3806,8 @@ function each(node, flags2, get_collection, get_key, render_fn2, fallback_fn = n
     if (!first_run) {
       pending.set(batch, keys);
       if (defer) {
-        for (const [key2, item2] of items) {
-          if (!keys.has(key2)) {
+        for (const [key3, item2] of items) {
+          if (!keys.has(key3)) {
             batch.skip_effect(item2.e);
           }
         }
@@ -3821,14 +3838,14 @@ function reconcile(state2, array, anchor, flags2, get_key) {
   var matched = [];
   var stashed = [];
   var value;
-  var key;
+  var key2;
   var effect2;
   var i;
   for (i = 0; i < length; i += 1) {
     value = array[i];
-    key = get_key(value, i);
+    key2 = get_key(value, i);
     effect2 = /** @type {EachItem} */
-    items.get(key).e;
+    items.get(key2).e;
     if (state2.outrogroups !== null) {
       for (const group of state2.outrogroups) {
         group.pending.delete(effect2);
@@ -3941,7 +3958,7 @@ function reconcile(state2, array, anchor, flags2, get_key) {
     }
   }
 }
-function create_item(items, anchor, value, key, index2, render_fn2, flags2, get_collection) {
+function create_item(items, anchor, value, key2, index2, render_fn2, flags2, get_collection) {
   var v = (flags2 & EACH_ITEM_REACTIVE) !== 0 ? (flags2 & EACH_ITEM_IMMUTABLE) === 0 ? /* @__PURE__ */ mutable_source(value, false, false) : source(value) : null;
   var i = (flags2 & EACH_INDEX_REACTIVE) !== 0 ? source(index2) : null;
   return {
@@ -3950,7 +3967,7 @@ function create_item(items, anchor, value, key, index2, render_fn2, flags2, get_
     e: branch(() => {
       render_fn2(anchor, v ?? value, i ?? index2, get_collection);
       return () => {
-        items.delete(key);
+        items.delete(key2);
       };
     })
   };
@@ -3990,14 +4007,17 @@ function link(state2, prev, next) {
 const whitespace = [..." 	\n\r\f \v\uFEFF"];
 function to_class(value, hash, directives) {
   var classname = value == null ? "" : "" + value;
+  if (hash) {
+    classname = classname ? classname + " " + hash : hash;
+  }
   if (directives) {
-    for (var key of Object.keys(directives)) {
-      if (directives[key]) {
-        classname = classname ? classname + " " + key : key;
+    for (var key2 of Object.keys(directives)) {
+      if (directives[key2]) {
+        classname = classname ? classname + " " + key2 : key2;
       } else if (classname.length) {
-        var len = key.length;
+        var len = key2.length;
         var a = 0;
-        while ((a = classname.indexOf(key, a)) >= 0) {
+        while ((a = classname.indexOf(key2, a)) >= 0) {
           var b = a + len;
           if ((a === 0 || whitespace.includes(classname[a - 1])) && (b === classname.length || whitespace.includes(classname[b]))) {
             classname = (a === 0 ? "" : classname.substring(0, a)) + classname.substring(b + 1);
@@ -4026,10 +4046,10 @@ function set_class(dom, is_html, value, hash, prev_classes, next_classes) {
     }
     dom[CLASS_CACHE] = value;
   } else if (next_classes && prev_classes !== next_classes) {
-    for (var key in next_classes) {
-      var is_present = !!next_classes[key];
-      if (prev_classes == null || is_present !== !!prev_classes[key]) {
-        dom.classList.toggle(key, is_present);
+    for (var key2 in next_classes) {
+      var is_present = !!next_classes[key2];
+      if (prev_classes == null || is_present !== !!prev_classes[key2]) {
+        dom.classList.toggle(key2, is_present);
       }
     }
   }
@@ -4072,10 +4092,10 @@ function get_setters(element) {
   var element_proto = Element.prototype;
   while (element_proto !== proto) {
     descriptors = get_descriptors(proto);
-    for (var key in descriptors) {
-      if (descriptors[key].set && // better safe than sorry, we don't want spread attributes to mess with HTML content
-      key !== "innerHTML" && key !== "textContent" && key !== "innerText") {
-        setters.add(key);
+    for (var key2 in descriptors) {
+      if (descriptors[key2].set && // better safe than sorry, we don't want spread attributes to mess with HTML content
+      key2 !== "innerHTML" && key2 !== "textContent" && key2 !== "innerText") {
+        setters.add(key2);
       }
     }
     proto = get_prototype_of(proto);
@@ -4145,9 +4165,9 @@ function init(immutable = false) {
     const d = /* @__PURE__ */ derived(() => {
       let changed = false;
       const props2 = context.s;
-      for (const key in props2) {
-        if (props2[key] !== prev[key]) {
-          prev[key] = props2[key];
+      for (const key2 in props2) {
+        if (props2[key2] !== prev[key2]) {
+          prev[key2] = props2[key2];
           changed = true;
         }
       }
@@ -4185,7 +4205,7 @@ function observe_all(context, props) {
   }
   props();
 }
-function prop(props, key, flags2, fallback) {
+function prop(props, key2, flags2, fallback) {
   var _a2;
   var runes = !legacy_mode_flag || (flags2 & PROPS_IS_RUNES) !== 0;
   var bindable = (flags2 & PROPS_IS_BINDABLE) !== 0;
@@ -4205,14 +4225,14 @@ function prop(props, key, flags2, fallback) {
   let setter;
   {
     var is_entry_props = STATE_SYMBOL in props || LEGACY_PROPS in props;
-    setter = ((_a2 = get_descriptor(props, key)) == null ? void 0 : _a2.set) ?? (is_entry_props && key in props ? (v) => props[key] = v : void 0);
+    setter = ((_a2 = get_descriptor(props, key2)) == null ? void 0 : _a2.set) ?? (is_entry_props && key2 in props ? (v) => props[key2] = v : void 0);
   }
   var initial_value;
   var is_store_sub = false;
   {
     [initial_value, is_store_sub] = capture_store_binding(() => (
       /** @type {V} */
-      props[key]
+      props[key2]
     ));
   }
   if (initial_value === void 0 && fallback !== void 0) {
@@ -4227,7 +4247,7 @@ function prop(props, key, flags2, fallback) {
     getter = () => {
       var value = (
         /** @type {V} */
-        props[key]
+        props[key2]
       );
       if (value === void 0) return get_fallback();
       fallback_dirty = true;
@@ -4237,7 +4257,7 @@ function prop(props, key, flags2, fallback) {
     getter = () => {
       var value = (
         /** @type {V} */
-        props[key]
+        props[key2]
       );
       if (value !== void 0) {
         fallback_value = /** @type {V} */
@@ -4336,8 +4356,175 @@ if (typeof window !== "undefined") {
   ((_b = window.__svelte ?? (window.__svelte = {})).v ?? (_b.v = /* @__PURE__ */ new Set())).add(PUBLIC_VERSION);
 }
 enable_legacy_mode_flag();
-var root$2 = /* @__PURE__ */ from_html(`<p class="account-label"> </p>`);
-var root_1$2 = /* @__PURE__ */ from_html(`<span class="working-dot" data-working-dot="" aria-hidden="true"></span>`);
+var root$2 = /* @__PURE__ */ from_html(`<div class="prompt-account svelte-glm292"> </div>`);
+var root_1$2 = /* @__PURE__ */ from_html(`<p class="prompt-error svelte-glm292" data-action-error="" role="alert"> </p>`);
+var root_2$2 = /* @__PURE__ */ from_html(`<button> </button>`);
+var root_3$2 = /* @__PURE__ */ from_html(`<div class="prompt-overlay svelte-glm292" role="dialog" aria-modal="true" aria-labelledby="prompt-title"><div class="ambient-canvas svelte-glm292" aria-hidden="true"></div> <div class="prompt-card svelte-glm292"><!> <h1 class="prompt-title svelte-glm292" id="prompt-title"> </h1> <p class="prompt-body svelte-glm292"> </p> <!> <div class="prompt-actions svelte-glm292"></div></div></div>`);
+function PromptOverlay($$anchor, $$props) {
+  push($$props, false);
+  let prompt = prop($$props, "prompt", 8);
+  let account = prop($$props, "account", 8, null);
+  let onAction = prop($$props, "onAction", 8, null);
+  let errorMessage = prop($$props, "errorMessage", 8, null);
+  const ACTION_TIMEOUT_MS = 1e4;
+  const MAX_PROMPT_TIMEOUT_SECONDS = 2147483647e-3;
+  let dismissed = /* @__PURE__ */ mutable_source(false);
+  let submitting = /* @__PURE__ */ mutable_source(false);
+  let localError = /* @__PURE__ */ mutable_source(null);
+  let timeoutId = /* @__PURE__ */ mutable_source(null);
+  let timeoutKey = /* @__PURE__ */ mutable_source(null);
+  onDestroy(() => {
+    if (get(timeoutId) !== null) clearTimeout(get(timeoutId));
+  });
+  function withTimeout(value) {
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error("display action timed out")), ACTION_TIMEOUT_MS);
+      Promise.resolve(value).then(
+        (result) => {
+          clearTimeout(timer);
+          resolve(result);
+        },
+        (error) => {
+          clearTimeout(timer);
+          reject(error);
+        }
+      );
+    });
+  }
+  async function sendAction(actionId, choice) {
+    if (get(dismissed) || get(submitting)) return;
+    set(submitting, true);
+    const action = { type: "action", schema: 1, action_id: actionId, choice };
+    let accepted = true;
+    try {
+      if (onAction() !== null) {
+        accepted = await withTimeout(onAction()(action)) !== false;
+      } else {
+        const url = `/action?action_id=${encodeURIComponent(actionId)}&choice=${encodeURIComponent(choice)}`;
+        const controller = new AbortController();
+        const requestTimeoutId = setTimeout(() => controller.abort(), ACTION_TIMEOUT_MS);
+        try {
+          const response = await fetch(url, { method: "POST", signal: controller.signal });
+          accepted = response.ok;
+        } finally {
+          clearTimeout(requestTimeoutId);
+        }
+      }
+    } catch {
+      accepted = false;
+    }
+    if (!accepted) {
+      set(submitting, false);
+      set(localError, "Display action could not be sent");
+      return;
+    }
+    set(dismissed, true);
+    set(localError, null);
+    set(submitting, false);
+    if (get(timeoutId) !== null) {
+      clearTimeout(get(timeoutId));
+      set(timeoutId, null);
+    }
+  }
+  function handleOption(option) {
+    void sendAction(prompt().action_id, option.id);
+  }
+  legacy_pre_effect(
+    () => (deep_read_state(prompt()), get(timeoutKey), get(timeoutId), get(dismissed)),
+    () => {
+      var _a2, _b2;
+      const nextTimeoutKey = JSON.stringify({
+        action_id: prompt().action_id,
+        timeout_seconds: prompt().timeout_seconds,
+        default_choice: ((_a2 = prompt().options[0]) == null ? void 0 : _a2.id) ?? "no"
+      });
+      if (nextTimeoutKey !== get(timeoutKey)) {
+        set(timeoutKey, nextTimeoutKey);
+        if (get(timeoutId) !== null) {
+          clearTimeout(get(timeoutId));
+          set(timeoutId, null);
+        }
+        if (prompt().timeout_seconds !== null && prompt().timeout_seconds > 0 && !get(dismissed)) {
+          const defaultChoice = ((_b2 = prompt().options[0]) == null ? void 0 : _b2.id) ?? "no";
+          set(timeoutId, setTimeout(
+            () => {
+              void sendAction(prompt().action_id, defaultChoice);
+            },
+            Math.min(prompt().timeout_seconds, MAX_PROMPT_TIMEOUT_SECONDS) * 1e3
+          ));
+        }
+      }
+    }
+  );
+  legacy_pre_effect_reset();
+  init();
+  var fragment = comment();
+  var node = first_child(fragment);
+  {
+    var consequent_2 = ($$anchor2) => {
+      var div = root_3$2();
+      var div_1 = sibling(child(div), 2);
+      var node_1 = child(div_1);
+      {
+        var consequent = ($$anchor3) => {
+          var div_2 = root$2();
+          var text = only_child(div_2, true);
+          template_effect(() => set_text(text, account()));
+          append($$anchor3, div_2);
+        };
+        if_block(node_1, ($$render) => {
+          if (account()) $$render(consequent);
+        });
+      }
+      var h1 = sibling(node_1, 2);
+      var text_1 = only_child(h1, true);
+      var p = sibling(h1, 2);
+      var text_2 = only_child(p, true);
+      var node_2 = sibling(p, 2);
+      {
+        var consequent_1 = ($$anchor3) => {
+          var p_1 = root_1$2();
+          var text_3 = only_child(p_1, true);
+          template_effect(() => set_text(text_3, errorMessage() ?? get(localError)));
+          append($$anchor3, p_1);
+        };
+        if_block(node_2, ($$render) => {
+          if (errorMessage() ?? get(localError)) $$render(consequent_1);
+        });
+      }
+      var div_3 = sibling(node_2, 2);
+      each(
+        div_3,
+        5,
+        () => (deep_read_state(prompt()), untrack(() => prompt().options)),
+        (option) => option.id,
+        ($$anchor3, option) => {
+          var button = root_2$2();
+          var text_4 = only_child(button, true);
+          template_effect(() => {
+            set_class(button, 1, `prompt-btn prompt-btn--${(get(option), untrack(() => get(option).id)) ?? ""}`, "svelte-glm292");
+            button.disabled = get(submitting);
+            set_text(text_4, (get(option), untrack(() => get(option).label)));
+          });
+          event("click", button, () => handleOption(get(option)));
+          append($$anchor3, button);
+        }
+      );
+      template_effect(() => {
+        set_text(text_1, (deep_read_state(prompt()), untrack(() => prompt().title)));
+        set_text(text_2, (deep_read_state(prompt()), untrack(() => prompt().body)));
+      });
+      append($$anchor2, div);
+    };
+    if_block(node, ($$render) => {
+      if (!get(dismissed)) $$render(consequent_2);
+    });
+  }
+  append($$anchor, fragment);
+  pop();
+}
+var root$1 = /* @__PURE__ */ from_html(`<p class="account-label"> </p>`);
+var root_1$1 = /* @__PURE__ */ from_html(`<span class="working-dot" data-working-dot="" aria-hidden="true"></span>`);
 var root_2$1 = /* @__PURE__ */ from_html(`<p class="status-text"> <!></p>`);
 var root_3$1 = /* @__PURE__ */ from_html(`<li> </li>`);
 var root_4$1 = /* @__PURE__ */ from_html(`<section class="prompt-summary"><h2> </h2> <p> </p> <ul></ul></section>`);
@@ -4459,7 +4646,7 @@ function StateSurface($$anchor, $$props) {
   var node = sibling(p, 2);
   {
     var consequent = ($$anchor2) => {
-      var p_1 = root$2();
+      var p_1 = root$1();
       var text_1 = only_child(p_1);
       template_effect(() => set_text(text_1, `Profile: ${(deep_read_state(snapshot()), untrack(() => snapshot().account)) ?? ""}`));
       append($$anchor2, p_1);
@@ -4476,7 +4663,7 @@ function StateSurface($$anchor, $$props) {
       var node_2 = sibling(text_2);
       {
         var consequent_1 = ($$anchor3) => {
-          var span = root_1$2();
+          var span = root_1$1();
           append($$anchor3, span);
         };
         if_block(node_2, ($$render) => {
@@ -4539,260 +4726,6 @@ function StateSurface($$anchor, $$props) {
     classes_1 = set_class(div, 1, "response-viewport", null, classes_1, { visible: get(showResponse) });
     set_text(text_3, (get(showResponse), deep_read_state(snapshot()), untrack(() => get(showResponse) ? snapshot().response_text : "")));
   });
-  append($$anchor, main);
-  pop();
-}
-const DISPLAY_WIDTH = 1024;
-const DISPLAY_HEIGHT = 600;
-const defaultImageDataFactory = (data, width, height) => new ImageData(data, width, height);
-function asError(error) {
-  return error instanceof Error ? error : new Error("Display canvas runtime failed");
-}
-function clamp(value, minimum, maximum) {
-  return Math.min(Math.max(value, minimum), maximum);
-}
-class CanvasDisplayHost {
-  constructor(canvas, reducer, options) {
-    __publicField(this, "context");
-    __publicField(this, "imageDataFactory");
-    __publicField(this, "requestFrame");
-    __publicField(this, "cancelFrame");
-    __publicField(this, "now");
-    __publicField(this, "stagingCanvas", null);
-    __publicField(this, "stagingContext", null);
-    __publicField(this, "frameHandle", null);
-    __publicField(this, "lastTimestamp", null);
-    __publicField(this, "running", false);
-    __publicField(this, "pointerId", null);
-    __publicField(this, "renderFrame", (timestamp) => {
-      if (!this.running) return;
-      const elapsed = this.lastTimestamp === null ? 0 : clamp(Math.round(timestamp - this.lastTimestamp), 0, 250);
-      this.lastTimestamp = timestamp;
-      try {
-        this.reducer.tick(elapsed);
-        this.drawFrame();
-        const action = this.reducer.pollAction();
-        if (action !== null) {
-          const result = this.options.onAction(action);
-          if (result !== null && typeof result === "object" && "then" in result) {
-            void Promise.resolve(result).catch((error) => this.report(error));
-          }
-        }
-      } catch (error) {
-        this.stop();
-        this.report(error);
-        return;
-      }
-      this.frameHandle = this.requestFrame(this.renderFrame);
-    });
-    __publicField(this, "handleResize", () => {
-      try {
-        this.resizeCanvas();
-      } catch (error) {
-        this.stop();
-        this.report(error);
-      }
-    });
-    __publicField(this, "handlePointerDown", (event2) => {
-      var _a2, _b2;
-      event2.preventDefault();
-      this.pointerId = event2.pointerId;
-      (_b2 = (_a2 = this.canvas).setPointerCapture) == null ? void 0 : _b2.call(_a2, event2.pointerId);
-      this.setPointer(event2, true);
-    });
-    __publicField(this, "handlePointerMove", (event2) => {
-      if (event2.pointerId !== this.pointerId) return;
-      event2.preventDefault();
-      this.setPointer(event2, true);
-    });
-    __publicField(this, "handlePointerUp", (event2) => {
-      var _a2, _b2;
-      if (event2.pointerId !== this.pointerId) return;
-      event2.preventDefault();
-      this.setPointer(event2, false);
-      (_b2 = (_a2 = this.canvas).releasePointerCapture) == null ? void 0 : _b2.call(_a2, event2.pointerId);
-      this.pointerId = null;
-    });
-    __publicField(this, "handlePointerCancel", (event2) => {
-      var _a2, _b2;
-      if (event2.pointerId !== this.pointerId) return;
-      event2.preventDefault();
-      this.setPointer(event2, false);
-      (_b2 = (_a2 = this.canvas).releasePointerCapture) == null ? void 0 : _b2.call(_a2, event2.pointerId);
-      this.pointerId = null;
-    });
-    this.canvas = canvas;
-    this.reducer = reducer;
-    this.options = options;
-    const context = canvas.getContext("2d");
-    if (context === null) {
-      throw new Error("Display canvas cannot create a 2D rendering context");
-    }
-    this.context = context;
-    this.imageDataFactory = options.imageDataFactory ?? defaultImageDataFactory;
-    this.now = options.now ?? (() => performance.now());
-    this.requestFrame = options.requestAnimationFrame ?? ((callback) => {
-      if (typeof window === "undefined") {
-        throw new Error("Display canvas animation is unavailable outside a browser");
-      }
-      return window.requestAnimationFrame(callback);
-    });
-    this.cancelFrame = options.cancelAnimationFrame ?? ((handle) => {
-      if (typeof window !== "undefined") window.cancelAnimationFrame(handle);
-    });
-  }
-  start() {
-    if (this.running) return;
-    this.resizeCanvas();
-    this.canvas.addEventListener("pointerdown", this.handlePointerDown);
-    this.canvas.addEventListener("pointermove", this.handlePointerMove);
-    this.canvas.addEventListener("pointerup", this.handlePointerUp);
-    this.canvas.addEventListener("pointercancel", this.handlePointerCancel);
-    window.addEventListener("resize", this.handleResize);
-    this.running = true;
-    this.lastTimestamp = this.now();
-    this.frameHandle = this.requestFrame(this.renderFrame);
-  }
-  stop() {
-    if (!this.running) return;
-    this.running = false;
-    if (this.frameHandle !== null) {
-      this.cancelFrame(this.frameHandle);
-      this.frameHandle = null;
-    }
-    this.canvas.removeEventListener("pointerdown", this.handlePointerDown);
-    this.canvas.removeEventListener("pointermove", this.handlePointerMove);
-    this.canvas.removeEventListener("pointerup", this.handlePointerUp);
-    this.canvas.removeEventListener("pointercancel", this.handlePointerCancel);
-    window.removeEventListener("resize", this.handleResize);
-    this.pointerId = null;
-  }
-  resizeCanvas() {
-    var _a2, _b2;
-    const rawPixelRatio = ((_b2 = (_a2 = this.options).getDevicePixelRatio) == null ? void 0 : _b2.call(_a2)) ?? window.devicePixelRatio ?? 1;
-    const pixelRatio = clamp(Number.isFinite(rawPixelRatio) ? rawPixelRatio : 1, 1, 3);
-    this.canvas.width = Math.round(DISPLAY_WIDTH * pixelRatio);
-    this.canvas.height = Math.round(DISPLAY_HEIGHT * pixelRatio);
-    this.canvas.style.aspectRatio = `${DISPLAY_WIDTH} / ${DISPLAY_HEIGHT}`;
-    this.canvas.style.display = "block";
-    this.canvas.style.height = "auto";
-    this.canvas.style.imageRendering = "auto";
-    this.canvas.style.touchAction = "none";
-    this.canvas.style.width = "100%";
-    this.context.imageSmoothingEnabled = false;
-    if (pixelRatio > 1) {
-      if (this.stagingCanvas === null) {
-        const createCanvas = this.options.createStagingCanvas ?? ((width, height) => {
-          const stagingCanvas = document.createElement("canvas");
-          stagingCanvas.width = width;
-          stagingCanvas.height = height;
-          return stagingCanvas;
-        });
-        this.stagingCanvas = createCanvas(DISPLAY_WIDTH, DISPLAY_HEIGHT);
-        this.stagingCanvas.width = DISPLAY_WIDTH;
-        this.stagingCanvas.height = DISPLAY_HEIGHT;
-        this.stagingContext = this.stagingCanvas.getContext("2d");
-        if (this.stagingContext === null) {
-          throw new Error("Display canvas cannot create its high-DPI staging context");
-        }
-        this.stagingContext.imageSmoothingEnabled = false;
-      }
-    }
-  }
-  drawFrame() {
-    const frame = this.reducer.framebuffer();
-    if (frame.width !== DISPLAY_WIDTH || frame.height !== DISPLAY_HEIGHT) {
-      throw new Error(`Display WebAssembly framebuffer must be ${DISPLAY_WIDTH}x${DISPLAY_HEIGHT}`);
-    }
-    const rgba = new Uint8ClampedArray(frame.data.length);
-    for (let offset = 0; offset < frame.data.length; offset += 4) {
-      rgba[offset] = frame.data[offset + 2];
-      rgba[offset + 1] = frame.data[offset + 1];
-      rgba[offset + 2] = frame.data[offset];
-      rgba[offset + 3] = frame.data[offset + 3];
-    }
-    const imageData = this.imageDataFactory(rgba, frame.width, frame.height);
-    if (this.stagingCanvas !== null && this.stagingContext !== null) {
-      this.stagingContext.putImageData(imageData, 0, 0);
-      this.context.clearRect(0, 0, this.canvas.width, this.canvas.height);
-      this.context.drawImage(this.stagingCanvas, 0, 0, this.canvas.width, this.canvas.height);
-    } else {
-      this.context.putImageData(imageData, 0, 0);
-    }
-  }
-  setPointer(event2, pressed) {
-    const rect = this.canvas.getBoundingClientRect();
-    if (rect.width <= 0 || rect.height <= 0) return;
-    const x = clamp(
-      Math.round((event2.clientX - rect.left) / rect.width * DISPLAY_WIDTH),
-      0,
-      DISPLAY_WIDTH - 1
-    );
-    const y = clamp(
-      Math.round((event2.clientY - rect.top) / rect.height * DISPLAY_HEIGHT),
-      0,
-      DISPLAY_HEIGHT - 1
-    );
-    try {
-      this.reducer.setPointer(x, y, pressed);
-    } catch (error) {
-      this.report(error);
-    }
-  }
-  report(error) {
-    var _a2, _b2;
-    (_b2 = (_a2 = this.options).onError) == null ? void 0 : _b2.call(_a2, asError(error));
-  }
-}
-var root$1 = /* @__PURE__ */ from_html(`<div class="wasm-canvas-error" data-canvas-error="" role="alert"> </div>`);
-var root_1$1 = /* @__PURE__ */ from_html(`<main class="wasm-canvas-shell"><canvas class="wasm-display-canvas" data-display-canvas="" aria-label="Hermes home display" aria-hidden="true"></canvas> <!></main>`);
-function WasmCanvas($$anchor, $$props) {
-  push($$props, false);
-  const visibleError = /* @__PURE__ */ mutable_source();
-  let reducer = prop($$props, "reducer", 8);
-  let dispatchAction = prop($$props, "dispatchAction", 8, async () => false);
-  let errorMessage = prop($$props, "errorMessage", 8, null);
-  let onRuntimeError = prop($$props, "onRuntimeError", 8, () => {
-  });
-  let canvas = /* @__PURE__ */ mutable_source();
-  let hostError = /* @__PURE__ */ mutable_source(null);
-  onMount(() => {
-    try {
-      const host = new CanvasDisplayHost(get(canvas), reducer(), {
-        onAction: dispatchAction(),
-        onError: (error) => {
-          set(hostError, error.message);
-          onRuntimeError()(error.message);
-        }
-      });
-      host.start();
-      return () => host.stop();
-    } catch (error) {
-      set(hostError, error instanceof Error ? error.message : "Display canvas failed to start");
-      onRuntimeError()(get(hostError));
-    }
-  });
-  legacy_pre_effect(() => (get(hostError), deep_read_state(errorMessage())), () => {
-    set(visibleError, get(hostError) ?? errorMessage());
-  });
-  legacy_pre_effect_reset();
-  init();
-  var main = root_1$1();
-  var canvas_1 = child(main);
-  bind_this(canvas_1, ($$value) => set(canvas, $$value), () => get(canvas));
-  var node = sibling(canvas_1, 2);
-  {
-    var consequent = ($$anchor2) => {
-      var div = root$1();
-      var text = only_child(div, true);
-      template_effect(() => set_text(text, get(visibleError)));
-      append($$anchor2, div);
-    };
-    if_block(node, ($$render) => {
-      if (get(visibleError)) $$render(consequent);
-    });
-  }
-  template_effect(() => set_attribute(main, "data-state", get(visibleError) ? "error" : "ready"));
   append($$anchor, main);
   pop();
 }
@@ -5222,14 +5155,24 @@ function createInitialDisplayView() {
     prompt: null
   });
 }
+const DISPLAY_ACTION_TIMEOUT_MS = 1e4;
 const postDisplayAction = async (action) => {
   const query = new URLSearchParams({
     action_id: action.action_id,
     choice: action.choice
   });
-  const response = await fetch(`/action?${query.toString()}`, { method: "POST" });
-  if (!response.ok) {
-    throw new Error(`display action failed with HTTP ${response.status}`);
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), DISPLAY_ACTION_TIMEOUT_MS);
+  try {
+    const response = await fetch(`/action?${query.toString()}`, {
+      method: "POST",
+      signal: controller.signal
+    });
+    if (!response.ok) {
+      throw new Error(`display action failed with HTTP ${response.status}`);
+    }
+  } finally {
+    clearTimeout(timeoutId);
   }
 };
 class DisplayBridge {
@@ -5326,297 +5269,6 @@ class DisplayBridge {
       callback();
     } catch {
     }
-  }
-}
-const DISPLAY_WASM_MODULE_PATH = "/wasm/display_core.js";
-class DisplayWasmError extends Error {
-  constructor(message) {
-    super(message);
-    this.name = "DisplayWasmError";
-  }
-}
-class DisplayWasmLoadError extends DisplayWasmError {
-  constructor(cause) {
-    const detail = cause instanceof Error && cause.message ? ` ${cause.message}` : "";
-    super(
-      `Display WebAssembly is unavailable. Run scripts/build_display_wasm.sh before starting the kiosk.${detail}`
-    );
-    __publicField(this, "cause");
-    this.name = "DisplayWasmLoadError";
-    this.cause = cause;
-  }
-}
-const ABI_VERSION = 2;
-const ACCEPTED = 0;
-const STALE = 1;
-const INVALID_ARGUMENT = 2;
-const INVALID_SNAPSHOT = 3;
-const INVALID_TRANSITION = 4;
-const PROMPT_NOT_ACTIVE = 5;
-const ACTION_NOT_ALLOWED = 6;
-const ACTION_ID_MISMATCH = 7;
-const UNKNOWN_CHOICE = 8;
-const snapshotArguments = [
-  "number",
-  "string",
-  "string",
-  "string",
-  "string",
-  "string",
-  "string",
-  "string",
-  "string",
-  "number",
-  "number",
-  "number",
-  "number",
-  "string",
-  "string",
-  "string",
-  "string",
-  "string",
-  "string",
-  "string",
-  "string"
-];
-function cwrap(module, name, argumentTypes) {
-  const wrapped = module.cwrap(name, "number", argumentTypes);
-  if (typeof wrapped !== "function") {
-    throw new DisplayWasmError(`Display WebAssembly export is missing: ${name}`);
-  }
-  return wrapped;
-}
-function cwrapString(module, name, argumentTypes) {
-  const wrapped = module.cwrap(name, "string", argumentTypes);
-  if (typeof wrapped !== "function") {
-    throw new DisplayWasmError(`Display WebAssembly export is missing: ${name}`);
-  }
-  return wrapped;
-}
-function actionValidation(result) {
-  switch (result) {
-    case ACCEPTED:
-      return "accepted";
-    case INVALID_ARGUMENT:
-      return "invalid_argument";
-    case PROMPT_NOT_ACTIVE:
-      return "prompt_not_active";
-    case ACTION_NOT_ALLOWED:
-      return "action_not_allowed";
-    case ACTION_ID_MISMATCH:
-      return "action_id_mismatch";
-    case UNKNOWN_CHOICE:
-      return "unknown_choice";
-    default:
-      return "invalid_argument";
-  }
-}
-function validActionShape(action) {
-  return action.type === "action" && action.schema === 1 && typeof action.action_id === "string" && action.action_id.length > 0 && action.action_id.length <= 64 && typeof action.choice === "string" && action.choice.length > 0 && action.choice.length <= 32;
-}
-class WasmDisplayReducer {
-  constructor(module) {
-    __publicField(this, "module");
-    __publicField(this, "resetC");
-    __publicField(this, "applySnapshotC");
-    __publicField(this, "validateChoiceC");
-    __publicField(this, "validateDismissC");
-    __publicField(this, "setConnectionStateC");
-    __publicField(this, "setPointerC");
-    __publicField(this, "actionPendingC");
-    __publicField(this, "actionIdC");
-    __publicField(this, "actionChoiceC");
-    __publicField(this, "actionClearC");
-    __publicField(this, "viewStateC");
-    __publicField(this, "viewSequenceC");
-    __publicField(this, "viewIsBusyC");
-    __publicField(this, "viewConnectionHealthyC");
-    __publicField(this, "viewCanChooseC");
-    __publicField(this, "viewCanDismissC");
-    __publicField(this, "framebufferC");
-    __publicField(this, "framebufferWidthC");
-    __publicField(this, "framebufferHeightC");
-    __publicField(this, "tickC");
-    __publicField(this, "current", null);
-    this.module = module;
-    const abiVersion = cwrap(module, "display_wasm_abi_version", [])();
-    if (abiVersion !== ABI_VERSION) {
-      throw new DisplayWasmError(
-        `Unsupported display WebAssembly ABI ${abiVersion}; expected ${ABI_VERSION}`
-      );
-    }
-    const init2 = cwrap(module, "display_wasm_init", []);
-    if (init2() !== ACCEPTED) {
-      throw new DisplayWasmError("Display WebAssembly reducer failed to initialize");
-    }
-    this.resetC = cwrap(module, "display_wasm_reset", []);
-    this.applySnapshotC = cwrap(module, "display_wasm_apply_snapshot", snapshotArguments);
-    this.validateChoiceC = cwrap(module, "display_wasm_validate_choice", ["string", "string"]);
-    this.validateDismissC = cwrap(module, "display_wasm_validate_dismiss", []);
-    this.setConnectionStateC = cwrap(module, "display_wasm_set_connection_state", ["number"]);
-    this.setPointerC = cwrap(module, "display_wasm_set_pointer", ["number", "number", "number"]);
-    this.actionPendingC = cwrap(module, "display_wasm_action_pending", []);
-    this.actionIdC = cwrapString(module, "display_wasm_action_id", []);
-    this.actionChoiceC = cwrapString(module, "display_wasm_action_choice", []);
-    this.actionClearC = cwrap(module, "display_wasm_action_clear", []);
-    this.viewStateC = cwrap(module, "display_wasm_view_state", []);
-    this.viewSequenceC = cwrap(module, "display_wasm_view_sequence", []);
-    this.viewIsBusyC = cwrap(module, "display_wasm_view_is_busy", []);
-    this.viewConnectionHealthyC = cwrap(module, "display_wasm_view_connection_healthy", []);
-    this.viewCanChooseC = cwrap(module, "display_wasm_view_can_choose", []);
-    this.viewCanDismissC = cwrap(module, "display_wasm_view_can_dismiss", []);
-    this.framebufferC = cwrap(module, "display_wasm_framebuffer", []);
-    this.framebufferWidthC = cwrap(module, "display_wasm_framebuffer_width", []);
-    this.framebufferHeightC = cwrap(module, "display_wasm_framebuffer_height", []);
-    this.tickC = cwrap(module, "display_wasm_tick", ["number"]);
-  }
-  reset() {
-    if (this.resetC() !== ACCEPTED) {
-      throw new DisplayWasmError("Display WebAssembly reducer failed to reset");
-    }
-    this.current = null;
-  }
-  applySnapshot(snapshot) {
-    var _a2, _b2;
-    const prompt = snapshot.prompt;
-    const options = [0, 1, 2, 3].flatMap((index2) => {
-      var _a3, _b3;
-      return [
-        ((_a3 = prompt == null ? void 0 : prompt.options[index2]) == null ? void 0 : _a3.id) ?? "",
-        ((_b3 = prompt == null ? void 0 : prompt.options[index2]) == null ? void 0 : _b3.label) ?? ""
-      ];
-    });
-    const result = this.applySnapshotC(
-      snapshot.sequence,
-      snapshot.state,
-      snapshot.response_text,
-      snapshot.status_text ?? "",
-      snapshot.account ?? "",
-      (prompt == null ? void 0 : prompt.kind) ?? "",
-      (prompt == null ? void 0 : prompt.title) ?? "",
-      (prompt == null ? void 0 : prompt.body) ?? "",
-      (prompt == null ? void 0 : prompt.action_id) ?? "",
-      (prompt == null ? void 0 : prompt.timeout_seconds) ?? -1,
-      prompt !== null && ((_a2 = snapshot.capabilities) == null ? void 0 : _a2.actions.includes("prompt.choose")) ? 1 : 0,
-      prompt !== null && ((_b2 = snapshot.capabilities) == null ? void 0 : _b2.actions.includes("prompt.dismiss")) ? 1 : 0,
-      (prompt == null ? void 0 : prompt.options.length) ?? 0,
-      ...options
-    );
-    switch (result) {
-      case ACCEPTED: {
-        const view = {
-          ...snapshot,
-          is_busy: this.viewIsBusyC() !== 0,
-          connection_healthy: this.viewConnectionHealthyC() !== 0,
-          can_choose: this.viewCanChooseC() !== 0,
-          can_dismiss: this.viewCanDismissC() !== 0
-        };
-        this.current = view;
-        return { kind: "accepted", view };
-      }
-      case STALE:
-        return { kind: "stale" };
-      case INVALID_TRANSITION:
-        return { kind: "invalid_transition" };
-      case INVALID_ARGUMENT:
-      case INVALID_SNAPSHOT:
-      default:
-        return { kind: "invalid_snapshot" };
-    }
-  }
-  validateAction(action) {
-    if (!validActionShape(action)) return "invalid_argument";
-    return actionValidation(this.validateChoiceC(action.action_id, action.choice));
-  }
-  validateDismiss() {
-    return actionValidation(this.validateDismissC());
-  }
-  setConnectionState(state2) {
-    const stateValue = { connected: 0, disconnected: 1, error: 2 }[state2];
-    if (this.setConnectionStateC(stateValue) !== ACCEPTED) {
-      throw new DisplayWasmError(`Display WebAssembly rejected connection state: ${state2}`);
-    }
-  }
-  setPointer(x, y, pressed) {
-    if (this.setPointerC(x, y, pressed ? 1 : 0) !== ACCEPTED) {
-      throw new DisplayWasmError("Display WebAssembly rejected pointer input");
-    }
-  }
-  pollAction() {
-    if (this.actionPendingC() === 0) return null;
-    const actionId = this.actionIdC();
-    const choice = this.actionChoiceC();
-    if (this.actionClearC() !== ACCEPTED) {
-      throw new DisplayWasmError("Display WebAssembly failed to clear the pending action");
-    }
-    if (actionId.length === 0 || choice.length === 0) return null;
-    return {
-      type: "action",
-      schema: 1,
-      action_id: actionId,
-      choice
-    };
-  }
-  framebuffer() {
-    const width = this.framebufferWidthC();
-    const height = this.framebufferHeightC();
-    const pointer = this.framebufferC();
-    const byteLength = width * height * 4;
-    if (!Number.isInteger(width) || width <= 0 || !Number.isInteger(height) || height <= 0 || !Number.isInteger(pointer) || pointer < 0 || !Number.isSafeInteger(byteLength) || pointer + byteLength > this.module.HEAPU8.length) {
-      throw new DisplayWasmError("Display WebAssembly returned an invalid framebuffer");
-    }
-    return {
-      data: this.module.HEAPU8.subarray(pointer, pointer + byteLength),
-      width,
-      height
-    };
-  }
-  tick(elapsedMs) {
-    if (!Number.isInteger(elapsedMs) || elapsedMs < 0 || elapsedMs > 4294967295) {
-      throw new DisplayWasmError("Display WebAssembly received an invalid tick interval");
-    }
-    if (this.tickC(elapsedMs) !== ACCEPTED) {
-      throw new DisplayWasmError("Display WebAssembly failed to advance LVGL");
-    }
-  }
-  viewState() {
-    const state2 = this.viewStateC();
-    const states = [
-      "idle",
-      "heard",
-      "listening",
-      "thinking",
-      "speaking",
-      "buffering",
-      "error",
-      "disconnected",
-      "prompt"
-    ];
-    return state2 >= 1 && state2 <= states.length ? states[state2 - 1] : null;
-  }
-  viewSequence() {
-    return this.viewSequenceC();
-  }
-  currentView() {
-    return this.current;
-  }
-}
-async function defaultDisplayWasmFactory() {
-  const imported = await import(
-    /* @vite-ignore */
-    DISPLAY_WASM_MODULE_PATH
-  );
-  if (typeof imported.default !== "function") {
-    throw new DisplayWasmError("display_core.js does not export an Emscripten module factory");
-  }
-  return imported.default();
-}
-async function loadDisplayWasm(factory = defaultDisplayWasmFactory) {
-  try {
-    return new WasmDisplayReducer(await factory());
-  } catch (error) {
-    if (error instanceof DisplayWasmLoadError) throw error;
-    throw new DisplayWasmLoadError(error);
   }
 }
 function defaultRecognitionFactory() {
@@ -6312,8 +5964,7 @@ var root_7 = /* @__PURE__ */ from_html(`<p data-handsfree-status="">Listening…
 var root_8 = /* @__PURE__ */ from_html(`<p data-handsfree-status="">Listening for a follow-up…</p>`);
 var root_9 = /* @__PURE__ */ from_html(`<p data-handsfree-status="">Sending…</p>`);
 var root_10 = /* @__PURE__ */ from_html(`<section class="browser-voice-controls" aria-label="Browser voice"><button type="button" data-voice-button=""> </button> <!> <!> <!></section>`);
-var root_11 = /* @__PURE__ */ from_html(`<!> <!> <!>`, 1);
-var root_12 = /* @__PURE__ */ from_html(`<main class="wasm-bootstrap-shell"><p data-bootstrap-message=""> </p></main>`);
+var root_11 = /* @__PURE__ */ from_html(`<div><!></div> <!> <!>`, 1);
 function App($$anchor, $$props) {
   push($$props, false);
   const browserVoiceEnabled = /* @__PURE__ */ mutable_source();
@@ -6321,7 +5972,8 @@ function App($$anchor, $$props) {
   const handsFreeArmed = /* @__PURE__ */ mutable_source();
   const displayReady = /* @__PURE__ */ mutable_source();
   const wakePhraseLabel = /* @__PURE__ */ mutable_source();
-  let displayReducer = /* @__PURE__ */ mutable_source(null);
+  const promptVisible = /* @__PURE__ */ mutable_source();
+  const promptKey = /* @__PURE__ */ mutable_source();
   let protocolError = /* @__PURE__ */ mutable_source(null);
   let displayView = /* @__PURE__ */ mutable_source(createInitialDisplayView());
   let connectionState = /* @__PURE__ */ mutable_source("connecting");
@@ -6344,147 +5996,139 @@ function App($$anchor, $$props) {
     return `${scheme}//${window.location.host}/state`;
   };
   onMount(() => {
-    let disposed = false;
     let bridge = null;
-    const start = async () => {
-      try {
-        const reducer = await loadDisplayWasm();
-        if (disposed) return;
-        set(displayReducer, reducer);
-        bridge = new DisplayBridge({
-          url: stateChannelUrl(),
-          reducer,
-          onView: (view) => {
-            var _a2, _b2, _c;
-            set(displayView, view);
-            set(protocolError, null);
-            handsFreeController == null ? void 0 : handsFreeController.configure({
-              wakePhrases: ((_a2 = view.capabilities) == null ? void 0 : _a2.wake_phrases) ?? [],
-              wakeListenSeconds: (_b2 = view.capabilities) == null ? void 0 : _b2.wake_listen_seconds,
-              followUpSeconds: (_c = view.capabilities) == null ? void 0 : _c.wake_followup_seconds
-            });
-            if (view.state === "prompt" || view.state !== "idle" && view.state !== "error" && view.state !== "disconnected" && (handsFreeController == null ? void 0 : handsFreeController.state) !== "submitting") {
-              handsFreeController == null ? void 0 : handsFreeController.abort("Display is busy — hands-free is off");
-            }
-            if (["heard", "listening", "thinking", "error", "disconnected"].includes(view.state)) {
-              audioPlayer == null ? void 0 : audioPlayer.stop();
-              responseHasAudio = false;
-              playbackFinished = false;
-              pendingAudioTurnId = null;
-            }
-            if (view.state === "error") {
-              voiceController == null ? void 0 : voiceController.reset();
-              handsFreeController == null ? void 0 : handsFreeController.abort(view.status_text ?? "Turn could not be completed");
-            } else if (view.state === "disconnected") {
-              handsFreeController == null ? void 0 : handsFreeController.abort("Display disconnected — hands-free is off");
-            } else if (view.state === "idle") {
-              if (get(voiceState) === "submitting") voiceController == null ? void 0 : voiceController.reset();
-              maybeCompleteHandsFreeTurn();
-            }
-          },
-          onConnectionState: (state2) => {
-            set(connectionState, state2);
-            if (state2 === "disconnected") {
-              audioPlayer == null ? void 0 : audioPlayer.stop();
-              responseHasAudio = false;
-              playbackFinished = false;
-              pendingAudioTurnId = null;
-              voiceController == null ? void 0 : voiceController.reset();
-              handsFreeController == null ? void 0 : handsFreeController.abort("Display disconnected — hands-free is off");
-            } else if (state2 === "connecting") {
-              handsFreeController == null ? void 0 : handsFreeController.abort("Display disconnected — hands-free is off");
-            }
-          },
-          onProtocolError: (message) => {
-            set(protocolError, message);
-            audioPlayer == null ? void 0 : audioPlayer.stop();
-            responseHasAudio = false;
-            playbackFinished = false;
-            pendingAudioTurnId = null;
-            voiceController == null ? void 0 : voiceController.reset();
-            handsFreeController == null ? void 0 : handsFreeController.abort("Display data unavailable — hands-free is off");
-          },
-          onValidSnapshot: () => {
-            set(protocolError, null);
-          },
-          onActionError: (error) => {
-            set(protocolError, error === "transport_error" ? "Display action could not be sent" : "That display action is no longer available");
-          },
-          onAudioEvent: (event2) => {
-            if (event2.type === "audio_start") {
-              responseHasAudio = true;
-              playbackFinished = false;
-              pendingAudioTurnId = event2.turn_id;
-              audioPlayer == null ? void 0 : audioPlayer.start(event2);
-            } else if (event2.type === "audio_end") {
-              audioPlayer == null ? void 0 : audioPlayer.end(event2.turn_id);
-              if (pendingAudioTurnId === event2.turn_id && !(audioPlayer == null ? void 0 : audioPlayer.hasPendingPlayback)) {
-                playbackFinished = true;
-              }
-              maybeCompleteHandsFreeTurn();
-            } else {
-              audioPlayer == null ? void 0 : audioPlayer.abort(event2.turn_id);
-              if (pendingAudioTurnId === event2.turn_id) {
-                playbackFinished = true;
-                handsFreeController == null ? void 0 : handsFreeController.abort("Response interrupted — hands-free is off");
-              }
-            }
-          },
-          onAudioChunk: (chunk) => audioPlayer == null ? void 0 : audioPlayer.append(chunk),
-          onVoiceError: () => {
-            set(voiceError, "Turn could not be sent");
-            set(voiceState, "error");
-          }
+    bridge = new DisplayBridge({
+      url: stateChannelUrl(),
+      onView: (view) => {
+        var _a2, _b2, _c;
+        set(displayView, view);
+        set(protocolError, null);
+        handsFreeController == null ? void 0 : handsFreeController.configure({
+          wakePhrases: ((_a2 = view.capabilities) == null ? void 0 : _a2.wake_phrases) ?? [],
+          wakeListenSeconds: (_b2 = view.capabilities) == null ? void 0 : _b2.wake_listen_seconds,
+          followUpSeconds: (_c = view.capabilities) == null ? void 0 : _c.wake_followup_seconds
         });
-        set(dispatchAction, (action) => (bridge == null ? void 0 : bridge.dispatchAction(action)) ?? Promise.resolve(false));
-        audioPlayer = new PcmAudioPlayer({
-          onError: (message) => {
-            set(voiceError, message);
-            set(voiceState, "error");
-          },
-          onPlaybackFinished: (turnId) => {
-            if (pendingAudioTurnId !== turnId) return;
-            playbackFinished = true;
-            maybeCompleteHandsFreeTurn();
-          }
-        });
-        voiceController = new BrowserVoiceController({
-          sendText: (text) => (bridge == null ? void 0 : bridge.sendVoiceTurn(text)) ?? false,
-          onState: (state2) => {
-            set(voiceState, state2);
-            if (state2 !== "error") set(voiceError, null);
-          },
-          onError: (message) => {
-            set(voiceError, message);
-          }
-        });
-        handsFreeController = new BrowserHandsFreeController({
-          sendText: (text) => (bridge == null ? void 0 : bridge.sendVoiceTurn(text)) ?? false,
-          wakePhrases: [],
-          onState: (state2) => {
-            set(handsFreeState, state2);
-            if (state2 !== "error") set(handsFreeError, null);
-          },
-          onError: (message) => {
-            set(handsFreeError, message);
-          }
-        });
-        bridge.start();
-      } catch (error) {
-        if (!disposed) {
-          set(protocolError, error instanceof Error ? error.message : "Display WebAssembly is unavailable. Run scripts/build_display_wasm.sh");
+        if (view.state === "prompt" || view.state !== "idle" && view.state !== "error" && view.state !== "disconnected" && (handsFreeController == null ? void 0 : handsFreeController.state) !== "submitting") {
+          handsFreeController == null ? void 0 : handsFreeController.abort("Display is busy — hands-free is off");
         }
+        if ([
+          "heard",
+          "listening",
+          "thinking",
+          "error",
+          "disconnected",
+          "prompt"
+        ].includes(view.state)) {
+          resetPlayback();
+        }
+        if (get(voiceState) === "listening" && view.state !== "idle") {
+          voiceController == null ? void 0 : voiceController.reset();
+        }
+        if (view.state === "error") {
+          voiceController == null ? void 0 : voiceController.reset();
+          handsFreeController == null ? void 0 : handsFreeController.abort(view.status_text ?? "Turn could not be completed");
+        } else if (view.state === "disconnected") {
+          voiceController == null ? void 0 : voiceController.reset();
+          handsFreeController == null ? void 0 : handsFreeController.abort("Display disconnected — hands-free is off");
+        } else if (view.state === "idle") {
+          if (get(voiceState) === "submitting") voiceController == null ? void 0 : voiceController.reset();
+          maybeCompleteHandsFreeTurn();
+        }
+      },
+      onConnectionState: (state2) => {
+        set(connectionState, state2);
+        if (state2 === "disconnected") {
+          resetPlayback();
+          voiceController == null ? void 0 : voiceController.reset();
+          handsFreeController == null ? void 0 : handsFreeController.abort("Display disconnected — hands-free is off");
+        } else if (state2 === "connecting") {
+          handsFreeController == null ? void 0 : handsFreeController.abort("Display disconnected — hands-free is off");
+        }
+      },
+      onProtocolError: (message) => {
+        set(protocolError, message);
+        resetPlayback();
+        voiceController == null ? void 0 : voiceController.reset();
+        handsFreeController == null ? void 0 : handsFreeController.abort("Display data unavailable — hands-free is off");
+      },
+      onAudioEvent: (event2) => {
+        if (event2.type === "audio_start") {
+          responseHasAudio = true;
+          playbackFinished = false;
+          pendingAudioTurnId = event2.turn_id;
+          audioPlayer == null ? void 0 : audioPlayer.start(event2);
+        } else if (event2.type === "audio_end") {
+          audioPlayer == null ? void 0 : audioPlayer.end(event2.turn_id);
+          if (pendingAudioTurnId === event2.turn_id && !(audioPlayer == null ? void 0 : audioPlayer.hasPendingPlayback)) {
+            playbackFinished = true;
+          }
+          maybeCompleteHandsFreeTurn();
+        } else {
+          audioPlayer == null ? void 0 : audioPlayer.abort(event2.turn_id);
+          if (pendingAudioTurnId === event2.turn_id) {
+            playbackFinished = true;
+            handsFreeController == null ? void 0 : handsFreeController.abort("Response interrupted — hands-free is off");
+          }
+        }
+      },
+      onAudioChunk: (chunk) => audioPlayer == null ? void 0 : audioPlayer.append(chunk),
+      onVoiceError: () => {
+        set(voiceError, "Turn could not be sent");
+        set(voiceState, "error");
       }
-    };
-    void start();
+    });
+    set(dispatchAction, (action) => {
+      if (get(connectionState) !== "connected" || get(displayView).state !== "prompt" || !get(displayView).can_choose) {
+        return Promise.resolve(false);
+      }
+      return (bridge == null ? void 0 : bridge.dispatchAction(action)) ?? Promise.resolve(false);
+    });
+    audioPlayer = new PcmAudioPlayer({
+      onError: (message) => {
+        set(voiceError, message);
+        set(voiceState, "error");
+      },
+      onPlaybackFinished: (turnId) => {
+        if (pendingAudioTurnId !== turnId) return;
+        playbackFinished = true;
+        maybeCompleteHandsFreeTurn();
+      }
+    });
+    voiceController = new BrowserVoiceController({
+      sendText: (text) => (bridge == null ? void 0 : bridge.sendVoiceTurn(text)) ?? false,
+      onState: (state2) => {
+        set(voiceState, state2);
+        if (state2 !== "error") set(voiceError, null);
+      },
+      onError: (message) => {
+        set(voiceError, message);
+      }
+    });
+    handsFreeController = new BrowserHandsFreeController({
+      sendText: (text) => (bridge == null ? void 0 : bridge.sendVoiceTurn(text)) ?? false,
+      wakePhrases: [],
+      onState: (state2) => {
+        set(handsFreeState, state2);
+        if (state2 !== "error") set(handsFreeError, null);
+      },
+      onError: (message) => {
+        set(handsFreeError, message);
+      }
+    });
+    bridge.start();
     return () => {
-      disposed = true;
       voiceController == null ? void 0 : voiceController.reset();
       handsFreeController == null ? void 0 : handsFreeController.disarm();
-      audioPlayer == null ? void 0 : audioPlayer.stop();
+      resetPlayback();
       bridge == null ? void 0 : bridge.stop();
     };
   });
+  function resetPlayback() {
+    audioPlayer == null ? void 0 : audioPlayer.stop();
+    responseHasAudio = false;
+    playbackFinished = false;
+    pendingAudioTurnId = null;
+  }
   async function toggleVoice() {
     if (voiceController === null || get(voiceState) === "submitting" || get(handsFreeArmed)) return;
     if (get(voiceState) === "listening") {
@@ -6539,153 +6183,156 @@ function App($$anchor, $$props) {
     var _a2, _b2;
     set(wakePhraseLabel, ((_b2 = (_a2 = get(displayView).capabilities) == null ? void 0 : _a2.wake_phrases) == null ? void 0 : _b2.join(" or ")) ?? "the wake phrase");
   });
+  legacy_pre_effect(
+    () => (get(protocolError), get(connectionState), get(displayView)),
+    () => {
+      set(promptVisible, get(protocolError) === null && get(connectionState) === "connected" && get(displayView).state === "prompt" && get(displayView).prompt !== null && get(displayView).can_choose);
+    }
+  );
+  legacy_pre_effect(() => get(displayView), () => {
+    set(promptKey, get(displayView).prompt === null ? "" : JSON.stringify(get(displayView).prompt));
+  });
   legacy_pre_effect_reset();
   init();
-  var fragment = comment();
-  var node = first_child(fragment);
+  var fragment = root_11();
+  var div = first_child(fragment);
+  var node = child(div);
+  StateSurface(node, {
+    get snapshot() {
+      return get(displayView);
+    },
+    get connectionState() {
+      return get(connectionState);
+    },
+    get protocolError() {
+      return get(protocolError);
+    }
+  });
+  var node_1 = sibling(div, 2);
   {
-    var consequent_11 = ($$anchor2) => {
-      var fragment_1 = root_11();
-      var node_1 = first_child(fragment_1);
-      WasmCanvas(node_1, {
-        get reducer() {
-          return get(displayReducer);
-        },
-        get dispatchAction() {
-          return get(dispatchAction);
-        },
-        get errorMessage() {
-          return get(protocolError);
-        },
-        onRuntimeError: (message) => set(protocolError, message)
-      });
-      var node_2 = sibling(node_1, 2);
-      StateSurface(node_2, {
-        get snapshot() {
-          return get(displayView);
-        },
-        get connectionState() {
-          return get(connectionState);
-        },
-        get protocolError() {
-          return get(protocolError);
-        },
-        accessibleOnly: true
-      });
-      var node_3 = sibling(node_2, 2);
-      {
-        var consequent_10 = ($$anchor3) => {
-          var section = root_10();
-          var button = child(section);
-          var text_1 = only_child(button, true);
-          var node_4 = sibling(button, 2);
-          {
-            var consequent = ($$anchor4) => {
-              var button_1 = root();
-              var text_2 = only_child(button_1, true);
-              template_effect(() => {
-                set_attribute(button_1, "aria-pressed", get(handsFreeArmed));
-                button_1.disabled = !get(handsFreeArmed) && !get(displayReady);
-                set_text(text_2, get(handsFreeArmed) ? "Disable hands-free" : "Enable hands-free");
-              });
-              event("click", button_1, toggleHandsFree);
-              append($$anchor4, button_1);
-            };
-            if_block(node_4, ($$render) => {
-              if (get(browserHandsFreeEnabled)) $$render(consequent);
-            });
-          }
-          var node_5 = sibling(node_4, 2);
-          {
-            var consequent_1 = ($$anchor4) => {
-              var p = root_1();
-              var text_3 = only_child(p, true);
-              template_effect(() => set_text(text_3, get(voiceError)));
-              append($$anchor4, p);
-            };
-            var consequent_2 = ($$anchor4) => {
-              var p_1 = root_2();
-              append($$anchor4, p_1);
-            };
-            var consequent_3 = ($$anchor4) => {
-              var p_2 = root_3();
-              append($$anchor4, p_2);
-            };
-            if_block(node_5, ($$render) => {
-              if (get(voiceError)) $$render(consequent_1);
-              else if (get(voiceState) === "listening") $$render(consequent_2, 1);
-              else if (get(voiceState) === "submitting") $$render(consequent_3, 2);
-            });
-          }
-          var node_6 = sibling(node_5, 2);
-          {
-            var consequent_4 = ($$anchor4) => {
-              var p_3 = root_4();
-              var text_4 = only_child(p_3, true);
-              template_effect(() => set_text(text_4, get(handsFreeError)));
-              append($$anchor4, p_3);
-            };
-            var consequent_5 = ($$anchor4) => {
-              var p_4 = root_5();
-              var text_5 = only_child(p_4);
-              template_effect(() => set_text(text_5, `Say ${get(wakePhraseLabel) ?? ""}`));
-              append($$anchor4, p_4);
-            };
-            var consequent_6 = ($$anchor4) => {
-              var p_5 = root_6();
-              append($$anchor4, p_5);
-            };
-            var consequent_7 = ($$anchor4) => {
-              var p_6 = root_7();
-              append($$anchor4, p_6);
-            };
-            var consequent_8 = ($$anchor4) => {
-              var p_7 = root_8();
-              append($$anchor4, p_7);
-            };
-            var consequent_9 = ($$anchor4) => {
-              var p_8 = root_9();
-              append($$anchor4, p_8);
-            };
-            if_block(node_6, ($$render) => {
-              if (get(handsFreeError)) $$render(consequent_4);
-              else if (get(handsFreeState) === "wake_ready") $$render(consequent_5, 1);
-              else if (get(handsFreeState) === "heard") $$render(consequent_6, 2);
-              else if (get(handsFreeState) === "listening") $$render(consequent_7, 3);
-              else if (get(handsFreeState) === "follow_up") $$render(consequent_8, 4);
-              else if (get(handsFreeState) === "submitting") $$render(consequent_9, 5);
-            });
-          }
-          template_effect(() => {
-            set_attribute(section, "data-voice-state", get(voiceState));
-            set_attribute(button, "aria-pressed", get(voiceState) === "listening");
-            button.disabled = !get(displayReady) || get(voiceState) === "submitting" || get(handsFreeArmed);
-            set_text(text_1, get(voiceState) === "listening" ? "Stop listening" : "Tap to talk");
+    var consequent = ($$anchor2) => {
+      var fragment_1 = comment();
+      var node_2 = first_child(fragment_1);
+      key(node_2, () => get(promptKey), ($$anchor3) => {
+        {
+          let $0 = /* @__PURE__ */ derived_safe_equal(() => (get(displayView), untrack(() => get(displayView).account ?? null)));
+          PromptOverlay($$anchor3, {
+            get prompt() {
+              return get(displayView), untrack(() => get(displayView).prompt);
+            },
+            get account() {
+              return get($0);
+            },
+            get onAction() {
+              return get(dispatchAction);
+            }
           });
-          event("click", button, toggleVoice);
-          append($$anchor3, section);
-        };
-        if_block(node_3, ($$render) => {
-          if (get(browserVoiceEnabled)) $$render(consequent_10);
-        });
-      }
+        }
+      });
       append($$anchor2, fragment_1);
     };
-    var alternate = ($$anchor2) => {
-      var main = root_12();
-      var p_9 = child(main);
-      var text_6 = only_child(p_9, true);
-      template_effect(() => {
-        set_attribute(main, "data-state", get(protocolError) ? "error" : "connecting");
-        set_text(text_6, get(protocolError) ?? "Starting the shared Hermes display…");
-      });
-      append($$anchor2, main);
-    };
-    if_block(node, ($$render) => {
-      if (get(displayReducer) !== null) $$render(consequent_11);
-      else $$render(alternate, -1);
+    if_block(node_1, ($$render) => {
+      if (get(promptVisible), get(displayView), untrack(() => get(promptVisible) && get(displayView).prompt)) $$render(consequent);
     });
   }
+  var node_3 = sibling(node_1, 2);
+  {
+    var consequent_11 = ($$anchor2) => {
+      var section = root_10();
+      var button = child(section);
+      var text_1 = only_child(button, true);
+      var node_4 = sibling(button, 2);
+      {
+        var consequent_1 = ($$anchor3) => {
+          var button_1 = root();
+          var text_2 = only_child(button_1, true);
+          template_effect(() => {
+            set_attribute(button_1, "aria-pressed", get(handsFreeArmed));
+            button_1.disabled = !get(handsFreeArmed) && !get(displayReady);
+            set_text(text_2, get(handsFreeArmed) ? "Disable hands-free" : "Enable hands-free");
+          });
+          event("click", button_1, toggleHandsFree);
+          append($$anchor3, button_1);
+        };
+        if_block(node_4, ($$render) => {
+          if (get(browserHandsFreeEnabled)) $$render(consequent_1);
+        });
+      }
+      var node_5 = sibling(node_4, 2);
+      {
+        var consequent_2 = ($$anchor3) => {
+          var p = root_1();
+          var text_3 = only_child(p, true);
+          template_effect(() => set_text(text_3, get(voiceError)));
+          append($$anchor3, p);
+        };
+        var consequent_3 = ($$anchor3) => {
+          var p_1 = root_2();
+          append($$anchor3, p_1);
+        };
+        var consequent_4 = ($$anchor3) => {
+          var p_2 = root_3();
+          append($$anchor3, p_2);
+        };
+        if_block(node_5, ($$render) => {
+          if (get(voiceError)) $$render(consequent_2);
+          else if (get(voiceState) === "listening") $$render(consequent_3, 1);
+          else if (get(voiceState) === "submitting") $$render(consequent_4, 2);
+        });
+      }
+      var node_6 = sibling(node_5, 2);
+      {
+        var consequent_5 = ($$anchor3) => {
+          var p_3 = root_4();
+          var text_4 = only_child(p_3, true);
+          template_effect(() => set_text(text_4, get(handsFreeError)));
+          append($$anchor3, p_3);
+        };
+        var consequent_6 = ($$anchor3) => {
+          var p_4 = root_5();
+          var text_5 = only_child(p_4);
+          template_effect(() => set_text(text_5, `Say ${get(wakePhraseLabel) ?? ""}`));
+          append($$anchor3, p_4);
+        };
+        var consequent_7 = ($$anchor3) => {
+          var p_5 = root_6();
+          append($$anchor3, p_5);
+        };
+        var consequent_8 = ($$anchor3) => {
+          var p_6 = root_7();
+          append($$anchor3, p_6);
+        };
+        var consequent_9 = ($$anchor3) => {
+          var p_7 = root_8();
+          append($$anchor3, p_7);
+        };
+        var consequent_10 = ($$anchor3) => {
+          var p_8 = root_9();
+          append($$anchor3, p_8);
+        };
+        if_block(node_6, ($$render) => {
+          if (get(handsFreeError)) $$render(consequent_5);
+          else if (get(handsFreeState) === "wake_ready") $$render(consequent_6, 1);
+          else if (get(handsFreeState) === "heard") $$render(consequent_7, 2);
+          else if (get(handsFreeState) === "listening") $$render(consequent_8, 3);
+          else if (get(handsFreeState) === "follow_up") $$render(consequent_9, 4);
+          else if (get(handsFreeState) === "submitting") $$render(consequent_10, 5);
+        });
+      }
+      template_effect(() => {
+        set_attribute(section, "data-voice-state", get(voiceState));
+        set_attribute(button, "aria-pressed", get(voiceState) === "listening");
+        button.disabled = !get(displayReady) || get(voiceState) === "submitting" || get(handsFreeArmed);
+        set_text(text_1, get(voiceState) === "listening" ? "Stop listening" : "Tap to talk");
+      });
+      event("click", button, toggleVoice);
+      append($$anchor2, section);
+    };
+    if_block(node_3, ($$render) => {
+      if (get(browserVoiceEnabled)) $$render(consequent_11);
+    });
+  }
+  template_effect(() => set_attribute(div, "aria-hidden", get(promptVisible) ? "true" : void 0));
   append($$anchor, fragment);
   pop();
 }

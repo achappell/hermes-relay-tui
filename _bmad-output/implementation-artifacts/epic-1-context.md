@@ -4,9 +4,31 @@
 
 ## Goal
 
-Give every configured Hermes doorway one honest conversation path: authorization and Profile identity are settled before capture or submission, the request crosses one normalized SessionProtocol boundary, observed response phases remain consistent, and transport failure cannot duplicate or silently resume a turn. This is the foundation consumed by the room Display, Puck, iOS, and TUI surfaces.
+Give every configured Hermes doorway one honest conversation path: authorization and Profile identity are settled before capture or submission, the request crosses one normalized SessionProtocol boundary, observed response phases remain consistent, and transport failure cannot duplicate or silently resume a turn. This includes the audio-only Puck, the voice-plus-display ESP32 Touch doorway, the W/K browser voice-plus-display surface, iOS, and TUI. Passive room Displays consume the same visual semantics without becoming alternate Hermes doorways.
 
-## Stories
+## Surface-specific story ownership — 2026-09-10
+
+Epic 1 is decomposed by delivery surface. The shared SessionProtocol, display
+snapshot/reducer semantics, and bounded audio contracts are prerequisites, not
+an unowned cross-surface story. A surface story closes only that surface's
+acceptance criteria; evidence from another surface does not close it.
+
+| Surface family | Epic 1 story set | Owns |
+|---|---|---|
+| iOS | `I-1` through `I-3` | Authorized initiation, honest phases with response/audio delivery, and fresh recovery without replay. |
+| ReSpeaker Puck | `P-1` through `P-4` | Authorized wake/capture, status and response audio, bounded follow-up/`stop`, and recovery. |
+| ESP32 Touch Display | `E-1` through `E-5` | Authorized voice capture, native phase/response rendering, response audio delivery, bounded follow-up/`stop`, and recovery. |
+| Web/iPad (`W/K`) | `WK-1` | One shared browser voice-plus-display surface for authorized capture, honest phases, streamed/completed response text, response audio, and delivery/error state. iPad is not a separate surface story. |
+| TUI | Existing local Stories 1.1–1.4 | The current TUI-specific authorization, phase/delivery, follow-up, and recovery slices. Their numeric IDs remain stable for implementation history. |
+
+The ESP32 Touch story set is not satisfied by the current display snapshot
+plumbing alone. Its implementation must add or integrate a bounded microphone
+and response-audio path while keeping Hermes response authority and session
+semantics behind the owning adapter. `ui_display.c` owns native presentation;
+the audio bridge/session boundary remains an explicit Epic 1 implementation
+dependency.
+
+## Existing local TUI stories
 
 - Story 1.1: Start an authorized Hermes turn
 - Story 1.2: Render honest turn phases and response delivery
@@ -15,13 +37,13 @@ Give every configured Hermes doorway one honest conversation path: authorization
 
 ## Requirements & Constraints
 
-- Support an authorized Puck wake or explicit Client/TUI initiation for a selected Hermes Profile (FR1).
-- Fix the selected Profile before Puck capture or Hermes submission. Unapproved, revoked, unavailable, or unverified identity must fail closed before capture and must not select a fallback.
+- Support an authorized Puck wake, an authorized ESP32 Touch voice initiation, or explicit Client/TUI initiation for a selected Hermes Profile (FR1).
+- Fix the selected Profile before Puck, ESP32 Touch, or W/K browser capture or Hermes submission. Unapproved, revoked, unavailable, or unverified identity must fail closed before capture and must not select a fallback.
 - Expose normalized session and turn events through the shared SessionProtocol. Front ends must not parse Hermes wire frames or invent assistant responses.
 - Preserve one Active Turn per doorway and one initial submission per accepted initiation. A request that may have reached Hermes is never automatically replayed.
 - Surfaces expose only observed phases: `heard`, `listening`, `transcribing`, `thinking`, `buffering`, `speaking`, `complete`, and honest Disconnected State. A doorway must not advance or regress before the corresponding event, and completed text remains available when audio is unavailable.
-- Puck follow-up is bounded—eight seconds by default—and exact `stop` closes local capture silently without a replacement turn. Blocking capture/playback stays outside UI event loops.
-- Credentials remain in the owning local process/profile. Raw Puck audio and shared-device transcripts are transient; only deliberate iOS/TUI Local History may persist by default.
+- Puck follow-up is bounded—eight seconds by default—and exact `stop` closes local capture silently without a replacement turn. The ESP32 Touch and W/K browser follow-up windows, if enabled for their initiation modes, must be separately bounded and must preserve the same silent-stop/no-replay semantics. Blocking capture/playback stays outside UI event loops.
+- Credentials remain in the owning local process/profile. Raw Puck and ESP32 Touch audio plus shared-device transcripts are transient; only deliberate iOS/TUI Local History may persist by default.
 - Developer and CI validation uses fake Hermes sessions/WebSockets and local fixtures. Live text/voice smoke testing is an explicit runtime check, not a test fixture.
 
 ## Technical Decisions
@@ -33,13 +55,14 @@ Give every configured Hermes doorway one honest conversation path: authorization
 
 ## UX & Interaction Patterns
 
-- Show the active Profile from `heard` through completion on the Room Display and in iOS/TUI headers; identity explains routing, not answer correctness.
-- Use readable child-friendly labels alongside technical phases. Color, motion, and sound support state text but never replace it. The Puck remains status-only; response text and transcript history do not belong on its TFT.
+- Show the active Profile from `heard` through completion on the ESP32 Touch console, W/K browser surface, passive Room Display, and iOS/TUI headers; identity explains routing, not answer correctness.
+- Use readable child-friendly labels alongside technical phases. Color, motion, and sound support state text but never replace it. The Puck remains status-only; response text and transcript history do not belong on its TFT. The ESP32 Touch Display renders its own response and audio-delivery state.
 - Stream the same Hermes response text on text-capable surfaces and play audio only when audio is actually available. If audio fails, preserve usable text and label audio as unavailable; `Retry` reconnects only and never resembles send or replay.
-- Keep conversation text and active-turn state Room-local. Displays do not capture, speak, create a second Session, or expose touch actions for Hermes prompts in v1.
+- Keep conversation text and active-turn state Room-local. A passive Display does not capture, speak, create a second Session, or expose touch actions for Hermes prompts in v1; the ESP32 Touch Display or W/K browser surface may capture and speak when it is the selected active doorway.
 
 ## Cross-Story Dependencies
 
-- Story 1.1 establishes the authorization, SessionProtocol, identity, and single-submission boundary that Stories 1.2–1.4 refine.
-- Later Display and companion-doorway epics consume Epic 1’s normalized events and recovery semantics; they must not create alternate protocol paths.
+- The shared authorization, SessionProtocol, display-state, and bounded-audio contracts establish the boundary consumed by each surface-specific story family.
+- The existing local TUI Stories 1.1–1.4 preserve their implementation history; new iOS, Puck, ESP32 Touch, and W/K work is tracked as surface-specific Epic 1 stories rather than inferred from TUI closure.
+- Later room-context epics consume Epic 1’s normalized events and recovery semantics; they must not create alternate protocol paths. A passive Display may mirror an active touch doorway, but must not create a second Session.
 - Physical-device credentials, provisioning, revocation, and wake arbitration belong to the separate device-administration work. This epic consumes an authorized configuration and does not invent that system.

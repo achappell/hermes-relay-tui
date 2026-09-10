@@ -79,6 +79,7 @@ class HandsFreeCoordinator:
         on_state_change: Callable[[str], Any] | None = None,
         route_wake: Callable[[str | None], bool] | None = None,
         is_ready: Callable[[], bool] | None = None,
+        on_unavailable: Callable[[], Any] | None = None,
         is_hallucination: Callable[[str], bool] | None = None,
         now: Callable[[], float] = time.monotonic,
     ) -> None:
@@ -97,6 +98,7 @@ class HandsFreeCoordinator:
         self._on_state_change = on_state_change
         self._route_wake = route_wake
         self._is_ready = is_ready or self._session_is_connected
+        self._on_unavailable = on_unavailable
         self._is_hallucination = is_hallucination
         self._now = now
         self._state = IDLE
@@ -141,6 +143,24 @@ class HandsFreeCoordinator:
             logger.debug("session readiness check failed", exc_info=True)
             return False
 
+    def _report_unavailable(self) -> None:
+        if self._on_unavailable is None:
+            return
+        try:
+            self._on_unavailable()
+        except Exception:
+            logger.debug("hands-free unavailable callback failed", exc_info=True)
+
+    def _ready_or_report(self, stage: str) -> bool:
+        try:
+            ready = bool(self._is_ready())
+        except Exception:
+            logger.debug("readiness callback failed %s", stage, exc_info=True)
+            ready = False
+        if not ready:
+            self._report_unavailable()
+        return ready
+
     def playback_started(self) -> None:
         """Enter SPEAKING, from idle or from the turn that produced the audio.
 
@@ -184,11 +204,7 @@ class HandsFreeCoordinator:
         # selected profile has completed the authorization handshake. This
         # check happens before acknowledgement or capture, so a disconnected
         # doorway stays silent and never opens its microphone.
-        try:
-            if not self._is_ready():
-                return False
-        except Exception:
-            logger.debug("readiness callback failed", exc_info=True)
+        if not self._ready_or_report("before wake"):
             return False
 
         if self._route_wake is not None:
@@ -200,11 +216,7 @@ class HandsFreeCoordinator:
             if not allowed:
                 return False
 
-        try:
-            if not self._is_ready():
-                return False
-        except Exception:
-            logger.debug("readiness callback failed after wake routing", exc_info=True)
+        if not self._ready_or_report("after wake routing"):
             return False
 
         with self._lock:
@@ -233,12 +245,7 @@ class HandsFreeCoordinator:
         # lock — this waits on hardware, and the lock guards state.
         self._notify(self._acknowledge, "wake")
 
-        try:
-            if not self._is_ready():
-                self._finish()
-                return False
-        except Exception:
-            logger.debug("readiness callback failed before capture", exc_info=True)
+        if not self._ready_or_report("before capture"):
             self._finish()
             return False
 
@@ -260,24 +267,12 @@ class HandsFreeCoordinator:
 
         delivered = self._deliver(transcript)
         if delivered and self._follow_up_capture is not None:
-            try:
-                if not self._is_ready():
-                    self._finish()
-                    return True
-            except Exception:
-                logger.debug("readiness callback failed before follow-up", exc_info=True)
+            if not self._ready_or_report("before follow-up"):
                 self._finish()
                 return True
             with self._lock:
                 self._begin_capture(follow_up=True)
-            try:
-                if not self._is_ready():
-                    self._finish()
-                    return True
-            except Exception:
-                logger.debug(
-                    "readiness callback failed before follow-up capture", exc_info=True
-                )
+            if not self._ready_or_report("before follow-up capture"):
                 self._finish()
                 return True
             try:
@@ -368,6 +363,7 @@ def build_hands_free(
     capture_finished: Callable[[], Any] | None = None,
     route_wake: Callable[[str | None], bool] | None = None,
     is_ready: Callable[[], bool] | None = None,
+    on_unavailable: Callable[[], Any] | None = None,
     _load_engine: Callable[[str | None], Any] | None = None,
     _load_sherpa_engine: Callable[..., Any] | None = None,
 ):
@@ -438,6 +434,7 @@ def build_hands_free(
         on_state_change=on_state_change,
         route_wake=route_wake,
         is_ready=is_ready,
+        on_unavailable=on_unavailable,
         is_hallucination=is_whisper_hallucination,
     )
 

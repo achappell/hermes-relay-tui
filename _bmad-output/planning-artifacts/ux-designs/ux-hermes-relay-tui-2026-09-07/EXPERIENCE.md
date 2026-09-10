@@ -2,7 +2,7 @@
 title: Hermes Home Assistant Platform — Experience
 status: final
 created: '2026-09-07'
-updated: '2026-09-07'
+updated: '2026-09-10'
 sources:
   - "{planning_artifacts}/briefs/brief-hermes-relay-tui-2026-09-07/brief.md"
   - "{planning_artifacts}/briefs/brief-hermes-relay-tui-2026-09-07/addendum.md"
@@ -18,7 +18,7 @@ design: DESIGN.md
 
 ## Foundation
 
-This is a multi-surface household experience: a physical Puck, a room Display, an iPad Display running Safari/Guided Access, a native iOS/macOS Client, and the existing TUI. The first release proves one complete single-Room pilot while keeping the shared contracts multi-Room-ready. The native macOS simulator is development tooling, not a household surface.
+This is a multi-surface household experience: a physical Puck, an ESP32-S3/LVGL touch Display, one W/K browser voice-plus-display surface deployed on web or iPad, a native iOS/macOS Client, and the existing TUI. The first release proves one complete single-Room pilot while keeping the shared contracts multi-Room-ready. The native macOS simulator is development tooling, not a household surface. The ESP32 touch unit is a full voice-plus-display doorway, not merely a passive mirror.
 
 `DESIGN.md` is the visual identity reference. It defines the Night Console direction, semantic tokens, density, contrast, and motion treatment. This spine defines behavior: which doorway acts, what state is honest, where text is allowed to appear, and how recovery works. The [Night Console mockup](mockups/direction-night-console.html) illustrates the room Display's dense active-turn composition; the spine wins on conflict.
 
@@ -35,15 +35,16 @@ The following terms retain the PRD glossary meanings and spelling so downstream 
 | Term | Contract meaning |
 |---|---|
 | **Device** | A physical household endpoint managed by iOS: a Puck or Display with its own Device Credential. |
-| **Puck** | The room voice Device that detects a Wake Mapping, captures speech, and plays Hermes audio. |
-| **Display** | A room visual Device that renders the Ambient Surface, Active Turn state, live Transcription, response text, and Departure Card. |
+| **Puck** | The ESP32-based room voice Device without a touch display. It detects a Wake Mapping, captures speech, and plays Hermes audio. Its small TFT is status-only. |
+| **ESP32 Touch Display** | A voice-plus-display Device that captures speech, participates in the Hermes turn, renders its own phases and response text, and plays response audio through its own bounded device path. |
+| **Passive Room Display** | A display-only role that mirrors the selected doorway's room-local Active Turn without capturing, speaking, or creating a second Hermes Session. Web and iPad are one W/K surface; W/K is active when its browser voice capability is enabled. |
 | **Client** | A software doorway, currently iOS or TUI, that can create an Hermes Session without being a physical Device. |
 | **Room** | A named household location that binds Devices to presentation policy and room-local Active Turn mirroring. |
 | **Wake Mapping** | One unique wake phrase mapped to one Hermes Profile on a Device. |
 | **Hermes Profile** | The configured Hermes identity and authorized context selected by a Wake Mapping or Client configuration. Missy is one Hermes Profile. |
 | **Hermes Session** | The conversation session owned by one doorway. A reconnect starts a new Hermes Session. |
-| **Media Server** | The trusted home-LAN service that transcribes Puck audio before the transcript reaches Hermes. |
-| **Transcription** | The text representation of captured speech produced while a Puck or Client is listening. |
+| **Media Server** | The trusted home-LAN service that may transcribe Puck or ESP32 Touch audio before the transcript reaches Hermes. |
+| **Transcription** | The text representation of captured speech produced while a Puck, ESP32 Touch Display, or Client is listening. |
 | **Device Credential** | The individually revocable credential that authorizes one Device; it is never shared by multiple Devices. |
 | **Active Turn** | One user request and its Hermes response, including listening, transcription, thinking, buffering, speaking, and completion states. |
 | **Turn Phase** | One of the user-visible Active Turn states: heard, listening, transcribing, thinking, buffering, speaking, complete, or Disconnected State. |
@@ -56,18 +57,19 @@ The following terms retain the PRD glossary meanings and spelling so downstream 
 
 | Surface | Reached from | Purpose and behavioral boundary |
 |---|---|---|
-| **Puck** | Wake Mapping detection or follow-up | Captures only after the selected Profile is fixed, sends Puck audio through the Media Server, and plays Hermes audio. Its TFT is a status surface, not a transcript. |
-| **Room Display** | Ambient Surface in a Room | Shows room-local Active Turn state, live Transcription, response text, and the active Profile identity. It does not capture, speak, or create a second Hermes Session. See the [room active-turn key screen](mockups/key-room-active-turn.html). |
-| **iPad Display** | Safari/Guided Access kiosk URL | Consumes the same display contract as the ESP32-S3/LVGL Display for Ambient Surface, Active Turn, Departure Card, and Disconnected State. It is not a separate native iPad application in v1. |
+| **Puck** | Wake Mapping detection or follow-up | Captures only after the selected Profile is fixed, sends Puck audio through the Media Server, and plays Hermes audio. This ESP32 audio/status doorway has no touch response surface; its TFT is status-only, not a transcript. |
+| **ESP32 Touch Display** | Supported local voice initiation | Captures only after the selected Profile is fixed, participates in one Hermes Session, renders its own Active Turn, and plays Hermes audio. It is a first-class Epic 1 doorway as well as a Display surface. |
+| **Passive Room Display** | Ambient Surface in a Room | Shows room-local Active Turn state, live Transcription, response text, and the active Profile identity without capturing, speaking, or creating a second Hermes Session. See the [room active-turn key screen](mockups/key-room-active-turn.html). |
+| **Web / iPad (W/K)** | Safari/Guided Access kiosk URL | One shared browser voice-plus-display surface consuming the same contract as the ESP32 renderer. It captures and plays audio when `browser_voice` is advertised, and renders Ambient Surface, Active Turn, Departure Card, and Disconnected State. iPad is not a separate product renderer. |
 | **iOS Client** | App launch; conversation or Settings | Provides tap-to-speak and typed conversation, visible listening/thinking/speaking state, active Profile in the header, Local History, and the sole physical-Device control plane. |
 | **iOS Settings** | iOS Client Settings | Discovers, approves, connects, assigns Rooms, configures Wake Mappings, revokes Device Credentials, and guides re-enrollment. A discovered Device is inert until explicit approval and setup. See the [iOS setup key screen](mockups/key-ios-setup.html). |
 | **TUI** | Terminal launch or existing Hermes Session | Provides a direct voice-chat doorway, shared phase semantics, active Profile in the header, conversation rendering, and engineering diagnostics. It is not the household configuration surface. |
-| **Media Server** | Puck voice path | A supporting home-LAN service, not a user surface. It produces transient Transcription and does not become a transcript archive by default. |
+| **Media Server** | Puck or ESP32 Touch voice path | A supporting home-LAN service, not a user surface. It produces transient Transcription and does not become a transcript archive by default. |
 | **Ambient Surface** | Display idle state | Shows room-filtered Immich photos; a Room with no matching photos receives a neutral ambient background, not a widened filter or setup prompt. |
 | **Departure Card** | Qualifying shared-calendar event | Replaces the Ambient Surface on every Display, remains visual-only, and clears or recomputes from calendar changes. |
 | **Local History** | iOS Client or TUI conversation | Stores deliberate conversation history only on those intentional Client surfaces. Pucks and Displays do not expose it. |
 
-Surface closure is deliberate: conversation reaches the Puck/Room Display, iOS Client, and TUI; physical administration reaches iOS Settings; ambient and departure context reaches Displays; recovery is visible at the doorway that failed. Other Displays do not receive room-local conversation text. Household-wide propagation is reserved for the Departure Card.
+Surface closure is deliberate: conversation reaches the Puck, ESP32 Touch Display, W/K browser surface, iOS Client, and TUI; passive Room Displays mirror the selected doorway's response presentation when they are subscribed to the owning Room; physical administration reaches iOS Settings; ambient and departure context reaches Displays; recovery is visible at the doorway that failed. Other Rooms do not receive room-local conversation text. Household-wide propagation is reserved for the Departure Card.
 
 ### Product-requirement crosswalk
 
@@ -120,7 +122,8 @@ These are behavioral contracts. Visual anatomy, token usage, density, color, and
 
 | Component | Behavioral rules |
 |---|---|
-| **Room Display** | Mirrors the selected Puck's room-local Active Turn, including live Transcription, Turn Phase, response text, and active Profile identity. It never captures, speaks, creates a second Session, or shows another Room's conversation. |
+| **Passive Room Display** | Mirrors the selected doorway's room-local Active Turn, including live Transcription, Turn Phase, response text, and active Profile identity. It never captures, speaks, creates a second Session, or shows another Room's conversation. |
+| **ESP32 Touch Display** | Renders its own room-local Active Turn, including live Transcription, Turn Phase, response text, active Profile identity, and audio-delivery state. When selected as the active doorway it captures and plays through its own bounded voice path; it does not invent Hermes content or create a second Session. |
 | **Puck Status** | Shows one short, readable local phase. It acknowledges wake, exposes listening/working/speaking/unavailable/stopped status, plays Hermes audio only for an authorized turn, and never displays full response text or retained transcript history. |
 | **Profile Header** | Shows the active Hermes Profile from the `heard` acknowledgement through completion on the Room Display and in the active iOS/TUI conversation header. The Puck does not speak the profile name as a UX requirement. The header identifies routing; it must not imply that the answer is correct. Hermes owns the answer content. |
 | **Turn Path** | Exposes the supported phases in order as they occur. A doorway does not paint Thinking, Buffering, Speaking, or Complete before the corresponding event is known. `Disconnected State` replaces an indefinite active path after transport loss. |
@@ -130,13 +133,13 @@ These are behavioral contracts. Visual anatomy, token usage, density, color, and
 | **Follow-up Window** | Opens after each response for eight seconds without another Wake Mapping. When the window opens, play a sound cue and show `Listening` again. When it closes without new speech, play the closing cue and return to wake detection; exactly `stop` closes capture/follow-up silently and creates no replacement turn. |
 | **Ambient Surface** | Remains in the background when idle. It shows Room-filtered Immich photos or a neutral ambient background when no photos match. It yields to a Departure Card or room-local Active Turn according to the still-open priority rule below. |
 | **Departure Card** | Promotes the same visual-only event state to every Display when the event crosses its effective threshold. It contains event name, location, calculated departure time, countdown, and `estimated` when a configured estimate replaces a live route. Time/location changes recompute it; cancellation and event start clear it. |
-| **Disconnected State** | Persists visibly when the Hermes path is unavailable. Displays may retain useful cached Ambient Surface or Departure Card content. The Puck captures nothing and speaks no fallback; recovery clears the state only after verification and never reopens capture silently. |
+| **Disconnected State** | Persists visibly when the Hermes or doorway path is unavailable. Displays may retain useful cached Ambient Surface or Departure Card content. The Puck and ESP32 Touch Display capture nothing and speak no fallback; recovery clears the state only after verification and never reopens capture silently. |
 | **Retry Action** | Appears after a dropped connection where an explicit action is useful. Retry reconnects only, leaves the interrupted turn unresolved, and does not resend the previous prompt. A fresh wake or explicit new prompt is required after recovery. See the [recovery key screen](mockups/key-recovery.html). |
 | **Device Discovery** | Lists discovered Devices separately from approved Devices. Selecting a discovered Device shows a connecting state while it remains unconfigured and inert. Discovery alone never grants capture or Hermes access. |
 | **Device Setup** | Guides the ordered flow: approval/connection, Room assignment, one or more Wake Mappings, then ready confirmation. Both iOS and the Device show success; incomplete setup leaves the Device inactive. Duplicate Wake Mappings are blocked before save, and a pending or offline configuration is labeled pending rather than ready. |
 | **Device Details** | Shows the Device's current status and makes Disconnect consequential. Confirmation explains that the Device stops working until re-enrolled. Revocation removes access even if the powered Device remains reachable. Edits to Wake Mappings show validation and publish status; an unverified edit never masquerades as the applied mapping. |
 | **Local History** | Exists only where the user intentionally keeps it: iOS Client and TUI. It supports continuity on those surfaces; Puck, Display, and Media Server do not create a default transcript archive. |
-| **Prompt Mirror** | May show an active Hermes clarification or approval prompt on the Room Display. The answer comes through the active Puck or Client voice path; the Display has no touch prompt action in v1. |
+| **Prompt Mirror** | May show an active Hermes clarification or approval prompt on a passive Room Display. The answer comes through the active Puck, ESP32 Touch Display, W/K browser voice, or Client path; no Display touch prompt action exists in v1. |
 | **TUI Header** | Shows the active Profile in the terminal conversation header and preserves the shared phase semantics. Diagnostics remain an engineering capability and do not become the validated household journey. |
 
 ## State Patterns
@@ -145,22 +148,22 @@ The named Turn Phases are `heard`, `listening`, `transcribing`, `thinking`, `buf
 
 | State | Applies to | Entry and behavior | Exit and failure rule |
 |---|---|---|---|
-| **Idle / Ambient Surface** | Room Display, iPad Display | Display stays in the background with Room-filtered Immich photos. | A qualifying Active Turn or Departure Card replaces it. No matching photos use a neutral background. |
+| **Idle / Ambient Surface** | Room Display, W/K browser surface | Display stays in the background with Room-filtered Immich photos. | A qualifying Active Turn or Departure Card replaces it. No matching photos use a neutral background. |
 | **Unconfigured** | New Puck/Display and iOS discovery | A discovered Device is visibly inert and cannot capture or use Hermes. | Explicit approval and setup move it toward Connected/Ready; failure never silently activates it. |
 | **Connecting** | iOS setup, Device setup, reconnecting doorway | Show that a connection attempt is in progress; the Device remains honest about whether it is configured. The active-state motion may be used as a supplementary signal. | Success is visible on both surfaces. Failure remains visible and actionable without claiming Ready. |
-| **heard** | Puck, Displays, iOS Client, TUI | The doorway acknowledges a recognized and authorized initiation before capture. The selected Profile is already fixed for a Puck. | Move to `listening` or fail closed if identity/authorization is unavailable. |
-| **listening** | Puck, Displays, iOS Client, TUI | Show that capture is open. The follow-up variant adds the opening sound cue and does not require another Wake Mapping. | Capture ends, cancellation occurs, or the eight-second follow-up expires. |
-| **transcribing** | Puck path, Room Display, iOS Client, TUI | Show live Transcription as words arrive. Puck audio is transient and remains on the home-LAN Media Server path before Hermes receives text. | Move to `thinking`; loss of path becomes `Disconnected State`, not indefinite listening. |
+| **heard** | Puck, ESP32 Touch Display, W/K browser, passive Displays, iOS Client, TUI | The active doorway acknowledges a recognized and authorized initiation before capture. The selected Profile is already fixed for the Puck, touch unit, or W/K browser surface; passive Displays mirror it. | Move to `listening` or fail closed if identity/authorization is unavailable. |
+| **listening** | Puck, ESP32 Touch Display, W/K browser, passive Displays, iOS Client, TUI | Show that the active doorway's capture is open. The follow-up variant adds the opening sound cue and does not require another Wake Mapping where supported. | Capture ends, cancellation occurs, or the configured bounded follow-up expires. |
+| **transcribing** | Puck path, ESP32 Touch path, W/K browser, passive Room Display, iOS Client, TUI | Show live Transcription as words arrive. Device audio is transient and remains on the bounded home-LAN/device path before Hermes receives text. | Move to `thinking`; loss of path becomes `Disconnected State`, not indefinite listening. |
 | **thinking** | All conversation doorways | Show that Hermes is processing without suggesting that answer content is defined by the doorway. | Move to `buffering`, `speaking`, or `Disconnected State` when transport fails. |
-| **buffering** | Puck, Room Display, iOS Client, TUI | Show that response audio is preparing. Keep response text and audio status distinct. | Move to `speaking` only when audio is actually available, or to complete text plus unavailable-audio status if text completes and audio fails. |
-| **speaking** | Puck, Room Display, iOS Client, TUI | Puck/Client plays the Hermes response; Display/Client/TUI presents the same response text. The Room Display's visualizer may synchronize with voice. | Move to `complete`; active-playback barge-in remains out of v1 until the audio route is echo-safe. |
-| **complete** | All conversation doorways | Leave the completed response visible where the doorway supports text. Show the active Profile in the Room Display response and iOS/TUI header. | Puck opens the eight-second follow-up. If no follow-up arrives, the window closes with its closing cue and the Display returns to Ambient/idle. |
-| **Stopped** | Puck capture/follow-up, local doorway UI | Exactly `stop` closes local capture or follow-up silently and creates no replacement Hermes turn. | Return to wake detection or doorway idle state without a spoken or celebratory reply. |
-| **Audio unavailable** | Display, iOS Client, TUI | If Hermes text completes but response audio fails, show the text as complete with an unavailable-audio status. | Never show `speaking` or claim audio was delivered. Recovery is a fresh turn unless the doorway offers an explicit non-replay action. |
-| **Disconnected State** | Every Device/Client as applicable | Persistent visual state when Media Server, Hermes, or the doorway path is unavailable. Displays may retain useful cached context; Puck captures nothing and speaks no fallback. | Verified recovery clears it but never silently reopens capture or resumes the old turn. A dropped active turn remains unresolved. |
+| **buffering** | Puck, ESP32 Touch Display, W/K browser, passive Room Display, iOS Client, TUI | Show that response audio is preparing. Keep response text and audio status distinct. | Move to `speaking` only when audio is actually available, or to complete text plus unavailable-audio status if text completes and audio fails. |
+| **speaking** | Puck, ESP32 Touch Display, W/K browser, passive Room Display, iOS Client, TUI | Puck/ESP32 Touch/W/K/Client plays the Hermes response; active and passive display-capable surfaces present the same response text. The ESP32, W/K, and passive Room Display visualizers may synchronize with voice. | Move to `complete`; active-playback barge-in remains out of v1 until each audio route is echo-safe. |
+| **complete** | All conversation doorways | Leave the completed response visible where the doorway supports text. Show the active Profile in the ESP32 Touch/W/K/passive Room Display response and iOS/TUI header. | A doorway opens only its configured bounded follow-up. If no follow-up arrives, the window closes with its closing cue and the Display returns to Ambient/idle. |
+| **Stopped** | Puck, ESP32 Touch, or W/K capture/follow-up, local doorway UI | Exactly `stop` closes local capture or follow-up silently and creates no replacement Hermes turn. | Return to wake detection or doorway idle state without a spoken or celebratory reply. |
+| **Audio unavailable** | Puck, ESP32 Touch Display, W/K browser, passive Display, iOS Client, TUI | If Hermes text completes but response audio fails, show the text as complete with an unavailable-audio status. | Never show `speaking` or claim audio was delivered. Recovery is a fresh turn unless the doorway offers an explicit non-replay action. |
+| **Disconnected State** | Every Device/Client as applicable | Persistent visual state when Media Server, Hermes, or the doorway path is unavailable. Displays may retain useful cached context; Puck, ESP32 Touch, and W/K capture nothing and speak no fallback. | Verified recovery clears it but never silently reopens capture or resumes the old turn. A dropped active turn remains unresolved. |
 | **Revoked / unavailable identity** | Puck and administration surfaces | Fail closed with local sound and visible status. No capture, no submission, no alternate Profile. | Explicit re-enrollment is required after revocation; unavailable identity stays unavailable. |
 | **Departure Card** | Every Display | Replaces Ambient Surface when a qualifying shared-calendar event crosses the effective threshold. | Recompute on event time/location change, clear on cancellation or event start, and never generate unsolicited audio. |
-| **Prompt waiting** | Room Display plus active Puck/Client | Mirror Hermes clarification or approval text and show that a spoken answer is awaited. | Answer follows the active Session; no touch response action exists in v1. |
+| **Prompt waiting** | Passive Room Display plus active Puck/ESP32 Touch/W/K/Client | Mirror Hermes clarification or approval text and show that a spoken answer is awaited. | Answer follows the active Session; no touch response action exists in v1. |
 
 ### Priority and persistence notes
 
@@ -194,12 +197,14 @@ The doorway keeps one canonical state model while presenting a small child-reada
 
 ### Surface state matrix
 
-This matrix assigns the visible contract when a surface is cold, empty, active, offline, permission-blocked, failed, or recovering. `Retry` is a Client action in v1: iOS and TUI render it; Room Displays and Pucks show status and direct the user to a Client rather than inventing a touch action.
+This matrix assigns the visible contract when a surface is cold, empty, active, offline, permission-blocked, failed, or recovering. `Retry` is a Client action in v1: iOS and TUI render it; Pucks and passive Room Displays show status, while active ESP32 Touch and W/K surfaces show their own disconnected/error state and never replay an uncertain turn.
 
 | Surface | Cold / empty | Active turn | Offline / permission / failure | Recovery and persistence |
 |---|---|---|---|---|
 | **Puck** | `Ready` when configured; `Not ready` when unconfigured; no transcript history | `Heard` → `Listening` → `Working` → `Speaking`; tiny TFT shows one short label and local cues | `Unavailable` or `Disconnected`; no capture, submission, fallback, or profile substitution | Reconnect never opens the microphone. After verified recovery, a fresh wake is required; no shared text persists |
-| **Room Display / iPad Display** | Ambient Surface or neutral fallback; no matching Immich photos do not become an error | Mirrors the selected Room's state, Profile, live Transcription, and response; the selected Room Active Turn outranks Departure Card | Shows persistent Disconnected/Unavailable and may retain clearly stale-labeled ambient/calendar context; no room text from another Room | Retry is described as a Client action. Room-local turn text clears at terminal state, new session, Retry, or restart; Departure Card remains household-wide when qualifying |
+| **ESP32 Touch Display** | Ready when configured; Ambient Surface when idle; no retained transcript history | When active, captures voice after authorization, renders observed phases and response text in native LVGL, and plays response audio | `Unavailable` or `Disconnected`; no capture, fallback, or replay | Recovery requires a fresh initiation; the display may retain only honest current-room state and never invents Hermes content |
+| **Passive Room Display role** | Ambient Surface or neutral fallback | Mirrors the selected Room's Profile, live Transcription, phase, and response without capturing or speaking | Shows persistent Disconnected/Unavailable and may retain clearly stale-labeled ambient/context state; no other Room's turn text | Returns to the Room's Ambient Surface after terminal state; no Retry or touch prompt action |
+| **W/K browser surface (web/iPad)** | Ambient Surface or neutral fallback; no matching Immich photos do not become an error | When active, captures browser voice and renders/plays the selected Room's state, Profile, live Transcription, and response; when acting as a passive mirror, it does not capture or speak | Shows persistent Disconnected/Unavailable and may retain clearly stale-labeled ambient/calendar context; no room text from another Room | Reconnect never resubmits the prior turn. Room-local turn text clears at terminal state, new session, or restart; Departure Card remains household-wide when qualifying |
 | **iOS Client** | Empty conversation has a ready state; Settings separately shows discovered vs approved Devices | Header shows Profile before capture; state, response, audio status, and Local History are visible | Permission denial, revoked identity, or transport failure is explicit; no silent fallback; `Retry` is available after connection loss | Retry reconnects only. Local History is intentional and may persist completed turns; unresolved turns are not replayed |
 | **iOS Settings** | Empty discovery shows no approved Devices and a clear Add path | Connecting/setup steps show pending Room and Wake Mapping work | Discovery is not approval; permission, duplicate mapping, offline publish, and revocation failures remain visibly unresolved | Only verified configuration is shown as applied. Re-enrollment is explicit; pending edits are not treated as ready |
 | **TUI** | Ready header with active Profile when configured; empty transcript is not an error | Shared phase labels, inline streamed response text, active Profile, and explicit diagnostics where enabled | Disconnected or unavailable state is visible; no fake answer or replay | `Retry` reconnects only. Local History is deliberate; a fresh explicit prompt is required after recovery |
@@ -217,17 +222,17 @@ This matrix assigns the visible contract when a surface is cold, empty, active, 
 
 ### Turn-taking and cues
 
-- Each Puck or Client shows the honest phase sequence: heard → listening → transcribing → thinking → buffering → speaking → complete. A doorway may omit a phase it cannot observe, but it must not show a later phase early.
+- Each Puck, ESP32 Touch Display, W/K browser voice surface, or Client shows the honest phase sequence: heard → listening → transcribing → thinking → buffering → speaking → complete. A doorway may omit a phase it cannot observe, but it must not show a later phase early.
 - After every response, the active Puck opens an eight-second follow-up window. When the window opens, play a sound cue and show `Listening` again; when it closes without new speech, play the closing cue.
 - When the user says exactly `stop` during capture or the follow-up window, close the local window silently. It creates no replacement turn. A Display may show `Stopped` as a local status while returning to its idle listening contract.
 - Active-playback barge-in is deferred until the v1 audio route proves echo-safe. Explicit controls supported by a Client remain distinct from automatic hands-free interruption.
 
 ### Presentation and privacy
 
-- The Room Display mirrors the selected Puck's Active Turn but never captures, speaks, or creates a second Hermes Session.
-- Live Transcription and response text stay in the selected Room. The Puck's tiny TFT shows status only; the iPad Display and ESP32-S3/LVGL Display share semantics, not necessarily geometry.
+- A passive Room Display mirrors the selected doorway's Active Turn but never captures, speaks, or creates a second Hermes Session. An ESP32 Touch Display or W/K browser surface may itself be that selected doorway and then owns capture, response rendering, and audio delivery.
+- Live Transcription and response text stay in the selected Room. The Puck's tiny TFT shows status only; the W/K browser surface and ESP32-S3/LVGL renderer share semantics, not necessarily geometry.
 - Departure Cards intentionally propagate to every Display but remain visual-only. No Puck speaks or announces them.
-- Puck audio is transient and home-LAN-only. The Media Server may buffer for Transcription, then discards it; diagnostic recording is bounded and opt-in. iOS/TUI may retain deliberate Local History.
+- Puck and ESP32 Touch audio are transient and home-LAN-only. The Media Server or audio bridge may buffer for Transcription/playback, then discards it; diagnostic recording is bounded and opt-in. iOS/TUI may retain deliberate Local History.
 
 ### Recovery and explicit actions
 
@@ -265,8 +270,8 @@ The minimum behavior is household-readable and multimodal without making any sin
 | Platform/surface | Required adaptation |
 |---|---|
 | ReSpeaker Lite prototype Puck with small TFT | Status-only presentation. Use short readable phase labels and local cues; never place full response text or a transcript archive on the TFT. Exact electrical, acoustic, thermal, controller, and firmware behavior remains hardware validation. |
-| ESP32-S3/LVGL Display | Dense Night Console active state and quiet Ambient Surface at the physical 1024×600 form factor. It consumes the shared `/ws`-style display state contract and sends no voice or touch prompt response in v1. |
-| iPad Display | Safari/Guided Access kiosk using the same Display semantics as the ESP32-S3/LVGL target. Keep an accessible DOM status mirror alongside the canvas; kiosk authentication, offline behavior, and exact responsive reflow remain open. |
+| ESP32-S3/LVGL Touch Display | Dense Night Console active state and quiet Ambient Surface at the physical 1024×600 form factor. It consumes the shared `/ws`-style display state contract; voice capture and response audio use a separate bounded adapter, while touch prompt choices remain non-actionable in v1. |
+| W/K browser surface (web/iPad) | Safari/Guided Access deployment of the shared browser voice-plus-display surface. When `browser_voice` is advertised, it captures browser voice and plays streamed response audio; keep an accessible DOM status mirror alongside the canvas. Kiosk authentication, offline behavior, and exact responsive reflow remain open. |
 | iOS Client | Native conversation doorway with tap-to-speak and typed turns, listening/thinking/speaking status, active Profile header, Local History, and Settings-based Device administration. iOS may use its existing local push-to-talk Transcription path; the Puck Media Server requirement does not automatically apply to iOS microphone bytes. |
 | macOS Client | A companion doorway may share the iOS conversation/admin contract; exact macOS behavior is not defined by the confirmed UX sources. |
 | TUI | Direct voice-chat doorway with terminal transcript and state rendering. Preserve inline streamed text and Profile identity in the header; diagnostics are engineering-only. |
@@ -284,7 +289,7 @@ Hard anti-patterns for this experience:
 - Multiple Devices acknowledging or answering the same wake.
 - A doorway claiming Listening, Speaking, Complete, or recovered when it does not know that to be true.
 - A Display in one Room receiving another Room's Active Turn text.
-- A Puck capturing, speaking, or replaying during Disconnected State.
+- A Puck, ESP32 Touch Display, or W/K browser surface capturing, speaking, or replaying during Disconnected State.
 - A retry that resends a turn that may already have reached Hermes.
 - A shared Device retaining an ambient transcript archive or full response text on the tiny Puck TFT.
 - A Departure Card speaking, sounding, or requiring manual dismissal.
@@ -308,6 +313,19 @@ Hard anti-patterns for this experience:
 **Climax:** The conversational back-and-forth feels like one continuous Hermes relationship: Amanda can follow up naturally because the doorway reopens Listening without another wake, while the Display and Puck make each phase honest.
 
 **Failure path:** If the Profile is unavailable or revoked, the Puck gives a local sound and visible unavailable status, captures nothing, submits nothing, and does not choose another Profile. If the connection drops during the turn, the doorway enters Disconnected State and exposes Retry where appropriate; Retry reconnects only, the turn stays unresolved, and a fresh wake or explicit prompt is required. Other Displays never receive the conversation text.
+
+### UJ-1A — Amanda asks Missy through the ESP32 touch Display
+
+1. Amanda starts a supported voice capture on the configured ESP32 touch unit. The selected Profile is already verified before its microphone opens.
+2. The touch unit shows `heard` and `listening`, then shows `transcribing` and the live words as its bounded audio path delivers them. A passive Room Display, if present, mirrors the same room-local state without opening its own capture path.
+3. The touch unit shows `thinking`, then `buffering` only while response audio is actually preparing. It renders the streamed Hermes response in its native LVGL console and keeps the active Profile visible.
+4. The touch unit plays the Hermes response audio and may synchronize its visualizer with the audio. It does not invent, summarize, or replace Hermes text.
+5. On completion, the touch unit leaves the response visible, reports unavailable audio if playback failed, and enters only a configured bounded follow-up path. A passive Display receives the visual state but does not become a second doorway.
+6. If the touch unit loses transport, it shows Disconnected State, stops capture/playback safely, and requires verified recovery plus fresh initiation. It never resubmits an uncertain turn.
+
+**Climax:** The touch unit is one coherent household doorway: the same device hears, shows, and speaks the exchange without making the Display and audio path contradict one another.
+
+**Failure path:** If authorization or the audio bridge is unavailable, the touch unit fails closed before capture or playback. A completed text response remains visible when audio fails; no unavailable route is presented as `speaking`.
 
 ### UJ-2 — Amanda adds a new puck from iOS Settings
 
@@ -375,12 +393,12 @@ These items are intentionally not resolved into architecture or implementation h
 
 - What proximity signal, arbitration window, and configured priority semantics select the closest Device? **Owner:** Architecture. **Revisit:** before arbitration is finalized for architecture and story creation. **Status:** downstream, non-blocking.
 - How should iOS publish mapping, Room, and credential changes, and what last-known configuration is safe while a Device is offline? **Owner:** iOS + Architecture. **Revisit:** before enrollment and configuration stories. **Status:** downstream, non-blocking.
-- What Device Credential storage, rotation, expiry, offline revocation, and re-enrollment mechanism fits the Puck and iPad Display? **Owner:** Architecture + Security. **Revisit:** before Device enrollment implementation. **Status:** downstream, non-blocking.
+- What Device Credential storage, rotation, expiry, offline revocation, and re-enrollment mechanism fits the Puck and W/K browser deployment? **Owner:** Architecture + Security. **Revisit:** before Device enrollment implementation. **Status:** downstream, non-blocking.
 - What Media Server audio transport, bounded buffering, and cleanup behavior covers success, cancellation, and failure? **Owner:** Architecture + Media Server integration. **Revisit:** before Puck voice implementation. **Status:** downstream, non-blocking.
 - Which people and exclusions define each Room's Immich filter, and what freshness policy applies? **Owner:** UX + iOS. **Revisit:** before Room presentation settings. **Status:** downstream, non-blocking.
 - Where are travel estimates keyed in the vault, how is staleness detected, and how are missed calendar updates recovered? **Owner:** Hermes/vault integration. **Revisit:** before calendar integration stories. **Status:** downstream, non-blocking.
 - When does a future release earn active-playback barge-in? **Owner:** UX + Audio. **Revisit:** only after the v1 audio route proves echo-safe. **Status:** future release, non-blocking.
-- What kiosk authentication and offline re-entry behavior does the iPad Display require? **Owner:** iPad/platform engineering. **Revisit:** before Guided Access deployment. **Status:** downstream, non-blocking.
+- What kiosk authentication and offline re-entry behavior does the W/K browser deployment on iPad require? **Owner:** iPad/platform engineering. **Revisit:** before Guided Access deployment. **Status:** downstream, non-blocking.
 - What exact conversation and administration behavior should the macOS Client support beyond the TUI and iOS contracts? **Owner:** macOS + UX. **Revisit:** before a native macOS Client is scoped; **Status:** future surface, does not block the pilot.
 - Which localization targets follow the English pilot, and how should translated labels be revalidated for child comprehension and room-distance wrapping? **Owner:** UX + product. **Revisit:** before localization work. **Status:** downstream, non-blocking.
 - What exact microcopy and cue durations should accompany an unavailable identity, connection loss, the opening and closing of the follow-up window, and audio-unavailable states? The semantic behaviors are decided; the final phrase/tone and timing remain a producer detail. **Owner:** UX + audio. **Revisit:** before implementation sign-off. **Status:** downstream, non-blocking; semantic contract is final.

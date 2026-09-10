@@ -94,19 +94,36 @@ uv tool install hermes-relay-tui
 ### HOME-03 kiosk display distribution
 
 The kiosk display ships as compiled browser assets in `home_display/static/`.
-Build the pinned LVGL WebAssembly target before the browser bundle, then build
-the browser assets before building a Python wheel or source distribution:
+The browser default is the DOM-first Svelte surface: it starts the normalized
+`DisplayBridge`, renders observed state and streamed responses accessibly, and
+shows direct-use prompt buttons only when the current snapshot advertises
+`prompt.choose`. Build it without an Emscripten installation:
 
 ```bash
-source build/display-wasm/emsdk/emsdk_env.sh
-bash scripts/build_display_wasm.sh
+npm --prefix home_display/web install
+npm --prefix home_display/web test -- --run
+npm --prefix home_display/web run check
 npm --prefix home_display/web run build
 venv/bin/python -m build
 ```
 
-The WebAssembly build uses Emscripten `6.0.5` and LVGL `8.3.11`; see the
-[shared display target notes](shared/display/README.md) for emsdk setup and
-path overrides.
+The optional shared C/LVGL WebAssembly target remains available for the native
+display experiment and its independent reducer/canvas tests. If that target
+is needed, build it separately before packaging:
+
+```bash
+source build/display-wasm/emsdk/emsdk_env.sh
+bash scripts/build_display_wasm.sh --check
+bash scripts/build_display_wasm.sh
+```
+
+If the optional target is included in the package, rerun the browser build after
+these commands and before `venv/bin/python -m build` so Vite copies the generated
+WASM files into the static bundle. The direct-use DOM package needs none of this.
+
+It uses Emscripten `6.0.5` and LVGL `8.3.11`; see the [shared display target
+notes](shared/display/README.md) for emsdk setup and path overrides. The
+direct-use browser page does not load or require those generated files.
 
 Node, Svelte, Vite, TypeScript, and browser test packages are build-time tools,
 not appliance runtime dependencies. Follow the
@@ -115,7 +132,13 @@ to validate the local fake-state display after building.
 
 The display shell now renders the shared ESP32 C/LVGL surface in the browser,
 including state snapshots, prompt touch actions, browser voice, and streamed
-audio. Photo playback and YouTube/video remain part of the HOME-16 work.
+audio. Web and iPad are one W/K browser voice-plus-display surface; iPad is a
+deployment target, not a separate product surface. The physical ESP32 touch
+unit is a separate Epic 1 voice-plus-display doorway: it must capture voice,
+render its own response, and deliver response audio. Its current firmware
+foundation implements the display snapshot/action path; the bounded
+microphone/audio transport remains a dedicated implementation slice. Photo
+playback and YouTube/video remain part of the HOME-16 work.
 
 ## Upgrade and uninstall
 

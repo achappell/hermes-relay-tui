@@ -60,6 +60,16 @@ located in `firmware/esp32-s3-touch-lcd-7/main/src/`:
 - **Shared State Contract:** All targets consume the exact same `/ws` `DisplaySnapshot`
   JSON stream from `home_display/server.py` and dispatch touch choices back to `/action`.
 
+The ESP32-S3 touch target is a first-class Epic 1 voice-plus-display surface,
+not only a passive room mirror. Its product scope includes microphone capture,
+native response/phase rendering, and response-audio delivery. The shared
+`DisplaySnapshot` contract carries visual state and response presentation; a
+separate bounded audio/session adapter must carry microphone and response PCM.
+The current firmware transport implements snapshot receipt and `/action` only,
+so that audio path remains an explicit implementation slice. Hermes answer
+authority and no-replay session semantics stay behind the owning adapter; the
+firmware must not invent responses or parse Hermes wire frames.
+
 
 Rules:
 
@@ -97,10 +107,13 @@ reconciliation decisions:
 
 `~/Documents/Vaults/Personal Vault/projects/hermes-home/hermes-home.md`
 
-BMad artifacts are part of the engineering record, but they do not replace
-the GitHub Project as the task queue or source of truth for priority and
-workflow state. See [`docs/bmad-upstream.md`](docs/bmad-upstream.md) for the
-delivery boundary and reading order.
+BMad artifacts are part of the engineering record. While GitHub Project work
+is paused, [`_bmad-output/implementation-artifacts/surface-coverage-matrix.md`](_bmad-output/implementation-artifacts/surface-coverage-matrix.md)
+is the shared cross-repository coverage and prioritization aid. The Personal
+Vault remains canonical for durable product intent and reconciliation; local
+BMad artifacts remain the delivery record for each repository. See
+[`docs/bmad-upstream.md`](docs/bmad-upstream.md) for the delivery boundary and
+reading order.
 
 - Existing tracked planning artifacts under `_bmad-output/planning-artifacts/`
   are preserved historical snapshots and implementation evidence. Read the
@@ -121,6 +134,11 @@ delivery boundary and reading order.
   their files do not contend. Shared protocol or contract work remains a
   prerequisite when both clients depend on it. Feed durable cross-repository
   discoveries back to the Personal Vault hub.
+- Read the surface coverage matrix before selecting the next story. Treat
+  `Implemented` as surface-level evidence, `In review` as work needing its
+  validation or build gate finished, and `Foundation` as support that does not
+  close the story. Do not create a duplicate matrix or silently close a story
+  in one repository based only on another surface's cell.
 - The BMad framework under `_bmad/` and local tool integrations under
   `.agents/`, `.claude/`, and `.opencode/` are tooling, not product scope by
   themselves. Rendered workflow/cache output is transient. Include these
@@ -132,62 +150,35 @@ delivery boundary and reading order.
   review the exact staged paths before committing. Never commit bearer tokens,
   profile `.env` files, audio captures, or machine-specific credentials.
 
-## GitHub Project task management — check this first
+## GitHub Project task management — paused by Amanda
 
-Before answering "what's next" or starting any work, inspect the
-[Hermes Streaming TUI GitHub Project](https://github.com/users/achappell/projects/3/views/2)
-first. It is the sole source of truth for task scope, priority, ownership,
-dependencies, and progress — not `docs/plans/`, not `.hermes/plans/`, not this
-file's own roadmap-sounding prose. Those directories hold design history,
-testing procedures, and superseded operating-model proposals; none of them is
-a task queue, and several are stale relative to the board. If a plan file's
-status conflicts with the board, the board wins.
+Amanda has explicitly paused GitHub Project #3 work while the local BMad
+surface reconciliation is completed. Until she explicitly reopens the board:
 
-```bash
-gh project item-list 3 --owner achappell --format json -L 100
-```
+- Do not inspect, query, create, edit, move, delete, or reconcile Project #3
+  items for ordinary planning or implementation.
+- Do not require a GitHub card before doing local BMad reconciliation, and do
+  not present the board as the current source of truth for next-story choice.
+- Before answering "what's next" or starting substantive story work, read
+  [`_bmad-output/implementation-artifacts/surface-coverage-matrix.md`](_bmad-output/implementation-artifacts/surface-coverage-matrix.md),
+  the relevant epic context, and the owning repository's implementation or
+  validation artifacts.
+- Prioritize, in order: finish an `In review` slice whose build or validation
+  gate is close and unlocks later stories; then choose an open story with the
+  strongest useful coverage across incomplete surfaces and settled
+  prerequisites; then choose the smallest independently verifiable vertical
+  slice. Keep one active slice per repository/workstream.
+- Use local `sprint-status.yaml` and story artifacts to record delivery state.
+  The matrix records cross-surface evidence, not formal closure in another
+  repository and not a replacement task queue.
+- Do not use this pause to create a competing backlog in `docs/plans/` or
+  `.hermes/plans/`; select from the existing BMad epics/stories and record any
+  prioritization decision in the appropriate local implementation artifact.
 
-GitHub CLI credentials are workspace-contextual on this machine. The primary
-TUI workspace injects the admin `GH_TOKEN`; the separate Hermes relay checkout
-may fall back to the keyring token, which does not have the `project` and
-`read:project` scopes. Before any project read or write, run `gh auth status`
-from the chosen working directory and confirm the active credential includes
-those scopes. If it does not, run the `gh project` command from the primary
-workspace (or refresh/export an explicitly scoped token); never assume that a
-repository-admin or keyring credential can edit a user-owned Project, and
-never print token values.
-
-- Before starting work, inspect the project and choose the highest-priority
-  unblocked item in `Ready` or `Building`. Do not invent a parallel task list
-  in the repository.
-- Give every substantive task a project item. Shape new items with an
-  outcome, acceptance criteria, UX expectations, and a validation scenario;
-  fill in `Priority`, `Area`, `Layer`, and `Horizon`.
-- Move work through the `Workflow` field: `Inbox` → `Ready` → `Building` →
-  `Verify` → `Done`. Use `Blocked` when progress depends on Hermes, a
-  protocol change, an external service, or an explicit design decision.
-- Keep the built-in `Status` field aligned with `Workflow` (`Todo` for
-  planned work, `In Progress` for active work, and `Done` only after
-  completion). `Workflow` is the board's kanban state.
-- Keep one active vertical slice per repository/workstream in `Building`.
-  Independent TUI and iOS items may be in `Building` simultaneously when
-  their contracts are settled and their files do not contend. Move each item
-  out promptly when it is blocked, ready for verification, or complete.
-- Manage the board continuously as the work changes: add newly discovered
-  follow-ups, split oversized tasks, edit acceptance criteria, link PRs and
-  evidence, remove duplicates or abandoned tasks, and delete stale work
-  rather than leaving ghosts in `Building`.
-- When blocked, record the concrete blocker and the next unblocking action
-  on the item. Do not present a local fallback as complete relay support.
-- Move an item to `Verify` after implementation, then run focused tests, the
-  full suite, and the required manual smoke test. Record the evidence on the
-  item; move it to `Done` only when the change is validated and merged.
-- At the end of a work session, reconcile the board with the code and GitHub
-  state: no completed item left in `Building`, no active work without a
-  card, and no release or administrative PR allowed to hide unfinished
-  product work.
-- When multiple `Ready` items tie on `Priority` and `Horizon`, ask which one
-  to pick rather than guessing — the board doesn't encode a tiebreaker.
+When Amanda explicitly reopens GitHub Project work, restore the board procedure
+before choosing a new board-scoped task: run `gh auth status`, verify the
+credential scopes, inspect Project #3, and reconcile its state with the matrix
+and local artifacts. Never print token values.
 
 ## Working agreement
 

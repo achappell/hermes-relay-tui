@@ -61,3 +61,18 @@ jobs:
           python -m pip install --no-deps dist/*.whl
           hermes-relay --help
           hermes-relay-home --help
+
+      - name: Verify installed kiosk assets
+        run: |
+          python - <<'PY'
+          import re
+          from importlib.resources import files
+
+          static = files("home_display") / "static"
+          index = (static / "index.html").read_text(encoding="utf-8")
+          assets = re.findall(r'(?:src|href)=["\']([^"\']+)["\']', index)
+          missing = [asset for asset in assets if not (static / asset.lstrip("/")).is_file()]
+          if missing:
+              raise SystemExit(f"installed kiosk assets are missing: {missing}")
+          print(f"verified {len(assets)} installed kiosk assets")
+          PY

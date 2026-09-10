@@ -3,7 +3,7 @@ name: Hermes Night Console
 description: Shared dark, high-contrast visual identity for the Hermes Home Assistant Platform's truthful multi-doorway interaction states.
 status: final
 created: '2026-09-07'
-updated: '2026-09-07'
+updated: '2026-09-10'
 sources:
   - "{planning_artifacts}/briefs/brief-hermes-relay-tui-2026-09-07/brief.md"
   - "{planning_artifacts}/briefs/brief-hermes-relay-tui-2026-09-07/addendum.md"
@@ -214,7 +214,7 @@ components:
 
 ## Brand & Style
 
-Night Console is a dense, dark instrument panel for a household assistant that must never bluff. It makes the current doorway state legible at room distance while leaving the idle Display quiet in the background. The visual personality is clear, fun, and friendly through concise labels, a live signal vocabulary, and purposeful motion—not through jokes in Hermes' answers, gamification, or decorative clutter.
+Night Console is a dense, dark instrument panel for a household assistant that must never bluff. It makes the current doorway state legible at room distance while leaving the idle Display quiet in the background. The ESP32 touch unit uses this console as both its native voice-doorway surface and its room display; a passive Display may consume the same semantics without owning capture or audio. The visual personality is clear, fun, and friendly through concise labels, a live signal vocabulary, and purposeful motion—not through jokes in Hermes' answers, gamification, or decorative clutter.
 
 Hermes is the shared relationship across doorways. Missy is a Hermes Profile and is shown as the active identity from the `heard` acknowledgement through response completion; the visual system does not turn the profile into a separate product brand. The design direction is anchored by the [Night Console visual reference](mockups/direction-night-console.html), which illustrates the dense console frame, explicit Turn Path, active profile, large state label, and voice-synchronized visualizer. The spine wins if the mockup and this document disagree.
 
@@ -241,7 +241,7 @@ Readable system sans-serif carries the human-facing state and response text. Mon
 
 Labels may use the tracked monospace treatment from `{typography.label}` for secondary console chrome, but the primary state must remain a readable word such as `Listening`, `Thinking`, `Speaking`, `Unavailable`, or `Stopped`, not a code or color-only mark. `{typography.meta}` is for timestamps, Room metadata, and supporting status. `{typography.button}` is reserved for explicit actions such as `Retry` and `Disconnect`; `{typography.caption}` supports short explanations.
 
-Room-distance minimums are explicit: on the 1024×600 Display, the primary state is at least 56px, the active Profile is at least 24px, response text is at least `{typography.room-response}` (24px), and recovery text is at least `{typography.room-recovery}` (20px). Labels and metadata are supplementary, never the only copy. The Puck's 14px status label must be validated on the actual TFT at the intended distance; no response text is placed there. Native platform type scaling remains authoritative on iOS and the TUI.
+Room-distance minimums are explicit: on the 1024×600 Display, the primary state is at least 56px, the active Profile is at least 24px, response text is at least `{typography.room-response}` (24px), and recovery text is at least `{typography.room-recovery}` (20px). Labels and metadata are supplementary, never the only copy. The Puck's 14px status label must be validated on the actual TFT at the intended distance; no response text is placed there. The ESP32 touch unit may render the full response console and audio-delivery state. Native platform type scaling remains authoritative on iOS and the TUI.
 
 ## Layout & Spacing
 
@@ -249,7 +249,7 @@ The spacing scale is 4 / 8 / 12 / 16 / 24 / 32 / 40 / 48 px (`{spacing.1}` throu
 
 The Night Console composition is intentionally dense: a profile header across the top, a Turn Path rail, a central state/visualizer region, and supporting status or recovery information. On a smaller surface those regions stack in the same semantic order rather than being dropped or replaced by unlabeled icons. The idle Display has no active console chrome demanding attention; it is an Ambient Surface. Platform-specific adaptations are specified in `EXPERIENCE.md`.
 
-Room Displays and iPad Displays share the same state contract but may reflow for their form factor. iOS follows native navigation and the TUI follows terminal conventions; neither inherits the physical Display's exact geometry. Breakpoints, kiosk chrome, and platform-specific navigation are downstream implementation details, not changes to the shared visual contract.
+The ESP32 Touch Display and W/K browser deployments share the same state contract but may reflow for their form factors. Web and iPad are one W/K surface, not separate renderers. iOS follows native navigation and the TUI follows terminal conventions; neither inherits the physical Display's exact geometry. Breakpoints, kiosk chrome, and platform-specific navigation are downstream implementation details, not changes to the shared visual contract.
 
 ## Elevation & Depth
 
@@ -269,7 +269,8 @@ Visual rules live here; interaction and state behavior live in `EXPERIENCE.md`. 
 
 | Component | Visual specification |
 |---|---|
-| **Room Display** | Use `{components.room-display.surface}` as the dark canvas with `{components.room-display.padding}` framing the composition, `{components.room-display.border}` for the outer boundary, and `{components.room-display.radius}` only at the device/frame edge. The active layout reads as a dense console: profile header, Turn Path, central state label and visualizer, then supporting status. See the [room active-turn key screen](mockups/key-room-active-turn.html). |
+| **Passive Room Display** | Use `{components.room-display.surface}` as the dark canvas with `{components.room-display.padding}` framing the composition, `{components.room-display.border}` for the outer boundary, and `{components.room-display.radius}` only at the device/frame edge. The active layout reads as a dense console: profile header, Turn Path, central state label and visualizer, then supporting status. It mirrors the selected doorway and does not own capture or audio. See the [room active-turn key screen](mockups/key-room-active-turn.html). |
+| **ESP32 Touch Console** | Use the same Night Console semantic structure in native LVGL: profile header, Turn Path, dominant state label, response/transcription region, voice visualizer, and audio-delivery/recovery status. The touch unit is allowed to capture and play because it is a first-class voice doorway; its rendering must remain truthful to the shared state contract. |
 | **Puck Status** | Use `{components.puck-status.surface}` with `{components.puck-status.state}` for one short, readable phase label. Keep the surface status-only: no full response text, transcript archive, or miniature console that cannot be read. `{components.puck-status.padding}` is generous relative to the tiny form factor. |
 | **Profile Header** | Show the active Hermes Profile name in `{components.profile-header.name}` with a small label in `{components.profile-header.label}` and an identity signal in `{components.profile-header.identity}`. Use `{components.profile-header.divider}` to separate identity from the turn body. |
 | **Turn Path** | Render the supported Turn Phases as a visible progression using `{components.turn-path.label}`. Completed steps use `{components.turn-path.complete}`, the current step uses `{components.turn-path.current}`, and the gap uses `{components.turn-path.gap}`. The path is supplementary to the large state label, not a replacement for it. |
@@ -284,7 +285,7 @@ Visual rules live here; interaction and state behavior live in `EXPERIENCE.md`. 
 | **Device Discovery** | Use `{components.device-discovery.row}` for discovered devices, `{components.device-discovery.selected}` for the selected row or focus, and `{components.device-discovery.divider}` between entries. Status must be readable in `{components.device-discovery.label}`; discovery is not approval. |
 | **Device Setup** | Show the ordered setup steps with `{components.device-setup.step}`, `{components.device-setup.current}`, `{components.device-setup.complete}`, and `{components.device-setup.gap}`. The visual sequence is Room, Wake Mappings, then ready confirmation. See the [iOS setup key screen](mockups/key-ios-setup.html). |
 | **Device Details** | Use `{components.device-details.surface}` and `{components.device-details.padding}` for a device's management surface. `{components.device-details.destructive}` identifies Disconnect/revocation; `{components.device-details.divider}` keeps credential and status information distinct. |
-| **Local History** | Use `{components.local-history.row}` and `{components.local-history.text}` for intentional iOS/TUI history, with `{components.local-history.date}` for supporting metadata and `{components.local-history.divider}` for separation. Puck and Display surfaces do not expose this component. |
+| **Local History** | Use `{components.local-history.row}` and `{components.local-history.text}` for intentional iOS/TUI history, with `{components.local-history.date}` for supporting metadata and `{components.local-history.divider}` for separation. Puck and passive Display surfaces do not expose this component; the ESP32 touch unit also does not create a default archive. |
 | **Prompt Mirror** | Use `{components.prompt-mirror.surface}`, `{components.prompt-mirror.border}`, and `{components.prompt-mirror.prompt}` to display an active Hermes clarification or approval prompt. `{components.prompt-mirror.waiting}` means the doorway is waiting for a spoken answer; no touch control is styled as available in v1. |
 | **TUI Header** | Use `{components.tui-header.surface}` and `{components.tui-header.divider}` for the terminal header, with `{components.tui-header.profile}` showing the active Hermes Profile. It may be denser than iOS, but it must preserve profile identity and the shared phase vocabulary. |
 

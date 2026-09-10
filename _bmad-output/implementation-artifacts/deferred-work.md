@@ -43,3 +43,10 @@
 - source_spec: `_bmad-output/implementation-artifacts/spec-5-stream-audio-to-host-after-a-validated-wake.md`
   summary: Complete the live hardware smoke test (a full round-trip Hermes turn from real speech) once the Puck can be positioned with a stronger WiFi signal.
   evidence: This session proved wake detection, VAD-gated capture, chunked upload, and the full receive-to-Whisper pipeline all work on real hardware -- a short 5-chunk capture completed end to end. But every capture large enough to contain real speech (hundreds of chunks) stalled partway through upload and was evicted by the TTL cleanup, on a device whose WiFi signal read -89 to -90 dB throughout the session. A live tcpdump trace confirmed the failure is a mid-transfer esp_http_client_write() stall, not a routing/firewall/application bug. The device could not be relocated during this session; based on all evidence gathered, no further code change is expected to be needed for a retest closer to the AP to succeed.
+- source_spec: `_bmad-output/implementation-artifacts/spec-web-epic-1-reliable-conversation.md`
+  summary: Add server-side validation for browser actions against the currently published prompt and advertised capability.
+  evidence: `DisplayServer` currently treats `/action` as a same-origin transport callback and does not inspect the publisher's current prompt; the restored App validates actions through `DisplayBridge`, but a direct request can still reach the callback without that reducer gate. Implementing this safely requires a shared server-side action authority and is pre-existing transport behavior outside this DOM restoration.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-web-epic-1-reliable-conversation.md`
+  summary: Run the physical Safari/iPad HTTPS/WSS, permission, audio, and direct-touch gate for the restored DOM kiosk.
+  evidence: The local fake-state and automated browser checks pass, but no physical iPad/Safari session was available in this worktree to verify Guided Access, secure state-channel hydration, microphone permission, audio playback, and touch-button operation on the supported device.

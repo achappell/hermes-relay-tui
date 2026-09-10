@@ -19,15 +19,15 @@ This document provides the complete epic and story breakdown for hermes-relay-tu
 
 ### Functional Requirements
 
-FR1: A Puck recognizes a configured Wake Mapping, and an authorized iOS Client or TUI accepts an explicit user-initiated turn.
+FR1: A configured Puck, ESP32 Touch Display, or enabled W/K browser voice surface accepts its supported authorized voice initiation, and an authorized iOS Client or TUI accepts an explicit user-initiated turn.
 
-FR2: The room Display shows wake acknowledgement, the Listening phase, and live Transcription while the Puck captures speech; iOS and TUI show corresponding capture state.
+FR2: The active Puck, ESP32 Touch Display, or W/K browser voice surface shows its capture acknowledgement and Listening phase; a passive room Display mirrors the owning Room's Listening phase and live Transcription; iOS and TUI show corresponding capture state.
 
 FR3: Each supported doorway exposes the appropriate Turn Phase—heard, listening, transcribing, thinking, buffering, speaking, complete, or Disconnected State—without presenting a later phase early.
 
-FR4: The Puck or iOS Client speaks the Hermes response; the room Display streams the same response text for the room-local Active Turn and leaves the completed answer visible; the TUI renders the conversation through its terminal surface.
+FR4: The Puck, ESP32 Touch Display, W/K browser voice surface, or iOS Client speaks the Hermes response; active text-capable surfaces render their own response text, passive room Displays stream the same room-local response text, and the TUI renders the conversation through its terminal surface.
 
-FR5: After each response, the active Puck opens an eight-second follow-up window without another Wake Mapping; exactly “stop” during capture or follow-up closes the local window silently.
+FR5: After each response, a configured voice doorway may open a bounded follow-up window; the active Puck's v1 window is eight seconds without another Wake Mapping, the W/K browser surface uses its advertised bounded capability, and exactly “stop” during capture or follow-up closes the local window silently.
 
 FR6: After transport loss, a doorway starts a fresh Hermes Session and does not replay or silently resume the prior Active Turn.
 
@@ -39,7 +39,7 @@ FR9: When multiple authorized Devices hear a Wake Mapping, the closest Device wi
 
 FR10: A Display shows Immich photos selected by its Room-level face filters while no higher-priority household state is active; no matching photos produce a neutral ambient background without widening filters or showing setup.
 
-FR11: The Display bound to the selected Puck’s Room renders live Transcription, Turn Phases, and response text for that Active Turn without capturing audio, speaking, or creating a second Hermes Session; other Displays receive no conversation text.
+FR11: A passive Display bound to the selected doorway's Room renders live Transcription, Turn Phases, and response text for that Active Turn without capturing audio, speaking, or creating a second Hermes Session; an ESP32 Touch Display may itself be the selected doorway and then owns its capture, response rendering, and audio delivery; other Rooms receive no conversation text.
 
 FR12: A Display shows a persistent visual Disconnected State when the Media Server or Hermes connection is unavailable and may continue showing cached Ambient Surface or cached Departure Card content; it never remains indefinitely in Thinking and never speaks a local outage phrase.
 
@@ -61,7 +61,7 @@ FR20: The iOS Client starts voice turns by tap-to-speak and supports typed turns
 
 FR21: The TUI starts voice conversation through its own Hermes Session and renders conversation and response state without becoming a second assistant; diagnostic detail is not required for the household journey.
 
-FR22: A room Display mirrors an active Hermes clarification or approval prompt while the Puck or Client accepts the spoken answer; no Display touch action creates, submits, or resumes a prompt response in v1.
+FR22: A passive room Display mirrors an active Hermes clarification or approval prompt while the active Puck, ESP32 Touch Display, W/K browser voice surface, or Client accepts the spoken answer; no passive Display touch action creates, submits, or resumes a prompt response in v1.
 
 ### NonFunctional Requirements
 
@@ -69,11 +69,11 @@ NFR1: Wake acknowledgement and visible Puck status should appear in roughly one 
 
 NFR2: Supported surfaces expose the actual Turn Phase, avoid duplicate Active Turns, and recover from transport loss without replaying captured speech.
 
-NFR3: Raw Puck audio remains transient on the home LAN; the Media Server retains no transcripts; only intentional iOS/TUI Local History may persist by default.
+NFR3: Raw Puck and ESP32 Touch audio remain transient on the home LAN; the Media Server/audio bridge retains no transcripts; only intentional iOS/TUI Local History may persist by default.
 
 NFR4: Every Device uses an individual revocable Device Credential, and unapproved, revoked, or unavailable identity fails closed before capture.
 
-NFR5: ESP32-S3 Display and iPad Display consume the same state semantics for Ambient Surface, Active Turn, Departure Card, and Disconnected State.
+NFR5: ESP32-S3 Touch and W/K Web/iPad surfaces consume the same visual semantics for Ambient Surface, Active Turn, Departure Card, and Disconnected State; each voice-enabled surface additionally owns its voice capture and response-audio path.
 
 ### Additional Requirements
 
@@ -85,6 +85,7 @@ NFR5: ESP32-S3 Display and iPad Display consume the same state semantics for Amb
 - Keep Active Turn text, phases, and prompts Room-local. Household-wide propagation is reserved for an explicitly defined state such as a Departure Card.
 - Keep hermes-relay, hermes-relay-home, browser kiosk, and ESP/native display targets as independent deployment units. Do not introduce a shared database, broker, or transcript store.
 - Make recovery and shutdown explicit state transitions: run blocking capture/playback outside UI loops, use bounded reconnect, cancel workers before releasing audio, and require fresh user initiation after recovery.
+- Treat the ESP32 Touch Display and enabled W/K browser surface as first-class Epic 1 voice-plus-display surfaces. Their visual state uses the shared display contract; microphone ingress and response-audio egress use bounded surface-specific contracts and do not move Hermes answer authority into firmware or browser presentation code.
 - Keep Hermes credentials in the owning local process/profile. Snapshots, actions, diagnostics, and display clients contain no bearer tokens; the display server binds to loopback by default and remote LAN binding is explicit opt-in.
 - Isolate front-end dependencies. The base install contains the core/TUI path; voice, wake, hardware, browser, and firmware dependencies remain in optional extras or target-specific environments with separate front-end entry points.
 - Any shared contract change updates schemas and fixtures together and runs Python contract tests, portable/native C reducer tests, Web/TypeScript parser or reducer tests, target adapter tests, and the core import-boundary test.
@@ -128,7 +129,7 @@ UX-DR16: Implement Device Details with readable status, credential/configuration
 
 UX-DR17: Implement Local History only on intentional iOS/TUI Client surfaces; do not expose or rehydrate conversation history on Pucks, Displays, or the Media Server.
 
-UX-DR18: Implement Prompt Mirror as a visible Hermes clarification/approval state that waits for a spoken answer through the active Puck or Client; the room Display has no touch prompt action in v1.
+UX-DR18: Implement Prompt Mirror as a visible Hermes clarification/approval state that waits for a spoken answer through the active Puck, ESP32 Touch Display, W/K browser voice surface, or Client; passive room Displays have no touch prompt action in v1.
 
 UX-DR19: Implement the TUI Header with active Profile identity and shared phase semantics while keeping diagnostics an engineering capability rather than the household journey.
 
@@ -142,17 +143,17 @@ UX-DR23: Preserve the interaction anti-pattern guardrails: no wrong-profile resp
 
 ### FR Coverage Map
 
-FR1: Epic 1 - Authorized doorway starts a Hermes turn.
-FR2: Epic 2 - Room Display shows live capture state and Transcription.
+FR1: Epic 1 - Authorized Puck/ESP32 Touch/WK doorway or Client starts a Hermes turn.
+FR2: Epic 1 surface stories + Epic 2 passive mirror - Voice-capable Puck/ESP32 Touch/WK doorway captures; room Displays mirror live capture state and Transcription.
 FR3: Epic 1 - Doorways expose honest Turn Phases.
-FR4: Epic 1 - Hermes response is delivered through supported text and audio surfaces.
-FR5: Epic 1 - Puck provides bounded follow-up listening and silent stop.
+FR4: Epic 1 - Hermes response is delivered through Puck, ESP32 Touch, W/K, iOS, TUI, and passive display surfaces.
+FR5: Epic 1 - Configured voice doorways provide bounded follow-up listening and silent stop where supported, including W/K's advertised browser capability.
 FR6: Epic 1 - Reconnect starts a clean Session without replay.
 FR7: Epic 3 - Wake Mappings are unique and profile-specific.
 FR8: Epic 3 - Revoked or unavailable identity fails closed.
 FR9: Epic 3 - One Device wins a simultaneous wake.
 FR10: Epic 2 - Displays render Room-filtered Ambient Surface content.
-FR11: Epic 2 - Displays mirror only the owning Room's Active Turn.
+FR11: Epic 1 surface stories for active ESP32 Touch and W/K delivery; Epic 2 passive Displays mirror only the owning Room's Active Turn.
 FR12: Epic 2 - Displays show honest Disconnected State and useful cached context.
 FR13: Epic 4 - Calendar events qualify only with usable location and travel data.
 FR14: Epic 4 - Qualifying events promote a shared visual Departure Card.
@@ -163,21 +164,51 @@ FR18: Epic 3 - iOS revokes Device access and requires re-enrollment.
 FR19: Epic 1 - Verified recovery never silently resumes a turn.
 FR20: Epic 5 - iOS provides an independent full conversation doorway.
 FR21: Epic 5 - TUI provides an independent direct voice-chat doorway.
-FR22: Epic 2 - Displays mirror voice-only Hermes prompts without touch actions.
+FR22: Epic 2 - Passive Displays mirror voice-only Hermes prompts without touch actions; the active Puck, ESP32 Touch Display, W/K browser voice surface, or Client supplies the spoken answer.
 
 ## Epic List
 
 ### Epic 1: Have a reliable Hermes conversation
 
-A configured doorway can complete an honest voice turn, continue briefly after the response, and recover safely from transport loss.
+A configured doorway can complete an honest voice turn, continue briefly after the response, and recover safely from transport loss. Epic 1 is decomposed into surface-specific delivery stories; shared session, display-state, and bounded-audio contracts are prerequisites rather than a hidden generic story.
 **FRs covered:** FR1, FR3, FR4, FR5, FR6, FR19
 **Natural dependency:** Establishes the normalized session and turn semantics consumed by later display and companion-doorway epics. It needs only an authorized configured doorway and can be validated with fake sessions plus the explicit live smoke path.
 
 ### Epic 2: See and trust what the room is doing
 
-Room Displays and the iPad kiosk show calm ambient context, the owning Room's active conversation, visible prompts, and honest recovery state without becoming another assistant.
+Passive Room Displays and the W/K iPad/web surface's room-context mode show calm ambient context, the owning Room's active conversation, visible prompts, and honest recovery state without becoming another assistant. W/K voice capture/audio and the ESP32 Touch Display's active voice capture, response rendering, and audio delivery remain Epic 1 surface work.
 **FRs covered:** FR2, FR10, FR11, FR12, FR22
 **Natural dependency:** Consumes Epic 1's turn events and the shared display contract; it can be developed and validated independently with display fixtures and does not require calendar or Device administration.
+
+### Surface-specific Epic 2 story map — decision 2026-09-10
+
+Epic 2 stories belong to the renderer or doorway that owns the visible
+behavior. The shared `DisplaySnapshot` schema, reducer, Room filtering, and
+normalized event feed are prerequisites, not an unowned closure story. A
+passive Room Display is a role exercised by a Display renderer; it is not a
+second W/K or iPad surface.
+
+| Surface story key | Surface | Scope |
+|---|---|---|
+| `2-I-1` | iOS Client | Show the iOS doorway's capture acknowledgement and live Transcription participant state. |
+| `2-I-2` | iOS Client | Show honest iOS disconnected/unavailable state without stale-turn replay. |
+| `2-P-1` | ReSpeaker Puck | Expose the Puck's local capture, response, and status phases without putting transcript text on the TFT. |
+| `2-P-2` | ReSpeaker Puck | Fail closed and show unavailable/disconnected status when the Puck or Hermes path is unavailable. |
+| `2-E-1` | ESP32 Touch Display | Render the Room-scoped Ambient Surface in native LVGL. |
+| `2-E-2` | ESP32 Touch Display | Render room-local active-turn state, live Transcription, and the touch doorway's observed response state. |
+| `2-E-3` | ESP32 Touch Display | Mirror Hermes prompts without creating touch response actions or a second Session. |
+| `2-E-4` | ESP32 Touch Display | Render honest disconnected state and safe cached context on the native Display. |
+| `2-WK-1` | W/K browser voice-plus-display surface | Render the shared Room-scoped Ambient Surface for web and iPad deployment. |
+| `2-WK-2` | W/K browser voice-plus-display surface | Render active capture, room-local Transcription, response, and phase state in the browser surface. |
+| `2-WK-3` | W/K browser voice-plus-display surface | Mirror Hermes prompts without touch approval or a second Session. |
+| `2-WK-4` | W/K browser voice-plus-display surface | Render honest disconnected state, cached context, and accessible recovery presentation. |
+| `2-T-1` | TUI | Keep the direct TUI doorway's capture and phase state visible while a Room Display may mirror separately. |
+| `2-T-2` | TUI | Keep TUI disconnect/recovery presentation honest without replaying an uncertain turn. |
+
+The generic numeric Stories 2.1–2.5 below retain the original acceptance
+language as the requirements template. The surface keys above are the delivery
+identities for implementation and coverage; status in one row never closes
+the other rows.
 
 ### Epic 3: Control household doorway identity and access
 
@@ -185,11 +216,57 @@ iOS can configure physical Devices and Wake Mappings, preserve profile isolation
 **FRs covered:** FR7, FR8, FR9, FR16, FR17, FR18
 **Natural dependency:** Uses the conversation/session boundary from Epic 1 but is independently testable with fake profiles, Devices, and relay endpoints; it enables trusted use of later room and companion journeys.
 
+### Surface-specific Epic 3 story map — decision 2026-09-10
+
+Epic 3 has two ownership boundaries in the pilot. iOS is the sole physical
+Device control plane; the Puck owns the device-side identity, mapping, and
+fail-closed enforcement. The initial pilot names the ReSpeaker Puck as the
+affected physical target. ESP32 Touch, W/K, and TUI remain `N/A` for Epic 3
+until a separate administration boundary is adopted rather than silently
+borrowing the Puck story.
+
+| Surface story key | Surface | Scope |
+|---|---|---|
+| `3-I-1` | iOS Settings | Discover and connect an unconfigured Device without granting access. |
+| `3-I-2` | iOS Settings | Approve a Device and guide Room, Wake Mapping, and Ready setup. |
+| `3-I-3` | iOS Settings | Validate unique Wake Mappings and Profile-specific publish state. |
+| `3-I-4` | iOS Settings | Configure and expose deterministic single-Device wake arbitration. |
+| `3-I-5` | iOS Settings | Show and enforce unavailable or revoked identity as a failed-closed state. |
+| `3-I-6` | iOS Settings | Revoke access and require explicit verified re-enrollment. |
+| `3-P-1` | ReSpeaker Puck | Advertise independently identifiable unconfigured state for discovery and connection. |
+| `3-P-2` | ReSpeaker Puck | Apply approved Room, credential, and Wake Mapping configuration without becoming Ready early. |
+| `3-P-3` | ReSpeaker Puck | Enforce the selected Wake Mapping and Profile before capture. |
+| `3-P-4` | ReSpeaker Puck | Participate in single-winner wake arbitration and remain silent when it loses. |
+| `3-P-5` | ReSpeaker Puck | Reject revoked, unavailable, or unverified identity before capture or submission. |
+| `3-P-6` | ReSpeaker Puck | Retire revoked credentials and require the ordered setup flow on re-enrollment. |
+
+The generic numeric Stories 3.1–3.6 below remain the acceptance template for
+the paired iOS control-plane and Puck device-side slices. No other surface is
+implicitly closed by either family.
+
 ### Epic 4: Know when the household needs to leave
 
 Displays promote, update, and clear a consistent visual Departure Card from qualifying shared-calendar events without unsolicited audio.
 **FRs covered:** FR13, FR14, FR15
 **Natural dependency:** Consumes the display surface from Epic 2 and can be validated independently with calendar and route fixtures; it does not require a voice turn or Device enrollment.
+
+### Surface-specific Epic 4 story map — decision 2026-09-10
+
+Departure qualification is a shared calendar/travel prerequisite, not a
+surface closure claim. Once a qualifying state exists, each Display family
+owns its own rendering and lifecycle behavior.
+
+| Surface story key | Surface | Scope |
+|---|---|---|
+| `4-C-1` | Shared calendar/travel evaluator | Qualify events only with usable location, route or estimate, family buffer, and effective threshold; label configured estimates. This is a shared prerequisite, not a Display surface story. |
+| `4-E-1` | ESP32 Touch Display | Promote the household-wide Departure Card in native LVGL while preserving Room-local Active Turn precedence. |
+| `4-E-2` | ESP32 Touch Display | Recompute and clear the native Departure Card on time, location, cancellation, and event-start changes. |
+| `4-WK-1` | W/K browser voice-plus-display surface | Promote the same Departure Card in the shared web/iPad browser renderer without audio. |
+| `4-WK-2` | W/K browser voice-plus-display surface | Recompute and clear the browser Departure Card while preserving active-turn precedence and accessible state. |
+
+The generic numeric Stories 4.1–4.3 below retain the evaluator and lifecycle
+acceptance language. `4-C-1` must be settled before either surface renderer
+can be closed; E and W/K cells are then closed independently.
 
 ### Epic 5: Carry the Hermes relationship with you
 
@@ -197,11 +274,48 @@ iOS and the TUI provide independent portable and terminal conversation doorways 
 **FRs covered:** FR20, FR21
 **Natural dependency:** Consumes Epic 1's session semantics but remains independently usable through configured Client sessions; diagnostics remain an engineering capability rather than a household prerequisite.
 
+### Surface-specific Epic 5 story map — decision 2026-09-10
+
+Epic 5 is already naturally surface-specific: the iOS and TUI doorways own
+separate Sessions, presentation, and deliberate Local History boundaries.
+
+| Surface story key | Surface | Scope |
+|---|---|---|
+| `5-I-1` | iOS Client | Use iOS as an independent typed and tap-to-speak conversation doorway with response audio, phase state, recovery, and Local History. |
+| `5-T-1` | TUI | Use the TUI as an independent direct voice-chat gateway with inline response rendering, diagnostics, and deliberate local history. |
+
+The existing numeric Stories 5.1 and 5.2 below remain stable aliases for
+`5-I-1` and `5-T-1`; neither surface's implementation closes the other.
+
 ## Epic 1: Have a reliable Hermes conversation
 
-A configured doorway can complete an honest voice turn, continue briefly after the response, and recover safely from transport loss.
+A configured doorway can complete an honest voice turn, continue briefly after the response, and recover safely from transport loss. Epic 1 is decomposed into surface-specific delivery stories; shared session, display-state, and bounded-audio contracts are prerequisites rather than a hidden generic story.
 
 **FRs covered:** FR1, FR3, FR4, FR5, FR6, FR19
+
+### Surface-specific Epic 1 story map — decision 2026-09-10
+
+The surface key is part of the story identity. A completed story closes only
+the named surface; another surface's implementation is evidence, not closure.
+
+| Surface story key | Surface | Scope |
+|---|---|---|
+| `I-1` to `I-3` | iOS | Authorized initiation; honest phases with response/audio delivery; fresh recovery without replay. |
+| `P-1` to `P-4` | ReSpeaker Puck | Authorized wake/capture; status and response audio; bounded follow-up/`stop`; recovery. |
+| `E-1` to `E-5` | ESP32 Touch Display | Authorized voice capture; native phase and streamed-response rendering; response audio delivery; bounded follow-up/`stop`; recovery without replay. |
+| `WK-1` | Web/iPad | One shared W/K browser voice-plus-display surface for authorized capture, honest phases, streamed/completed response text, response audio, and delivery/error state. iPad is a deployment target, not a separate surface. |
+| `T-1` to `T-4` | TUI | Existing local TUI authorization, phase/delivery, follow-up, and recovery slices. The historical numeric artifacts 1.1–1.4 remain stable aliases for these stories. |
+
+The ESP32 Touch stories cannot be closed by the existing `DisplaySnapshot`
+transport alone. The surface must capture voice and deliver response audio as
+well as render its own response. Its implementation may use the Python
+appliance/session adapter or a direct device adapter, but the choice must be
+explicit; firmware must not become a second Hermes authority. The current
+snapshot/action firmware path is foundation evidence only.
+
+The following four numeric stories are retained as the local TUI delivery
+record. New surface work must use the ownership map above rather than treating
+one TUI story as global Epic 1 completion.
 
 ### Story 1.1: Start an authorized Hermes turn
 
@@ -335,7 +449,7 @@ So that I can continue safely without duplicate requests, stale responses, or si
 
 ## Epic 2: See and trust what the room is doing
 
-Room Displays and the iPad kiosk show calm ambient context, the owning Room’s active conversation, visible prompts, and honest recovery state without becoming another assistant.
+Passive Room Displays and the W/K iPad/web surface's room-context mode show calm ambient context, the owning Room's active conversation, visible prompts, and honest recovery state without becoming another assistant. W/K voice capture/audio and the ESP32 Touch Display's active voice capture, response rendering, and audio delivery remain Epic 1 surface work.
 
 **FRs covered:** FR2, FR10, FR11, FR12, FR22
 
@@ -370,11 +484,11 @@ So that the Display feels calm and personal without exposing another Room’s co
 **When** their Ambient Surfaces render
 **Then** each uses only its own Room policy and cached content.
 
-**UX expectation:** ESP32-S3 and iPad Displays share the same ambient semantics while adapting layout to their platforms; ambience remains quiet and never competes with load-bearing state.
+**UX expectation:** ESP32-S3 Touch and W/K browser deployments share the same ambient semantics while adapting layout to their platforms; ambience remains quiet and never competes with load-bearing state.
 
 ### Story 2.2: Show live capture state and transcription
 
-As a household member speaking through a Puck, iOS Client, or TUI,
+As a household member speaking through a Puck, ESP32 Touch Display, iOS Client, or TUI,
 I want the relevant doorway and owning Room Display to show capture progress and live words as they arrive,
 So that I know the system is listening rather than waiting in mysterious silence.
 
@@ -384,16 +498,16 @@ So that I know the system is listening rather than waiting in mysterious silence
 
 **Given** an authorized wake or explicit turn initiation is accepted
 **When** capture begins
-**Then** the Puck shows the wake acknowledgement and Listening state
+**Then** the active voice doorway shows its capture acknowledgement and Listening state
 **And** the owning Room Display mirrors that state
 **And** iOS/TUI show their corresponding capture state.
 
 **Given** partial transcription becomes available
 **When** words arrive
-**Then** the Room Display, iOS Client, and TUI update live rather than waiting for capture to finish.
+**Then** the Room Display, W/K browser surface, iOS Client, and TUI update live rather than waiting for capture to finish.
 
-**Given** Puck capture is active
-**When** the Room Display mirrors it
+**Given** Puck, ESP32 Touch, or W/K browser capture is active
+**When** a passive Room Display mirrors it
 **Then** the Display receives transcription/state information only
 **And** it does not capture, speak, or create another Hermes Session.
 
@@ -421,17 +535,27 @@ So that the exchange is visible without leaking into other rooms or creating a s
 
 **Acceptance Criteria:**
 
-**Given** a Puck is assigned to a Room and has an Active Turn
+**Given** a Puck, ESP32 Touch, or W/K browser voice doorway is assigned to a Room and has an Active Turn
 **When** normalized turn events arrive
 **Then** that Room’s Display shows the live Transcription, canonical phase, streamed response text, and active Hermes Profile.
 
 **Given** multiple Displays belong to different Rooms
-**When** one Puck has an Active Turn
+**When** one voice doorway has an Active Turn
 **Then** only the owning Room’s Display receives or renders that conversation text and state.
 
-**Given** a Display mirrors an Active Turn
+**Given** a passive Display mirrors an Active Turn
 **When** the turn is in progress
 **Then** the Display does not capture audio, speak the response, create another Hermes Session, or expose a touch-based response action.
+
+**Given** an ESP32 Touch Display is the selected active doorway
+**When** the turn is in progress
+**Then** its Epic 1 surface owns capture, response rendering, and response audio delivery
+**And** any other Room Display remains a passive mirror.
+
+**Given** the W/K browser voice surface is the selected active doorway
+**When** the turn is in progress
+**Then** its Epic 1 surface owns browser capture, response rendering, and response audio delivery
+**And** any other Room Display remains a passive mirror.
 
 **Given** a household-wide Departure Card is active
 **When** the owning Room has an Active Turn
@@ -462,7 +586,7 @@ So that the room stays informed without creating a second prompt-control surface
 **Then** the owning Room Display shows the prompt text and that a spoken answer is awaited.
 
 **Given** a prompt is visible
-**When** the user answers through the active Puck or Client
+**When** the user answers through the active Puck, ESP32 Touch Display, W/K browser voice surface, or Client
 **Then** the answer follows that existing Hermes Session
 **And** the Display remains a mirror only.
 
