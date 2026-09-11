@@ -156,9 +156,10 @@ def test_routed_profile_can_replace_the_coordinators_original_session():
     assert coordinator.state == handsfree.IDLE
 
 
-def test_a_wake_turn_accepts_one_follow_up_without_another_wake():
+def test_a_wake_turn_keeps_accepting_follow_ups_without_another_wake():
     session = FakeSession()
     captures = []
+    states = []
 
     def capture():
         captures.append("wake")
@@ -166,22 +167,34 @@ def test_a_wake_turn_accepts_one_follow_up_without_another_wake():
 
     def capture_follow_up():
         captures.append("follow-up")
-        return "and tomorrow"
+        return next(iter_follow_ups)
+
+    iter_follow_ups = iter(["and tomorrow", "what about Friday", ""])
+
+    def send(text):
+        session.send_turn(text)
+        coordinator.playback_started()
+        coordinator.playback_finished()
+        assert coordinator.state == handsfree.SENDING
 
     coordinator = handsfree.HandsFreeCoordinator(
         session,
         capture=capture,
-        send=lambda text: session.send_turn(text),
+        send=send,
         follow_up_capture=capture_follow_up,
+        on_state_change=states.append,
     )
 
     assert coordinator.on_wake() is True
 
-    assert captures == ["wake", "follow-up"]
+    assert captures == ["wake", "follow-up", "follow-up", "follow-up"]
     assert session.turns == [
         ("what is the weather", "local"),
         ("and tomorrow", "local"),
+        ("what about Friday", "local"),
     ]
+    assert states.count(handsfree.CAPTURING) == 4
+    assert handsfree.IDLE not in states[:-1]
     assert coordinator.state == handsfree.IDLE
 
 
@@ -242,11 +255,12 @@ def test_terminal_punctuation_from_stt_does_not_escape_local_stop():
 
 def test_a_longer_stop_phrase_in_the_follow_up_window_is_sent():
     session = FakeSession()
+    follow_ups = iter(["stop the timer", ""])
     coordinator = handsfree.HandsFreeCoordinator(
         session,
         capture=lambda: "what is the weather",
         send=lambda text: session.send_turn(text),
-        follow_up_capture=lambda: "stop the timer",
+        follow_up_capture=lambda: next(follow_ups),
     )
 
     coordinator.on_wake()
@@ -422,6 +436,15 @@ def test_barge_in_stops_playback_then_captures():
 
 def test_playback_finished_returns_to_idle():
     coordinator, _, _, _ = _coordinator()
+    coordinator.playback_started()
+    coordinator.playback_finished()
+    assert coordinator.state == handsfree.IDLE
+
+
+def test_non_wake_playback_returns_to_idle_with_follow_up_wiring():
+    coordinator, _, _, _ = _coordinator(
+        follow_up_capture=lambda: "should not be opened"
+    )
     coordinator.playback_started()
     coordinator.playback_finished()
     assert coordinator.state == handsfree.IDLE

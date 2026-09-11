@@ -104,6 +104,14 @@ enrollment, and new audio hardware behavior are outside this slice.
   9.51 seconds. The four new review-path tests pass after repair; the full
   suite is rerun below before handoff.
 
+## Spec Change Log
+
+- 2026-09-10 — The approved cross-surface
+  `spec-continuous-wake-free-follow-ups.md` supersedes this slice's historical
+  one-follow-up limit for adapters that support wake-free capture. This record
+  remains unchanged as the delivered Story 1.3 evidence; current behavior and
+  acceptance are owned by the new cross-surface spec.
+
 ## Review Triage Log
 
 - `medium / patch` — blind-hunter: `_send_wake_turn` read mutable `_last_prompt_status`; `_run_turn` now returns the initiating turn's result before queued prompts can overwrite it.

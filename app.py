@@ -1866,12 +1866,18 @@ class HermesStreamingApp(App):
 
         A turn or a Ctrl+R capture owns the input stream, and pausing resets
         the detector's rolling buffer. Without this the client wakes itself on
-        the tail of the phrase it has just recorded.
+        the tail of the phrase it has just recorded. A successful wake turn
+        also keeps the coordinator busy while it hands the microphone to the
+        next wake-free follow-up; do not reopen detection in that small gap.
         """
         listener = self._wake_listener
         if listener is None:
             return
-        if busy or self._barge_capture_active:
+        coordinator = self._wake_coordinator
+        conversation_busy = (
+            coordinator is not None and coordinator.state != handsfree.IDLE
+        )
+        if busy or self._barge_capture_active or conversation_busy:
             listener.pause()
         else:
             listener.resume()
@@ -1953,7 +1959,7 @@ class HermesStreamingApp(App):
         return self.session.capture_voice(wait_timeout=float(timeout))
 
     def _capture_wake_follow_up(self) -> str:
-        """Give a speaker one quiet, wake-word-free conversational window."""
+        """Give a speaker one bounded, wake-word-free conversational window."""
         if not self._connection_is_ready():
             return ""
         timeout = getattr(self.args, "wake_followup_seconds", 8.0)
@@ -4287,7 +4293,19 @@ class HermesStreamingApp(App):
                     playback_failed,
                 )
                 turn_completed = True
-                self._set_voice_state(VOICE_READY)
+                continuous_wake = (
+                    self.wake_armed
+                    and self._wake_coordinator is not None
+                    and self._wake_coordinator.state != handsfree.IDLE
+                )
+                if continuous_wake:
+                    # The coordinator is about to open the next configured
+                    # wake-free capture window. The domain is at COMPLETE now,
+                    # so this is a valid transition and avoids painting the
+                    # pre-wake `ready` state between conversational turns.
+                    self._set_voice_state(VOICE_LISTENING)
+                else:
+                    self._set_voice_state(VOICE_READY)
 
         if not turn_completed and not turn_failed:
             error_text = "turn ended without a completion event"

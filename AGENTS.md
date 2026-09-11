@@ -14,7 +14,7 @@ This repository contains a small Python/Textual terminal UI for the Hermes voice
 - `voice.py` — owned local microphone capture (sounddevice) and speech-to-text (faster-whisper).
 - `mic.py` — device-selection and cancellation glue around `voice.py`'s recorder.
 - `wake.py` — wake-word detection and the listener worker for hands-free capture.
-- `handsfree.py` — turns a wake event into exactly one session turn.
+- `handsfree.py` — turns a wake event into one or more session turns.
 - `home_display/appliance.py` — the home unit's front end: joins the session,
   the wake listener, audio playback, and the display state channel.
 - `transcript.py` — typed transcript records and Rich Markdown rendering.
@@ -276,11 +276,13 @@ Do not put a real token in this file or in the README.
   off` closes the input stream, it does not merely pause the detector. A
   successful `/reload` and a connection loss both disarm wake mode and report
   that `/wake on` is required to arm it again; reconnect never reopens the
-  microphone silently. After a wake-triggered response, the TUI listens for a
-  bounded follow-up window
-  (`--wake-followup-seconds`, default 8 seconds) without another wake phrase.
+  microphone silently. After each successful wake-triggered response, the TUI
+  opens a bounded wake-free follow-up window (`--wake-followup-seconds`,
+  default 8 seconds) and reopens it after every non-empty follow-up without
+  another wake phrase. Silence, exact `stop`, failure, disconnect, or disarm
+  returns to wake detection.
   Saying exactly `stop` during hands-free capture closes it locally and
-  silently, both for the initial wake capture and that follow-up window;
+  silently, both for the initial wake capture and any follow-up window;
   normal terminal punctuation from transcription is ignored, while longer
   phrases and `Ctrl+R` remain ordinary turns.
   `/wake on` reports model-loading and microphone-opening stages without
@@ -332,7 +334,7 @@ The complete source of truth is `config.build_arg_parser()`. The main runtime op
 - `--wake-barge-in-min-speech-duration` — windowed microphone energy required
   before immediate interruption; local STT decides whether to follow up;
   default `0.30` seconds.
-- `--wake-followup-seconds` — silence window after a wake-triggered response before returning to wake-word detection.
+- `--wake-followup-seconds` — bounded silence window for each wake-free follow-up after a successful response; each non-empty follow-up opens another window.
 - `--mic-input-device`, `--audio-output-device` — optional local input/output device name or index; `default` restores the system default.
 - `--stt-model` — optional local Faster-Whisper model selection.
 

@@ -1196,7 +1196,7 @@ def build_arg_parser(argv: Optional[list[str]] = None) -> argparse.ArgumentParse
             "VOICE_SESSION_WAKE_FOLLOWUP_SECONDS",
             cfg.get("wake_followup_seconds", 8.0),
         ),
-        help="how long to listen for a follow-up after a wake-triggered response",
+        help="how long to listen in each wake-free follow-up window after a successful response",
     )
     parser.add_argument(
         "--wake-barge-in",

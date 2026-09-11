@@ -61,6 +61,18 @@
       && displayView.connection_healthy && !displayView.is_busy;
   }
 
+  function handsFreeSurfaceState(state: HandsFreeState): DisplayView["state"] | null {
+    if (state === "heard") return "heard";
+    if (state === "listening" || state === "follow_up") return "listening";
+    if (state === "submitting") return "thinking";
+    return null;
+  }
+
+  $: localHandsFreeState = handsFreeSurfaceState(handsFreeState);
+  $: surfaceView = localHandsFreeState !== null && displayView.state === "idle"
+    ? { ...displayView, state: localHandsFreeState, status_text: null }
+    : displayView;
+
   function clearResponseRetentionTimer(): void {
     responseRetentionGeneration += 1;
     if (responseRetentionTimer !== null) {
@@ -354,7 +366,7 @@
 
 <div aria-hidden={promptVisible ? "true" : undefined}>
   <StateSurface
-    snapshot={displayView}
+    snapshot={surfaceView}
     {connectionState}
     protocolError={protocolError}
     {userTranscript}

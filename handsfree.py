@@ -1,6 +1,6 @@
 """Hands-free turn orchestration for the home unit.
 
-Turns a wake event into exactly one captured turn on the shared session core.
+Turns a wake event into one or more captured turns on the shared session core.
 Detection lives in `wake.py`; this module decides what to do about it.
 
 Playback is not owned here. The appliance loop injects `stop_playback` and
@@ -60,7 +60,7 @@ _is_local_stop_command = is_local_stop_command
 
 
 class HandsFreeCoordinator:
-    """Wake event in, one turn plus one optional follow-up out."""
+    """Wake event in, then continuous wake-free follow-up turns out."""
 
     def __init__(
         self,
@@ -104,6 +104,7 @@ class HandsFreeCoordinator:
         self._state = IDLE
         self._capture_started = 0.0
         self._last_wake_phrase: str | None = None
+        self._wake_conversation_active = False
         self._lock = threading.Lock()
 
     @property
@@ -174,19 +175,25 @@ class HandsFreeCoordinator:
             self._set_state(SPEAKING)
 
     def playback_finished(self) -> None:
-        """Leave SPEAKING for IDLE — the unit is ready for the phrase again.
+        """Leave SPEAKING without reopening wake detection mid-conversation.
 
-        Playback is the last phase of a turn, so returning to idle rather than
-        to SENDING is what the room actually sees: the answer has been spoken
-        and the user may speak again.
+        Playback is the last phase of a response, but a wake-triggered
+        conversation with a follow-up capture still owns the microphone handoff.
+        Keep it in SENDING until the coordinator either opens the next capture
+        window or finishes the conversation.
         """
         with self._lock:
             if self._state != SPEAKING:
                 return
-            self._set_state(IDLE)
+            self._set_state(
+                SENDING
+                if self._wake_conversation_active
+                and self._follow_up_capture is not None
+                else IDLE
+            )
 
     def on_wake(self, phrase: str | bool | None = None) -> bool:
-        """Handle a detection and its one optional wake-word-free follow-up."""
+        """Handle a detection and its continuous wake-word-free follow-ups."""
         if isinstance(phrase, str) and phrase.strip():
             self._last_wake_phrase = phrase.strip()
         elif phrase is True:
@@ -237,57 +244,56 @@ class HandsFreeCoordinator:
             # Claim the turn before releasing the lock. Acknowledging is a
             # busy state, so a second detection during the tone is dropped by
             # the same single-flight rule as one during a capture.
+            self._wake_conversation_active = True
             self._set_state(ACKNOWLEDGING)
 
         # Blocking here is the ordering guarantee: the microphone does not
         # open until the tone has finished leaving the speaker, so the unit
         # can never record its own acknowledgement. Deliberately outside the
         # lock — this waits on hardware, and the lock guards state.
-        self._notify(self._acknowledge, "wake")
-
-        if not self._ready_or_report("before capture"):
-            self._finish()
-            return False
-
-        with self._lock:
-            self._begin_capture()
-
         try:
-            transcript = self._capture()
-        except Exception:
-            # A misfire must be silent and cheap. Never announce a failure the
-            # user did not ask for.
-            logger.debug("hands-free capture failed", exc_info=True)
-            self._finish()
-            return False
+            self._notify(self._acknowledge, "wake")
 
-        if _is_local_stop_command(transcript or ""):
-            self._finish()
-            return True
+            if not self._ready_or_report("before capture"):
+                return False
 
-        delivered = self._deliver(transcript)
-        if delivered and self._follow_up_capture is not None:
-            if not self._ready_or_report("before follow-up"):
-                self._finish()
-                return True
             with self._lock:
-                self._begin_capture(follow_up=True)
-            if not self._ready_or_report("before follow-up capture"):
-                self._finish()
-                return True
+                self._begin_capture()
+
             try:
-                follow_up = self._follow_up_capture()
+                transcript = self._capture()
             except Exception:
-                logger.debug("hands-free follow-up capture failed", exc_info=True)
-                self._finish()
+                # A misfire must be silent and cheap. Never announce a failure
+                # the user did not ask for.
+                logger.debug("hands-free capture failed", exc_info=True)
+                return False
+
+            if _is_local_stop_command(transcript or ""):
                 return True
-            if _is_local_stop_command(follow_up or ""):
-                self._finish()
-            elif not (follow_up or "").strip():
-                self._finish()
-            else:
-                self._deliver(follow_up)
-        return True
+            if not self._deliver(transcript):
+                return True
+
+            while self._follow_up_capture is not None:
+                if not self._ready_or_report("before follow-up"):
+                    return True
+                with self._lock:
+                    self._begin_capture(follow_up=True)
+                if not self._ready_or_report("before follow-up capture"):
+                    return True
+                try:
+                    follow_up = self._follow_up_capture()
+                except Exception:
+                    logger.debug("hands-free follow-up capture failed", exc_info=True)
+                    return True
+                if _is_local_stop_command(follow_up or ""):
+                    return True
+                if not (follow_up or "").strip():
+                    return True
+                if not self._deliver(follow_up):
+                    return True
+            return True
+        finally:
+            self._finish()
 
     def _begin_capture(self, *, follow_up: bool = False) -> None:
         self._active_listen_timeout = (
@@ -306,12 +312,10 @@ class HandsFreeCoordinator:
     def _deliver(self, transcript: str) -> bool:
         text = (transcript or "").strip()
         if not text:
-            self._finish()
             return False
         if self._is_hallucination is not None:
             try:
                 if self._is_hallucination(text):
-                    self._finish()
                     return False
             except Exception:
                 logger.debug("hallucination check failed", exc_info=True)
@@ -326,12 +330,12 @@ class HandsFreeCoordinator:
         except Exception:
             logger.debug("hands-free send failed", exc_info=True)
             delivered = False
-        finally:
-            self._finish()
         return delivered
 
     def _finish(self) -> None:
-        self._set_state(IDLE)
+        with self._lock:
+            self._wake_conversation_active = False
+            self._set_state(IDLE)
 
     def tick(self) -> None:
         """Expire the listening window if nobody ever started speaking."""

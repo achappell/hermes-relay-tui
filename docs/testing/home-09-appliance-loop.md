@@ -133,14 +133,15 @@ When the display is connected and idle:
    the question, never the wake phrase. Let the streamed answer finish and
    confirm recognition stays paused while the answer is thinking, buffering,
    and speaking.
-4. During the one follow-up window, ask a second question without the wake
-   phrase. Confirm exactly one more turn. The browser primes the microphone
-   once and retries a silent Safari post-playback recognition start within the
-   bounded window. Stay silent until the default eight-second window closes;
-   no third capture or turn may occur. If Safari cannot recover, the page
+4. During successive follow-up windows, ask at least three questions without
+   the wake phrase. Confirm exactly one turn for each, and confirm every
+   completed response opens the next bounded window. The browser primes the
+   microphone once and retries a silent Safari post-playback recognition start
+   within each bounded window. Stay silent after the final answer until the
+   default eight-second window closes. If Safari cannot recover, the page
    returns to wake-ready without replaying or sending an uncertain transcript.
 5. Repeat the initial and follow-up captures with exactly `stop` (including
-   ordinary terminal punctuation). Both must close silently: no Hermes turn,
+   ordinary terminal punctuation). Each must close silently: no Hermes turn,
    capture-complete signal, or replay.
 6. Stop the relay during an armed idle period and during a response. Confirm
    hands-free turns off, no uncertain text is replayed after reconnect, and the
@@ -274,8 +275,10 @@ checks are pending for HOME-11; earlier HOME-09 evidence does not cover them.
 
 1. Launch with `--wake-followup-seconds 12`. Wake once and ask a question.
    After playback finishes, confirm Listening appears with no second wake
-   acknowledgement. Ask a follow-up: exactly one additional answer, then idle
-   with no third capture. Repeat with the default eight-second window.
+   acknowledgement. Ask at least three follow-ups without the wake phrase;
+   each must produce exactly one additional answer and reopen Listening. Stay
+   silent after the final answer until idle. Repeat with the default
+   eight-second window.
 2. Stay silent after the initial answer. Confirm the prior answer stays visible
    and the display returns to idle after the configured window, with no turn
    sent or error sound. Say the wake phrase again to confirm normal detection.
