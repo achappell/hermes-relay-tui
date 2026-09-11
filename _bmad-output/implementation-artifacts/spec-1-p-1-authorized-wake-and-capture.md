@@ -2,7 +2,7 @@
 title: 'Authorized wake and capture'
 type: 'feature'
 created: '2026-09-10'
-status: 'in-progress'
+status: 'review'
 route: 'dispatch'
 review_loop_iteration: 0
 baseline_commit: '64ee9b7'
@@ -75,6 +75,28 @@ This is a deliberate, human-owned narrowing of the AC and must be reviewed as su
 - **A device-side gate against a build-time constant is weak by construction.** A token baked into firmware cannot be revoked without reflashing. The value here is ordering (no capture before authorization) and observability (a refusal is visible), not cryptographic assurance.
 - **Failing closed must not make the Puck look dead.** An appliance that silently ignores wakes is indistinguishable from broken hardware — task 3 is not optional polish.
 - **P-1 was started after P-2.** Some of P-1's wake/capture substrate already exists from stories 3 and 5 and was only made to work by the 2026-09-10 VAD fix. Evidence from those stories is *input*, not closure — per the epic's own rule that another surface's or story's implementation is evidence, not closure.
+
+## Verification results — 2026-09-10
+
+All six tasks implemented. Hardware-verified by a deliberate rejection test: the
+bridge was restarted expecting a different token, then two wakes were spoken.
+
+| Check | Result |
+|---|---|
+| Normal wake with valid identity captures | PASS -- `state: AUTHORIZED (may_capture=true)`, capture and upload proceed |
+| Bridge `401` flips the device to `UNAUTHORIZED` | PASS -- wake 1 captured, was rejected, state changed |
+| Next wake after a `401` fails closed | PASS -- wake 2 refused, zero captured bytes, zero POSTs |
+| Refusal is audible | PASS -- descending 660->440Hz tone, confirmed by ear |
+| No fallback profile is ever selected | PASS -- covered by test in `tests/test_puck_bridge.py` |
+| Puck and TUI `session_id` differ | PASS -- `amanda-kiosk-puck-bridge`, verified live |
+
+Not covered: `DEGRADED` (bridge unreachable) was reasoned about and implemented
+but not exercised on hardware. Worth a reviewer's attention, since it is the
+state the contract deliberately narrowed.
+
+Task 5 note: the session-id collision was already fixed on main in #138 before
+this branch began; a duplicate written here was discarded in favour of main's
+during the merge. Only the no-fallback test survived.
 
 ## Verification
 
