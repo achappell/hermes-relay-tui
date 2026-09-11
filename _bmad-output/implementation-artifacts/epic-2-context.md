@@ -17,6 +17,8 @@ and response audio, while other Displays only mirror the owning Room's state.
 - Story 2.3: Mirror only the owning Room's Active Turn
 - Story 2.4: Mirror Hermes prompts without becoming another assistant
 - Story 2.5: Stay useful and honest when disconnected
+- Surface story 2-A-1: Show the Android doorway's capture acknowledgement and live Transcription participant state
+- Surface story 2-A-2: Show honest Android disconnected/unavailable state without stale-turn replay
 - Surface story 2-WK-1: Render the shared Room-scoped Ambient Surface for web and iPad
 - Surface story 2-WK-2: Render active capture, transcription, response, and phase state in W/K
 - Surface story 2-WK-3: Mirror Hermes prompts without touch approval or a second Session
@@ -24,7 +26,7 @@ and response audio, while other Displays only mirror the owning Room's state.
 
 ## Requirements & Constraints
 
-- The active Puck, ESP32 Touch Display, W/K browser, iOS Client, or TUI shows
+- The active Puck, ESP32 Touch Display, W/K browser, iOS Client, Android Client, or TUI shows
   its own capture state; the owning Room Display may mirror live Transcription
   and the canonical Turn Phase.
 - W/K is one Web/iPad voice-plus-display surface. When its voice capability is

@@ -4,13 +4,15 @@ type: architecture-spine
 purpose: build-substrate
 altitude: initiative
 paradigm: ports-and-adapters with functional cores
-scope: "The hermes-relay-tui repository: Python Hermes session core and TUI, household appliance, shared display contract and reducer, native LVGL firmware/simulator, and Web/WASM kiosk."
+scope: "The hermes-relay-tui repository and its cross-repository doorway boundaries: Python Hermes session core and TUI, household appliance, shared display contract and reducer, native LVGL firmware/simulator, Web/WASM kiosk, and native mobile Client integration."
 status: final
 created: 2026-09-08
-updated: 2026-09-10
+updated: 2026-09-11
 binds:
   - FR-1 through FR-6
+  - FR-7 through FR-9
   - FR-10 through FR-12
+  - FR-16 through FR-20
   - FR-19
   - FR-21 through FR-22
 sources:
@@ -23,6 +25,8 @@ sources:
   - _bmad-output/planning-artifacts/briefs/brief-hermes-relay-tui-2026-09-07/brief.md
   - docs/superpowers/specs/2026-08-31-home-03-kiosk-display-design.md
   - docs/superpowers/specs/2026-09-01-home-02-wake-word-design.md
+  - ../hermes-relay-ios/_bmad-output/implementation-artifacts/epic-1-context.md
+  - ../hermes-relay-ios/_bmad-output/implementation-artifacts/spec-5-1-ios-independent-conversation-doorway.md
   - https://pypi.org/project/textual/
   - https://websockets.readthedocs.io/en/stable/
   - https://svelte.dev/docs/svelte/overview
@@ -49,6 +53,7 @@ Use ports-and-adapters with functional cores.
 flowchart TB
     providers["Hermes endpoint, OS audio, LAN, browser, ESP hardware"]
     tui["TUI adapter<br/>app.py, transcript.py, prompts.py"]
+    mobile["Native mobile Clients<br/>iOS + Android adapters"]
     appliance["Appliance adapter<br/>home_display/"]
     native["Native display adapter<br/>firmware/"]
     web["Web/WASM adapter<br/>home_display/web/"]
@@ -56,6 +61,7 @@ flowchart TB
     ccore["Portable display functional core<br/>shared/display/"]
 
     providers --> tui
+    providers --> mobile
     providers --> appliance
     providers --> native
     providers --> web
@@ -102,7 +108,7 @@ flowchart TB
 
 - **Binds:** All repository front ends and runtime environments.
 - **Prevents:** Premature centralization, shared-process failure coupling, and a hidden cross-front-end state store.
-- **Rule:** hermes-relay, hermes-relay-home, the browser kiosk, and ESP/native display targets remain separate deployment units. Hermes is the external session/model/speech authority. This repository does not introduce a shared database, broker, or transcript store. The appliance serves the local display channel; Web/WASM and ESP/native clients connect to it.
+- **Rule:** hermes-relay, hermes-relay-home, the browser kiosk, ESP/native display targets, and native iOS/Android Clients remain separate deployment units. Hermes is the external session/model/speech authority. This repository does not introduce a shared database, broker, or transcript store. The appliance serves the local display channel; Web/WASM and ESP/native clients connect to it; mobile Clients own their own Hermes sessions and local state.
 
 ### AD-7 — Recovery and shutdown are explicit state transitions [ADOPTED]
 
@@ -120,7 +126,7 @@ flowchart TB
 
 - **Binds:** Packaging, entry points, development environments, and repository boundaries.
 - **Prevents:** A TUI installation dragging in appliance hardware or wake-word dependencies, and speculative repository extraction.
-- **Rule:** The base Python install contains the core/TUI path. Voice, wake, hardware, browser, and firmware dependencies remain in optional extras or target-specific build environments, with separate entry points per front end. Keep one repository until a demonstrated package or platform conflict makes an installable hermes-relay-core split cheaper.
+- **Rule:** The base Python install contains the core/TUI path. Voice, wake, hardware, browser, firmware, and native mobile dependencies remain in optional extras or target-specific repositories/build environments, with separate entry points per front end. Keep one repository until a demonstrated package or platform conflict makes an installable hermes-relay-core split cheaper; do not force native iOS/Android UI, lifecycle, audio, or secure-storage code into this Python repository.
 
 ### AD-10 — Contract changes require cross-target evidence [ADOPTED]
 
@@ -133,6 +139,12 @@ flowchart TB
 - **Binds:** FR-1 through FR-6, FR-19, and the ESP32 Touch surface stories in Epic 1.
 - **Prevents:** Treating the touch unit as a passive display and forgetting its microphone, response-audio, cancellation, or recovery contract.
 - **Rule:** The ESP32-S3/LVGL touch unit is a first-class voice-plus-display surface. It captures voice only after authorization is verified, renders its own observed phases and streamed/completed response, and delivers response audio through an explicit bounded audio path. The same ownership rule applies to the W/K browser voice surface when `browser_voice` is advertised: its browser capture and playback bridge may own presentation I/O, but not Hermes answer authority or replay policy. The shared DisplaySnapshot contract governs visual state; audio ingress/egress is a separate contract and must not be smuggled into display JSON. Hermes answer authority and session semantics remain behind the owning session adapter—firmware and browser presentation code do not invent responses, parse Hermes wire frames, or replay uncertain turns. The current ESP32 snapshot/action transport is foundation only until the touch audio path is implemented and validated.
+
+### AD-12 — Native mobile Clients are capability-parity peers [ADOPTED]
+
+- **Binds:** FR-1 through FR-9, FR-16 through FR-20, and the iOS/Android surface stories across Epics 1–3 and 5.
+- **Prevents:** Android becoming a reduced conversation-only doorway, iOS silently remaining the only mobile control plane, or the two native Clients drifting on authorization, recovery, device administration, and Local History guarantees.
+- **Rule:** iOS and Android are co-equal mobile Client surfaces with parity in user capability and safety behavior: typed and tap-to-speak conversation, observed phases and response audio, profile-bound secure storage, deliberate per-profile Local History, recovery without replay, Device discovery/setup, Room and Wake Mapping configuration, verification, revocation, and explicit re-enrollment. Each native Client owns its platform lifecycle, permissions, accessibility, audio, secure storage, presentation, and local state in its own repository. Both consume the canonical Hermes session/event semantics and shared product contracts through typed adapters; neither parses Hermes wire frames in presentation code, invents unsupported operations, shares credentials or Local History with the other, or claims the other Client's story closure. Exact Android toolchain and repository bootstrap remain deferred until the Android delivery repository is initialized.
 
 ## Consistency Conventions
 
@@ -178,6 +190,8 @@ hermes-relay-tui/
     fixtures/                            # portable rules and conformance contract
   firmware/esp32-s3-touch-lcd-7/
     main/, simulator/                    # ESP-IDF and native LVGL adapters
+  ../hermes-relay-ios/                    # native Apple Client boundary
+  ../hermes-relay-android/                # future native Android Client boundary
   tests/                                 # core, contract, adapter, and integration fakes
   scripts/build_display_wasm.sh         # reproducible WebAssembly build
 ~~~
@@ -189,9 +203,11 @@ flowchart LR
     home["hermes-relay-home<br/>appliance process"]
     web["Web/WASM kiosk<br/>same-origin browser client"]
     esp["ESP32 or native simulator<br/>LVGL client"]
+    mobile["Native mobile Clients<br/>iOS + Android"]
 
     hermes <-->|voice-session WebSocket| tui
     hermes <-->|voice-session WebSocket| home
+    hermes <-->|native session/audio/profile adapters| mobile
     home -->|/state snapshots and /action| web
     home -->|LAN state channel and actions| esp
 ~~~
@@ -202,6 +218,7 @@ flowchart LR
 - Desktop TUI and household appliance are installed through separate console entry points. The appliance may hold local microphone and playback resources; the TUI may borrow or own them through the core ports.
 - The household display server is loopback-only by default. ESP or remote-browser use requires explicit LAN binding and remains within the trusted private-pilot assumption.
 - Hermes URL, client/device identity, profile token, audio devices, reconnect limits, and turn timeouts are runtime configuration. No machine credential or token is part of the repository artifact.
+- Native iOS and Android Clients store their own profile-bound credentials and Local History locally, use platform permission and audio services, and validate their adapters with deterministic fakes plus platform simulator/device checks. Mobile parity is validated by capability and failure-path evidence, not pixel identity or shared source files.
 - Reconnects are bounded and observable. A process restart or transport loss returns to a safe idle/disconnected state and requires a fresh user action.
 
 ## Capability → Architecture Map
@@ -209,11 +226,12 @@ flowchart LR
 | Capability / Area | Lives in | Governed by |
 | --- | --- | --- |
 | FR-1–FR-6: voice doorway, turn phases, response, follow-up, clean reconnect | client.py, session.py, voice.py, mic.py, wake.py, handsfree.py, app.py, home_display/appliance.py, ESP32 Touch audio adapter | AD-1, AD-2, AD-3, AD-7, AD-11 |
+| FR-1–FR-9, FR-16–FR-20: native mobile conversation, recovery, Profiles, Local History, Device administration, and mobile control-plane behavior | `hermes-relay-ios` and future `hermes-relay-android` adapters | AD-2, AD-3, AD-6, AD-7, AD-8, AD-9, AD-12 |
 | FR-10–FR-12: ambient/display state, room-local mirroring, disconnected state | home_display/state.py, home_display/server.py, shared/display/, home_display/web/, firmware/ | AD-2, AD-4, AD-5, AD-6, AD-8 |
 | FR-19: recovery without a silent turn | session.py, home_display/appliance.py, display adapters | AD-2, AD-6, AD-7 |
 | FR-21: TUI as a direct Hermes doorway | app.py, transcript.py, prompts.py, session_picker.py | AD-1, AD-3, AD-7 |
 | FR-22: voice-only prompt mirroring and response | client.py, session.py, home_display/appliance.py, shared display contract | AD-3, AD-4, AD-5, AD-8 |
-| FR-7–FR-9, FR-13–FR-18, FR-20: device provisioning/arbitration, calendar, physical-device administration, and iOS doorway | Outside this repository or deferred | Revisit when the corresponding cross-repository or device-control boundary is implemented |
+| FR-13–FR-15: calendar, Departure Card computation, and household-wide context | Outside this repository or deferred | Revisit when the corresponding provider and display boundary is implemented |
 
 ## Deferred
 
@@ -221,6 +239,6 @@ flowchart LR
 - Wake arbitration and proximity signals when multiple physical devices hear the same phrase.
 - Media-server/audio-bridge ownership, audio framing, backpressure, retention, and transcription boundaries for Puck and ESP32 Touch.
 - Calendar routing, Immich policy, Departure Card computation, and household-wide context providers.
-- iOS profile/device UX and the contract between this repository and the separate iOS client.
+- Native mobile profile/device UX and the contracts between this repository, the separate iOS client, and the future Android client; Android repository bootstrap and exact toolchain remain open until that delivery boundary is initialized.
 - Exact ESP-IDF framework pin and hardware release/CI matrix; PlatformIO currently provides the firmware build seed.
 - A central household service, shared database, cross-front-end transcript store, repository rename, or hermes-relay-core extraction. Revisit only after a demonstrated coordination or dependency conflict requires it.

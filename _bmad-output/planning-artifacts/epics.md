@@ -19,13 +19,13 @@ This document provides the complete epic and story breakdown for hermes-relay-tu
 
 ### Functional Requirements
 
-FR1: A configured Puck, ESP32 Touch Display, or enabled W/K browser voice surface accepts its supported authorized voice initiation, and an authorized iOS Client or TUI accepts an explicit user-initiated turn.
+FR1: A configured Puck, ESP32 Touch Display, or enabled W/K browser voice surface accepts its supported authorized voice initiation, and an authorized iOS Client, Android Client, or TUI accepts an explicit user-initiated turn.
 
 FR2: The active Puck, ESP32 Touch Display, or W/K browser voice surface shows its capture acknowledgement and Listening phase; a passive room Display mirrors the owning Room's Listening phase and live Transcription; iOS and TUI show corresponding capture state.
 
 FR3: Each supported doorway exposes the appropriate Turn Phase—heard, listening, transcribing, thinking, buffering, speaking, complete, or Disconnected State—without presenting a later phase early.
 
-FR4: The Puck, ESP32 Touch Display, W/K browser voice surface, or iOS Client speaks the Hermes response; active text-capable surfaces render their own response text, passive room Displays stream the same room-local response text, and the TUI renders the conversation through its terminal surface.
+FR4: The Puck, ESP32 Touch Display, W/K browser voice surface, iOS Client, or Android Client speaks the Hermes response; active text-capable surfaces render their own response text, passive room Displays stream the same room-local response text, and the TUI renders the conversation through its terminal surface.
 
 FR5: After each response, a configured voice doorway may open a bounded follow-up window; the active Puck's v1 window is eight seconds without another Wake Mapping, the W/K browser surface uses its advertised bounded capability, and exactly “stop” during capture or follow-up closes the local window silently.
 
@@ -49,15 +49,15 @@ FR14: When a qualifying event crosses its effective threshold, every Display rep
 
 FR15: The Departure Card recomputes when event time or location changes, clears when the event is cancelled, and clears at event start so Displays return to the Ambient Surface; no manual dismissal is required.
 
-FR16: From iOS Settings, Amanda can discover an unconfigured Device, select it, see a connecting state, and see success indicators on both iOS and the Device after connection.
+FR16: From iOS or Android Settings, Amanda can discover an unconfigured Device, select it, see a connecting state, and see success indicators on the selected Client and the Device after connection.
 
-FR17: After connection success, iOS guides Room assignment, one or more Wake Mappings, and final ready confirmation; the Device cannot become an active household doorway before setup completes.
+FR17: After connection success, iOS or Android guides Room assignment, one or more Wake Mappings, and final ready confirmation; the Device cannot become an active household doorway before setup completes.
 
-FR18: From Device details, Amanda can confirm Disconnect to revoke the Device Credential and Hermes access; the powered Device cannot wake, capture, or submit until explicitly re-enrolled.
+FR18: From Device details in iOS or Android, Amanda can confirm Disconnect to revoke the Device Credential and Hermes access; the powered Device cannot wake, capture, or submit until explicitly re-enrolled.
 
 FR19: When the Hermes path returns, an authorized Device reconnects and clears Disconnected State only after verified recovery; it does not reopen capture or submit a pending turn, and failed recovery remains visibly disconnected.
 
-FR20: The iOS Client starts voice turns by tap-to-speak and supports typed turns through its own Hermes Session, showing listening, thinking, and speaking indicators and retaining the conversation in iOS Local History.
+FR20: The iOS and Android Clients start voice turns by tap-to-speak and support typed turns through their own Hermes Sessions, showing listening, thinking, and speaking indicators and retaining the conversation in per-profile mobile Local History.
 
 FR21: The TUI starts voice conversation through its own Hermes Session and renders conversation and response state without becoming a second assistant; diagnostic detail is not required for the household journey.
 
@@ -69,7 +69,7 @@ NFR1: Wake acknowledgement and visible Puck status should appear in roughly one 
 
 NFR2: Supported surfaces expose the actual Turn Phase, avoid duplicate Active Turns, and recover from transport loss without replaying captured speech.
 
-NFR3: Raw Puck and ESP32 Touch audio remain transient on the home LAN; the Media Server/audio bridge retains no transcripts; only intentional iOS/TUI Local History may persist by default.
+NFR3: Raw Puck and ESP32 Touch audio remain transient on the home LAN; the Media Server/audio bridge retains no transcripts; only intentional iOS/Android/TUI Local History may persist by default.
 
 NFR4: Every Device uses an individual revocable Device Credential, and unapproved, revoked, or unavailable identity fails closed before capture.
 
@@ -105,7 +105,7 @@ UX-DR4: Build the Room Display as a dense active console with Profile Header, Tu
 
 UX-DR5: Build the Puck Status surface as one short readable local phase with acknowledgement and audio cues; never place full response text, a transcript archive, or a miniature unreadable console on the TFT.
 
-UX-DR6: Show the active Hermes Profile from `heard` acknowledgement through completion on the Room Display and in iOS/TUI headers; identify routing without implying answer correctness, and do not require the Puck to speak the profile name.
+UX-DR6: Show the active Hermes Profile from `heard` acknowledgement through completion on the Room Display and in iOS/Android/TUI headers; identify routing without implying answer correctness, and do not require the Puck to speak the profile name.
 
 UX-DR7: Render a visible Turn Path and dominant State Label using the canonical phase vocabulary; do not show a later phase early, and pair every animation or sound cue with readable text.
 
@@ -127,7 +127,7 @@ UX-DR15: Implement the ordered Device Setup presentation: Discover, Connect/appr
 
 UX-DR16: Implement Device Details with readable status, credential/configuration boundaries, destructive Disconnect confirmation, visible publish/verification state, and explicit re-enrollment after revocation.
 
-UX-DR17: Implement Local History only on intentional iOS/TUI Client surfaces; do not expose or rehydrate conversation history on Pucks, Displays, or the Media Server.
+UX-DR17: Implement Local History only on intentional iOS/Android/TUI Client surfaces; do not expose or rehydrate conversation history on Pucks, Displays, or the Media Server.
 
 UX-DR18: Implement Prompt Mirror as a visible Hermes clarification/approval state that waits for a spoken answer through the active Puck, ESP32 Touch Display, W/K browser voice surface, or Client; passive room Displays have no touch prompt action in v1.
 
@@ -135,18 +135,18 @@ UX-DR19: Implement the TUI Header with active Profile identity and shared phase 
 
 UX-DR20: Implement child-readable state labels (`Ready`, `Heard`, `Listening`, `Working`, `Speaking`, `Unavailable`, `Stopped`) alongside technical labels; use live regions or announcements once per state transition, not once per transcript delta.
 
-UX-DR21: Implement accessibility behavior: WCAG 2.2 AA contrast targets, reduced-motion static states, iPad accessible DOM status mirror and completion announcement, iOS VoiceOver order Profile → state → response/Transcription → action with focus restoration, TUI keyboard-equivalent recovery actions, and non-actionable Display prompt mirrors.
+UX-DR21: Implement accessibility behavior: WCAG 2.2 AA contrast targets, reduced-motion static states, iPad accessible DOM status mirror and completion announcement, iOS VoiceOver and Android accessibility order Profile → state → response/Transcription → action with focus restoration, TUI keyboard-equivalent recovery actions, and non-actionable Display prompt mirrors.
 
-UX-DR22: Adapt the shared semantics to the ReSpeaker/TFT Puck, 1024×600 ESP32-S3/LVGL Display, Safari/Guided Access iPad kiosk, native iOS Client, companion macOS behavior, TUI, and native macOS simulator without encoding one-room assumptions or requiring identical geometry.
+UX-DR22: Adapt the shared semantics to the ReSpeaker/TFT Puck, 1024×600 ESP32-S3/LVGL Display, Safari/Guided Access iPad kiosk, native iOS Client, native Android Client, companion macOS behavior, TUI, and native macOS simulator without encoding one-room assumptions or requiring identical geometry.
 
 UX-DR23: Preserve the interaction anti-pattern guardrails: no wrong-profile response, duplicate wake, false phase/recovery claim, cross-Room text, disconnected capture/fallback, replaying Retry, Puck transcript, audible Departure Card, touch prompt response, chain-of-thought display, or pre-echo-safe barge-in.
 
 ### FR Coverage Map
 
-FR1: Epic 1 - Authorized Puck/ESP32 Touch/WK doorway or Client starts a Hermes turn.
+FR1: Epic 1 - Authorized Puck/ESP32 Touch/WK doorway or iOS/Android/TUI Client starts a Hermes turn.
 FR2: Epic 1 surface stories + Epic 2 passive mirror - Voice-capable Puck/ESP32 Touch/WK doorway captures; room Displays mirror live capture state and Transcription.
 FR3: Epic 1 - Doorways expose honest Turn Phases.
-FR4: Epic 1 - Hermes response is delivered through Puck, ESP32 Touch, W/K, iOS, TUI, and passive display surfaces.
+FR4: Epic 1 - Hermes response is delivered through Puck, ESP32 Touch, W/K, iOS, Android, TUI, and passive display surfaces.
 FR5: Epic 1 - Configured voice doorways provide bounded follow-up listening and silent stop where supported, including W/K's advertised browser capability.
 FR6: Epic 1 - Reconnect starts a clean Session without replay.
 FR7: Epic 3 - Wake Mappings are unique and profile-specific.
@@ -158,11 +158,11 @@ FR12: Epic 2 - Displays show honest Disconnected State and useful cached context
 FR13: Epic 4 - Calendar events qualify only with usable location and travel data.
 FR14: Epic 4 - Qualifying events promote a shared visual Departure Card.
 FR15: Epic 4 - Departure Cards recompute and clear automatically.
-FR16: Epic 3 - iOS discovers and connects unconfigured Devices.
-FR17: Epic 3 - iOS guides Room, Wake Mapping, and Ready setup.
-FR18: Epic 3 - iOS revokes Device access and requires re-enrollment.
+FR16: Epic 3 - iOS and Android discover and connect unconfigured Devices.
+FR17: Epic 3 - iOS and Android guide Room, Wake Mapping, and Ready setup.
+FR18: Epic 3 - iOS and Android revoke Device access and require re-enrollment.
 FR19: Epic 1 - Verified recovery never silently resumes a turn.
-FR20: Epic 5 - iOS provides an independent full conversation doorway.
+FR20: Epic 5 - iOS and Android provide independent full conversation doorways.
 FR21: Epic 5 - TUI provides an independent direct voice-chat doorway.
 FR22: Epic 2 - Passive Displays mirror voice-only Hermes prompts without touch actions; the active Puck, ESP32 Touch Display, W/K browser voice surface, or Client supplies the spoken answer.
 
@@ -180,7 +180,7 @@ Passive Room Displays and the W/K iPad/web surface's room-context mode show calm
 **FRs covered:** FR2, FR10, FR11, FR12, FR22
 **Natural dependency:** Consumes Epic 1's turn events and the shared display contract; it can be developed and validated independently with display fixtures and does not require calendar or Device administration.
 
-### Surface-specific Epic 2 story map — decision 2026-09-10
+### Surface-specific Epic 2 story map — decision 2026-09-10; Android parity addendum 2026-09-11
 
 Epic 2 stories belong to the renderer or doorway that owns the visible
 behavior. The shared `DisplaySnapshot` schema, reducer, Room filtering, and
@@ -192,6 +192,8 @@ second W/K or iPad surface.
 |---|---|---|
 | `2-I-1` | iOS Client | Show the iOS doorway's capture acknowledgement and live Transcription participant state. |
 | `2-I-2` | iOS Client | Show honest iOS disconnected/unavailable state without stale-turn replay. |
+| `2-A-1` | Android Client | Show the Android doorway's capture acknowledgement and live Transcription participant state with the same session/turn identity rules as iOS. |
+| `2-A-2` | Android Client | Show honest Android disconnected/unavailable state without stale-turn replay. |
 | `2-P-1` | ReSpeaker Puck | Expose the Puck's local capture, response, and status phases without putting transcript text on the TFT. |
 | `2-P-2` | ReSpeaker Puck | Fail closed and show unavailable/disconnected status when the Puck or Hermes path is unavailable. |
 | `2-E-1` | ESP32 Touch Display | Render the Room-scoped Ambient Surface in native LVGL. |
@@ -212,18 +214,18 @@ the other rows.
 
 ### Epic 3: Control household doorway identity and access
 
-iOS can configure physical Devices and Wake Mappings, preserve profile isolation, revoke access, and select one authorized Device when several hear a wake.
+iOS and Android can configure physical Devices and Wake Mappings, preserve profile isolation, revoke access, and select one authorized Device when several hear a wake.
 **FRs covered:** FR7, FR8, FR9, FR16, FR17, FR18
 **Natural dependency:** Uses the conversation/session boundary from Epic 1 but is independently testable with fake profiles, Devices, and relay endpoints; it enables trusted use of later room and companion journeys.
 
-### Surface-specific Epic 3 story map — decision 2026-09-10
+### Surface-specific Epic 3 story map — decision 2026-09-10; Android parity addendum 2026-09-11
 
-Epic 3 has two ownership boundaries in the pilot. iOS is the sole physical
-Device control plane; the Puck owns the device-side identity, mapping, and
-fail-closed enforcement. The initial pilot names the ReSpeaker Puck as the
-affected physical target. ESP32 Touch, W/K, and TUI remain `N/A` for Epic 3
-until a separate administration boundary is adopted rather than silently
-borrowing the Puck story.
+Epic 3 has two ownership boundaries in the pilot. iOS and Android are the
+co-equal mobile physical-Device control planes; the Puck owns the device-side
+identity, mapping, and fail-closed enforcement. The initial pilot names the
+ReSpeaker Puck as the affected physical target. ESP32 Touch, W/K, and TUI
+remain `N/A` for Epic 3 until a separate administration boundary is adopted
+rather than silently borrowing the Puck story.
 
 | Surface story key | Surface | Scope |
 |---|---|---|
@@ -233,6 +235,12 @@ borrowing the Puck story.
 | `3-I-4` | iOS Settings | Configure and expose deterministic single-Device wake arbitration. |
 | `3-I-5` | iOS Settings | Show and enforce unavailable or revoked identity as a failed-closed state. |
 | `3-I-6` | iOS Settings | Revoke access and require explicit verified re-enrollment. |
+| `3-A-1` | Android Settings | Discover and connect an unconfigured Device without granting access. |
+| `3-A-2` | Android Settings | Approve a Device and guide Room, Wake Mapping, and Ready setup. |
+| `3-A-3` | Android Settings | Validate unique Wake Mappings and Profile-specific publish state. |
+| `3-A-4` | Android Settings | Configure and expose deterministic single-Device wake arbitration. |
+| `3-A-5` | Android Settings | Show and enforce unavailable or revoked identity as a failed-closed state. |
+| `3-A-6` | Android Settings | Revoke access and require explicit verified re-enrollment. |
 | `3-P-1` | ReSpeaker Puck | Advertise independently identifiable unconfigured state for discovery and connection. |
 | `3-P-2` | ReSpeaker Puck | Apply approved Room, credential, and Wake Mapping configuration without becoming Ready early. |
 | `3-P-3` | ReSpeaker Puck | Enforce the selected Wake Mapping and Profile before capture. |
@@ -241,8 +249,8 @@ borrowing the Puck story.
 | `3-P-6` | ReSpeaker Puck | Retire revoked credentials and require the ordered setup flow on re-enrollment. |
 
 The generic numeric Stories 3.1–3.6 below remain the acceptance template for
-the paired iOS control-plane and Puck device-side slices. No other surface is
-implicitly closed by either family.
+the paired mobile control-plane (iOS and Android) and Puck device-side slices.
+No other surface is implicitly closed by either family.
 
 ### Epic 4: Know when the household needs to leave
 
@@ -270,11 +278,11 @@ can be closed; E and W/K cells are then closed independently.
 
 ### Epic 5: Carry the Hermes relationship with you
 
-iOS and the TUI provide independent portable and terminal conversation doorways with deliberate local history and shared phase semantics.
+iOS, Android, and the TUI provide independent portable and terminal conversation doorways with deliberate local history and shared phase semantics.
 **FRs covered:** FR20, FR21
 **Natural dependency:** Consumes Epic 1's session semantics but remains independently usable through configured Client sessions; diagnostics remain an engineering capability rather than a household prerequisite.
 
-### Surface-specific Epic 5 story map — decision 2026-09-10
+### Surface-specific Epic 5 story map — decision 2026-09-10; Android parity addendum 2026-09-11
 
 Epic 5 is already naturally surface-specific: the iOS and TUI doorways own
 separate Sessions, presentation, and deliberate Local History boundaries.
@@ -282,10 +290,12 @@ separate Sessions, presentation, and deliberate Local History boundaries.
 | Surface story key | Surface | Scope |
 |---|---|---|
 | `5-I-1` | iOS Client | Use iOS as an independent typed and tap-to-speak conversation doorway with response audio, phase state, recovery, and Local History. |
+| `5-A-1` | Android Client | Use Android as an independent typed and tap-to-speak conversation doorway with response audio, phase state, recovery, secure profile storage, and per-profile Local History matching iOS capability and safety behavior. |
 | `5-T-1` | TUI | Use the TUI as an independent direct voice-chat gateway with inline response rendering, diagnostics, and deliberate local history. |
 
 The existing numeric Stories 5.1 and 5.2 below remain stable aliases for
-`5-I-1` and `5-T-1`; neither surface's implementation closes the other.
+`5-I-1` and `5-T-1`; Android's `5-A-1` is a separate delivery identity and
+neither mobile surface's implementation closes the other.
 
 ## Epic 1: Have a reliable Hermes conversation
 
@@ -293,7 +303,7 @@ A configured doorway can complete an honest voice turn, continue briefly after t
 
 **FRs covered:** FR1, FR3, FR4, FR5, FR6, FR19
 
-### Surface-specific Epic 1 story map — decision 2026-09-10
+### Surface-specific Epic 1 story map — decision 2026-09-10; Android parity addendum 2026-09-11
 
 The surface key is part of the story identity. A completed story closes only
 the named surface; another surface's implementation is evidence, not closure.
@@ -303,6 +313,9 @@ the named surface; another surface's implementation is evidence, not closure.
 | `I-1` | iOS | Authorized initiation. |
 | `I-2` | iOS | Honest phases with response/audio delivery. |
 | `I-3` | iOS | Fresh recovery without replay. |
+| `A-1` | Android | Authorized typed or tap-to-speak initiation bound to the selected Profile. |
+| `A-2` | Android | Honest phases with response text/audio delivery and explicit unavailable-state behavior. |
+| `A-3` | Android | Fresh recovery without replaying an uncertain turn. |
 | `P-1` | ReSpeaker Puck | Authorized wake and capture. |
 | `P-2` | ReSpeaker Puck | Status and response-audio delivery. |
 | `P-3` | ReSpeaker Puck | Bounded follow-up and exact `stop`. |
@@ -367,7 +380,7 @@ So that my request reaches the intended Hermes relationship and unauthorized pat
 
 As a household member using any supported Hermes doorway,
 I want every participating front end to reflect the same observed turn phase and response,
-So that the Puck, iOS Client, TUI, and room-display mirror never tell different stories about one conversation.
+So that the Puck, iOS Client, Android Client, TUI, and room-display mirror never tell different stories about one conversation.
 
 **Covers:** FR3, FR4; NFR1, NFR2, NFR5; normalized session events, explicit state ownership, shared semantic state, and front-end-specific presentation.
 
@@ -504,7 +517,7 @@ So that the Display feels calm and personal without exposing another Room’s co
 
 ### Story 2.2: Show live capture state and transcription
 
-As a household member speaking through a Puck, ESP32 Touch Display, iOS Client, or TUI,
+As a household member speaking through a Puck, ESP32 Touch Display, iOS Client, Android Client, or TUI,
 I want the relevant doorway and owning Room Display to show capture progress and live words as they arrive,
 So that I know the system is listening rather than waiting in mysterious silence.
 
@@ -520,7 +533,7 @@ So that I know the system is listening rather than waiting in mysterious silence
 
 **Given** partial transcription becomes available
 **When** words arrive
-**Then** the Room Display, W/K browser surface, iOS Client, and TUI update live rather than waiting for capture to finish.
+**Then** the Room Display, W/K browser surface, iOS Client, Android Client, and TUI update live rather than waiting for capture to finish.
 
 **Given** Puck, ESP32 Touch, or W/K browser capture is active
 **When** a passive Room Display mirrors it
@@ -661,21 +674,21 @@ So that the household understands what is offline without hearing a fabricated a
 
 ## Epic 3: Control household doorway identity and access
 
-iOS can configure physical Devices and Wake Mappings, preserve Profile isolation, revoke access, and select one authorized Device when several hear a wake.
+iOS and Android can configure physical Devices and Wake Mappings, preserve Profile isolation, revoke access, and select one authorized Device when several hear a wake.
 
 **FRs covered:** FR7, FR8, FR9, FR16, FR17, FR18
 
 ### Story 3.1: Discover unconfigured Devices safely
 
-As a household administrator using iOS Settings,
+As a household administrator using iOS or Android Settings,
 I want to discover and connect to a new household Device,
 So that I can identify it clearly before granting it any ability to capture audio or use Hermes.
 
-**Covers:** FR16; NFR4, NFR5; iOS as the sole physical-Device control plane and discovery/approval separation.
+**Covers:** FR16; NFR4, NFR5; iOS and Android as co-equal mobile control planes with discovery/approval separation.
 
 **Acceptance Criteria:**
 
-**Given** Amanda taps `Add` in iOS Settings
+**Given** Amanda taps `Add` in the selected mobile Client's Settings
 **When** discovery runs
 **Then** unconfigured Devices appear in a clearly separate discovery list from approved Devices.
 
@@ -686,11 +699,11 @@ So that I can identify it clearly before granting it any ability to capture audi
 
 **Given** Amanda selects a discovered Device
 **When** connection is attempted
-**Then** iOS shows a connecting state while the Device remains unconfigured.
+**Then** the selected mobile Client shows a connecting state while the Device remains unconfigured.
 
 **Given** connection succeeds
 **When** the Device confirms the connection
-**Then** success is visible on both iOS and the Device
+**Then** success is visible on both the selected mobile Client and the Device
 **And** success does not depend on a silent list refresh.
 
 **Given** LAN discovery is unavailable or blocked
@@ -699,12 +712,12 @@ So that I can identify it clearly before granting it any ability to capture audi
 
 **Given** discovery or connection fails
 **When** the attempt ends
-**Then** iOS shows an actionable failure
+**Then** the selected mobile Client shows an actionable failure
 **And** the Device remains inert and unapproved.
 
 ### Story 3.2: Approve and configure a Device
 
-As a household administrator using iOS Settings,
+As a household administrator using iOS or Android Settings,
 I want to approve a discovered Device and configure it in a clear order,
 So that it cannot become an active household doorway before its Room and wake behavior are known.
 
@@ -714,12 +727,12 @@ So that it cannot become an active household doorway before its Room and wake be
 
 **Given** a connected but unconfigured Device
 **When** Amanda explicitly approves it
-**Then** iOS grants authorization and provisions an individual revocable Device Credential
+**Then** the selected mobile Client grants authorization and provisions an individual revocable Device Credential
 **And** the Device remains inactive until setup completes.
 
 **Given** approval succeeds
 **When** setup begins
-**Then** iOS guides the user through the ordered steps `Room` → `Wake Mappings` → `Ready`.
+**Then** the selected mobile Client guides the user through the ordered steps `Room` → `Wake Mappings` → `Ready`.
 
 **Given** Room assignment is incomplete
 **When** the Device is powered or reachable
@@ -728,17 +741,17 @@ So that it cannot become an active household doorway before its Room and wake be
 
 **Given** Room assignment is complete
 **When** one or more valid Wake Mappings are configured
-**Then** iOS and the Device show the pending setup state rather than implying readiness.
+**Then** the selected mobile Client and the Device show the pending setup state rather than implying readiness.
 
 **Given** all required setup steps complete
 **When** Amanda confirms `Ready`
-**Then** iOS and the Device show matching success indicators
+**Then** the selected mobile Client and the Device show matching success indicators
 **And** the Device may operate as an active doorway.
 
 **Given** setup fails, is offline, or has unverified changes
 **When** the setup attempt ends
 **Then** the Device remains inactive
-**And** iOS labels the configuration as pending or failed rather than applied.
+**And** the selected mobile Client labels the configuration as pending or failed rather than applied.
 
 ### Story 3.3: Keep Wake Mappings unique and Profile-specific
 
@@ -752,7 +765,7 @@ So that a recognized phrase can never route to the wrong identity.
 
 **Given** multiple Wake Mappings are configured across the household
 **When** a new or edited wake phrase would duplicate or ambiguously target another Profile
-**Then** iOS rejects it before publishing.
+**Then** the selected mobile Client rejects it before publishing.
 
 **Given** a valid Wake Mapping is saved
 **When** it is published to a Device
@@ -852,12 +865,12 @@ So that a powered Device cannot continue operating until it has been trusted aga
 
 **Given** Amanda opens approved Device details
 **When** she taps `Disconnect`
-**Then** iOS shows a confirmation explaining that the Device will stop working until it is re-enrolled.
+**Then** the selected mobile Client shows a confirmation explaining that the Device will stop working until it is re-enrolled.
 
 **Given** Amanda confirms the disconnect
 **When** revocation succeeds
 **Then** the Device Credential and Hermes access are revoked
-**And** iOS and the Device show the revoked or unavailable state.
+**And** the selected mobile Client and the Device show the revoked or unavailable state.
 
 **Given** a powered Device has been revoked
 **When** it attempts to wake or operate
@@ -874,7 +887,7 @@ So that a powered Device cannot continue operating until it has been trusted aga
 
 **Given** revocation or re-enrollment cannot be confirmed
 **When** the operation ends
-**Then** iOS shows a visible pending or failed state
+**Then** the selected mobile Client shows a visible pending or failed state
 **And** it does not present the Device as safely ready.
 
 ## Epic 4: Know when the household needs to leave
@@ -987,51 +1000,51 @@ So that the household never follows stale departure information.
 
 ## Epic 5: Carry the Hermes relationship with you
 
-iOS and the TUI provide independent portable and terminal conversation doorways with deliberate local history and shared phase semantics.
+iOS, Android, and the TUI provide independent portable and terminal conversation doorways with deliberate local history and shared phase semantics.
 
 **FRs covered:** FR20, FR21
 
-### Story 5.1: Use iOS as an independent conversation doorway
+### Story 5.1: Use a native mobile Client as an independent conversation doorway
 
-As a household member using the iOS Client,
+As a household member using the iOS or Android Client,
 I want to start typed or tap-to-speak conversations through my own Hermes Session,
-So that iOS remains a complete doorway with clear state, audio, transcript, and local continuity.
+So that the selected mobile Client remains a complete doorway with clear state, audio, transcript, and local continuity.
 
 **Covers:** FR20; NFR1, NFR2, NFR3, NFR4, NFR5; independent Session ownership, active Profile visibility, and intentional Local History.
 
 **Acceptance Criteria:**
 
-**Given** the iOS Client has valid configuration and authorization
+**Given** the selected mobile Client has valid configuration and authorization
 **When** Amanda starts a tap-to-speak turn
-**Then** iOS creates or uses its own Hermes Session
+**Then** the selected mobile Client creates or uses its own Hermes Session
 **And** it shows the active Profile before capture begins.
 
 **Given** a tap-to-speak turn is active
 **When** capture, processing, response, and playback events arrive
-**Then** iOS shows the corresponding Listening, Thinking, Speaking, and completion states without advancing early.
+**Then** the selected mobile Client shows the corresponding Listening, Thinking, Speaking, and completion states without advancing early.
 
 **Given** Amanda submits a typed prompt
 **When** the turn is sent
-**Then** it follows the same iOS Hermes Session
+**Then** it follows the same selected mobile Client Hermes Session
 **And** it receives the corresponding Hermes response without merging with a Puck, Display, TUI, or other Client Session.
 
 **Given** Hermes returns response text and audio
 **When** they stream
-**Then** iOS shows the transcript and plays the same Hermes response without replacing it with local fallback prose.
+**Then** the selected mobile Client shows the transcript and plays the same Hermes response without replacing it with local fallback prose.
 
 **Given** a turn completes successfully
 **When** Local History is updated
-**Then** the completed conversation is retained intentionally on iOS
+**Then** the completed conversation is retained intentionally on the selected mobile Client
 **And** raw audio is not stored.
 
 **Given** transport loss interrupts a turn
-**When** iOS reconnects
+**When** the selected mobile Client reconnects
 **Then** Retry reconnects only
 **And** the unresolved turn is not replayed and a fresh explicit initiation is required.
 
 **Given** permission, authorization, or Profile verification fails
 **When** Amanda attempts a turn
-**Then** iOS shows the failure
+**Then** the selected mobile Client shows the failure
 **And** it captures or submits no audio.
 
 ### Story 5.2: Use the TUI as an independent direct voice-chat gateway
