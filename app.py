@@ -3127,6 +3127,14 @@ class HermesStreamingApp(App):
             self._set_wake_listening(busy=True)
         resume_wake = wake_was_armed
         try:
+            # An explicit turn has been accepted, but the microphone is not
+            # open yet. Keep that acknowledgement distinct from listening so
+            # the TUI's doorway phase agrees with the wake path and any
+            # separate Room Display mirror.
+            self._set_voice_state(VOICE_HEARD)
+            # Give Textual one event-loop turn to paint the acknowledgement
+            # before the capture worker can replace it with listening.
+            await asyncio.sleep(0)
             capture_task = asyncio.create_task(asyncio.to_thread(self.session.capture_voice))
             # Assigned before the repaint below: `_set_voice_state` reads
             # `microphone_is_open`, and the one state that most obviously means
