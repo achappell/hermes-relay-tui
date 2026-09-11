@@ -7,6 +7,9 @@
   export let connectionState: ConnectionState;
   export let protocolError: string | null = null;
   export let accessibleOnly = false;
+  export let userTranscript = "";
+  export let responseVisible = true;
+  export let audioPlaybackFailed = false;
 
   const labels: Record<DisplayState, string> = {
     idle: "Ready",
@@ -31,16 +34,37 @@
     : connectionState === "connected"
       ? snapshot.state
       : "disconnected";
-  $: status = protocolError ?? snapshot.status_text ?? fallbackStatus[displayState] ?? null;
+  $: renderedState = audioPlaybackFailed && displayState === "speaking" ? "buffering" : displayState;
+  $: status = protocolError ?? (
+    audioPlaybackFailed && displayState === "speaking"
+      ? "Audio unavailable — response text remains visible"
+      : snapshot.status_text ?? fallbackStatus[renderedState] ?? null
+  );
   $: showResponse = protocolError === null && snapshot.response_text.length > 0
-    && (displayState === "speaking" || displayState === "idle");
+    && responseVisible && ["thinking", "speaking", "buffering", "idle"].includes(renderedState);
+  $: visibleUserTranscript = userTranscript.trim();
+  $: showUserTranscript = protocolError === null && visibleUserTranscript.length > 0
+    && ["heard", "listening", "thinking", "speaking", "buffering", "idle"].includes(renderedState);
   let liveMode: "off" | "polite";
-  $: liveMode = displayState === "speaking" ? "off" : "polite";
+  let responseLiveMode: "off" | "polite";
+  $: liveMode = renderedState === "speaking" || (renderedState === "idle" && showResponse)
+    ? "off"
+    : "polite";
+  $: responseLiveMode = renderedState === "idle" && showResponse ? "polite" : "off";
+  $: responsePhase = renderedState === "idle" && showResponse
+    ? "complete"
+    : renderedState === "buffering" && showResponse
+      ? "buffering"
+      : ["thinking", "speaking"].includes(renderedState) && showResponse
+        ? "streaming"
+        : ["error", "disconnected"].includes(renderedState)
+          ? "unavailable"
+          : "hidden";
   // Hermes announces the audio format about two seconds before the first
   // audible sample. Across that gap the unit is genuinely working and
   // genuinely silent, so it gets a sign of life that is visibly not a claim
   // to be talking.
-  $: working = displayState === "thinking" || displayState === "buffering";
+  $: working = renderedState === "thinking" || renderedState === "buffering";
 
   let responseViewport: HTMLDivElement | undefined;
   let showingResponse = false;
@@ -118,16 +142,17 @@
 
 <main
   class:has-response={showResponse}
+  class:has-user-transcript={showUserTranscript}
   class:accessible-only={accessibleOnly}
   class="state-surface"
-  data-state={displayState}
+  data-state={renderedState}
   aria-live={liveMode}
   aria-atomic="true"
 >
   <div class="ambient-canvas" aria-hidden="true"></div>
 
-  <section class="state-overlay" aria-label={labels[displayState]}>
-    <p class="state-label">{labels[displayState]}</p>
+  <section class="state-overlay" aria-label={labels[renderedState]}>
+    <p class="state-label">{labels[renderedState]}</p>
     {#if snapshot.account}
       <p class="account-label">Profile: {snapshot.account}</p>
     {/if}
@@ -136,15 +161,41 @@
         {status}{#if working}<span class="working-dot" data-working-dot aria-hidden="true"></span>{/if}
       </p>
     {/if}
+    {#if showUserTranscript}
+      <section
+        class="user-transcription"
+        data-user-transcription
+        aria-label="Your transcription"
+      >
+        <p class="transcription-label">You said</p>
+        <p
+          class="transcription-text"
+          data-user-transcription-text
+          aria-live={renderedState === "speaking" ? "polite" : "off"}
+          aria-atomic="true"
+        >{visibleUserTranscript}</p>
+      </section>
+    {/if}
     <div
       class:visible={showResponse}
       class="response-viewport"
       data-response-viewport
+      data-response-phase={responsePhase}
+      aria-live={responseLiveMode}
+      aria-atomic="true"
+      aria-label={responsePhase === "complete"
+        ? "Completed Hermes response"
+        : responsePhase === "buffering"
+          ? "Hermes response (audio unavailable)"
+          : responsePhase === "unavailable"
+            ? "Unavailable Hermes response"
+            : "Hermes response"}
+      role="region"
       bind:this={responseViewport}
     >
       <p class="response-text" data-response-text>{showResponse ? snapshot.response_text : ""}</p>
     </div>
-    {#if displayState === "prompt" && snapshot.prompt}
+    {#if renderedState === "prompt" && snapshot.prompt}
       <section class="prompt-summary" aria-label={snapshot.prompt.title}>
         <h2>{snapshot.prompt.title}</h2>
         <p>{snapshot.prompt.body}</p>

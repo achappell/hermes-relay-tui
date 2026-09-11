@@ -4526,19 +4526,27 @@ function PromptOverlay($$anchor, $$props) {
 var root$1 = /* @__PURE__ */ from_html(`<p class="account-label"> </p>`);
 var root_1$1 = /* @__PURE__ */ from_html(`<span class="working-dot" data-working-dot="" aria-hidden="true"></span>`);
 var root_2$1 = /* @__PURE__ */ from_html(`<p class="status-text"> <!></p>`);
-var root_3$1 = /* @__PURE__ */ from_html(`<li> </li>`);
-var root_4$1 = /* @__PURE__ */ from_html(`<section class="prompt-summary"><h2> </h2> <p> </p> <ul></ul></section>`);
-var root_5$1 = /* @__PURE__ */ from_html(`<main aria-atomic="true"><div class="ambient-canvas" aria-hidden="true"></div> <section class="state-overlay"><p class="state-label"> </p> <!> <!> <div data-response-viewport=""><p class="response-text" data-response-text=""> </p></div> <!></section></main>`);
+var root_3$1 = /* @__PURE__ */ from_html(`<section class="user-transcription" data-user-transcription="" aria-label="Your transcription"><p class="transcription-label">You said</p> <p class="transcription-text" data-user-transcription-text="" aria-atomic="true"> </p></section>`);
+var root_4$1 = /* @__PURE__ */ from_html(`<li> </li>`);
+var root_5$1 = /* @__PURE__ */ from_html(`<section class="prompt-summary"><h2> </h2> <p> </p> <ul></ul></section>`);
+var root_6$1 = /* @__PURE__ */ from_html(`<main aria-atomic="true"><div class="ambient-canvas" aria-hidden="true"></div> <section class="state-overlay"><p class="state-label"> </p> <!> <!> <!> <div data-response-viewport="" aria-atomic="true" role="region"><p class="response-text" data-response-text=""> </p></div> <!></section></main>`);
 function StateSurface($$anchor, $$props) {
   push($$props, false);
   const displayState = /* @__PURE__ */ mutable_source();
+  const renderedState = /* @__PURE__ */ mutable_source();
   const status = /* @__PURE__ */ mutable_source();
   const showResponse = /* @__PURE__ */ mutable_source();
+  const visibleUserTranscript = /* @__PURE__ */ mutable_source();
+  const showUserTranscript = /* @__PURE__ */ mutable_source();
+  const responsePhase = /* @__PURE__ */ mutable_source();
   const working = /* @__PURE__ */ mutable_source();
   let snapshot = prop($$props, "snapshot", 8);
   let connectionState = prop($$props, "connectionState", 8);
   let protocolError = prop($$props, "protocolError", 8, null);
   let accessibleOnly = prop($$props, "accessibleOnly", 8, false);
+  let userTranscript = prop($$props, "userTranscript", 8, "");
+  let responseVisible = prop($$props, "responseVisible", 8, true);
+  let audioPlaybackFailed = prop($$props, "audioPlaybackFailed", 8, false);
   const labels = {
     idle: "Ready",
     heard: "Heard you",
@@ -4556,6 +4564,7 @@ function StateSurface($$anchor, $$props) {
     disconnected: "Display disconnected — check the host connection"
   };
   let liveMode = /* @__PURE__ */ mutable_source();
+  let responseLiveMode = /* @__PURE__ */ mutable_source();
   let responseViewport = /* @__PURE__ */ mutable_source();
   let showingResponse = false;
   let previousResponse = "";
@@ -4619,26 +4628,54 @@ function StateSurface($$anchor, $$props) {
     }
   );
   legacy_pre_effect(
-    () => (deep_read_state(protocolError()), deep_read_state(snapshot()), get(displayState)),
+    () => (deep_read_state(audioPlaybackFailed()), get(displayState)),
     () => {
-      set(status, protocolError() ?? snapshot().status_text ?? fallbackStatus[get(displayState)] ?? null);
+      set(renderedState, audioPlaybackFailed() && get(displayState) === "speaking" ? "buffering" : get(displayState));
     }
   );
   legacy_pre_effect(
-    () => (deep_read_state(protocolError()), deep_read_state(snapshot()), get(displayState)),
+    () => (deep_read_state(protocolError()), deep_read_state(audioPlaybackFailed()), get(displayState), deep_read_state(snapshot()), get(renderedState)),
     () => {
-      set(showResponse, protocolError() === null && snapshot().response_text.length > 0 && (get(displayState) === "speaking" || get(displayState) === "idle"));
+      set(status, protocolError() ?? (audioPlaybackFailed() && get(displayState) === "speaking" ? "Audio unavailable — response text remains visible" : snapshot().status_text ?? fallbackStatus[get(renderedState)] ?? null));
     }
   );
-  legacy_pre_effect(() => get(displayState), () => {
-    set(liveMode, get(displayState) === "speaking" ? "off" : "polite");
+  legacy_pre_effect(
+    () => (deep_read_state(protocolError()), deep_read_state(snapshot()), deep_read_state(responseVisible()), get(renderedState)),
+    () => {
+      set(showResponse, protocolError() === null && snapshot().response_text.length > 0 && responseVisible() && ["thinking", "speaking", "buffering", "idle"].includes(get(renderedState)));
+    }
+  );
+  legacy_pre_effect(() => deep_read_state(userTranscript()), () => {
+    set(visibleUserTranscript, userTranscript().trim());
   });
-  legacy_pre_effect(() => get(displayState), () => {
-    set(working, get(displayState) === "thinking" || get(displayState) === "buffering");
+  legacy_pre_effect(
+    () => (deep_read_state(protocolError()), get(visibleUserTranscript), get(renderedState)),
+    () => {
+      set(showUserTranscript, protocolError() === null && get(visibleUserTranscript).length > 0 && [
+        "heard",
+        "listening",
+        "thinking",
+        "speaking",
+        "buffering",
+        "idle"
+      ].includes(get(renderedState)));
+    }
+  );
+  legacy_pre_effect(() => (get(renderedState), get(showResponse)), () => {
+    set(liveMode, get(renderedState) === "speaking" || get(renderedState) === "idle" && get(showResponse) ? "off" : "polite");
+  });
+  legacy_pre_effect(() => (get(renderedState), get(showResponse)), () => {
+    set(responseLiveMode, get(renderedState) === "idle" && get(showResponse) ? "polite" : "off");
+  });
+  legacy_pre_effect(() => (get(renderedState), get(showResponse)), () => {
+    set(responsePhase, get(renderedState) === "idle" && get(showResponse) ? "complete" : get(renderedState) === "buffering" && get(showResponse) ? "buffering" : ["thinking", "speaking"].includes(get(renderedState)) && get(showResponse) ? "streaming" : ["error", "disconnected"].includes(get(renderedState)) ? "unavailable" : "hidden");
+  });
+  legacy_pre_effect(() => get(renderedState), () => {
+    set(working, get(renderedState) === "thinking" || get(renderedState) === "buffering");
   });
   legacy_pre_effect_reset();
   init();
-  var main = root_5$1();
+  var main = root_6$1();
   let classes;
   var section = sibling(child(main), 2);
   var p = child(section);
@@ -4677,54 +4714,74 @@ function StateSurface($$anchor, $$props) {
       if (get(status)) $$render(consequent_2);
     });
   }
-  var div = sibling(node_1, 2);
-  let classes_1;
-  var p_3 = child(div);
-  var text_3 = only_child(p_3, true);
-  bind_this(div, ($$value) => set(responseViewport, $$value), () => get(responseViewport));
-  var node_3 = sibling(div, 2);
+  var node_3 = sibling(node_1, 2);
   {
     var consequent_3 = ($$anchor2) => {
-      var section_1 = root_4$1();
-      var h2 = child(section_1);
-      var text_4 = only_child(h2, true);
-      var p_4 = sibling(h2, 2);
-      var text_5 = only_child(p_4, true);
-      var ul = sibling(p_4, 2);
+      var section_1 = root_3$1();
+      var p_3 = sibling(child(section_1), 2);
+      var text_3 = only_child(p_3, true);
+      template_effect(() => {
+        set_attribute(p_3, "aria-live", get(renderedState) === "speaking" ? "polite" : "off");
+        set_text(text_3, get(visibleUserTranscript));
+      });
+      append($$anchor2, section_1);
+    };
+    if_block(node_3, ($$render) => {
+      if (get(showUserTranscript)) $$render(consequent_3);
+    });
+  }
+  var div = sibling(node_3, 2);
+  let classes_1;
+  var p_4 = child(div);
+  var text_4 = only_child(p_4, true);
+  bind_this(div, ($$value) => set(responseViewport, $$value), () => get(responseViewport));
+  var node_4 = sibling(div, 2);
+  {
+    var consequent_4 = ($$anchor2) => {
+      var section_2 = root_5$1();
+      var h2 = child(section_2);
+      var text_5 = only_child(h2, true);
+      var p_5 = sibling(h2, 2);
+      var text_6 = only_child(p_5, true);
+      var ul = sibling(p_5, 2);
       each(
         ul,
         5,
         () => (deep_read_state(snapshot()), untrack(() => snapshot().prompt.options)),
         index,
         ($$anchor3, option) => {
-          var li = root_3$1();
-          var text_6 = only_child(li, true);
-          template_effect(() => set_text(text_6, (get(option), untrack(() => get(option).label))));
+          var li = root_4$1();
+          var text_7 = only_child(li, true);
+          template_effect(() => set_text(text_7, (get(option), untrack(() => get(option).label))));
           append($$anchor3, li);
         }
       );
       template_effect(() => {
-        set_attribute(section_1, "aria-label", (deep_read_state(snapshot()), untrack(() => snapshot().prompt.title)));
-        set_text(text_4, (deep_read_state(snapshot()), untrack(() => snapshot().prompt.title)));
-        set_text(text_5, (deep_read_state(snapshot()), untrack(() => snapshot().prompt.body)));
+        set_attribute(section_2, "aria-label", (deep_read_state(snapshot()), untrack(() => snapshot().prompt.title)));
+        set_text(text_5, (deep_read_state(snapshot()), untrack(() => snapshot().prompt.title)));
+        set_text(text_6, (deep_read_state(snapshot()), untrack(() => snapshot().prompt.body)));
       });
-      append($$anchor2, section_1);
+      append($$anchor2, section_2);
     };
-    if_block(node_3, ($$render) => {
-      if (get(displayState), deep_read_state(snapshot()), untrack(() => get(displayState) === "prompt" && snapshot().prompt)) $$render(consequent_3);
+    if_block(node_4, ($$render) => {
+      if (get(renderedState), deep_read_state(snapshot()), untrack(() => get(renderedState) === "prompt" && snapshot().prompt)) $$render(consequent_4);
     });
   }
   template_effect(() => {
     classes = set_class(main, 1, "state-surface", null, classes, {
       "has-response": get(showResponse),
+      "has-user-transcript": get(showUserTranscript),
       "accessible-only": accessibleOnly()
     });
-    set_attribute(main, "data-state", get(displayState));
+    set_attribute(main, "data-state", get(renderedState));
     set_attribute(main, "aria-live", get(liveMode));
-    set_attribute(section, "aria-label", (get(displayState), untrack(() => labels[get(displayState)])));
-    set_text(text, (get(displayState), untrack(() => labels[get(displayState)])));
+    set_attribute(section, "aria-label", (get(renderedState), untrack(() => labels[get(renderedState)])));
+    set_text(text, (get(renderedState), untrack(() => labels[get(renderedState)])));
     classes_1 = set_class(div, 1, "response-viewport", null, classes_1, { visible: get(showResponse) });
-    set_text(text_3, (get(showResponse), deep_read_state(snapshot()), untrack(() => get(showResponse) ? snapshot().response_text : "")));
+    set_attribute(div, "data-response-phase", get(responsePhase));
+    set_attribute(div, "aria-live", get(responseLiveMode));
+    set_attribute(div, "aria-label", get(responsePhase) === "complete" ? "Completed Hermes response" : get(responsePhase) === "buffering" ? "Hermes response (audio unavailable)" : get(responsePhase) === "unavailable" ? "Unavailable Hermes response" : "Hermes response");
+    set_text(text_4, (get(showResponse), deep_read_state(snapshot()), untrack(() => get(showResponse) ? snapshot().response_text : "")));
   });
   append($$anchor, main);
   pop();
@@ -5294,6 +5351,7 @@ class BrowserVoiceController {
     __publicField(this, "sendText");
     __publicField(this, "onState");
     __publicField(this, "onError");
+    __publicField(this, "onTranscript");
     __publicField(this, "recognitionFactory");
     __publicField(this, "language");
     __publicField(this, "recognition", null);
@@ -5303,6 +5361,8 @@ class BrowserVoiceController {
     this.onState = options.onState ?? (() => {
     });
     this.onError = options.onError ?? (() => {
+    });
+    this.onTranscript = options.onTranscript ?? (() => {
     });
     this.recognitionFactory = options.recognitionFactory ?? defaultRecognitionFactory;
     this.language = options.language ?? "en-US";
@@ -5320,6 +5380,7 @@ class BrowserVoiceController {
         if (this.recognition === recognition) this.recognition = null;
         if (!this.submitting) {
           this.listening = false;
+          this.onTranscript("", true);
           this.emit("idle");
         }
       };
@@ -5337,26 +5398,21 @@ class BrowserVoiceController {
     if (!this.listening || this.recognition === null) return;
     this.listening = false;
     this.stopRecognition();
+    this.onTranscript("", true);
     if (!this.submitting) this.emit("idle");
   }
   reset() {
     this.stopRecognition();
     this.listening = false;
     this.submitting = false;
+    this.onTranscript("", true);
     this.emit("idle");
   }
   handleResult(event2) {
-    var _a2, _b2;
     if (!this.listening) return;
-    const finalText = [];
-    for (let index2 = event2.resultIndex; index2 < event2.results.length; index2 += 1) {
-      const result = event2.results[index2];
-      if (result == null ? void 0 : result.isFinal) {
-        const transcript = (_b2 = (_a2 = result[0]) == null ? void 0 : _a2.transcript) == null ? void 0 : _b2.trim();
-        if (transcript) finalText.push(transcript);
-      }
-    }
-    const text = finalText.join(" ").trim();
+    const { liveText, finalText: text } = recognitionText(event2);
+    const visibleText = text || liveText;
+    this.onTranscript(visibleText, text.length > 0);
     if (!text) return;
     this.listening = false;
     this.submitting = true;
@@ -5377,6 +5433,7 @@ class BrowserVoiceController {
     this.stopRecognition();
     this.listening = false;
     this.submitting = false;
+    this.onTranscript("", true);
     this.emit("error");
     this.onError(message);
   }
@@ -5420,16 +5477,23 @@ function wakeRemainder(text, wakePhrases) {
   }
   return null;
 }
-function finalRecognitionText(event2) {
+function recognitionText(event2) {
   var _a2;
-  const parts = [];
+  const liveParts = [];
+  const finalParts = [];
   for (let index2 = event2.resultIndex; index2 < event2.results.length; index2 += 1) {
     const result = event2.results[index2];
-    if (!(result == null ? void 0 : result.isFinal)) continue;
     const transcript = (_a2 = result[0]) == null ? void 0 : _a2.transcript;
-    if (transcript) parts.push(transcript);
+    if (!transcript) continue;
+    const normalized = normaliseSpeech(transcript);
+    if (!normalized) continue;
+    liveParts.push(normalized);
+    if (result.isFinal) finalParts.push(normalized);
   }
-  return normaliseSpeech(parts.join(" "));
+  return {
+    liveText: normaliseSpeech(liveParts.join(" ")),
+    finalText: normaliseSpeech(finalParts.join(" "))
+  };
 }
 class BrowserHandsFreeController {
   constructor(options) {
@@ -5439,6 +5503,7 @@ class BrowserHandsFreeController {
     __publicField(this, "followUpSeconds");
     __publicField(this, "onState");
     __publicField(this, "onError");
+    __publicField(this, "onTranscript");
     __publicField(this, "recognitionFactory");
     __publicField(this, "prepareRecognition");
     __publicField(this, "language");
@@ -5461,6 +5526,8 @@ class BrowserHandsFreeController {
     this.onState = options.onState ?? (() => {
     });
     this.onError = options.onError ?? (() => {
+    });
+    this.onTranscript = options.onTranscript ?? (() => {
     });
     this.recognitionFactory = options.recognitionFactory ?? defaultRecognitionFactory;
     this.prepareRecognition = options.prepareRecognition ?? defaultRecognitionPreparer;
@@ -5515,6 +5582,7 @@ class BrowserHandsFreeController {
     this.turnInFlight = false;
     this.clearTimers();
     this.stopRecognition();
+    this.onTranscript("", true);
     this.emit("off");
   }
   abort(message = "Display disconnected — hands-free is off") {
@@ -5634,9 +5702,9 @@ class BrowserHandsFreeController {
   }
   handleResult(event2, generation) {
     if (!this.isCurrent(generation) || this.phase === "submitting") return;
-    const text = finalRecognitionText(event2);
-    if (!text) return;
+    const { liveText, finalText: text } = recognitionText(event2);
     if (this.phase === "wake_ready") {
+      if (!text) return;
       const remainder = wakeRemainder(text, this.wakePhrases);
       if (remainder === null) return;
       if (!remainder || isLocalStopCommand(remainder)) {
@@ -5644,14 +5712,20 @@ class BrowserHandsFreeController {
         else this.beginInitialCapture(generation);
         return;
       }
+      this.onTranscript(remainder, true);
       this.submit(remainder, generation);
       return;
     }
     if (this.phase !== "heard" && this.phase !== "initial_capture" && this.phase !== "follow_up") return;
+    if (!text) {
+      this.onTranscript(liveText, false);
+      return;
+    }
     if (isLocalStopCommand(text)) {
       this.finishCapture(generation);
       return;
     }
+    this.onTranscript(text, true);
     this.submit(text, generation);
   }
   beginInitialCapture(generation) {
@@ -5721,6 +5795,7 @@ class BrowserHandsFreeController {
   }
   finishCapture(generation) {
     if (!this.isCurrent(generation)) return;
+    this.onTranscript("", true);
     this.clearCaptureTimer();
     this.stopRecognition();
     this.enterWakeReady(generation, true);
@@ -5730,6 +5805,7 @@ class BrowserHandsFreeController {
     this.captureTimer = setTimeout(() => {
       this.captureTimer = null;
       if (!this.isCurrent(generation)) return;
+      this.onTranscript("", true);
       this.stopRecognition();
       this.enterWakeReady(generation, true);
     }, Math.min(seconds, MAX_HANDS_FREE_TIMER_SECONDS) * 1e3);
@@ -5767,6 +5843,7 @@ class BrowserHandsFreeController {
     this.turnInFlight = false;
     this.clearTimers();
     this.stopRecognition();
+    this.onTranscript("", true);
     this.emit("error");
     this.onError(message);
   }
@@ -5998,8 +6075,74 @@ function App($$anchor, $$props) {
   let responseHasAudio = false;
   let playbackFinished = false;
   let pendingAudioTurnId = null;
+  let audioPlaybackFailed = /* @__PURE__ */ mutable_source(false);
+  let userTranscript = /* @__PURE__ */ mutable_source("");
+  let responseVisible = /* @__PURE__ */ mutable_source(false);
+  let responseRetentionTimer = null;
+  let responseRetentionGeneration = 0;
+  let trackedResponseText = "";
+  let responseTurnActive = false;
+  let responseRetentionExpired = false;
+  const responseActiveStates = /* @__PURE__ */ new Set(["heard", "listening", "thinking", "buffering", "speaking"]);
+  const RESPONSE_RETENTION_MS = 6e4;
   function isDisplayReady() {
     return get(protocolError) === null && get(connectionState) === "connected" && get(displayView).state === "idle" && get(displayView).connection_healthy && !get(displayView).is_busy;
+  }
+  function clearResponseRetentionTimer() {
+    responseRetentionGeneration += 1;
+    if (responseRetentionTimer !== null) {
+      clearTimeout(responseRetentionTimer);
+      responseRetentionTimer = null;
+    }
+  }
+  function clearConversationPresentation() {
+    clearResponseRetentionTimer();
+    set(userTranscript, "");
+    set(responseVisible, false);
+    trackedResponseText = "";
+    responseTurnActive = false;
+    responseRetentionExpired = false;
+  }
+  function beginCapturePresentation() {
+    clearConversationPresentation();
+  }
+  function scheduleResponseRetention(view) {
+    if (view.state !== "idle" || responseHasAudio && !playbackFinished || trackedResponseText.length === 0 || !get(responseVisible) || responseRetentionExpired || responseRetentionTimer !== null) return;
+    const generation = responseRetentionGeneration;
+    responseRetentionTimer = setTimeout(
+      () => {
+        if (generation !== responseRetentionGeneration) return;
+        responseRetentionTimer = null;
+        set(responseVisible, false);
+        responseRetentionExpired = true;
+        set(userTranscript, "");
+      },
+      RESPONSE_RETENTION_MS
+    );
+  }
+  function updateResponsePresentation(view) {
+    const activeTurn = responseActiveStates.has(view.state);
+    if (activeTurn) responseTurnActive = true;
+    if (view.response_text.length === 0) {
+      trackedResponseText = "";
+      set(responseVisible, false);
+      responseRetentionExpired = false;
+      clearResponseRetentionTimer();
+      if (view.state === "idle" || view.state === "prompt") responseTurnActive = false;
+    } else if (view.response_text !== trackedResponseText && (activeTurn || responseTurnActive)) {
+      trackedResponseText = view.response_text;
+      set(responseVisible, true);
+      responseRetentionExpired = false;
+      clearResponseRetentionTimer();
+    }
+    scheduleResponseRetention(view);
+  }
+  function setUserTranscript(text) {
+    set(userTranscript, text.trim());
+  }
+  function handleHandsFreeTranscript(text) {
+    if (text && get(handsFreeState) === "wake_ready") beginCapturePresentation();
+    setUserTranscript(text);
   }
   const stateChannelUrl = () => {
     const scheme = window.location.protocol === "https:" ? "wss:" : "ws:";
@@ -6013,6 +6156,11 @@ function App($$anchor, $$props) {
         var _a2, _b2, _c;
         set(displayView, view);
         set(protocolError, null);
+        if (view.state === "error" || view.state === "disconnected") {
+          clearConversationPresentation();
+        } else {
+          updateResponsePresentation(view);
+        }
         handsFreeController == null ? void 0 : handsFreeController.configure({
           wakePhrases: ((_a2 = view.capabilities) == null ? void 0 : _a2.wake_phrases) ?? [],
           wakeListenSeconds: (_b2 = view.capabilities) == null ? void 0 : _b2.wake_listen_seconds,
@@ -6047,6 +6195,7 @@ function App($$anchor, $$props) {
       },
       onConnectionState: (state2) => {
         set(connectionState, state2);
+        if (state2 !== "connected") clearConversationPresentation();
         if (state2 === "disconnected") {
           resetPlayback();
           voiceController == null ? void 0 : voiceController.reset();
@@ -6057,6 +6206,7 @@ function App($$anchor, $$props) {
       },
       onProtocolError: (message) => {
         set(protocolError, message);
+        clearConversationPresentation();
         resetPlayback();
         voiceController == null ? void 0 : voiceController.reset();
         handsFreeController == null ? void 0 : handsFreeController.abort("Display data unavailable — hands-free is off");
@@ -6066,6 +6216,8 @@ function App($$anchor, $$props) {
           responseHasAudio = true;
           playbackFinished = false;
           pendingAudioTurnId = event2.turn_id;
+          set(audioPlaybackFailed, false);
+          clearResponseRetentionTimer();
           audioPlayer == null ? void 0 : audioPlayer.start(event2);
         } else if (event2.type === "audio_end") {
           audioPlayer == null ? void 0 : audioPlayer.end(event2.turn_id);
@@ -6075,14 +6227,15 @@ function App($$anchor, $$props) {
           maybeCompleteHandsFreeTurn();
         } else {
           audioPlayer == null ? void 0 : audioPlayer.abort(event2.turn_id);
-          if (pendingAudioTurnId === event2.turn_id) {
-            playbackFinished = true;
-            handsFreeController == null ? void 0 : handsFreeController.abort("Response interrupted — hands-free is off");
-          }
+          if (pendingAudioTurnId !== event2.turn_id) return;
+          clearConversationPresentation();
+          resetPlayback();
+          handsFreeController == null ? void 0 : handsFreeController.abort("Response interrupted — hands-free is off");
         }
       },
       onAudioChunk: (chunk) => audioPlayer == null ? void 0 : audioPlayer.append(chunk),
       onVoiceError: () => {
+        clearConversationPresentation();
         set(voiceError, "Turn could not be sent");
         set(voiceState, "error");
       }
@@ -6095,12 +6248,17 @@ function App($$anchor, $$props) {
     });
     audioPlayer = new PcmAudioPlayer({
       onError: (message) => {
+        resetPlayback();
+        set(audioPlaybackFailed, true);
+        handsFreeController == null ? void 0 : handsFreeController.abort("Audio playback is unavailable — hands-free is off");
+        clearConversationPresentation();
         set(voiceError, message);
         set(voiceState, "error");
       },
       onPlaybackFinished: (turnId) => {
         if (pendingAudioTurnId !== turnId) return;
         playbackFinished = true;
+        updateResponsePresentation(get(displayView));
         maybeCompleteHandsFreeTurn();
       }
     });
@@ -6111,24 +6269,33 @@ function App($$anchor, $$props) {
         if (state2 !== "error") set(voiceError, null);
       },
       onError: (message) => {
+        clearConversationPresentation();
         set(voiceError, message);
-      }
+      },
+      onTranscript: (text) => setUserTranscript(text)
     });
     handsFreeController = new BrowserHandsFreeController({
       sendText: (text) => (bridge == null ? void 0 : bridge.sendVoiceTurn(text)) ?? false,
       wakePhrases: [],
       onState: (state2) => {
+        const previousState = get(handsFreeState);
         set(handsFreeState, state2);
+        if (state2 === "heard" || state2 === "follow_up" || state2 === "listening" && previousState !== "heard") {
+          beginCapturePresentation();
+        }
         if (state2 !== "error") set(handsFreeError, null);
       },
       onError: (message) => {
+        clearConversationPresentation();
         set(handsFreeError, message);
-      }
+      },
+      onTranscript: (text) => handleHandsFreeTranscript(text)
     });
     bridge.start();
     return () => {
       voiceController == null ? void 0 : voiceController.reset();
       handsFreeController == null ? void 0 : handsFreeController.disarm();
+      clearResponseRetentionTimer();
       resetPlayback();
       bridge == null ? void 0 : bridge.stop();
     };
@@ -6138,6 +6305,7 @@ function App($$anchor, $$props) {
     responseHasAudio = false;
     playbackFinished = false;
     pendingAudioTurnId = null;
+    set(audioPlaybackFailed, false);
   }
   async function toggleVoice() {
     if (voiceController === null || get(voiceState) === "submitting" || get(handsFreeArmed)) return;
@@ -6149,6 +6317,7 @@ function App($$anchor, $$props) {
     set(voiceError, null);
     if (audioPlayer !== null && !await audioPlayer.resume()) return;
     if (!isDisplayReady() || (handsFreeController == null ? void 0 : handsFreeController.isArmed)) return;
+    beginCapturePresentation();
     await voiceController.start();
   }
   async function toggleHandsFree() {
@@ -6216,6 +6385,15 @@ function App($$anchor, $$props) {
     },
     get protocolError() {
       return get(protocolError);
+    },
+    get userTranscript() {
+      return get(userTranscript);
+    },
+    get responseVisible() {
+      return get(responseVisible);
+    },
+    get audioPlaybackFailed() {
+      return get(audioPlaybackFailed);
     }
   });
   var node_1 = sibling(div, 2);

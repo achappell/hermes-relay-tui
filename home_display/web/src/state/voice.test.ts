@@ -47,10 +47,12 @@ describe("BrowserVoiceController", () => {
     const recognition = new FakeRecognition();
     const sendText = vi.fn(() => true);
     const states: string[] = [];
+    const transcripts: Array<{ text: string; isFinal: boolean }> = [];
     const controller = new BrowserVoiceController({
       recognitionFactory: () => recognition,
       sendText,
       onState: (state) => states.push(state),
+      onTranscript: (text, isFinal) => transcripts.push({ text, isFinal }),
     });
 
     await expect(controller.start()).resolves.toBe(true);
@@ -58,12 +60,17 @@ describe("BrowserVoiceController", () => {
     expect(recognition.continuous).toBe(false);
     expect(recognition.interimResults).toBe(true);
 
-    recognition.result(
-      { isFinal: false, transcript: "ignore this" },
-      { isFinal: true, transcript: "  send this  " },
-    );
+    recognition.result({ isFinal: false, transcript: "send this" });
+    expect(sendText).not.toHaveBeenCalled();
+    expect(transcripts).toEqual([{ text: "send this", isFinal: false }]);
+
+    recognition.result({ isFinal: true, transcript: "  send this  " });
 
     expect(sendText).toHaveBeenCalledWith("send this");
+    expect(transcripts).toEqual([
+      { text: "send this", isFinal: false },
+      { text: "send this", isFinal: true },
+    ]);
     expect(recognition.stops).toBe(1);
     expect(states).toEqual(["listening", "submitting"]);
   });
@@ -85,16 +92,40 @@ describe("BrowserVoiceController", () => {
 
   it("stops an active recognition session when reset clears the controller", async () => {
     const recognition = new FakeRecognition();
+    const transcripts: Array<{ text: string; isFinal: boolean }> = [];
     const controller = new BrowserVoiceController({
       recognitionFactory: () => recognition,
       sendText: () => true,
+      onTranscript: (text, isFinal) => transcripts.push({ text, isFinal }),
     });
 
     await expect(controller.start()).resolves.toBe(true);
+    recognition.result({ isFinal: false, transcript: "unfinished" });
     controller.reset();
 
     expect(recognition.stops).toBe(1);
     expect(recognition.onresult).toBeNull();
+    expect(transcripts).toEqual([
+      { text: "unfinished", isFinal: false },
+      { text: "", isFinal: true },
+    ]);
+  });
+
+  it("clears an interim transcript when recognition reports an empty correction", async () => {
+    const recognition = new FakeRecognition();
+    const transcripts: Array<{ text: string; isFinal: boolean }> = [];
+    const controller = new BrowserVoiceController({
+      recognitionFactory: () => recognition,
+      sendText: () => true,
+      onTranscript: (text, isFinal) => transcripts.push({ text, isFinal }),
+    });
+
+    await expect(controller.start()).resolves.toBe(true);
+    recognition.result({ isFinal: false, transcript: "draft" });
+    recognition.result({ isFinal: false, transcript: "" });
+
+    expect(transcripts.at(-1)).toEqual({ text: "", isFinal: false });
+    controller.reset();
   });
 });
 
@@ -140,6 +171,55 @@ describe("BrowserHandsFreeController", () => {
     recognitions.at(-1)?.result({ isFinal: true, transcript: "another question" });
     expect(sendText).toHaveBeenCalledTimes(2);
     controller.disarm();
+  });
+
+  it("reports interim and final hands-free question text but never the wake phrase", async () => {
+    vi.useFakeTimers();
+    const recognitions: FakeRecognition[] = [];
+    const transcripts: Array<{ text: string; isFinal: boolean }> = [];
+    const controller = new BrowserHandsFreeController({
+      recognitionFactory: () => {
+        const recognition = new FakeRecognition();
+        recognitions.push(recognition);
+        return recognition;
+      },
+      wakePhrases: ["hey hermes"],
+      sendText: () => true,
+      onTranscript: (text, isFinal) => transcripts.push({ text, isFinal }),
+    });
+
+    await expect(controller.arm()).resolves.toBe(true);
+    recognitions[0].result({ isFinal: true, transcript: "hey hermes" });
+    vi.advanceTimersByTime(150);
+
+    recognitions[0].result({ isFinal: false, transcript: "what is the weather" });
+    recognitions[0].result({ isFinal: true, transcript: "what is the weather?" });
+
+    expect(transcripts).toEqual([
+      { text: "what is the weather", isFinal: false },
+      { text: "what is the weather?", isFinal: true },
+    ]);
+    controller.disarm();
+  });
+
+  it("clears an interim hands-free transcript when capture is disarmed", async () => {
+    vi.useFakeTimers();
+    const recognition = new FakeRecognition();
+    const transcripts: Array<{ text: string; isFinal: boolean }> = [];
+    const controller = new BrowserHandsFreeController({
+      recognitionFactory: () => recognition,
+      wakePhrases: ["hey hermes"],
+      sendText: () => true,
+      onTranscript: (text, isFinal) => transcripts.push({ text, isFinal }),
+    });
+
+    await expect(controller.arm()).resolves.toBe(true);
+    recognition.result({ isFinal: true, transcript: "hey hermes" });
+    vi.advanceTimersByTime(150);
+    recognition.result({ isFinal: false, transcript: "unfinished" });
+    controller.disarm();
+
+    expect(transcripts.at(-1)).toEqual({ text: "", isFinal: true });
   });
 
   it("retries a follow-up recognizer that silently hangs after playback", async () => {
@@ -314,6 +394,7 @@ describe("BrowserHandsFreeController", () => {
     vi.useFakeTimers();
     const recognitions: FakeRecognition[] = [];
     const sendText = vi.fn(() => true);
+    const transcripts: Array<{ text: string; isFinal: boolean }> = [];
     const controller = new BrowserHandsFreeController({
       recognitionFactory: () => {
         const recognition = new FakeRecognition();
@@ -322,6 +403,7 @@ describe("BrowserHandsFreeController", () => {
       },
       wakePhrases: ["hey hermes"],
       sendText,
+      onTranscript: (text, isFinal) => transcripts.push({ text, isFinal }),
     });
 
     await expect(controller.arm()).resolves.toBe(true);
@@ -332,6 +414,7 @@ describe("BrowserHandsFreeController", () => {
 
     recognitions.at(-1)?.result({ isFinal: true, transcript: "hey hermes what time is it" });
     expect(sendText).toHaveBeenCalledWith("what time is it");
+    expect(transcripts.at(-1)).toEqual({ text: "what time is it", isFinal: true });
     controller.disarm();
   });
 
@@ -366,6 +449,7 @@ describe("BrowserHandsFreeController", () => {
     vi.useFakeTimers();
     const recognitions: FakeRecognition[] = [];
     const sendText = vi.fn(() => true);
+    const transcripts: Array<{ text: string; isFinal: boolean }> = [];
     const controller = new BrowserHandsFreeController({
       recognitionFactory: () => {
         const recognition = new FakeRecognition();
@@ -374,12 +458,18 @@ describe("BrowserHandsFreeController", () => {
       },
       wakePhrases: ["hey hermes"],
       sendText,
+      onTranscript: (text, isFinal) => transcripts.push({ text, isFinal }),
     });
 
     await expect(controller.arm()).resolves.toBe(true);
     recognitions[0].result({ isFinal: true, transcript: "hey hermes" });
+    recognitions[0].result({ isFinal: false, transcript: "stop" });
     recognitions[0].result({ isFinal: true, transcript: "stop!" });
     expect(sendText).not.toHaveBeenCalled();
+    expect(transcripts).toEqual([
+      { text: "stop", isFinal: false },
+      { text: "", isFinal: true },
+    ]);
     expect(controller.state).toBe("wake_ready");
     vi.advanceTimersByTime(50);
 

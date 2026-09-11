@@ -222,8 +222,38 @@ body {
   white-space: pre-wrap;
 }
 
+.user-transcription {
+  border-left: 0.3rem solid var(--signal-listening);
+  margin-top: clamp(1rem, 2.5vw, 2.5rem);
+  max-width: min(60rem, 100%);
+  padding-left: clamp(0.8rem, 1.7vw, 1.5rem);
+}
+
+.transcription-label {
+  color: var(--ink-secondary);
+  font-size: clamp(0.8rem, 1.3vw, 1.1rem);
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  margin: 0;
+  text-transform: uppercase;
+}
+
+.transcription-text {
+  color: var(--signal-listening);
+  font-size: clamp(1.15rem, 2.5vw, 2.5rem);
+  font-weight: 560;
+  line-height: 1.25;
+  margin: 0.35rem 0 0;
+  white-space: pre-wrap;
+}
+
 [data-state="idle"] .state-overlay {
   opacity: 0;
+}
+
+[data-state="idle"].has-response .state-overlay,
+[data-state="idle"].has-user-transcript .state-overlay {
+  opacity: 1;
 }
 
 [data-state="heard"] .status-text {
@@ -240,6 +270,10 @@ body {
 
 [data-state="speaking"] .response-text {
   color: var(--signal-speaking);
+}
+
+[data-response-phase="complete"] .response-text {
+  color: var(--ink-primary);
 }
 
 /* A slow breath, not a spinner. The unit is thinking, not straining. */
