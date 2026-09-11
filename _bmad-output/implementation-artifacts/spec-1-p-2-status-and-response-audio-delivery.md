@@ -2,7 +2,7 @@
 title: 'Status and response audio delivery'
 type: 'feature'
 created: '2026-09-10'
-status: 'in-progress'
+status: 'ready-for-dev'
 route: 'dispatch'
 review_loop_iteration: 0
 baseline_commit: 'be3958fec3554abaae019fc22412eb0fbb8e4437'
@@ -12,6 +12,14 @@ context:
 ---
 
 <frozen-after-approval reason="human-owned intent — do not modify unless human renegotiates">
+
+## PARKED 2026-09-10 22:55
+
+Tasks 1-2 are implemented and hardware-verified (PR #144); tasks 3-7 remain.
+Deliberately parked to keep exactly one implementation slice active while
+`1-p-1-authorized-wake-and-capture` runs. P-1 is the logically prior story --
+these were started out of order -- and P-2's remaining tasks do not depend on
+it, so this is a clean seam. Resume at task 3 (live-stream framing).
 
 ## Identifier reconciliation
 
