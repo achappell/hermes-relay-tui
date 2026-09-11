@@ -58,7 +58,7 @@ development_status:
   1-e-4-bounded-follow-up-and-exact-stop: backlog
   1-e-5-recovery-without-replay: backlog
   1-wk-1-one-shared-w-k-browser-voice-plus-display-surface-for-author:
-    ready-for-dev
+    review
   1-t-5-non-blocking-wake-listener-and-microphone-teardown-during-re: backlog
   1-t-6-detect-idle-relay-loss-and-present-honest-recovery-without-r: done
   epic-1-retrospective: optional
