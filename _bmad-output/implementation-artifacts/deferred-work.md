@@ -80,3 +80,7 @@
 - source_spec: `_bmad-output/implementation-artifacts/spec-continuous-wake-free-follow-ups.md`
   summary: Reconcile the contradictory AGENTS.md wording that describes connection loss as requiring explicit re-arm while also saying failure, disconnect, and disarm return to wake detection.
   evidence: `AGENTS.md:273-283` combines the explicit disarm/re-arm rule with the continuous conversation exit wording. Correcting it changes agent-context instructions and should be handled in a dedicated context reconciliation, not folded into this code repair.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-continuous-wake-free-follow-ups.md`
+  summary: Make repeated standalone `stop` idempotent across wake-capable surfaces.
+  evidence: If recognition returns a repeated stop phrase such as `stop stop`, or the user repeats `stop` while the hands-free conversation is closing, the words should remain a silent local stop rather than becoming Hermes content. Implement this consistently for the TUI, native appliance, and browser wake adapters while preserving the existing exact-stop punctuation rules and ordinary `Ctrl+R` semantics; no change is made in this slice.
