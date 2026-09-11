@@ -1003,6 +1003,70 @@ describe("App", () => {
     expect(container.querySelector('[data-state="listening"]')).not.toBeNull();
     expect(container.querySelector("[data-response-text]")).toHaveTextContent("");
     expect(container.querySelector("[data-user-transcription]")).toBeNull();
+
+    recognitions[1].onresult?.({
+      resultIndex: 0,
+      results: [{ isFinal: true, 0: { transcript: "and tomorrow?" } }],
+    });
+    await tick();
+    expect(bridges.instances.at(-1)?.sendVoiceTurn).toHaveBeenCalledTimes(2);
+    options?.onView({
+      type: "snapshot",
+      schema: 1,
+      sequence: 4,
+      state: "thinking",
+      response_text: "",
+      status_text: "Thinking",
+      media: null,
+      prompt: null,
+      capabilities,
+      is_busy: true,
+      connection_healthy: true,
+      can_choose: false,
+      can_dismiss: false,
+    });
+    options?.onAudioEvent?.({
+      type: "audio_start",
+      schema: 1,
+      turn_id: "turn-2",
+      sample_rate: 24000,
+      channels: 1,
+      sample_width: 2,
+    });
+    options?.onAudioChunk?.(new Uint8Array([5, 6]).buffer);
+    options?.onAudioChunk?.(new Uint8Array([7, 8]).buffer);
+    options?.onAudioEvent?.({ type: "audio_end", schema: 1, turn_id: "turn-2" });
+    options?.onView({
+      type: "snapshot",
+      schema: 1,
+      sequence: 5,
+      state: "idle",
+      response_text: "Later.",
+      status_text: null,
+      media: null,
+      prompt: null,
+      capabilities,
+      is_busy: false,
+      connection_healthy: true,
+      can_choose: false,
+      can_dismiss: false,
+    });
+    await tick();
+
+    expect(audioSources).toHaveLength(4);
+    expect(container.querySelector("[data-handsfree-status]")).not.toHaveTextContent(
+      "Listening for a follow-up",
+    );
+    audioSources[2].onended?.();
+    await tick();
+    expect(container.querySelector("[data-handsfree-status]")).not.toHaveTextContent(
+      "Listening for a follow-up",
+    );
+    audioSources[3].onended?.();
+    await tick();
+    expect(container.querySelector("[data-handsfree-status]")).toHaveTextContent(
+      "Listening for a follow-up",
+    );
     unmount();
     delete (window as Window & { SpeechRecognition?: unknown }).SpeechRecognition;
     delete (window as Window & { AudioContext?: unknown }).AudioContext;

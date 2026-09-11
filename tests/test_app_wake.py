@@ -624,6 +624,55 @@ async def test_wake_turn_keeps_sending_follow_ups_without_a_second_wake():
         assert fakes.listener.paused[-1] is False
 
 
+async def test_tui_waits_for_playback_drain_before_opening_a_follow_up():
+    close_started = threading.Event()
+    release_close = threading.Event()
+
+    class BlockingPlayer:
+        enabled = True
+        active = False
+        playing = False
+        failure = None
+        playback_position = 0.0
+
+        def start(self, _audio_format):
+            self.active = True
+
+        def write(self, _chunk):
+            self.playing = True
+
+        def close(self):
+            close_started.set()
+            assert release_close.wait(2)
+            self.active = False
+            self.playing = False
+
+    session = FakeSession(events=[
+        {"type": "audio_start", "sample_rate": 24000, "channels": 1, "sample_width": 2},
+        {"type": "audio_chunk", "data": b"\x01\x02"},
+        {"type": "audio_end"},
+        {"type": "turn_end", "turn_id": "audio-drain"},
+    ])
+    session.capture_results = iter(["what is the weather", ""])
+    app, fakes, _ = make_app(session=session, no_play=False)
+    app.player = BlockingPlayer()
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await app._handle_wake_command("on")
+        worker = asyncio.create_task(asyncio.to_thread(fakes.coordinator.on_wake))
+        try:
+            assert await asyncio.to_thread(close_started.wait, 1.0)
+            assert session.capture_calls == 1
+            release_close.set()
+            await asyncio.wait_for(worker, 2)
+            assert session.capture_calls == 2
+            assert session.sent_turns == [("what is the weather", "local")]
+        finally:
+            release_close.set()
+            await asyncio.wait_for(worker, 2)
+
+
 async def test_tui_wake_sender_reports_a_failed_turn_as_unsuccessful():
     class FailingWakeSession(FakeSession):
         def send_turn(self, text, *, stt_source="local"):

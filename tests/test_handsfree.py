@@ -441,6 +441,15 @@ def test_playback_finished_returns_to_idle():
     assert coordinator.state == handsfree.IDLE
 
 
+def test_non_wake_playback_returns_to_idle_with_follow_up_wiring():
+    coordinator, _, _, _ = _coordinator(
+        follow_up_capture=lambda: "should not be opened"
+    )
+    coordinator.playback_started()
+    coordinator.playback_finished()
+    assert coordinator.state == handsfree.IDLE
+
+
 def test_without_playback_wiring_the_unit_never_enters_speaking():
     """The appliance loop owns playback. With nothing injected the machine
     reduces to the three states this slice can exercise on its own."""

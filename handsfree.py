@@ -104,6 +104,7 @@ class HandsFreeCoordinator:
         self._state = IDLE
         self._capture_started = 0.0
         self._last_wake_phrase: str | None = None
+        self._wake_conversation_active = False
         self._lock = threading.Lock()
 
     @property
@@ -185,7 +186,10 @@ class HandsFreeCoordinator:
             if self._state != SPEAKING:
                 return
             self._set_state(
-                SENDING if self._follow_up_capture is not None else IDLE
+                SENDING
+                if self._wake_conversation_active
+                and self._follow_up_capture is not None
+                else IDLE
             )
 
     def on_wake(self, phrase: str | bool | None = None) -> bool:
@@ -240,6 +244,7 @@ class HandsFreeCoordinator:
             # Claim the turn before releasing the lock. Acknowledging is a
             # busy state, so a second detection during the tone is dropped by
             # the same single-flight rule as one during a capture.
+            self._wake_conversation_active = True
             self._set_state(ACKNOWLEDGING)
 
         # Blocking here is the ordering guarantee: the microphone does not
@@ -328,7 +333,9 @@ class HandsFreeCoordinator:
         return delivered
 
     def _finish(self) -> None:
-        self._set_state(IDLE)
+        with self._lock:
+            self._wake_conversation_active = False
+            self._set_state(IDLE)
 
     def tick(self) -> None:
         """Expire the listening window if nobody ever started speaking."""

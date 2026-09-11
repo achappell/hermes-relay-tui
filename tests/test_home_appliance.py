@@ -384,6 +384,29 @@ async def test_wake_to_spoken_answer_walks_the_display_through_the_real_states()
 
 
 @pytest.mark.asyncio
+async def test_non_wake_sethome_audio_returns_coordinator_to_idle():
+    script = [
+        {"type": "audio_start", "sample_rate": 24000, "channels": 1, "sample_width": 2},
+        {"type": "audio_chunk", "data": b"\x01\x02"},
+        {"type": "audio_end"},
+        {"type": "turn_end"},
+    ]
+    appliance, state = make_appliance(script)
+    task = asyncio.create_task(appliance.run())
+    try:
+        assert await _wait_for(lambda: state.get("coordinator") is not None and state["session"].connects)
+        await appliance._on_action("sethome", "yes")
+
+        assert state["coordinator"].state == handsfree.IDLE
+        assert state["listener"].paused[-1] is False
+    finally:
+        appliance._stopping.set()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+
+@pytest.mark.asyncio
 async def test_appliance_turn_entry_guards_all_capture_and_send_paths():
     session = FakeSession()
     appliance, _state = make_appliance(session=session)
@@ -1598,6 +1621,56 @@ async def test_home_keeps_opening_bounded_follow_ups_without_another_wake(
 
 
 @pytest.mark.asyncio
+async def test_home_waits_for_playback_drain_before_opening_a_follow_up():
+    class DelayedPlayer(FakePlayer):
+        def __init__(self):
+            super().__init__()
+            self.close_started = threading.Event()
+            self.release_close = threading.Event()
+            self.close_calls = 0
+
+        def close(self):
+            self.close_calls += 1
+            if self.close_calls == 1:
+                self.close_started.set()
+                assert self.release_close.wait(2)
+            super().close()
+
+    script = [
+        {"type": "audio_start", "sample_rate": 24000, "channels": 1, "sample_width": 2},
+        {"type": "audio_chunk", "data": b"\x01\x02"},
+        {"type": "audio_end"},
+        {"type": "turn_end"},
+    ]
+    session = FakeSession(script)
+    session.follow_up_results = iter(["and tomorrow?", ""])
+    player = DelayedPlayer()
+    appliance, state = make_appliance(
+        session=session,
+        player=player,
+        args=_args(wake_followup_seconds=12.0),
+    )
+    task = asyncio.create_task(appliance.run())
+    worker = None
+    try:
+        assert await _wait_for(lambda: state.get("coordinator") is not None and session.connects)
+        worker = asyncio.create_task(asyncio.to_thread(state["coordinator"].on_wake))
+        assert await asyncio.to_thread(player.close_started.wait, 1.0)
+        assert session.capture_timeouts == [None]
+        player.release_close.set()
+        await asyncio.wait_for(worker, 2)
+        assert session.capture_timeouts == [None, 12.0, 12.0]
+    finally:
+        player.release_close.set()
+        if worker is not None:
+            await asyncio.wait_for(worker, 2)
+        appliance._stopping.set()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("script", [
     [{"type": "error", "error": "failed"}, {"type": "turn_end"}],
     [{"type": "turn_interrupted"}, {"type": "turn_end"}],
@@ -1612,6 +1685,41 @@ async def test_unsuccessful_home_turn_never_opens_follow_up(script):
     await _run_until_idle(appliance, state)
     assert session.capture_timeouts == [None]
     assert session.turns == ["what is the weather"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("later_script", [
+    [{"type": "error", "error": "failed"}, {"type": "turn_end"}],
+    [{"type": "turn_interrupted"}, {"type": "turn_end"}],
+    [{"type": "audio_abort"}, {"type": "turn_end"}],
+    [ConnectionError("lost")],
+    [],
+])
+async def test_later_home_failure_never_opens_another_follow_up(later_script):
+    class SequencedSession(FakeSession):
+        def __init__(self):
+            super().__init__()
+            self.scripts = [[{"type": "turn_end"}], later_script]
+
+        def send_turn(self, text: str, *, stt_source: str = "local"):
+            self.turns.append(text)
+            script = self.scripts.pop(0)
+
+            async def _events():
+                for event in script:
+                    if isinstance(event, Exception):
+                        raise event
+                    yield event
+
+            return _events()
+
+    session = SequencedSession()
+    session.follow_up_results = iter(["again", "must not capture"])
+    appliance, state = make_appliance(session=session)
+    await _run_until_idle(appliance, state)
+
+    assert session.capture_timeouts == [None, 6.0]
+    assert session.turns == ["what is the weather", "again"]
 
 
 @pytest.mark.asyncio

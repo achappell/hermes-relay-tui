@@ -74,3 +74,9 @@
 
 - Wake-listener `stop()` can join its worker for up to two seconds when connection recovery calls `_disarm_wake()` from the Textual event loop. This is pre-existing lifecycle work outside Story 1.3 and needs a separate non-blocking shutdown design.
 - The review also re-confirmed the pre-existing reSpeaker diagnostic, format, lifecycle, output, and provenance findings already recorded at the top of this file. They remain outside the TUI follow-up slice and must not be folded into its implementation.
+
+## Deferred from: code review of spec-continuous-wake-free-follow-ups (2026-09-11)
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-continuous-wake-free-follow-ups.md`
+  summary: Reconcile the contradictory AGENTS.md wording that describes connection loss as requiring explicit re-arm while also saying failure, disconnect, and disarm return to wake detection.
+  evidence: `AGENTS.md:273-283` combines the explicit disarm/re-arm rule with the continuous conversation exit wording. Correcting it changes agent-context instructions and should be handled in a dedicated context reconciliation, not folded into this code repair.

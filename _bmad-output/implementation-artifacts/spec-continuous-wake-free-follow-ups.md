@@ -155,6 +155,21 @@ their tests, operational docs/spec notes, and generated browser assets.
   delivery, detector pause/resume ownership, playback boundaries, failure or
   disconnect exits, no-replay behavior, or the Puck/ESP32 adapter boundary.
 
+#### Fresh code-review triage (2026-09-11)
+
+- [x] [Review][Patch] Restore `IDLE` after non-wake appliance playback [handsfree.py:176-189] — `playback_finished()` now stays in `SENDING` whenever follow-up capture is configured, but the appliance wires that callback for ordinary actions such as `/sethome`; those turns never enter `on_wake`, so wake detection can remain paused permanently. Track an active wake conversation separately and add a regression test.
+- [x] [Review][Patch] Cover the second and later browser playback-drain handoffs [home_display/web/src/App.test.ts:935-1003; home_display/web/src/state/voice.test.ts:163-178] — Current App coverage proves the first follow-up waits for all queued audio sources, while the repeated controller test calls `turnFinished()` directly. Add an App-level repeated-turn case proving later windows also wait for playback completion.
+- [x] [Review][Patch] Exercise delayed playback during repeated native-appliance turns [tests/test_home_appliance.py:1584-1597] — The repeated-turn fixture uses immediately completing, no-audio fake sessions and cannot catch a follow-up window opening before a delayed response drains. Add a playback-drain regression at the appliance boundary.
+- [x] [Review][Patch] Exercise delayed playback during repeated TUI turns [tests/test_app_wake.py:598-624] — The repeated TUI test uses a fake sender without streamed audio or delayed player cleanup, so it does not lock the playback boundary for later wake-free windows. Add the smallest focused delayed-drain case.
+- [x] [Review][Patch] Cover failure exits after the initial wake turn [tests/test_home_appliance.py:1600-1614] — Existing appliance failure coverage only fails the initial turn. Add later-window error/interruption/disconnect/incomplete-response cases proving no subsequent capture or replay is opened.
+- [x] [Review][Defer] Clarify the wake disarm versus wake-listening wording [AGENTS.md:273-283] — deferred: the fix edits agent-context instructions, which must be reconciled separately from this implementation review.
+
+##### Rejected
+
+- `false` — The claim that the completed spec falsely asserts live validation is refuted by its explicit verification note that live Hermes smoke was not run; `done` records the implementation artifact's delivery state, not an unperformed manual smoke result. The native iOS behavior is explicitly existing cross-repository evidence, not a code change claimed by this diff.
+- `false` — The claim that disarm can send a late follow-up is refuted by `_disarm_wake()` clearing `_wake_loop` before releasing the coordinator and `_send_wake_turn()` returning `False` when that loop is absent; an already-submitted turn is not a new replay.
+- `rejected` — The cross-surface spec is intentionally evidence for the existing TUI and W/K delivery boundaries; formal status remains in their owning trackers, so no new tracker identity is required for this artifact.
+
 ## Verification
 
 **Commands:**
