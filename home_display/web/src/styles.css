@@ -131,6 +131,14 @@ body {
   color: var(--signal-error);
 }
 
+.browser-voice-controls [data-voice-error],
+.browser-voice-controls [data-handsfree-error] {
+  overflow: visible;
+  text-overflow: clip;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
 .state-surface {
   align-items: center;
   background: var(--canvas-night);
