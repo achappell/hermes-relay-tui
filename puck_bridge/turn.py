@@ -68,6 +68,17 @@ TURN_BACKSTOP_SECONDS = 600.0
 STREAM_CLOSE_TIMEOUT_SECONDS = 5.0
 
 
+# Writing PCM to the output device must be bounded too. `PCMPlayer.write`
+# ends in a blocking `stream.write()` on the sound device, which normally
+# paces playback in real time -- but a wedged or half-closed stream blocks
+# forever. The per-event timeouts above bound FETCHING events from Hermes;
+# on their own they leave PROCESSING them unbounded, which is exactly where
+# a turn hung for minutes on 2026-09-11 while the 20s stall timeout sat
+# uselessly around the fetch. Generous, because a legitimate write blocks
+# for roughly the duration of the audio it is pacing.
+PLAYBACK_WRITE_TIMEOUT_SECONDS = 60.0
+
+
 class TurnTimeout(Exception):
     """Raised inside `_run_turn` when Hermes stops producing events."""
 
@@ -194,6 +205,32 @@ class TurnRunner:
             )
             return False
 
+    async def _write_audio(self, data: bytes) -> None:
+        """Hand one PCM chunk to the player, bounded.
+
+        `PCMPlayer.write` blocks on the sound device, which is correct --
+        it is what paces playback in real time. But a wedged or half-closed
+        stream blocks forever, and nothing else in this turn can time that
+        out: the per-event deadlines guard fetching events from Hermes, not
+        processing them. Observed 2026-09-11 as a turn that hung for
+        minutes past its 20s stall budget with no log line at all, because
+        the stall budget was wrapped around the wrong await.
+
+        A timeout here aborts the turn rather than limping on: the player
+        is shared across turns, so continuing to feed a stream that will
+        not drain risks the next turn inheriting the same wedge.
+        """
+        try:
+            await asyncio.wait_for(
+                asyncio.to_thread(self._player.write, data),
+                PLAYBACK_WRITE_TIMEOUT_SECONDS,
+            )
+        except TimeoutError:
+            raise TurnTimeout(
+                "playback stalled for %.0fs writing audio"
+                % PLAYBACK_WRITE_TIMEOUT_SECONDS
+            ) from None
+
     async def _run_turn(self, text: str) -> bool:
         """Drive one `send_turn` to completion, speaking the response here."""
         file_audio = bytearray()
@@ -234,7 +271,7 @@ class TurnRunner:
                         self._player.start(audio_format)
                 elif kind == "audio_chunk":
                     if self._player.active:
-                        await asyncio.to_thread(self._player.write, event["data"])
+                        await self._write_audio(event["data"])
                         spoke = True
                         chunks_spoken += 1
                 elif kind == "audio_file_start":
@@ -258,7 +295,7 @@ class TurnRunner:
                         if not self._player.active:
                             self._player.start(fmt)
                         if self._player.active:
-                            await asyncio.to_thread(self._player.write, decoded)
+                            await self._write_audio(decoded)
                             spoke = True
         finally:
             # Close the generator before the player: it may still be
@@ -283,7 +320,16 @@ class TurnRunner:
                 except Exception:  # pragma: no cover - best-effort cleanup
                     logger.debug("puck bridge: error closing turn stream", exc_info=True)
             if self._player.active:
-                await asyncio.to_thread(self._player.close)
+                try:
+                    await asyncio.wait_for(
+                        asyncio.to_thread(self._player.close),
+                        PLAYBACK_WRITE_TIMEOUT_SECONDS,
+                    )
+                except TimeoutError:
+                    logger.error(
+                        "puck bridge: player did not close within %.0fs",
+                        PLAYBACK_WRITE_TIMEOUT_SECONDS,
+                    )
         # Surface a playback failure instead of discarding it. PCMPlayer
         # records problems on `.failure` (unsupported format, device error,
         # aborted stream) and nothing here ever read it, so a turn could

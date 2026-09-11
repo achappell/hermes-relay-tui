@@ -36,10 +36,10 @@ logger = logging.getLogger("hermes_relay_tui.puck_bridge.receiver")
 # Must match pcm_capture.h's UPLOAD_CHUNK_BYTES. Only used here as a sanity
 # hint in logs -- the receiver reassembles by declared chunk index, not by
 # assuming every chunk is exactly this size (the last chunk of a capture is
-# usually shorter). Shrunk from 16000 to 2000 alongside the firmware
-# constant -- see pcm_capture.h's comment for why (esp_http_client_write()
-# aborting mid-body on a weak WiFi link).
-UPLOAD_CHUNK_BYTES = 2000
+# usually shorter). Restored to 16000 alongside the firmware constant once
+# the Puck was relocated to a strong signal -- see pcm_capture.h's comment
+# for the full history, including why it was temporarily 2000.
+UPLOAD_CHUNK_BYTES = 16000
 
 # The raw capture is stereo, 32-bit, 16kHz -- the exact format
 # MicrophoneSource hands to micro_wake_word before any of its own
@@ -288,9 +288,22 @@ def make_handler(
                 logger.info("puck bridge capture produced an empty transcript")
                 return
             try:
-                on_transcript(transcript)
+                # The return value matters: the coordinator is single-flight,
+                # so a transcript arriving while an earlier turn is still in
+                # flight is DROPPED. That was silent -- on 2026-09-11 a
+                # wedged turn swallowed a following capture with nothing in
+                # the log to say a question had been thrown away. A dropped
+                # turn is a lost turn and should say so.
+                delivered = on_transcript(transcript)
             except Exception:
                 logger.exception("puck bridge turn callback failed")
+            else:
+                if delivered is False:
+                    logger.warning(
+                        "puck bridge dropped a capture: a turn is already in "
+                        "flight (single-flight coordinator). The question was "
+                        "transcribed but never asked."
+                    )
 
     return Handler
 
