@@ -417,6 +417,56 @@ async def test_voice_status_surface_displays_lifecycle_states():
             )
 
 
+async def test_explicit_voice_turn_shows_heard_before_microphone_listening():
+    class BlockingVoiceSession(FakeSession):
+        def __init__(self):
+            super().__init__()
+            self.capture_started = threading.Event()
+            self.capture_release = threading.Event()
+            self.capture_result = "spoken words"
+
+        def capture_voice(self):
+            self.capture_started.set()
+            self.capture_release.wait(1)
+            return self.capture_result
+
+    session = BlockingVoiceSession()
+    app = HermesStreamingApp(args=make_args(), session_factory=lambda: session)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        phase_history = []
+        heard_seen = asyncio.Event()
+        original_set_voice_state = app._set_voice_state
+
+        def record_voice_state(state):
+            phase_history.append((state, app.microphone_is_open))
+            original_set_voice_state(state)
+            if state == app_module.VOICE_HEARD:
+                heard_seen.set()
+
+        app._set_voice_state = record_voice_state
+        capture = asyncio.create_task(app._capture_voice_turn())
+        await asyncio.wait_for(heard_seen.wait(), 1)
+        assert voice_status_of(app) == "● heard"
+        assert app.microphone_is_open is False
+        assert session.capture_started.is_set() is False
+
+        assert await asyncio.to_thread(session.capture_started.wait, 1)
+
+        assert phase_history[:2] == [
+            (app_module.VOICE_HEARD, False),
+            (app_module.VOICE_LISTENING, True),
+        ]
+        assert voice_status_of(app).startswith("● listening…")
+        assert "mic open" in voice_status_of(app)
+
+        session.capture_release.set()
+        await asyncio.wait_for(capture, 1)
+        assert session.sent_turns == [("spoken words", "local-faster-whisper")]
+        assert "you> spoken words" in transcript_of(app)
+        assert voice_status_of(app) == "● ready"
+
+
 async def test_connect_banner_is_appended_from_the_worker():
     session = FakeSession(hello={"chat_id": "chat-42"})
     app = HermesStreamingApp(args=make_args(), session_factory=lambda: session)
