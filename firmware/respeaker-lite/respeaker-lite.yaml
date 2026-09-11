@@ -40,6 +40,9 @@ esphome:
   # patterns that crash-looped the device in a prior session.
   includes:
     - pcm_capture.h
+    # PUCK-01.7 task 1 diagnostic: output-direction proof-of-life. Kept in
+    # its own header so the capture path stays untangled from playback.
+    - speaker_tone.h
   # micro_wake_word does not start listening on its own -- MicroWakeWord::setup()
   # never calls start(), and its own data callback explicitly drops audio while
   # state_ == STOPPED. Without a voice_assistant: component (which normally
@@ -63,6 +66,31 @@ esphome:
     - priority: -200  # after the capture buffer is allocated above
       then:
         - lambda: pcm_capture::start();
+    # PUCK-01.7 task 1: output proof-of-life, last thing at boot so a
+    # failure here cannot delay wake-word setup above. The XMOS chip mutes
+    # its speaker output by default -- without this unmute the I2S writes
+    # succeed and nothing is audible, which would look exactly like a
+    # broken output path. Delay lets the XU316 finish its own init (it is
+    # the bus master for both directions) before the first DMA write.
+    - priority: -300
+      then:
+        - delay: 3s
+        - lambda: |-
+            id(respeaker).unmute_speaker();
+            id(puck_speaker).set_volume(0.6f);
+            speaker_tone::arm(id(puck_speaker));
+        # The speaker's start() is ASYNCHRONOUS: it only reaches
+        # STATE_RUNNING once the component's own loop() has run and its
+        # FreeRTOS task has come up. A busy-wait inside the lambda above
+        # would deadlock that -- blocking in an automation stops the main
+        # loop, so loop() never runs, so the state never transitions, so
+        # the wait never ends. ESPHome's `delay:` is the opposite: it
+        # yields back to the main loop and resumes later, which is exactly
+        # what lets the speaker finish starting. (First attempt skipped
+        # this and every play() call returned 0 against a still-starting
+        # speaker, ~120ms before it logged "Starting".)
+        - delay: 2s
+        - lambda: speaker_tone::play(id(puck_speaker), 440, 400);
 esp32:
   board: seeed_xiao_esp32s3
   variant: esp32s3
@@ -184,18 +212,44 @@ respeaker_lite:
 # input. Pin assignments sourced from Seeed's own wiki tutorial for this
 # exact board (wiki.seeedstudio.com/respeaker_lite_ha/), also used by
 # formatBCE/Respeaker-Lite-ESPHome-integration.
+# PUCK-01.7 task 1: split into two buses so the board can both listen and
+# speak. Input and output are separate `i2s_audio` entries that SHARE the
+# same three clock pins -- the XU316 is the bus master for both directions,
+# so lrclk/bclk/mclk are genuinely one set of wires driving two DMA
+# channels. `allow_other_uses: true` on each pin is what lets two
+# components legally claim them; without it ESPHome rejects the duplicate
+# at validation. This is not a workaround -- it is the exact shape
+# formatBCE's proven reference config for this board uses (see
+# respeaker-lite-stock-test.yaml:1144-1166).
 i2s_audio:
-  - id: i2s_bus
-    i2s_lrclk_pin: GPIO7
-    i2s_bclk_pin: GPIO8
-    i2s_mclk_pin: GPIO9
+  - id: i2s_input
+    i2s_lrclk_pin:
+      number: GPIO7
+      allow_other_uses: true
+    i2s_bclk_pin:
+      number: GPIO8
+      allow_other_uses: true
+    i2s_mclk_pin:
+      number: GPIO9
+      allow_other_uses: true
+
+  - id: i2s_output
+    i2s_lrclk_pin:
+      number: GPIO7
+      allow_other_uses: true
+    i2s_bclk_pin:
+      number: GPIO8
+      allow_other_uses: true
+    i2s_mclk_pin:
+      number: GPIO9
+      allow_other_uses: true
 
 # The XU316's I2S output arrives as external-ADC, 48kHz, 32-bit, stereo
 # audio (secondary/subordinate I2S mode — the XU316 is the bus master).
 microphone:
   - platform: i2s_audio
     id: puck_mic
-    i2s_audio_id: i2s_bus
+    i2s_audio_id: i2s_input
     i2s_din_pin: GPIO44
     adc_type: external
     pdm: false
@@ -243,6 +297,39 @@ microphone:
       # Story 5: same bounded-memcpy shape, into the separate VAD-gated
       # wake-capture buffer. A no-op whenever a wake capture isn't active.
       - lambda: pcm_capture::wake_capture::write(x.data(), x.size());
+# PUCK-01.7 task 1: the board's onboard TLV320AIC3204 codec, reached over
+# the same internal I2C bus the respeaker_lite component already uses to
+# talk to the XMOS chip. The speaker below drives volume through this.
+audio_dac:
+  - platform: aic3204
+    id: aic3204_dac
+    i2c_id: internal_i2c
+
+# PUCK-01.7 task 1: output path. Mirrors the mic's format exactly (48kHz,
+# 32-bit, stereo, secondary mode) because both directions ride the same
+# XU316-mastered clocks -- a mismatched output rate would fight the shared
+# bclk/lrclk. Values match formatBCE's proven reference block for this
+# board (respeaker-lite-stock-test.yaml:1179-1192).
+#
+# `timeout: never` keeps the I2S peripheral from tearing itself down
+# between utterances; `buffer_duration: 100ms` is the DMA cushion that
+# absorbs network jitter once PUCK-01.7 task 2 streams real TTS through
+# here. Story-5's chunked-upload path is deliberately untouched by all of
+# this -- this is a second, independent direction on the bus.
+speaker:
+  - platform: i2s_audio
+    id: puck_speaker
+    i2s_audio_id: i2s_output
+    i2s_dout_pin: GPIO43
+    dac_type: external
+    audio_dac: aic3204_dac
+    sample_rate: 48000
+    bits_per_sample: 32bit
+    i2s_mode: secondary
+    channel: stereo
+    timeout: never
+    buffer_duration: 100ms
+
 # On-device wake-word detection. Wake phrase candidates are microwakeword.com-
 # trained models (hey_missy/hey_bestie/hey_skippy below), A/B'd live against
 # each other on real hardware -- see README.md for the "not hey hermes"
@@ -281,6 +368,30 @@ micro_wake_word:
   vad:
     model: wake_models/vad.json
     probability_cutoff: 0.05
+  # Root cause of the "~1s VAD truncation" finding (2026-09-10 hardware
+  # session): this option defaults to TRUE in micro_wake_word/__init__.py,
+  # and this file never set it. With it true, the DETECTING_WAKE_WORD case
+  # in micro_wake_word.cpp calls stop() in the *same* loop iteration that
+  # fires on_wake_word_detected -- so the instant a wake capture starts,
+  # the inference task tears down: process_probabilities_() stops updating
+  # vad_state_, unload_models_() clears the VAD sliding window, and
+  # microphone_source_->stop() drops the audio source feeding the capture.
+  # Measured on hardware against the unfixed build: the wake trigger and
+  # "Stopping wake word detection" land in the same millisecond, mic_diag
+  # then goes silent for 1.7s -- exactly while the command is being spoken
+  # -- until the 2s "mww stopped -- restarting" self-heal below re-arms
+  # detection. Only then does VAD see real silence and close the window
+  # 800ms later, at ~130KB. So the captured ~1s is post-restart audio, not
+  # the question: every transcript came back empty because the payload was
+  # silence (faster-whisper's own VAD filter stripped 1.020s of 1.020s).
+  # The VAD was never deaf to sustained speech; it was not running.
+  #
+  # That self-heal has therefore been firing on every single wake, which is
+  # what previously made this look like intermittent weak-signal instability.
+  #
+  # With this false: capture grew to 314160 bytes (2.45s) tracking actual
+  # speech, whisper retained 1.49s of it, language confidence 0.57 -> 0.98.
+  stop_after_detection: false
   # Story 5: turns a validated on-device wake into an actual outbound audio
   # payload for the first time. `wake_word` is the automation variable this
   # component's own trigger provides (see components/micro_wake_word/
