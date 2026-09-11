@@ -38,6 +38,17 @@ def test_streaming_records_keep_roles_and_markdown_together():
     assert "print('ok')" in output
 
 
+def test_custom_assistant_label_is_used_by_rich_rendering():
+    buffer = TranscriptBuffer(assistant_label="Missy")
+    buffer.start_stream("assistant")
+    buffer.append_stream("Hello")
+
+    output = rendered_text(buffer)
+
+    assert "Missy:" in output
+    assert "hermes:" not in output
+
+
 def test_user_message_newlines_survive_rendering():
     # Markdown treats a single "\n" as a soft break (renders as a space);
     # user-typed text (e.g. via Shift+Enter) must keep its literal line breaks.

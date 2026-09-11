@@ -96,7 +96,7 @@ async def test_profile_switch_closes_old_session_preserves_draft_and_scopes_stat
 
     async with app.run_test() as pilot:
         await pilot.pause()
-        assert "profile amanda" in app.sub_title
+        assert "Profile: Amanda" in app.sub_title
         old_session = app.session
         composer = app.query_one("#composer", Composer)
         composer.text = "draft for Jensen"
@@ -111,13 +111,15 @@ async def test_profile_switch_closes_old_session_preserves_draft_and_scopes_stat
         assert factory.sessions[-1][1].connect_calls == 1
         assert app.args.profile_name == "jensen"
         assert app.args.url == "wss://jensen.example/voice-session"
-        assert "profile jensen" in app.sub_title
+        assert "Profile: Jensen" in app.sub_title
         assert app.args.wake_phrases == "hey skippy"
         assert composer.text == "draft for Jensen"
         assert app._queued_prompts == []
         assert "Amanda private transcript" not in transcript_of(app)
         assert "switching profile" in transcript_of(app)
-        assert "Connected to s1 (profile jensen" in transcript_of(app)
+        assert "Connected to s1 (profile jensen, chat chat-1)." in transcript_of(app)
+        await app._run_turn("hello from Jensen")
+        assert "Jensen: ok" in transcript_of(app)
         assert yaml.safe_load(config_path.read_text(encoding="utf-8"))["active_profile"] == "jensen"
 
 

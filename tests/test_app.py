@@ -8,14 +8,16 @@ from io import BytesIO
 
 import pytest
 from textual.events import MouseMove, MouseUp
+from textual.containers import VerticalScroll
 from textual.geometry import Offset
 from textual.selection import Selection
 from textual.widgets import Header, Input, Static
 
 import app as app_module
-from app import Composer, HermesSession, HermesStreamingApp
+from app import Composer, HermesSession, HermesStreamingApp, TranscriptStatic
 from client import ProtocolError
 from commands import parse_slash_command
+from help_screen import HelpModal
 from session_picker import SessionPickerModal
 
 DEFAULT_EVENTS = [
@@ -205,6 +207,7 @@ def make_args(**overrides):
         busy_mode="queue",
         connect_retries=0,
         connect_retry_delay=0,
+        display_name="hermes",
     )
     for key, value in overrides.items():
         setattr(args, key, value)
@@ -221,6 +224,24 @@ async def test_app_mounts_with_transcript_and_input():
         assert app.query_one("#transcript", Static) is not None
         assert app.query_one("#composer", Composer) is not None
         assert voice_status_of(app) == "● ready"
+
+
+async def test_profile_display_name_is_used_for_header_and_responses():
+    session = FakeSession(
+        events=[
+            {"type": "text_delta", "text": "Hello."},
+            {"type": "turn_end", "turn_id": "profile-label"},
+        ]
+    )
+    app = HermesStreamingApp(
+        args=make_args(display_name="Missy"), session_factory=lambda: session
+    )
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await app._run_turn("hello")
+        assert "Profile: Missy" in app.sub_title
+        assert "Missy: Hello." in transcript_of(app)
+        assert "hermes: Hello." not in transcript_of(app)
 
 
 async def test_app_shell_exposes_connection_state_and_honest_startup_surface():
@@ -242,8 +263,8 @@ async def test_app_shell_exposes_connection_state_and_honest_startup_surface():
 
         assert app.query_one(Header) is not None
         assert app.title == "Hermes Relay"
-        assert app.sub_title == "connecting · profile default · session s1"
-        assert connection_status_of(app) == "◌ connecting · profile default · session s1"
+        assert app.sub_title == "connecting · Profile: hermes · session s1"
+        assert connection_status_of(app) == "◌ connecting · Profile: hermes · session s1"
         empty_state = app.query_one("#empty-state", Static)
         assert empty_state.display is True
         assert str(empty_state.content) == "Connecting to Hermes…"
@@ -252,8 +273,8 @@ async def test_app_shell_exposes_connection_state_and_honest_startup_surface():
         await pilot.pause()
         await pilot.pause()
 
-        assert app.sub_title == "connected · profile default · session s1"
-        assert connection_status_of(app) == "● connected · profile default · session s1"
+        assert app.sub_title == "connected · Profile: hermes · session s1"
+        assert connection_status_of(app) == "● connected · Profile: hermes · session s1"
         assert app.query_one("#connection-status", Static).has_class("-connected")
         assert app.query_one("#voice-status", Static).has_class("-ready")
         assert empty_state.display is False
@@ -266,7 +287,7 @@ async def test_disconnected_surface_is_explicit_and_recoverable():
         await pilot.pause()
 
         connection = app.query_one("#connection-status", Static)
-        assert connection_status_of(app) == "○ disconnected · profile default · session s1"
+        assert connection_status_of(app) == "○ disconnected · Profile: hermes · session s1"
         assert connection.has_class("-disconnected")
         assert app.query_one("#voice-status", Static).has_class("-disconnected")
         assert "The app remains open; retry when the endpoint recovers." in transcript_of(app)
@@ -376,6 +397,7 @@ async def test_transcript_remains_rendered_after_terminal_resize():
         await pilot.pause()
 
         assert "Connected&#160;to&#160;s1" in app.export_screenshot()
+        assert app.query_one("#connection-status", Static).display is False
 
 
 async def test_queue_shelf_shows_count_and_previews_pending_prompts():
@@ -392,8 +414,26 @@ async def test_queue_shelf_shows_count_and_previews_pending_prompts():
         assert shelf.display is True
         shelf_text = str(shelf.content)
         assert "2 queued" in shelf_text
-        assert "1. 'first'" in shelf_text
-        assert "2. 'second ↵ line'" in shelf_text
+        assert "1. 'first'" not in shelf_text
+        assert "2. 'second ↵ line'" not in shelf_text
+        assert "'first'" in shelf_text
+        assert "'second ↵ line'" in shelf_text
+
+
+async def test_compact_layout_keeps_queue_shelf_bounded_without_ordinals():
+    app = HermesStreamingApp(args=make_args(), session_factory=lambda: FakeSession())
+    async with app.run_test(size=(40, 12)) as pilot:
+        await pilot.pause()
+        app._queued_prompts = ["first", "second"]
+        app._refresh_queue_shelf()
+        await pilot.pause()
+
+        shelf = app.query_one("#queue-shelf", Static)
+        transcript = app.query_one("#transcript-scroll", VerticalScroll)
+        assert shelf.has_class("-compact")
+        assert "1. " not in str(shelf.content)
+        assert "2. " not in str(shelf.content)
+        assert transcript.size.height >= 1
 
 
 async def test_voice_status_surface_displays_lifecycle_states():
@@ -979,7 +1019,8 @@ async def test_prompt_is_kept_in_queue_when_recovery_is_exhausted():
         assert "prompt kept in queue" in transcript_of(app)
         shelf = app.query_one("#queue-shelf", Static)
         assert shelf.display is True
-        assert "1. 'keep this prompt'" in str(shelf.content)
+        assert "1. 'keep this prompt'" not in str(shelf.content)
+        assert "'keep this prompt'" in str(shelf.content)
 
 
 async def test_new_prompt_waits_behind_a_retained_prompt():
@@ -1186,13 +1227,20 @@ async def test_slash_help_is_handled_without_sending_a_turn():
     app = HermesStreamingApp(args=make_args(), session_factory=lambda: session)
     async with app.run_test() as pilot:
         composer = app.query_one("#composer", Composer)
-        composer.text = "/help"
+        composer.text = "/help voice"
         await pilot.press("enter")
         await pilot.pause()
 
         assert session.sent_turns == []
-        assert "/voice" in transcript_of(app)
-        assert "/help" in transcript_of(app)
+        assert isinstance(app.screen, HelpModal)
+        help_content = str(app.screen.query_one("#help-content", Static).content)
+        assert "/voice" in help_content
+        assert "/model" not in help_content
+        assert "/help" not in transcript_of(app)
+        await pilot.press("escape")
+        await pilot.pause()
+        assert not isinstance(app.screen, HelpModal)
+        assert app.focused is composer
 
 
 async def test_image_command_stages_lists_and_clears_a_local_image(tmp_path):
@@ -1381,7 +1429,9 @@ async def test_details_command_controls_thinking_and_tool_rendering():
     async with app.run_test() as pilot:
         await pilot.pause()
         await app._run_turn("hi")
-        assert app.show_transcript_details is True
+        assert app.show_transcript_details is False
+        assert "planning" not in app._visible_transcript_text()
+        assert "planning" not in app.query_one("#transcript", TranscriptStatic)._transcript_plain_text
 
         app.query_one("#composer", Composer).text = "/details hide"
         await pilot.press("enter")
@@ -1396,6 +1446,7 @@ async def test_details_command_controls_thinking_and_tool_rendering():
         await pilot.pause()
         assert app.show_transcript_details is True
         assert "details: shown" in transcript_of(app)
+        assert "thought for" in app._visible_transcript_text()
 
 
 async def test_thinking_detail_accumulates_preview_and_reports_elapsed_time(monkeypatch):
@@ -2068,7 +2119,7 @@ async def test_second_turn_is_queued_while_one_is_in_flight():
         await app._run_turn("two")
         assert session.sent_turns == [("one", "local")]
         assert app._queued_prompts == ["two"]
-        assert "queued[1]: 'two'" in transcript_of(app)
+        assert "queued[1]: 'two'" not in transcript_of(app)
         shelf = app.query_one("#queue-shelf", Static)
         assert "1 queued" in str(shelf.content)
 
@@ -2850,7 +2901,7 @@ async def test_reload_command_picks_up_untouched_config_changes(tmp_path):
     app = HermesStreamingApp(args=make_args(), session_factory=lambda: session, argv=argv)
     async with app.run_test() as pilot:
         await pilot.pause()
-        assert app.show_transcript_details is True
+        assert app.show_transcript_details is False
 
         composer = app.query_one("#composer", Composer)
         composer.text = "/reload"
@@ -2858,8 +2909,8 @@ async def test_reload_command_picks_up_untouched_config_changes(tmp_path):
         await pilot.pause()
 
         assert app.args.turn_timeout == 42
-        assert app.sub_title == "connected · profile default · session s2"
-        assert connection_status_of(app) == "● connected · profile default · session s2"
+        assert app.sub_title == "connected · Profile: Amanda streaming TUI · session s2"
+        assert connection_status_of(app) == "● connected · Profile: Amanda streaming TUI · session s2"
         assert app.show_transcript_details is False
         assert "config reloaded from" in transcript_of(app)
 
@@ -2966,36 +3017,21 @@ async def test_composer_ctrl_c_reaches_the_app_interrupt_action():
         await asyncio.wait_for(first_press, 1)
 
 
-async def test_queue_command_lists_edits_and_drops_prompts():
+async def test_queue_shelf_is_ambient_and_queue_command_is_not_advertised():
     session = FakeSession()
     app = HermesStreamingApp(args=make_args(), session_factory=lambda: session)
     async with app.run_test() as pilot:
         app._queued_prompts = ["first", "second"]
         app._refresh_queue_shelf()
-        composer = app.query_one("#composer", Composer)
         shelf = app.query_one("#queue-shelf", Static)
         assert "2 queued" in str(shelf.content)
-
-        composer.text = "/queue"
-        await pilot.press("enter")
-        assert "1. 'first'" in transcript_of(app)
-        assert "2. 'second'" in transcript_of(app)
-
-        composer.text = "/queue edit 2 revised second"
-        await pilot.press("enter")
-        assert app._queued_prompts == ["first", "revised second"]
-        assert "revised second" in str(shelf.content)
-
-        composer.text = "/queue drop 1"
-        await pilot.press("enter")
-        assert app._queued_prompts == ["revised second"]
-        assert "1 queued" in str(shelf.content)
-        assert "first" not in str(shelf.content)
-        assert "dropped: 'first'" in transcript_of(app)
+        assert "1. " not in str(shelf.content)
+        assert "2. " not in str(shelf.content)
+        assert "/queue" not in str(app.query_one("#command-suggestions", Static).content or "")
         assert session.sent_turns == []
 
 
-async def test_queue_clear_hides_the_queue_shelf():
+async def test_queue_clear_hides_the_queue_shelf_when_idle_interrupt_clears_it():
     app = HermesStreamingApp(args=make_args(), session_factory=lambda: FakeSession())
     async with app.run_test() as pilot:
         await pilot.pause()
@@ -3004,9 +3040,7 @@ async def test_queue_clear_hides_the_queue_shelf():
         shelf = app.query_one("#queue-shelf", Static)
         assert shelf.display is True
 
-        composer = app.query_one("#composer", Composer)
-        composer.text = "/queue clear"
-        await pilot.press("enter")
+        await app.action_interrupt()
 
         assert app._queued_prompts == []
         assert shelf.display is False
@@ -3021,18 +3055,6 @@ async def test_ctrl_c_clears_queue_shelf_when_idle():
         shelf = app.query_one("#queue-shelf", Static)
 
         await app.action_interrupt()
-
-        assert app._queued_prompts == []
-        assert shelf.display is False
-
-
-async def test_queue_command_hides_shelf_after_starting_prompt_immediately():
-    app = HermesStreamingApp(args=make_args(), session_factory=lambda: FakeSession())
-    async with app.run_test() as pilot:
-        await pilot.pause()
-        shelf = app.query_one("#queue-shelf", Static)
-
-        await app._handle_queue_command("direct prompt")
 
         assert app._queued_prompts == []
         assert shelf.display is False
@@ -3746,9 +3768,13 @@ async def test_help_binding_prints_the_bindings_line():
     async with app.run_test() as pilot:
         await pilot.pause()
         await app.action_show_help()
-        assert "ctrl+r = voice turn" in transcript_of(app)
-        assert "ctrl+c = copy an existing selection or interrupt when none is selected" in transcript_of(app)
-        assert "busy-mode = queue" in transcript_of(app)
+        await pilot.pause()
+        assert isinstance(app.screen, HelpModal)
+        content = str(app.screen.query_one("#help-content", Static).content)
+        assert "Ctrl+R voice" in content
+        assert "Ctrl+C copy/interrupt/clear" in content
+        assert "busy" in content
+        assert "ctrl+r = voice turn" not in transcript_of(app)
 
 
 # --- session lifecycle ------------------------------------------------------

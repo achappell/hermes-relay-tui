@@ -74,6 +74,7 @@ from history import (
     artifact_path_for_profile,
     history_path_for_profile,
 )
+from help_screen import HelpModal
 from prompts import PendingPrompt
 from session import HermesSession, SessionNotReadyError, SessionProtocol
 from session_picker import SessionPickerModal
@@ -487,7 +488,7 @@ class HermesStreamingApp(App):
 
     #queue-shelf {
         height: auto;
-        max-height: 6;
+        max-height: 4;
         margin: 0 1;
         padding: 0 1;
         border-top: solid $panel-lighten-1;
@@ -496,7 +497,7 @@ class HermesStreamingApp(App):
 
     #command-suggestions {
         height: auto;
-        max-height: 6;
+        max-height: 4;
         margin: 0 1;
         padding: 0 1;
         border-top: solid $accent;
@@ -505,7 +506,7 @@ class HermesStreamingApp(App):
 
     #prompt-panel {
         height: auto;
-        max-height: 8;
+        max-height: 6;
         margin: 0 1;
         padding: 0 1;
         border: round $warning;
@@ -532,6 +533,29 @@ class HermesStreamingApp(App):
 
     #composer-hint.-compact {
         display: none;
+    }
+
+    #queue-shelf.-compact,
+    #command-suggestions.-compact {
+        max-height: 4;
+        padding: 0 1;
+        overflow-y: auto;
+    }
+
+    #prompt-panel.-compact {
+        max-height: 6;
+        padding: 0 1;
+        overflow-y: auto;
+    }
+
+    #connection-status.-compact {
+        display: none;
+    }
+
+    #connection-status.-compact.-connecting,
+    #connection-status.-compact.-retrying,
+    #connection-status.-compact.-disconnected {
+        display: block;
     }
     """
 
@@ -566,6 +590,7 @@ class HermesStreamingApp(App):
             or getattr(args, "profile", None)
             or "default"
         )
+        self._active_profile_display_name = self._profile_display_name_for_args(args)
         self._profiles_configured = bool(getattr(args, "profiles_configured", False))
         self._profile_names = tuple(
             getattr(args, "profile_names", ())
@@ -576,9 +601,13 @@ class HermesStreamingApp(App):
             output_device=getattr(args, "audio_output_device", None),
         )
         self.audio_input_device = getattr(args, "mic_input_device", None)
-        self.transcript = TranscriptBuffer()
+        self.transcript = TranscriptBuffer(
+            assistant_label=self._active_profile_display_name
+        )
         self.domain = TuiDomain()
-        self.show_transcript_details = not bool(getattr(args, "hide_thinking", False))
+        # Diagnostic activity is available on demand, but the default surface
+        # should read like a conversation rather than a worker log.
+        self.show_transcript_details = False
         self.voice_state = VOICE_READY
         self._audio_unavailable_reason: Optional[str] = None
         self._turn_in_flight = False
@@ -797,6 +826,10 @@ class HermesStreamingApp(App):
         for selector in (
             "#transcript-scroll",
             "#empty-state",
+            "#connection-status",
+            "#queue-shelf",
+            "#command-suggestions",
+            "#prompt-panel",
             "#composer",
             "#composer-hint",
         ):
@@ -839,12 +872,22 @@ class HermesStreamingApp(App):
             legacy=not bool(getattr(args, "profiles_configured", False)),
         )
 
+    @staticmethod
+    def _profile_display_name_for_args(args: Any) -> str:
+        """Return the configured Hermes Profile identity for presentation."""
+        display_name = str(getattr(args, "display_name", "") or "").strip()
+        if display_name:
+            return display_name
+        return "assistant"
+
     def _sync_profile_metadata(self, args: Any) -> None:
         self._active_profile_name = (
             getattr(args, "profile_name", None)
             or getattr(args, "profile", None)
             or "default"
         )
+        self._active_profile_display_name = self._profile_display_name_for_args(args)
+        self.transcript.set_assistant_label(self._active_profile_display_name)
         self._profiles_configured = bool(getattr(args, "profiles_configured", False))
         self._profile_names = tuple(
             getattr(args, "profile_names", ()) or (self._active_profile_name,)
@@ -889,8 +932,8 @@ class HermesStreamingApp(App):
             else ""
         )
         profile_part = (
-            f" · profile {self._active_profile_name}"
-            if self._active_profile_name
+            f" · Profile: {self._active_profile_display_name}"
+            if self._active_profile_display_name
             else ""
         )
         line = f"{symbol} {self.connection_state}{profile_part} · session {session_id}{model_part}"
@@ -922,7 +965,7 @@ class HermesStreamingApp(App):
             elif role in ("assistant", "system"):
                 self.transcript.add(role, content)
             elif role in ("thinking", "tool", "status"):
-                if self.show_details:
+                if self.show_transcript_details:
                     self.transcript.add(role, content, detail=True)
         self._refresh_transcript()
 
@@ -993,10 +1036,7 @@ class HermesStreamingApp(App):
             widget.update("")
             widget.display = False
             return
-        entries = [
-            f"{index}. {self._queue_preview(text)}"
-            for index, text in enumerate(self._queued_prompts, start=1)
-        ]
+        entries = [self._queue_preview(text) for text in self._queued_prompts]
         widget.update(f"Queue ({len(self._queued_prompts)} queued):\n" + "\n".join(entries))
         widget.display = True
 
@@ -2260,7 +2300,7 @@ class HermesStreamingApp(App):
             await self._dispatch_command(invocation)
             return
         if command.name == "help":
-            self._append_block(help_text(invocation.args))
+            await self.action_show_help(invocation.args)
         elif command.name == "clear":
             self.transcript.clear()
             self._refresh_transcript()
@@ -2295,8 +2335,6 @@ class HermesStreamingApp(App):
             await self._handle_session_resume_command(invocation.args)
         elif command.name == "new":
             await self._handle_session_new_command(invocation.args)
-        elif command.name == "queue":
-            await self._handle_queue_command(invocation.args)
         elif command.name == "busy":
             await self._handle_busy_command(invocation.args)
         elif command.name == "details":
@@ -2656,74 +2694,7 @@ class HermesStreamingApp(App):
         self._last_prompt = text
         self._last_prompt_status = PROMPT_NOT_SENT
         self._queued_prompts.append(text)
-        self._append_block(f"queued[{len(self._queued_prompts)}]: {self._queue_preview(text)}")
         self._refresh_queue_shelf()
-
-    def _queue_listing(self) -> str:
-        if not self._queued_prompts:
-            return "queue empty."
-        entries = [
-            f"{index}. {self._queue_preview(text)}"
-            for index, text in enumerate(self._queued_prompts, start=1)
-        ]
-        return "Queued prompts:\n" + "\n".join(entries)
-
-    def _queue_index(self, raw_index: str) -> Optional[int]:
-        try:
-            index = int(raw_index)
-        except ValueError:
-            self._append_block(f"invalid queue item: {raw_index!r}")
-            return None
-        if not 1 <= index <= len(self._queued_prompts):
-            self._append_block(f"queue item must be between 1 and {len(self._queued_prompts)}")
-            return None
-        return index - 1
-
-    async def _handle_queue_command(self, args: str) -> None:
-        parts = args.strip().split(maxsplit=2)
-        if not parts:
-            self._append_block(self._queue_listing())
-            return
-
-        action = parts[0].lower()
-        if action == "clear":
-            count = len(self._queued_prompts)
-            self._queued_prompts.clear()
-            self._refresh_queue_shelf()
-            self._append_block(f"cleared {count} queued prompt(s).")
-            return
-        if action in {"drop", "delete"}:
-            if len(parts) != 2:
-                self._append_block("usage: /queue drop <number>")
-                return
-            index = self._queue_index(parts[1])
-            if index is not None:
-                removed = self._queued_prompts.pop(index)
-                self._refresh_queue_shelf()
-                self._append_block(f"dropped: {self._queue_preview(removed)}")
-            return
-        if action == "edit":
-            if len(parts) != 3:
-                self._append_block("usage: /queue edit <number> <replacement>")
-                return
-            index = self._queue_index(parts[1])
-            if index is not None:
-                self._queued_prompts[index] = parts[2]
-                self._refresh_queue_shelf()
-                self._append_block(f"edited[{index + 1}]: {self._queue_preview(parts[2])}")
-            return
-
-        self._enqueue_prompt(args.strip())
-        if self._reconnect_in_flight:
-            self._append_block(
-                f"queued until reconnect completes: {self._queue_preview(args.strip())}"
-            )
-            return
-        if not self._turn_in_flight:
-            next_text = self._queued_prompts.pop(0)
-            self._refresh_queue_shelf()
-            self._append_block(f"starting queued: {self._queue_preview(next_text)}")
-            await self._run_turn(next_text)
 
     async def _handle_busy_command(self, args: str) -> None:
         parts = args.strip().lower().split()
@@ -2958,7 +2929,7 @@ class HermesStreamingApp(App):
         else:
             self.busy_mode = new_busy_mode
 
-        new_show_details = not bool(getattr(new_args, "hide_thinking", False))
+        new_show_details = False
         if self._show_details_touched:
             skipped.append("show-details")
         else:
@@ -3202,10 +3173,8 @@ class HermesStreamingApp(App):
                 self._append_block(f"cleared {attachment_count} staged attachment(s).")
             return
         if self._queued_prompts:
-            count = len(self._queued_prompts)
             self._queued_prompts.clear()
             self._refresh_queue_shelf()
-            self._append_block(f"cleared {count} queued prompt(s).")
             return
         self.exit()
 
@@ -3365,9 +3334,6 @@ class HermesStreamingApp(App):
 
         if self._reconnect_in_flight:
             self._enqueue_prompt(text)
-            self._append_block(
-                f"queued until reconnect completes: {self._queue_preview(text)}"
-            )
             return
 
         current_task = asyncio.current_task()
@@ -3383,7 +3349,6 @@ class HermesStreamingApp(App):
             self._enqueue_prompt(text)
             next_text = self._queued_prompts.pop(0)
             self._refresh_queue_shelf()
-            self._append_block(f"starting queued: {self._queue_preview(next_text)}")
             await self._run_turn(next_text)
             return
         if decision.action == "start":
@@ -3405,16 +3370,24 @@ class HermesStreamingApp(App):
             if self._busy_transition_owner is current_task:
                 self._busy_transition_owner = None
 
-    async def action_show_help(self) -> None:
-        self._append_block(
-            "Bindings: enter = send, shift+enter / alt+enter = newline, "
-            "up/down at the top/bottom line = prompt history, "
-            "drag transcript text = copy selection; ctrl+c = copy an existing "
-            "selection or interrupt when none is selected, "
-            "ctrl+r = voice turn, f1 = help, ctrl+q = quit. "
-            f"busy-mode = {self.busy_mode} (queue / steer / interrupt); "
-            "use /busy to change it."
+    async def action_show_help(self, filter_text: str = "") -> None:
+        """Open temporary help without polluting the conversation."""
+        bindings = (
+            "Bindings: Enter send · Shift+Enter/Alt+Enter newline · "
+            "Up/Down history · drag transcript to copy · "
+            "Ctrl+C copy/interrupt/clear · Ctrl+R voice · Ctrl+Q quit · "
+            "F1 help · Esc close\n\n"
         )
+        self.push_screen(
+            HelpModal(bindings + help_text(filter_text)),
+            callback=self._restore_composer_focus,
+        )
+
+    def _restore_composer_focus(self, _result: object = None) -> None:
+        try:
+            self.query_one("#composer", Composer).focus()
+        except (NoMatches, ScreenStackError):
+            return
 
     # --- the turn loop --------------------------------------------------------
 
@@ -3423,9 +3396,6 @@ class HermesStreamingApp(App):
             self._last_prompt = text
             self._last_prompt_status = PROMPT_NOT_SENT
             self._enqueue_prompt(text)
-            self._append_block(
-                f"queued until reconnect completes: {self._queue_preview(text)}"
-            )
             return False
         if self._turn_in_flight:
             # Keep one websocket reader while preserving text submitted during
@@ -3459,16 +3429,12 @@ class HermesStreamingApp(App):
                 if not turn_was_sent:
                     self._queued_prompts.insert(0, next_text)
                     self._refresh_queue_shelf()
-                    self._append_block(
-                        f"queued until connection recovers: {self._queue_preview(next_text)}"
-                    )
                     break
                 if not self._queued_prompts:
                     break
                 next_text = self._queued_prompts.pop(0)
                 self._refresh_queue_shelf()
                 next_stt_source = "local"
-                self._append_block(f"dequeued: {self._queue_preview(next_text)}")
         finally:
             self._turn_in_flight = False
             if self._active_turn_task is current_task:
