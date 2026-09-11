@@ -71,3 +71,8 @@
   summary: Move wake listener and recorder teardown off the Textual event loop.
   evidence: The new `/reconnect` handler calls synchronous `_disarm_wake`; that existing path joins the wake listener and calls `recorder.shutdown()` directly, even though both can wait on native audio/thread cleanup. The concern is real, but the fix requires refactoring the shared wake lifecycle and its synchronous callback callers rather than changing only recovery.
   reason: pre-existing lifecycle boundary; deferred outside the T-4 recovery slice.
+
+## Deferred from: code review of story-1-3-continue-with-bounded-follow-up-and-exact-stop (2026-09-10)
+
+- Wake-listener `stop()` can join its worker for up to two seconds when connection recovery calls `_disarm_wake()` from the Textual event loop. This is pre-existing lifecycle work outside Story 1.3 and needs a separate non-blocking shutdown design.
+- The review also re-confirmed the pre-existing reSpeaker diagnostic, format, lifecycle, output, and provenance findings already recorded at the top of this file. They remain outside the TUI follow-up slice and must not be folded into its implementation.
