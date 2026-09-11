@@ -20,6 +20,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import threading
+import time
 from typing import Any
 
 from audio import PCMPlayer, read_wav
@@ -27,11 +28,48 @@ from handsfree import HandsFreeCoordinator
 
 logger = logging.getLogger("hermes_relay_tui.puck_bridge.turn")
 
-# Matches `stop()`'s own close timeout. A hung Hermes turn must not block
-# the receiving thread (and the single-flight coordinator behind it)
-# forever -- bounding the wait lets a wedged turn fail back to idle instead
-# of wedging every later wake until process restart.
-SEND_TIMEOUT_SECONDS = 10.0
+# A hung Hermes turn must not block the receiving thread (and the
+# single-flight coordinator behind it) forever. But the bound has to be on
+# RESPONSIVENESS, not on total duration.
+#
+# The previous single `SEND_TIMEOUT_SECONDS = 10.0` bounded the whole turn
+# -- including streaming and playing the entire spoken answer, since
+# `_run_turn` plays inline. Any real answer takes longer than 10s to speak,
+# so the timeout fired on every genuine response and returned the device to
+# idle mid-sentence. Observed live 2026-09-10: transcription succeeded at
+# 0.99 confidence and the turn still "timed out" every time. It was not a
+# hang guard; it was a guarantee of failure.
+#
+# Replaced by two bounds on the gaps between events, applied inside
+# `_run_turn` where the stream actually is:
+
+# How long Hermes may take to produce its FIRST event. This is the real
+# "is the relay answering at all" question, and the only one a caller
+# genuinely needs to fail fast on.
+FIRST_EVENT_TIMEOUT_SECONDS = 20.0
+
+# Maximum gap BETWEEN events once the stream has started. A healthy
+# response emits audio chunks continuously, so a long silence mid-stream
+# means the turn died rather than that the answer is simply long. This is
+# what lets a five-minute answer succeed while a stalled one still fails.
+STALL_TIMEOUT_SECONDS = 20.0
+
+# Absolute backstop for the blocking caller. `_run_turn` self-bounds via
+# the two timeouts above, so reaching this means something wedged inside
+# the loop itself rather than in Hermes. Deliberately far larger than any
+# plausible spoken answer -- it exists so a bug cannot wedge every future
+# wake until the process restarts, not to bound normal operation.
+TURN_BACKSTOP_SECONDS = 600.0
+
+
+# Closing the response generator must itself be bounded -- see the call
+# site. Short, because this runs on the failure path and its only job is
+# to release the socket, not to drain it.
+STREAM_CLOSE_TIMEOUT_SECONDS = 5.0
+
+
+class TurnTimeout(Exception):
+    """Raised inside `_run_turn` when Hermes stops producing events."""
 
 
 class TurnRunner:
@@ -133,11 +171,26 @@ class TurnRunner:
             raise RuntimeError("turn runner is not started")
         future = asyncio.run_coroutine_threadsafe(self._run_turn(text), loop)
         try:
-            return future.result(timeout=SEND_TIMEOUT_SECONDS)
+            return future.result(timeout=TURN_BACKSTOP_SECONDS)
+        except TurnTimeout as exc:
+            # Hermes stopped producing events. `_run_turn` has already
+            # logged the specifics and closed the player.
+            logger.error("puck bridge turn abandoned: %s", exc)
+            return False
         except TimeoutError:
+            # The backstop, not the normal path -- `_run_turn` bounds itself.
+            #
+            # Cancel rather than merely stop waiting (deferred-work #36):
+            # `future.result(timeout=...)` only ends the CALLER's wait, so
+            # without this the orphaned coroutine keeps running on the
+            # background loop and can still write to the shared PCMPlayer
+            # behind a later turn's back -- two responses interleaving into
+            # one speaker.
+            future.cancel()
             logger.error(
-                "puck bridge turn timed out after %.0fs; returning to idle",
-                SEND_TIMEOUT_SECONDS,
+                "puck bridge turn hit the %.0fs backstop and was cancelled; "
+                "this indicates a wedge inside the turn loop, not a slow answer",
+                TURN_BACKSTOP_SECONDS,
             )
             return False
 
@@ -145,8 +198,31 @@ class TurnRunner:
         """Drive one `send_turn` to completion, speaking the response here."""
         file_audio = bytearray()
         spoke = False
+        chunks_spoken = 0
+        started_at = time.monotonic()
+        # Iterate manually rather than with `async for`, so each individual
+        # step can carry its own deadline. `async for` can only be bounded
+        # as a whole, which is precisely the mistake this replaces.
+        stream = self._session.send_turn(text, stt_source="local").__aiter__()
+        awaiting_first = True
         try:
-            async for event in self._session.send_turn(text, stt_source="local"):
+            while True:
+                budget = (
+                    FIRST_EVENT_TIMEOUT_SECONDS
+                    if awaiting_first
+                    else STALL_TIMEOUT_SECONDS
+                )
+                try:
+                    event = await asyncio.wait_for(stream.__anext__(), budget)
+                except StopAsyncIteration:
+                    break
+                except TimeoutError:
+                    raise TurnTimeout(
+                        "no first event within %.0fs" % budget
+                        if awaiting_first
+                        else "stream stalled for %.0fs mid-response" % budget
+                    ) from None
+                awaiting_first = False
                 kind = event.get("type")
                 if kind == "audio_start":
                     audio_format = (
@@ -160,6 +236,7 @@ class TurnRunner:
                     if self._player.active:
                         await asyncio.to_thread(self._player.write, event["data"])
                         spoke = True
+                        chunks_spoken += 1
                 elif kind == "audio_file_start":
                     file_audio.clear()
                 elif kind == "audio_file_chunk":
@@ -184,8 +261,47 @@ class TurnRunner:
                             await asyncio.to_thread(self._player.write, decoded)
                             spoke = True
         finally:
+            # Close the generator before the player: it may still be
+            # producing, and an abandoned async generator left open holds
+            # the underlying websocket read alive.
+            aclose = getattr(stream, "aclose", None)
+            if aclose is not None:
+                try:
+                    # BOUNDED. An unbounded await here can hang forever and
+                    # swallow the very timeout that sent us into this
+                    # `finally` -- closing a generator parked on a websocket
+                    # read waits for that read. That turns a clean
+                    # "abandoned" into total silence, which is exactly what
+                    # was observed on 2026-09-11: a turn that neither
+                    # completed, timed out, nor logged anything for minutes.
+                    await asyncio.wait_for(aclose(), STREAM_CLOSE_TIMEOUT_SECONDS)
+                except TimeoutError:
+                    logger.warning(
+                        "puck bridge: turn stream did not close within %.0fs; abandoning it",
+                        STREAM_CLOSE_TIMEOUT_SECONDS,
+                    )
+                except Exception:  # pragma: no cover - best-effort cleanup
+                    logger.debug("puck bridge: error closing turn stream", exc_info=True)
             if self._player.active:
                 await asyncio.to_thread(self._player.close)
+        # Surface a playback failure instead of discarding it. PCMPlayer
+        # records problems on `.failure` (unsupported format, device error,
+        # aborted stream) and nothing here ever read it, so a turn could
+        # fail to make a sound while reporting nothing at all.
+        player_failure = getattr(self._player, "failure", None)
+        if player_failure:
+            logger.error("puck bridge playback failed: %s", player_failure)
         if not spoke:
             logger.warning("puck bridge turn completed with no audible response")
+        else:
+            # Say so explicitly. A successful turn used to log nothing at
+            # all, so "it worked" and "it is still running" looked
+            # identical in the log -- the same silent-success trap that let
+            # the upload path lose three captures without complaint. The
+            # happy path is exactly when you most want a line to point at.
+            logger.info(
+                "puck bridge turn complete: %d audio chunks spoken in %.1fs",
+                chunks_spoken,
+                time.monotonic() - started_at,
+            )
         return True
