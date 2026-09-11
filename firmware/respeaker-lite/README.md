@@ -479,7 +479,7 @@ cannot regress either existing front end:
   happened) against a real `session.py:SessionProtocol`, and plays the
   response on **this host machine's own speakers** via `audio.PCMPlayer`
   (no Puck-side response playback yet — tracked separately, see the
-  friction log's 2026-09-09 entry, candidate `PUCK-01.7`).
+  friction log's 2026-09-09 entry, candidate `P-2`).
 - `puck_bridge/server.py` — wires the two together, resolving the Hermes
   session's connection settings through this project's existing
   `config.py` relay-profile machinery (same profiles the TUI and household

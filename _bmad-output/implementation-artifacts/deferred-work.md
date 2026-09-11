@@ -29,7 +29,7 @@
   evidence: tests/test_puck_bridge.py stops at the receiver/handler-factory/turn-runner layers; main() itself is thin entry-point wiring with no direct coverage.
 
 - source_spec: `_bmad-output/implementation-artifacts/spec-5-stream-audio-to-host-after-a-validated-wake.md`
-  summary: RESOLVED 2026-09-10 -- PUCK-01.7 is now specced at `_bmad-output/implementation-artifacts/spec-puck-01-7-stream-the-response-to-the-puck-speaker.md`; still needs its GitHub Project card created from that spec.
+  summary: RESOLVED 2026-09-10 -- superseded by Epic 1's 2026-09-10 surface decomposition. The friction log's candidate `PUCK-01.7` is now `P-2` ("status and response audio" in the Puck's P-1..P-4 set), specced at `_bmad-output/implementation-artifacts/spec-p-2-puck-status-and-response-audio.md`; tasks 1-2 are implemented and hardware-verified. Still needs its GitHub Project card created as P-2, not PUCK-01.7.
   evidence: docs/friction-log.md's 2026-09-09 entry names PUCK-01.7 as the candidate card but notes it was not yet created due to a GitHub API rate limit at the time; per this repo's own convention the friction log is not itself a task source, so this needs manual promotion to the board.
 
 - source_spec: `_bmad-output/implementation-artifacts/spec-5-stream-audio-to-host-after-a-validated-wake.md`

@@ -63,7 +63,7 @@ esphome:
     - priority: -200  # after the capture buffer is allocated above
       then:
         - lambda: pcm_capture::start();
-    # PUCK-01.7: bring the output path up last, so a failure here cannot
+    # P-2: bring the output path up last, so a failure here cannot
     # delay wake-word setup above. The delay lets the XU316 finish its own
     # init -- it is the bus master for both directions.
     - priority: -300
@@ -73,7 +73,7 @@ esphome:
         # the I2S writes all succeed and nothing is audible -- which looks
         # exactly like a broken output path.
         - lambda: id(respeaker).unmute_speaker();
-        # PUCK-01.7 task 2 proof: stream a real WAV over HTTP through
+        # P-2 task 2 proof: stream a real WAV over HTTP through
         # ESPHome's own audio stack. Deliberately a STATIC, complete file
         # with a known Content-Length -- that isolates the plumbing
         # (fetch -> decode -> resample -> I2S) from the live-stream
@@ -255,7 +255,7 @@ respeaker_lite:
 # input. Pin assignments sourced from Seeed's own wiki tutorial for this
 # exact board (wiki.seeedstudio.com/respeaker_lite_ha/), also used by
 # formatBCE/Respeaker-Lite-ESPHome-integration.
-# PUCK-01.7 task 1: split into two buses so the board can both listen and
+# P-2 task 1: split into two buses so the board can both listen and
 # speak. Input and output are separate `i2s_audio` entries that SHARE the
 # same three clock pins -- the XU316 is the bus master for both directions,
 # so lrclk/bclk/mclk are genuinely one set of wires driving two DMA
@@ -340,7 +340,7 @@ microphone:
       # Story 5: same bounded-memcpy shape, into the separate VAD-gated
       # wake-capture buffer. A no-op whenever a wake capture isn't active.
       - lambda: pcm_capture::wake_capture::write(x.data(), x.size());
-# PUCK-01.7 task 1: the board's onboard TLV320AIC3204 codec, reached over
+# P-2 task 1: the board's onboard TLV320AIC3204 codec, reached over
 # the same internal I2C bus the respeaker_lite component already uses to
 # talk to the XMOS chip. The speaker below drives volume through this.
 audio_dac:
@@ -348,7 +348,7 @@ audio_dac:
     id: aic3204_dac
     i2c_id: internal_i2c
 
-# PUCK-01.7 task 1: output path. Mirrors the mic's format exactly (48kHz,
+# P-2 task 1: output path. Mirrors the mic's format exactly (48kHz,
 # 32-bit, stereo, secondary mode) because both directions ride the same
 # XU316-mastered clocks -- a mismatched output rate would fight the shared
 # bclk/lrclk. Values match formatBCE's proven reference block for this
@@ -356,7 +356,7 @@ audio_dac:
 #
 # `timeout: never` keeps the I2S peripheral from tearing itself down
 # between utterances; `buffer_duration: 100ms` is the DMA cushion that
-# absorbs network jitter once PUCK-01.7 task 2 streams real TTS through
+# absorbs network jitter once P-2 task 2 streams real TTS through
 # here. Story-5's chunked-upload path is deliberately untouched by all of
 # this -- this is a second, independent direction on the bus.
 speaker:
@@ -373,7 +373,7 @@ speaker:
     timeout: never
     buffer_duration: 100ms
 
-  # PUCK-01.7 task 2: resampling stage in front of the hardware speaker.
+  # P-2 task 2: resampling stage in front of the hardware speaker.
   # Task 1 established the hard constraint this exists to satisfy -- the
   # XU316 masters the I2S clocks, so the speaker runs in secondary/slave
   # mode and CANNOT reconfigure the bus; a stream whose sample rate differs
@@ -389,7 +389,7 @@ speaker:
     sample_rate: 48000
     bits_per_sample: 16
 
-# PUCK-01.7 task 2: ESPHome's own HTTP streaming media source. This is the
+# P-2 task 2: ESPHome's own HTTP streaming media source. This is the
 # component that makes Puck-side playback viable at all -- it holds ONE
 # persistent connection and reads it incrementally (esp_http_client_read),
 # instead of pcm_capture.h's upload path which opens a fresh connection per
@@ -404,7 +404,7 @@ media_source:
     id: puck_http_source
     buffer_size: 100000
 
-# PUCK-01.7 task 2: the player itself. Deliberately ONE pipeline -- a
+# P-2 task 2: the player itself. Deliberately ONE pipeline -- a
 # spoken reply is an announcement, and a second (media) pipeline would only
 # add a mixer stage with nothing to mix. Sources feed in from the HTTP
 # source above; decoded audio lands in the resampler, then the speaker.

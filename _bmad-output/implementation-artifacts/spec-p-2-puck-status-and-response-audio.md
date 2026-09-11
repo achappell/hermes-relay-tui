@@ -1,8 +1,8 @@
 ---
-title: 'Stream the response to the Puck speaker'
+title: 'P-2: Puck status and response audio'
 type: 'feature'
 created: '2026-09-10'
-status: 'draft'
+status: 'in-progress'
 route: 'dispatch'
 review_loop_iteration: 0
 baseline_commit: 'be3958fec3554abaae019fc22412eb0fbb8e4437'
@@ -12,6 +12,12 @@ context:
 ---
 
 <frozen-after-approval reason="human-owned intent — do not modify unless human renegotiates">
+
+## Identifier reconciliation
+
+This spec was first drafted as `PUCK-01.7`, a candidate label proposed in `docs/friction-log.md`'s 2026-09-09 entry. That predates the **2026-09-10 surface decomposition** of Epic 1 in `epic-1-context.md`, which assigns the ReSpeaker Puck the story set `P-1`–`P-4` and gives **`P-2`** ownership of "status and response audio". `PUCK-01.7` is superseded and was never filed as a board item; this is `P-2`.
+
+Scope note: `P-2` owns **both** halves of Puck audio output. The original `PUCK-01.7` framing covered only the response half. Status audio is added as task 7 below rather than left to be discovered later.
 
 ## Intent
 
@@ -53,12 +59,21 @@ context:
 
 ## Tasks & Acceptance
 
-1. **Firmware: make the Puck produce a sound at all.** Split `i2s_bus` into `i2s_input`/`i2s_output` sharing the clock pins with `allow_other_uses: true`; add `speaker: i2s_audio` per the stock block; unmute. *Acceptance:* a hardcoded test tone or short WAV plays from the Puck on demand, with `micro_wake_word` still detecting afterward (the mic path must survive the bus split).
-2. **Firmware: wire the streaming media player.** Add `audio_http:` media source and `media_player: speaker_source`. *Acceptance:* `media_player.play_media` with a static URL served by the bridge plays end to end.
+1. **[DONE 2026-09-10] Firmware: make the Puck produce a sound at all.** Split `i2s_bus` into `i2s_input`/`i2s_output` sharing the clock pins with `allow_other_uses: true`; add `speaker: i2s_audio` per the stock block; unmute. *Acceptance:* a hardcoded test tone or short WAV plays from the Puck on demand, with `micro_wake_word` still detecting afterward (the mic path must survive the bus split).
+2. **[DONE 2026-09-10] Firmware: wire the streaming media player.** Add `audio_http:` media source and `media_player: speaker_source`. *Acceptance:* `media_player.play_media` with a static URL served by the bridge plays end to end.
 3. **Bridge: serve the response stream.** Add `GET /response?seq=N`, token-checked, that holds the connection until TTS begins and then streams WAV as chunks arrive. *Acceptance:* `curl` against it yields playable audio; a second request for the same `seq` does not duplicate a turn.
 4. **Bridge: move playback off the Mac.** `_run_turn` publishes `audio_chunk` data to the response stream instead of `self._player`. *Acceptance:* answer is audible on the Puck, not the Mac.
 5. **Firmware: trigger playback after upload.** On upload completion, call `media_player.play_media` with the templated `/response?seq=N` URL. *Acceptance:* full hands-free round trip — wake, speak, hear the answer from the Puck.
 6. **Reshape the turn timeout.** `SEND_TIMEOUT_SECONDS = 10.0` currently bounds the *entire* turn including playback, so it fires on every real answer (observed 2026-09-10). Re-bound it to time-to-first-audio, with a separate stall guard for a mid-stream gap. Fix deferred item #36 in the same pass: a timeout must cancel the orphaned `_run_turn` coroutine, which can otherwise still write to a shared sink behind a later turn. *Acceptance:* a long answer completes; a genuinely unresponsive Hermes still returns to idle.
+
+7. **Status audio: acknowledge the wake out loud.** Epic 1's UX rules require the Puck to stay *status-only* — "response text and transcript history do not belong on its TFT" — so on an audio-only device, status is carried by sound. `HOME-10` ("Wake acknowledgement and the silence before the answer") established this for the home-display appliance; the Puck has had no way to do it until task 1 gave it a speaker. Play a short acknowledgement on `on_wake_word_detected`, before capture completes, so a person knows they were heard during the several seconds before any answer arrives. *Acceptance:* a wake produces an audible acknowledgement within ~200ms; it does not leak into the captured audio (see the echo risk below) and does not delay or truncate capture.
+
+## Constraints discovered during tasks 1-2 (binding on the rest)
+
+- **Stream format must be declared before `start()`.** `AudioStreamInfo` defaults to `(16-bit, 1ch, 16000Hz)`. In secondary/slave mode the I2S speaker cannot reconfigure the bus and hard-rejects a mismatched **sample rate** with `Incompatible stream settings`. Bit depth may differ; sample rate may not. Everything therefore routes through the resampler to 48000.
+- **`speaker->start()` is asynchronous and must not be busy-waited.** The state transition happens in the component's `loop()`, so blocking inside an automation lambda deadlocks it — loop never runs, state never advances. Use ESPHome's `delay:`, which yields.
+- **Never write audio synchronously from the main loop.** Task 1's blocking tone helper starved the loop for 354ms, tripped `"a scheduled task took a long time"`, dropped WiFi mid-boot, and left `play_media` firing into a dead network. Playback belongs to `media_player`'s own task. This is the concrete reason this story does not hand-roll the audio path.
+- **The resampler is wired but not yet exercised.** The task-2 test WAV was already 48kHz mono. Real 24kHz TTS will be its first genuine workout in task 3.
 
 ## Risks & Open Questions
 
