@@ -246,7 +246,18 @@ def make_handler(
             # WAV conversion and transcription -- the Puck's own upload
             # loop is waiting on this response before sending the next
             # chunk or moving on.
-            self._respond(200)
+            #
+            # 202 for a chunk that was accepted into an incomplete
+            # reassembly, 200 only once the capture is whole. Before this
+            # distinction existed every chunk got a flat 200, so the
+            # firmware could not tell "you accepted my bytes" from "you
+            # have the whole capture" -- and logged "Uploaded wake capture"
+            # on runs the bridge had already evicted on TTL. Both sides
+            # reported their own half truthfully and nobody reported the
+            # lost turn. Both codes are 2xx, so existing success checks
+            # (firmware `chunk_ok`, puck_identity::note_upload_status) are
+            # unaffected.
+            self._respond(200 if finished_capture is not None else 202)
 
             if finished_capture is not None:
                 self._finish_capture(seq, finished_capture)
