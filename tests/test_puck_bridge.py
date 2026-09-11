@@ -22,6 +22,7 @@ from puck_bridge.receiver import (
     process_frame_sample,
     raw_stereo32_to_wav,
 )
+from puck_bridge.server import build_session_args
 from puck_bridge.turn import TurnRunner
 
 
@@ -452,3 +453,23 @@ def test_turn_runner_ignores_a_wake_while_a_turn_is_already_in_flight():
         assert session.turns == []
     finally:
         runner.stop()
+
+
+# ---------------------------------------------------------------------------
+# Bridge session identity
+# ---------------------------------------------------------------------------
+
+
+def test_build_session_args_suffixes_the_profile_s_own_session_id(monkeypatch):
+    """`config.build_arg_parser` always populates a non-empty `session_id`
+    from the selected profile's own YAML config, so this bridge must always
+    suffix it -- an emptiness check would never fire and every bridge
+    invocation would silently collide with that profile's other doorway."""
+    monkeypatch.delenv("VOICE_SESSION_ID", raising=False)
+    args = build_session_args([])
+    assert args.session_id == "hybrid-tui-puck-bridge"
+
+
+def test_build_session_args_honors_an_explicit_session_id_flag():
+    args = build_session_args(["--session-id", "custom-id"])
+    assert args.session_id == "custom-id"
