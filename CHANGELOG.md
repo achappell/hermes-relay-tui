@@ -1,5 +1,66 @@
 # Changelog
 
+## 0.10.0 (2026-09-11)
+
+<!-- Release notes generated using configuration in .github/release.yml at main -->
+
+## What's Changed
+### Dependencies
+* ci(deps-dev): bump vitest from 3.2.7 to 5.0.0 in /home_display/web by @dependabot[bot] in https://github.com/achappell/hermes-relay-tui/pull/114
+* ci(deps): bump @vitest/mocker and vitest in /home_display/web by @dependabot[bot] in https://github.com/achappell/hermes-relay-tui/pull/113
+### Other Changes
+* feat(firmware): Waveshare ESP32-S3-Touch-LCD-7B board bring-up, 1024x600 RGB LCD, and GT911 touch (ESP-01) by @achappell in https://github.com/achappell/hermes-relay-tui/pull/95
+* fix(firmware): correct ESP-01 Waveshare 7B hardware mapping by @achappell in https://github.com/achappell/hermes-relay-tui/pull/97
+* feat(firmware): connect ESP-02 display to state channel by @achappell in https://github.com/achappell/hermes-relay-tui/pull/98
+* feat: add named relay profiles and profile wake phrases by @achappell in https://github.com/achappell/hermes-relay-tui/pull/99
+* fix(tui): honor configured wake mode at launch by @achappell in https://github.com/achappell/hermes-relay-tui/pull/101
+* test(ui-core): add cross-target display conformance by @achappell in https://github.com/achappell/hermes-relay-tui/pull/103
+* feat(ui-core): route ESP display through shared reducer by @achappell in https://github.com/achappell/hermes-relay-tui/pull/105
+* feat(home-display): render shared LVGL surface in browser by @achappell in https://github.com/achappell/hermes-relay-tui/pull/106
+* feat(home-16): add browser voice bridge by @achappell in https://github.com/achappell/hermes-relay-tui/pull/107
+* docs(architecture): ratify architecture spine by @achappell in https://github.com/achappell/hermes-relay-tui/pull/108
+* PUCK-01.1: choose the Puck's on-device wake-word engine by @achappell in https://github.com/achappell/hermes-relay-tui/pull/110
+* Docs/arch 01 architecture spine by @achappell in https://github.com/achappell/hermes-relay-tui/pull/109
+* feat: adapt TUI to shared domain contract by @achappell in https://github.com/achappell/hermes-relay-tui/pull/111
+* feat: gate Hermes turns on verified authorization by @achappell in https://github.com/achappell/hermes-relay-tui/pull/116
+* PUCK-01.2: stand up the Puck's ESPHome firmware build target by @achappell in https://github.com/achappell/hermes-relay-tui/pull/115
+* PUCK-01.3: add on-device wake-word detection to the Puck firmware by @achappell in https://github.com/achappell/hermes-relay-tui/pull/117
+* docs: define Hermes Home repository boundary by @achappell in https://github.com/achappell/hermes-relay-tui/pull/118
+* fix(tests): remove flaky fixed-delay sync in composer-submit test by @achappell in https://github.com/achappell/hermes-relay-tui/pull/119
+* feat: render honest turn phases and response delivery by @achappell in https://github.com/achappell/hermes-relay-tui/pull/120
+* feat: gate wake follow-up on completed turns by @achappell in https://github.com/achappell/hermes-relay-tui/pull/121
+* feat: add explicit TUI reconnect recovery by @achappell in https://github.com/achappell/hermes-relay-tui/pull/122
+* Puck 01/3 onboard wake detection by @achappell in https://github.com/achappell/hermes-relay-tui/pull/123
+* Feat/web epic 1 https lan by @achappell in https://github.com/achappell/hermes-relay-tui/pull/124
+* docs: add surface coverage workflow by @achappell in https://github.com/achappell/hermes-relay-tui/pull/125
+* feat: restore DOM-first home display by @achappell in https://github.com/achappell/hermes-relay-tui/pull/126
+* fix: close Story 1.1 review gaps by @achappell in https://github.com/achappell/hermes-relay-tui/pull/127
+* docs: define surface-specific stories across epics by @achappell in https://github.com/achappell/hermes-relay-tui/pull/128
+* docs: make surface coverage index non-authoritative by @achappell in https://github.com/achappell/hermes-relay-tui/pull/130
+* PUCK-01.5: stream audio to host after a validated wake by @achappell in https://github.com/achappell/hermes-relay-tui/pull/129
+* docs: reconcile surface-specific story tracking by @achappell in https://github.com/achappell/hermes-relay-tui/pull/131
+* docs: mark Epic 1 iOS Stories 1.1/1.2 done in sprint status by @achappell in https://github.com/achappell/hermes-relay-tui/pull/132
+* fix: resolve Story 1.2 review findings by @achappell in https://github.com/achappell/hermes-relay-tui/pull/134
+* docs: mark Epic 1 iOS Story I-3 as review by @achappell in https://github.com/achappell/hermes-relay-tui/pull/133
+* feat(puck): swap pretrained wake models for trained hey_missy/bestie/skippy by @achappell in https://github.com/achappell/hermes-relay-tui/pull/135
+* Delete CLAUDE.md by @achappell in https://github.com/achappell/hermes-relay-tui/pull/137
+* fix(web): repair W/K browser audio delivery by @achappell in https://github.com/achappell/hermes-relay-tui/pull/136
+* fix(tui): harden explicit reconnect recovery by @achappell in https://github.com/achappell/hermes-relay-tui/pull/140
+* fix(puck): always mint a distinct bridge session id by @achappell in https://github.com/achappell/hermes-relay-tui/pull/138
+* fix(puck): keep wake detection running so VAD-gated capture can work by @achappell in https://github.com/achappell/hermes-relay-tui/pull/139
+* feat(web): show W/K transcription and retain responses by @achappell in https://github.com/achappell/hermes-relay-tui/pull/141
+* docs(bmad): reconcile merged story statuses by @achappell in https://github.com/achappell/hermes-relay-tui/pull/142
+* fix(tui): close Story 1.3 review findings by @achappell in https://github.com/achappell/hermes-relay-tui/pull/143
+* feat(puck): give the Puck a speaker and stream audio to it (1-p-2 tasks 1-2) by @achappell in https://github.com/achappell/hermes-relay-tui/pull/144
+* feat(tui): show explicit capture acknowledgement by @achappell in https://github.com/achappell/hermes-relay-tui/pull/145
+* chore(puck): drop the boot-time streaming proof once verified by @achappell in https://github.com/achappell/hermes-relay-tui/pull/147
+* docs: record the upload-TTL defect and move 1-p-1 to review by @achappell in https://github.com/achappell/hermes-relay-tui/pull/148
+* fix: keep wake conversations listening across follow-ups by @achappell in https://github.com/achappell/hermes-relay-tui/pull/146
+* fix(puck): make long captures deliverable, and report delivery honestly by @achappell in https://github.com/achappell/hermes-relay-tui/pull/149
+
+
+**Full Changelog**: https://github.com/achappell/hermes-relay-tui/compare/v0.9.0...v0.10.0
+
 ## 0.9.0 (2026-09-07)
 
 <!-- Release notes generated using configuration in .github/release.yml at main -->
