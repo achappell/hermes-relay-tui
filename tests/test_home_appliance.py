@@ -447,6 +447,60 @@ async def test_browser_voice_turn_uses_ops_session_and_streams_pcm_without_local
 
 
 @pytest.mark.asyncio
+async def test_browser_voice_turn_ignores_the_wav_copy_after_streamed_pcm():
+    wav = io.BytesIO()
+    with wave.open(wav, "wb") as output:
+        output.setnchannels(1)
+        output.setsampwidth(2)
+        output.setframerate(24000)
+        output.writeframes(b"\x03\x04")
+
+    server = FakeServer()
+    appliance = Appliance(
+        _args(browser_voice=True, wake_enabled=False),
+        session=FakeSession([
+            {"type": "audio_start", "sample_rate": 24000, "channels": 1, "sample_width": 2},
+            {"type": "audio_chunk", "data": b"\x01\x02"},
+            {"type": "audio_end"},
+            {"type": "audio_file_start"},
+            {"type": "audio_file_chunk", "data": wav.getvalue()},
+            {"type": "audio_file_end"},
+            {"type": "turn_end"},
+        ]),
+        server=server,
+        publisher=RecordingPublisher(),
+    )
+    appliance._connected = True
+
+    assert await appliance._run_browser_turn("say it") is True
+    assert [kind for kind, _payload in server.audio] == ["start", "chunk", "end"]
+
+
+@pytest.mark.asyncio
+async def test_browser_voice_turn_coalesces_audio_segments_into_one_stream():
+    server = FakeServer()
+    appliance = Appliance(
+        _args(browser_voice=True, wake_enabled=False),
+        session=FakeSession([
+            {"type": "audio_start", "sample_rate": 24000, "channels": 1, "sample_width": 2},
+            {"type": "audio_chunk", "data": b"\x01\x02"},
+            {"type": "audio_end"},
+            {"type": "text_delta", "text": " Second paragraph."},
+            {"type": "audio_start", "sample_rate": 24000, "channels": 1, "sample_width": 2},
+            {"type": "audio_chunk", "data": b"\x03\x04"},
+            {"type": "audio_end"},
+            {"type": "turn_end"},
+        ]),
+        server=server,
+        publisher=RecordingPublisher(),
+    )
+    appliance._connected = True
+
+    assert await appliance._run_browser_turn("say it twice") is True
+    assert [kind for kind, _payload in server.audio] == ["start", "chunk", "chunk", "end"]
+
+
+@pytest.mark.asyncio
 async def test_browser_voice_turn_keeps_speaking_state_for_late_text_delta():
     publisher = RecordingPublisher()
     appliance = Appliance(

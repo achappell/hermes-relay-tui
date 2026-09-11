@@ -7,6 +7,7 @@ class FakeSocket implements WebSocketLike {
   onmessage: ((event: MessageEvent<unknown>) => void) | null = null;
   onerror: (() => void) | null = null;
   onclose: (() => void) | null = null;
+  binaryType: "blob" | "arraybuffer" = "blob";
   closed = false;
   sent: string[] = [];
 
@@ -43,6 +44,22 @@ const rawSnapshot = (sequence: number) => JSON.stringify({
 
 describe("StateChannel", () => {
   afterEach(() => vi.useRealTimers());
+
+  it("requests ArrayBuffer delivery from the browser WebSocket", () => {
+    const socket = new FakeSocket();
+    const channel = new StateChannel(
+      "ws://display.test/state",
+      () => {},
+      () => {},
+      () => {},
+      () => socket,
+    );
+
+    channel.start();
+
+    expect(socket.binaryType).toBe("arraybuffer");
+    channel.stop();
+  });
 
   it("does not send browser voice before the socket has hydrated", () => {
     const socket = new FakeSocket();

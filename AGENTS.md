@@ -205,7 +205,6 @@ and local artifacts. Never print token values.
 - Treat the default endpoint as runtime configuration, not a test fixture. Tests should use fake sessions and WebSocket objects.
 - Keep streamed text inline in the transcript. A widget that renders every delta on a separate line is a regression.
 - Keep the UI responsive: blocking microphone capture and audio writes belong off the Textual event loop.
-- Record non-blocking bugs and usability snags in `docs/friction-log.md`; defer them unless they block current work, risk data loss, or repeat.
 - When changing behavior, update or add a focused test in `tests/` before declaring the work finished.
 
 ## Setup

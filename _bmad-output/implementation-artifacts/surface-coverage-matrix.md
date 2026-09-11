@@ -7,8 +7,11 @@ sources:
   - _bmad-output/planning-artifacts/epics.md
   - _bmad-output/implementation-artifacts/sprint-status.yaml
   - _bmad-output/implementation-artifacts/epic-1-context.md
+  - _bmad-output/implementation-artifacts/spec-1-wk-1-one-shared-w-k-browser-voice-plus-display-surface-for-author.md
+  - _bmad-output/implementation-artifacts/spec-2-wk-2-render-active-capture-room-local-transcription-response-and.md
   - _bmad-output/implementation-artifacts/spec-5-stream-audio-to-host-after-a-validated-wake.md
   - _bmad-output/implementation-artifacts/deferred-work.md
+  - _bmad-output/planning-artifacts/sprint-change-proposal-2026-09-10.md
   - docs/friction-log.md
   - shared/display/README.md
   - docs/bmad-upstream.md
@@ -75,7 +78,7 @@ Python host / DisplaySnapshot contract
 | I | `I-1`–`I-3` | `hermes-relay-ios` | Implementation and device-validation evidence exists in the sibling repository. |
 | P | `P-1`–`P-4` | Puck delivery work | The audio bridge has real-device evidence for wake, VAD-gated capture, chunked upload, host transcription, and host response playback, and now always mints a distinct bridge session identity rather than colliding with a profile's other doorway. A full spoken Hermes round trip remains unverified at the observed -89 to -90 dB Wi-Fi signal; Puck-side response playback and the remaining bounded/recovery validation stay open in the implementation record. |
 | E | `E-1`–`E-5` | `hermes-relay-tui` / firmware | Native display/reducer evidence exists for parts of E-2/E-5; voice capture and response-audio adapter work remains. |
-| W/K | `WK-1` | `hermes-relay-tui` / web | Browser voice/display foundation exists; kiosk, accessibility, device, and delivery validation remain. |
+| W/K | `WK-1` | `hermes-relay-tui` / web | Browser voice/display foundation and verified PCM delivery exist; the approved follow-on spec covers bounded post-playback hands-free recovery, while kiosk, accessibility, device, and delivery validation remain. |
 | T | `T-1`–`T-4` | `hermes-relay-tui` | Local implementation artifacts and regression evidence exist; formal status remains in the TUI tracker. |
 
 ## Epic 2 — See and trust what the room is doing
@@ -85,7 +88,7 @@ Python host / DisplaySnapshot contract
 | I | `2-I-1`, `2-I-2` | `hermes-relay-ios` | iOS participant implementation evidence exists in the sibling repository. |
 | P | `2-P-1`, `2-P-2` | Puck delivery work | Puck status-only doorway work remains open. |
 | E | `2-E-1`–`2-E-4` | `hermes-relay-tui` / firmware | Shared snapshot, reducer, and native renderer are foundation; surface story validation remains. |
-| W/K | `2-WK-1`–`2-WK-4` | `hermes-relay-tui` / web | DOM renderer and shared state are foundation; browser surface validation remains. |
+| W/K | `2-WK-1`–`2-WK-4` | `hermes-relay-tui` / web | DOM renderer and shared state are foundation; the approved `2-WK-2` spec covers live/final user transcription and bounded response retention, while browser surface validation remains. |
 | T | `2-T-1`, `2-T-2` | `hermes-relay-tui` | Existing TUI/appliance behavior is foundation for the direct doorway and separate room mirrors. |
 
 Shared `DisplaySnapshot`, reducer, Room filtering, and normalized event feeds

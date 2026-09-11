@@ -13,6 +13,7 @@ export interface WebSocketLike {
   onmessage: ((event: MessageEvent<unknown>) => void) | null;
   onerror: (() => void) | null;
   onclose: (() => void) | null;
+  binaryType?: "blob" | "arraybuffer";
   send?: (data: string) => void;
   close(): void;
 }
@@ -84,6 +85,7 @@ export class StateChannel {
       return;
     }
 
+    socket.binaryType = "arraybuffer";
     this.socket = socket;
     this.hasHydratedSocket = false;
     socket.onopen = () => {

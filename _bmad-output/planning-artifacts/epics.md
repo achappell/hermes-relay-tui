@@ -199,7 +199,7 @@ second W/K or iPad surface.
 | `2-E-3` | ESP32 Touch Display | Mirror Hermes prompts without creating touch response actions or a second Session. |
 | `2-E-4` | ESP32 Touch Display | Render honest disconnected state and safe cached context on the native Display. |
 | `2-WK-1` | W/K browser voice-plus-display surface | Render the shared Room-scoped Ambient Surface for web and iPad deployment. |
-| `2-WK-2` | W/K browser voice-plus-display surface | Render active capture, room-local Transcription, response, and phase state in the browser surface. |
+| `2-WK-2` | W/K browser voice-plus-display surface | Render active capture, room-local Transcription, response, and phase state in the browser surface, including live/final user text, streamed/completed response text, explicit audio state, and bounded post-turn response retention. |
 | `2-WK-3` | W/K browser voice-plus-display surface | Mirror Hermes prompts without touch approval or a second Session. |
 | `2-WK-4` | W/K browser voice-plus-display surface | Render honest disconnected state, cached context, and accessible recovery presentation. |
 | `2-T-1` | TUI | Keep the direct TUI doorway's capture and phase state visible while a Room Display may mirror separately. |
@@ -312,7 +312,7 @@ the named surface; another surface's implementation is evidence, not closure.
 | `E-3` | ESP32 Touch Display | Response-audio delivery. |
 | `E-4` | ESP32 Touch Display | Bounded follow-up and exact `stop`. |
 | `E-5` | ESP32 Touch Display | Recovery without replay. |
-| `WK-1` | Web/iPad | One shared W/K browser voice-plus-display surface for authorized capture, honest phases, streamed/completed response text, response audio, and delivery/error state. iPad is a deployment target, not a separate surface. |
+| `WK-1` | Web/iPad | One shared W/K browser voice-plus-display surface for authorized capture, honest phases, streamed/completed response text, response audio, and delivery/error state, including bounded post-playback hands-free recovery across supported browsers. iPad is a deployment target, not a separate surface. |
 | `T-1` | TUI | Authorized initiation. The historical numeric artifact 1.1 remains its stable local alias. |
 | `T-2` | TUI | Honest phases and response delivery. The historical numeric artifact 1.2 remains its stable local alias. |
 | `T-3` | TUI | Bounded follow-up and exact `stop`. The historical numeric artifact 1.3 remains its stable local alias. |

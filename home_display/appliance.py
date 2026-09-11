@@ -487,6 +487,7 @@ class Appliance:
 
         response = ""
         audio_active = False
+        streamed_audio = False
         file_audio = bytearray()
         file_format: tuple[int, int, int] | None = None
         file_audio_active = False
@@ -536,27 +537,31 @@ class Appliance:
                         status_text=str(event.get("text") or "Thinking"),
                     )
                 elif kind == "audio_start":
-                    audio_format = (
+                    incoming_format = (
                         int(event.get("sample_rate", 0)),
                         int(event.get("channels", 0)),
                         int(event.get("sample_width", 0)),
                     )
-                    await server.send_audio_start(
-                        turn_id=turn_id,
-                        sample_rate=audio_format[0],
-                        channels=audio_format[1],
-                        sample_width=audio_format[2],
-                    )
-                    audio_active = True
+                    if not audio_active:
+                        await server.send_audio_start(
+                            turn_id=turn_id,
+                            sample_rate=incoming_format[0],
+                            channels=incoming_format[1],
+                            sample_width=incoming_format[2],
+                        )
+                        audio_active = True
                     publish_response("speaking")
                 elif kind == "audio_chunk":
                     data = event.get("data")
                     if audio_active and isinstance(data, bytes):
+                        if data:
+                            streamed_audio = True
                         await server.send_audio_chunk(data)
                 elif kind == "audio_end":
-                    if audio_active:
-                        await server.send_audio_end(turn_id=turn_id)
-                        audio_active = False
+                    # Hermes closes each paragraph's stream here. Keep the
+                    # browser stream open until turn_end so the next segment
+                    # cannot restart playback or cut the previous source.
+                    continue
                 elif kind == "audio_file_start":
                     file_audio.clear()
                     metadata = tuple(
@@ -578,7 +583,10 @@ class Appliance:
                     if isinstance(data, bytes):
                         file_audio.extend(data)
                     file_audio_active = False
-                    if audio_active:
+                    # Hermes may stream PCM and send a whole-file copy for the
+                    # same answer. The browser must hear one rendition, not
+                    # a second stream that restarts or overlays the first.
+                    if streamed_audio:
                         continue
                     try:
                         decoded, decoded_format = audio_module.read_wav(bytes(file_audio))
@@ -590,17 +598,16 @@ class Appliance:
                             )
                             continue
                         decoded, decoded_format = bytes(file_audio), file_format
-                    await server.send_audio_start(
-                        turn_id=turn_id,
-                        sample_rate=decoded_format[0],
-                        channels=decoded_format[1],
-                        sample_width=decoded_format[2],
-                    )
-                    audio_active = True
+                    if not audio_active:
+                        await server.send_audio_start(
+                            turn_id=turn_id,
+                            sample_rate=decoded_format[0],
+                            channels=decoded_format[1],
+                            sample_width=decoded_format[2],
+                        )
+                        audio_active = True
                     publish_response("speaking")
                     await server.send_audio_chunk(decoded)
-                    await server.send_audio_end(turn_id=turn_id)
-                    audio_active = False
                 elif kind in ("audio_abort", "turn_interrupted"):
                     await abort_audio(str(event.get("error") or event.get("reason") or kind))
                     publish_terminal_error("Response interrupted")
