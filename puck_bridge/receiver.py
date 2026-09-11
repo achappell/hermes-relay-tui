@@ -31,6 +31,8 @@ import wave
 from typing import Callable
 from urllib.parse import parse_qs, urlparse
 
+from .response import ResponseStream, streaming_wav_header
+
 logger = logging.getLogger("hermes_relay_tui.puck_bridge.receiver")
 
 # Must match pcm_capture.h's UPLOAD_CHUNK_BYTES. Only used here as a sanity
@@ -55,6 +57,7 @@ Q25_MIN = ~Q25_MAX
 
 TOKEN_HEADER = "X-Puck-Token"
 UPLOAD_PATH = "/upload"
+RESPONSE_PATH = "/response"
 
 
 def process_frame_sample(raw4: bytes) -> int:
@@ -163,6 +166,7 @@ def make_handler(
     on_transcript: Callable[[str], None],
     transcribe_fn: Callable[[str], dict] | None = None,
     work_dir: str | os.PathLike[str] | None = None,
+    response_stream: "ResponseStream | None" = None,
 ) -> type[http.server.BaseHTTPRequestHandler]:
     """Build a request handler bound to one token and one transcript sink.
 
@@ -198,6 +202,77 @@ def make_handler(
             self.end_headers()
             if body:
                 self.wfile.write(body)
+
+        def do_GET(self) -> None:  # noqa: N802 - stdlib handler name
+            """Stream the current spoken response to the Puck.
+
+            The device fetches this after its upload, and ESPHome's
+            audio_http source plays it through the media_player. Two rules
+            come from that reader (audio/audio_reader.cpp) and both are
+            load-bearing:
+
+              * It fails a stream after ~30s without a successful read, so
+                every wait below is bounded well inside that.
+              * A zero-length read is a TIMEOUT, not EOF -- the body has to
+                be terminated definitively or the device waits forever.
+            """
+            path = self.path.split("?", 1)[0]
+            if path != RESPONSE_PATH:
+                self._respond(404, b"not found")
+                return
+
+            # Same fail-closed token check as the upload path. Response
+            # audio is as private as the question that produced it.
+            token = self.headers.get(TOKEN_HEADER, "")
+            if not expected_token or token != expected_token:
+                logger.warning("puck bridge response rejected: invalid token")
+                self._respond(401, b"invalid token")
+                return
+
+            if response_stream is None:
+                self._respond(503, b"no response stream configured")
+                return
+
+            audio_format = response_stream.wait_for_format()
+            if audio_format is None:
+                logger.warning(
+                    "puck bridge response: no audio format within the wait "
+                    "budget; nothing to stream"
+                )
+                self._respond(504, b"no response audio")
+                return
+
+            self.send_response(200)
+            self.send_header("Content-Type", "audio/wav")
+            # No Content-Length: the length genuinely is not known yet.
+            # Chunked encoding lets the body be terminated definitively,
+            # which is what the device needs to see end-of-stream.
+            self.send_header("Transfer-Encoding", "chunked")
+            self.end_headers()
+
+            total = 0
+            try:
+                self._write_chunk(streaming_wav_header(audio_format))
+                for chunk in response_stream.iter_chunks():
+                    self._write_chunk(chunk)
+                    total += len(chunk)
+                # Terminating zero-length chunk: this is what makes
+                # esp_http_client_is_complete_data_received() true.
+                self.wfile.write(b"0\r\n\r\n")
+                self.wfile.flush()
+            except (BrokenPipeError, ConnectionResetError):
+                logger.info("puck bridge response: device closed the connection")
+                return
+            logger.info("puck bridge response streamed %d bytes of PCM", total)
+
+        def _write_chunk(self, data: bytes) -> None:
+            """Write one HTTP chunked-encoding frame."""
+            if not data:
+                return
+            self.wfile.write(b"%X\r\n" % len(data))
+            self.wfile.write(data)
+            self.wfile.write(b"\r\n")
+            self.wfile.flush()
 
         def do_POST(self) -> None:  # noqa: N802 - stdlib handler name
             path = self.path.split("?", 1)[0]

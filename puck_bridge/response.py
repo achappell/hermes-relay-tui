@@ -1,0 +1,172 @@
+"""One in-flight spoken response, produced by a turn and consumed by the Puck.
+
+The bridge plays Hermes' answer on the host today. To move it onto the
+Puck, that audio has to become something the device can fetch over HTTP
+while it is still being produced -- Hermes streams the answer, and waiting
+for the whole thing before playing any of it would add the full length of
+the answer to the latency.
+
+This is the hand-off point: the turn writes PCM in as it arrives, the
+`/response` handler reads it out, and neither knows about the other.
+
+Two constraints come from ESPHome's own audio reader on the device
+(`audio/audio_reader.cpp`), and they are the reason this class looks the
+way it does rather than being a plain queue:
+
+  * The reader FAILS a stream after ~30s without a successful read
+    (MAX_FETCHING_HEADER_ATTEMPTS * CONNECTION_TIMEOUT_MS = 6 * 5000ms).
+    So the response cannot sit idle waiting for Hermes to start speaking --
+    every wait here is bounded well inside that.
+  * A zero-length read is treated as a TIMEOUT, not as end-of-stream. The
+    device detects the end via esp_http_client_is_complete_data_received(),
+    so the body must be terminated definitively rather than by simply
+    going quiet.
+"""
+
+from __future__ import annotations
+
+import logging
+import threading
+from collections import deque
+
+logger = logging.getLogger("hermes_relay_tui.puck_bridge.response")
+
+# How long a reader waits for the turn to declare an audio format before
+# giving up. Hermes emits `audio_start` almost immediately (measured at
+# 0.1s against the live relay), so this is generous -- but it stays well
+# inside the device's ~30s no-read failure budget.
+FORMAT_WAIT_SECONDS = 15.0
+
+# How long a reader blocks for the next chunk before checking whether the
+# producer has finished. Short, so `finish()` is noticed promptly; this is
+# a poll interval, not a deadline.
+CHUNK_POLL_SECONDS = 0.5
+
+# Total silence a reader tolerates mid-stream before declaring the producer
+# dead. Deliberately under the device's ~30s budget so the bridge ends the
+# body cleanly rather than letting the device time the connection out --
+# a definite short response beats an indefinite hang.
+STREAM_STALL_SECONDS = 20.0
+
+
+class ResponseStream:
+    """Thread-safe single-response channel: one producer, one consumer."""
+
+    def __init__(self) -> None:
+        self._cv = threading.Condition()
+        self._chunks: deque[bytes] = deque()
+        self._audio_format: tuple[int, int, int] | None = None
+        self._finished = False
+        self._seq: int | None = None
+
+    # -- producer side (the turn) -----------------------------------------
+
+    def begin(self, seq: int | None, audio_format: tuple[int, int, int]) -> None:
+        """Declare the format and open the stream for writing."""
+        with self._cv:
+            self._chunks.clear()
+            self._audio_format = audio_format
+            self._finished = False
+            self._seq = seq
+            self._cv.notify_all()
+        logger.debug("puck response stream opened seq=%s format=%s", seq, audio_format)
+
+    def write(self, data: bytes) -> None:
+        if not data:
+            return
+        with self._cv:
+            self._chunks.append(data)
+            self._cv.notify_all()
+
+    def finish(self) -> None:
+        """Mark the response complete. Idempotent."""
+        with self._cv:
+            self._finished = True
+            self._cv.notify_all()
+
+    @property
+    def finished(self) -> bool:
+        with self._cv:
+            return self._finished
+
+    # -- consumer side (the /response handler) -----------------------------
+
+    def wait_for_format(
+        self, timeout: float = FORMAT_WAIT_SECONDS
+    ) -> tuple[int, int, int] | None:
+        """Block until the turn declares an audio format, or give up.
+
+        The WAV header cannot be written before this is known -- it carries
+        the sample rate -- so this is the one unavoidable wait before the
+        device receives any bytes.
+        """
+        with self._cv:
+            if self._audio_format is not None:
+                return self._audio_format
+            self._cv.wait_for(lambda: self._audio_format is not None, timeout)
+            return self._audio_format
+
+    def iter_chunks(self, stall_timeout: float = STREAM_STALL_SECONDS):
+        """Yield PCM chunks until the response finishes or the producer stalls.
+
+        Ends the generator rather than raising on a stall: the consumer's
+        job is to terminate the HTTP body definitively, and a short truthful
+        response is better than an indefinite hang the device would have to
+        time out itself.
+        """
+        waited = 0.0
+        while True:
+            with self._cv:
+                while self._chunks:
+                    waited = 0.0
+                    yield self._chunks.popleft()
+                if self._finished:
+                    return
+                self._cv.wait(CHUNK_POLL_SECONDS)
+                if self._chunks or self._finished:
+                    continue
+            waited += CHUNK_POLL_SECONDS
+            if waited >= stall_timeout:
+                logger.warning(
+                    "puck response stream stalled for %.0fs with no audio; "
+                    "ending the body so the device is not left waiting",
+                    stall_timeout,
+                )
+                return
+
+
+# A streaming WAV cannot know its length when the header is written. The
+# device's decoder does not care: `micro_wav`'s wav_decoder.cpp validates
+# only num_channels and sample_rate, copies `data_chunk_size_` into a
+# uint32_t counter with NO validation, and stops decoding when the input
+# runs out regardless of that counter. So a sentinel length streams
+# correctly and neither a FLAC encoder nor buffer-then-serve is needed.
+#
+# 0xFFFFFFFF rather than 0: a zero-length data chunk would make the decoder
+# stop immediately.
+STREAMING_DATA_SIZE = 0xFFFFFFFF
+STREAMING_RIFF_SIZE = 0xFFFFFFFF
+
+
+def streaming_wav_header(audio_format: tuple[int, int, int]) -> bytes:
+    """Build a 44-byte PCM WAV header for a stream of unknown length."""
+    import struct
+
+    sample_rate, channels, sample_width = audio_format
+    byte_rate = sample_rate * channels * sample_width
+    block_align = channels * sample_width
+    return (
+        b"RIFF"
+        + struct.pack("<I", STREAMING_RIFF_SIZE)
+        + b"WAVE"
+        + b"fmt "
+        + struct.pack("<I", 16)          # PCM fmt chunk size
+        + struct.pack("<H", 1)           # PCM
+        + struct.pack("<H", channels)
+        + struct.pack("<I", sample_rate)
+        + struct.pack("<I", byte_rate)
+        + struct.pack("<H", block_align)
+        + struct.pack("<H", sample_width * 8)
+        + b"data"
+        + struct.pack("<I", STREAMING_DATA_SIZE)
+    )

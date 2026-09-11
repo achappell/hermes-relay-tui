@@ -750,3 +750,169 @@ def test_playback_that_never_drains_aborts_the_turn(monkeypatch):
         assert runner._send("a question") is False
     finally:
         runner.stop()
+
+
+# --- 1-p-2 tasks 3-4: response streaming to the Puck ----------------------
+
+
+def test_streaming_wav_header_declares_a_sentinel_length():
+    """A live WAV has no known length at header time. micro_wav's decoder
+    validates only num_channels and sample_rate -- data_chunk_size_ is
+    copied into a uint32_t counter with no validation and decoding stops
+    when the input runs out -- so a sentinel streams correctly."""
+    from puck_bridge.response import streaming_wav_header
+
+    header = streaming_wav_header((24000, 1, 2))
+    assert len(header) == 44
+    assert header[:4] == b"RIFF" and header[8:12] == b"WAVE"
+    assert struct.unpack("<I", header[24:28])[0] == 24000          # sample rate
+    assert struct.unpack("<I", header[40:44])[0] == 0xFFFFFFFF     # data size
+    # A zero data chunk would make the decoder stop immediately.
+    assert struct.unpack("<I", header[40:44])[0] != 0
+
+
+def test_response_stream_delivers_chunks_in_order_then_ends():
+    from puck_bridge.response import ResponseStream
+
+    stream = ResponseStream()
+    stream.begin(1, (24000, 1, 2))
+    stream.write(b"aa")
+    stream.write(b"bb")
+    stream.finish()
+    assert list(stream.iter_chunks()) == [b"aa", b"bb"]
+
+
+def test_response_stream_ends_the_body_when_the_producer_stalls():
+    """Rather than hanging: the device treats a zero-length read as a
+    timeout, not EOF, so an unterminated body leaves it waiting for its own
+    ~30s failure instead of stopping cleanly."""
+    from puck_bridge.response import ResponseStream
+
+    stream = ResponseStream()
+    stream.begin(1, (24000, 1, 2))
+    stream.write(b"aa")
+    # never finished
+    chunks = list(stream.iter_chunks(stall_timeout=0.6))
+    assert chunks == [b"aa"]
+
+
+def test_response_stream_wait_for_format_gives_up_rather_than_blocking():
+    from puck_bridge.response import ResponseStream
+
+    assert ResponseStream().wait_for_format(timeout=0.2) is None
+
+
+def test_a_turn_publishes_audio_to_the_response_stream_not_the_host():
+    """Task 4: with a response stream attached the answer goes to the Puck,
+    and must NOT also be played on this host."""
+    from puck_bridge.response import ResponseStream
+
+    stream = ResponseStream()
+    player = FakePlayer()
+    runner = TurnRunner(FakeSession(), player=player, response_stream=stream)
+    runner.start()
+    try:
+        assert runner._send("a question") is True
+    finally:
+        runner.stop()
+
+    assert list(stream.iter_chunks()) == [b"\x01\x02", b"\x03\x04"]
+    assert player.written == [], "the host must stay silent when the Puck plays"
+    assert stream.finished, "the body must be terminated for the device"
+
+
+def test_the_response_stream_is_finished_even_when_a_turn_fails(monkeypatch):
+    """The device is blocked reading; an abandoned turn must still end the
+    body rather than leaving it to time out."""
+    import puck_bridge.turn as turn_mod
+    from puck_bridge.response import ResponseStream
+
+    monkeypatch.setattr(turn_mod, "FIRST_EVENT_TIMEOUT_SECONDS", 0.2)
+
+    class _SilentSession(FakeSession):
+        def send_turn(self, text, *, stt_source="local"):
+            async def _events():
+                await asyncio.sleep(30)
+                yield {}
+
+            return _events()
+
+    stream = ResponseStream()
+    runner = TurnRunner(_SilentSession(), player=FakePlayer(), response_stream=stream)
+    runner.start()
+    try:
+        assert runner._send("a question") is False
+    finally:
+        runner.stop()
+    assert stream.finished
+
+
+def _get_response(port: int, *, token: str | None):
+    """Fetch /response and return (status, body-bytes)."""
+    conn = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
+    try:
+        headers = {}
+        if token is not None:
+            headers[TOKEN_HEADER] = token
+        conn.request("GET", "/response?seq=1", headers=headers)
+        resp = conn.getresponse()
+        body = resp.read()
+        return resp.status, body
+    finally:
+        conn.close()
+
+
+def test_response_endpoint_streams_a_wav_the_device_can_decode(tmp_path):
+    from puck_bridge.response import ResponseStream
+
+    stream = ResponseStream()
+    handler_cls = make_handler(
+        expected_token="s3cret",
+        on_transcript=_RecordingSink(),
+        transcribe_fn=_fake_transcribe(transcript="x"),
+        work_dir=tmp_path,
+        response_stream=stream,
+    )
+    server = _start_server(handler_cls)
+    port = server.server_address[1]
+
+    def _produce():
+        stream.begin(1, (24000, 1, 2))
+        stream.write(b"\x01\x02" * 8)
+        stream.write(b"\x03\x04" * 8)
+        stream.finish()
+
+    threading.Thread(target=_produce, daemon=True).start()
+    try:
+        status, body = _get_response(port, token="s3cret")
+    finally:
+        server.shutdown()
+
+    assert status == 200
+    # http.client de-chunks for us, so this is the reassembled body.
+    assert body[:4] == b"RIFF"
+    assert struct.unpack("<I", body[24:28])[0] == 24000
+    assert struct.unpack("<I", body[40:44])[0] == 0xFFFFFFFF
+    assert body[44:] == b"\x01\x02" * 8 + b"\x03\x04" * 8
+
+
+def test_response_endpoint_rejects_a_bad_token(tmp_path):
+    """Response audio is as private as the question that produced it."""
+    from puck_bridge.response import ResponseStream
+
+    stream = ResponseStream()
+    stream.begin(1, (24000, 1, 2))
+    stream.finish()
+    handler_cls = make_handler(
+        expected_token="s3cret",
+        on_transcript=_RecordingSink(),
+        transcribe_fn=_fake_transcribe(transcript="x"),
+        work_dir=tmp_path,
+        response_stream=stream,
+    )
+    server = _start_server(handler_cls)
+    try:
+        status, _ = _get_response(server.server_address[1], token="wrong")
+    finally:
+        server.shutdown()
+    assert status == 401

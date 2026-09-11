@@ -25,6 +25,7 @@ import config
 from session import HermesSession
 
 from .receiver import ThreadingHTTPServer, make_handler
+from .response import ResponseStream
 from .turn import TurnRunner
 
 logger = logging.getLogger("hermes_relay_tui.puck_bridge.server")
@@ -46,6 +47,16 @@ def build_arg_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--port", type=int, default=DEFAULT_PORT, help=f"listen port (default: {DEFAULT_PORT})"
+    )
+    parser.add_argument(
+        "--play-on-device",
+        action="store_true",
+        help=(
+            "stream the spoken answer to the Puck over HTTP instead of "
+            "playing it on this host. Requires firmware that fetches "
+            "/response after its upload (1-p-2 task 5); until that lands, "
+            "enabling this means no audio plays anywhere."
+        ),
     )
     return parser
 
@@ -94,7 +105,17 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     session = HermesSession(session_args)
-    runner = TurnRunner(session)
+    # Off by default: host playback is proven and device playback is not
+    # reachable until the firmware fetches /response. Defaulting this on
+    # would silently make the appliance mute.
+    response_stream = ResponseStream() if args.play_on_device else None
+    runner = TurnRunner(session, response_stream=response_stream)
+    if response_stream is not None:
+        logger.info(
+            "puck bridge will stream the answer to the device at %s; "
+            "this host stays silent",
+            "/response",
+        )
     logger.info(
         "puck bridge connecting Hermes session profile=%s session_id=%s",
         session_args.profile_name,
@@ -105,6 +126,7 @@ def main(argv: list[str] | None = None) -> int:
     handler_cls = make_handler(
         expected_token=token,
         on_transcript=runner.submit_transcript,
+        response_stream=response_stream,
     )
     try:
         with ThreadingHTTPServer((args.host, args.port), handler_cls) as httpd:
