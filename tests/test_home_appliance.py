@@ -38,6 +38,7 @@ class FakeSession:
         self.turn_index = 0
         self.capture_timeouts = []
         self.follow_up = ""
+        self.follow_up_results = None
         self.connected = True
 
     async def connect(self):
@@ -65,7 +66,11 @@ class FakeSession:
 
     def capture_voice(self, *, wait_timeout=None) -> str:
         self.capture_timeouts.append(wait_timeout)
-        return self.follow_up if wait_timeout is not None else self.transcript
+        if wait_timeout is not None:
+            if self.follow_up_results is not None:
+                return next(self.follow_up_results)
+            return self.follow_up
+        return self.transcript
 
     def cancel_voice(self) -> None:
         self.cancels += 1
@@ -1565,18 +1570,30 @@ async def test_a_dead_speaker_costs_the_chirp_and_nothing_else():
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("follow_up, expected", [("and tomorrow?", ["what is the weather", "and tomorrow?"]), ("", ["what is the weather"]), (" Stop! ", ["what is the weather"])])
-async def test_home_opens_one_bounded_follow_up_without_another_wake(follow_up, expected):
+@pytest.mark.parametrize(
+    "follow_ups, expected",
+    [
+        (
+            ["and tomorrow?", "what about Friday?", ""],
+            ["what is the weather", "and tomorrow?", "what about Friday?"],
+        ),
+        ([""], ["what is the weather"]),
+        ([" Stop! "], ["what is the weather"]),
+    ],
+)
+async def test_home_keeps_opening_bounded_follow_ups_without_another_wake(
+    follow_ups, expected
+):
     session = FakeSession()
-    session.follow_up = follow_up
+    session.follow_up_results = iter(follow_ups)
     publisher = RecordingPublisher()
     appliance, state = make_appliance(session=session, args=_args(wake_followup_seconds=12.0), publisher=publisher)
     await _run_until_idle(appliance, state)
     assert session.turns == expected
-    assert session.capture_timeouts == [None, 12.0]
+    assert session.capture_timeouts == [None, *([12.0] * len(follow_ups))]
     assert state["earcons"].played.count("wake") == 1
     assert state["earcons"].played.count("capture_done") == len(expected)
-    assert publisher.sequence.count("listening") == 2
+    assert publisher.sequence.count("listening") == 1 + len(follow_ups)
     assert publisher.sequence[-1] == "idle"
 
 

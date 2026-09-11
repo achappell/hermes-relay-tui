@@ -42,6 +42,14 @@ context:
 - Final verification: 154 browser tests pass after covering the `onstart`-without-result Safari variant. The live HTTPS host serves the new bundle.
 - Physical iPad Safari smoke on 2026-09-09: Amanda confirmed the refreshed HTTPS page now accepts the hands-free follow-up after playback. The previously observed "listens but ignores me" failure did not recur; the physical recovery gate passed.
 
+## Spec Change Log
+
+- 2026-09-10 — The approved cross-surface
+  `spec-continuous-wake-free-follow-ups.md` extends this recovery slice's
+  bounded retry behavior across every successive wake-free window. The
+  one-follow-up wording above remains historical evidence; current behavior is
+  owned by the cross-surface spec.
+
 ## Review Triage Log
 
 - `medium / patch` — Self-review identified that an `onstart` callback could clear the original watchdog even when Safari then emitted no speech. Added a separate post-start activity watchdog and regression coverage; normal started recognition still clears the watchdog on the first result.

@@ -850,7 +850,7 @@ describe("App", () => {
     delete (window as Window & { AudioContext?: unknown }).AudioContext;
   });
 
-  it("waits for all streamed audio to finish before opening the one follow-up", async () => {
+  it("waits for all streamed audio to finish before opening the first follow-up", async () => {
     vi.useFakeTimers();
     const recognitions: Array<{
       onresult: ((event: unknown) => void) | null;
@@ -1000,6 +1000,7 @@ describe("App", () => {
     expect(container.querySelector("[data-handsfree-status]")).toHaveTextContent(
       "Listening for a follow-up",
     );
+    expect(container.querySelector('[data-state="listening"]')).not.toBeNull();
     expect(container.querySelector("[data-response-text]")).toHaveTextContent("");
     expect(container.querySelector("[data-user-transcription]")).toBeNull();
     unmount();

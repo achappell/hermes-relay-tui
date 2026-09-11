@@ -674,6 +674,16 @@ class Appliance:
         if not self._connected:
             self._publish("disconnected")
             return
+        if (
+            state == handsfree.SENDING
+            and self._published is not None
+            and self._published[0] == "speaking"
+        ):
+            # Continuous follow-up handoff keeps the coordinator busy after
+            # playback drains, but the room has already heard the answer.
+            # Do not repaint that completed answer as "Thinking" while the
+            # next capture window is being opened.
+            return
         if state == handsfree.ACKNOWLEDGING:
             # A new question replaces the last answer: leaving the previous
             # response on screen while listening claims a conversation that

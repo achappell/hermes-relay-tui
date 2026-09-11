@@ -78,6 +78,11 @@ context:
 ## Spec Change Log
 
 - 2026-09-09 — Selected Safari browser tab under Guided Access; implemented and reviewed the browser hands-free slice.
+- 2026-09-10 — The approved cross-surface
+  `spec-continuous-wake-free-follow-ups.md` supersedes this slice's historical
+  one-follow-up limit. The browser now repeats the bounded wake-free window
+  after every successful non-empty turn; this document remains the historical
+  browser hands-free delivery record.
 
 ## Review Triage Log
 

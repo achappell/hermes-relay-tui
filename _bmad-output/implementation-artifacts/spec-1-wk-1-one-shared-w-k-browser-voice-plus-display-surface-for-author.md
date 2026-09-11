@@ -134,3 +134,7 @@ paths to accommodate one unobserved Samsung error.
 
 - 2026-09-10 — Created through the approved BMad Correct Course proposal
   after live Samsung Bespoke feedback.
+- 2026-09-10 — The approved cross-surface
+  `spec-continuous-wake-free-follow-ups.md` supersedes the one-follow-up
+  boundary recorded here for future W/K behavior; the current implementation
+  and acceptance are tracked by that cross-surface spec.

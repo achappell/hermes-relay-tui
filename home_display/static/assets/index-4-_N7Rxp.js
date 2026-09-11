@@ -5517,7 +5517,6 @@ class BrowserHandsFreeController {
     __publicField(this, "followUpRetryTimer", null);
     __publicField(this, "followUpWatchdogTimer", null);
     __publicField(this, "followUpAttempt", 0);
-    __publicField(this, "followUpEligible", false);
     __publicField(this, "turnInFlight", false);
     this.sendText = options.sendText;
     this.wakePhrases = options.wakePhrases.map(normaliseSpeech).filter(Boolean);
@@ -5564,7 +5563,6 @@ class BrowserHandsFreeController {
     const generation = this.generation;
     this.armed = true;
     this.phase = "wake_ready";
-    this.followUpEligible = false;
     this.turnInFlight = false;
     this.emit("arming");
     if (!this.startRecognition(generation)) {
@@ -5578,7 +5576,6 @@ class BrowserHandsFreeController {
     this.generation += 1;
     this.armed = false;
     this.phase = "off";
-    this.followUpEligible = false;
     this.turnInFlight = false;
     this.clearTimers();
     this.stopRecognition();
@@ -5595,12 +5592,7 @@ class BrowserHandsFreeController {
     const generation = this.generation;
     this.turnInFlight = false;
     this.clearCaptureTimer();
-    if (this.followUpEligible) {
-      this.followUpEligible = false;
-      this.beginFollowUp(generation);
-      return;
-    }
-    this.enterWakeReady(generation);
+    this.beginFollowUp(generation);
   }
   stateForPhase() {
     switch (this.phase) {
@@ -5812,13 +5804,11 @@ class BrowserHandsFreeController {
   }
   submit(text, generation) {
     if (!this.isCurrent(generation)) return;
-    const isFollowUp = this.phase === "follow_up";
     this.clearCaptureTimer();
     this.clearHeardTimer();
     this.clearFollowUpRetryTimer();
     this.stopRecognition();
     this.phase = "submitting";
-    this.followUpEligible = !isFollowUp;
     this.turnInFlight = true;
     this.emit("submitting");
     let sendResult;
@@ -5839,7 +5829,6 @@ class BrowserHandsFreeController {
     this.generation += 1;
     this.armed = false;
     this.phase = "off";
-    this.followUpEligible = false;
     this.turnInFlight = false;
     this.clearTimers();
     this.stopRecognition();
@@ -6061,6 +6050,8 @@ function App($$anchor, $$props) {
   const wakePhraseLabel = /* @__PURE__ */ mutable_source();
   const promptVisible = /* @__PURE__ */ mutable_source();
   const promptKey = /* @__PURE__ */ mutable_source();
+  const localHandsFreeState = /* @__PURE__ */ mutable_source();
+  const surfaceView = /* @__PURE__ */ mutable_source();
   let protocolError = /* @__PURE__ */ mutable_source(null);
   let displayView = /* @__PURE__ */ mutable_source(createInitialDisplayView());
   let connectionState = /* @__PURE__ */ mutable_source("connecting");
@@ -6087,6 +6078,12 @@ function App($$anchor, $$props) {
   const RESPONSE_RETENTION_MS = 6e4;
   function isDisplayReady() {
     return get(protocolError) === null && get(connectionState) === "connected" && get(displayView).state === "idle" && get(displayView).connection_healthy && !get(displayView).is_busy;
+  }
+  function handsFreeSurfaceState(state2) {
+    if (state2 === "heard") return "heard";
+    if (state2 === "listening" || state2 === "follow_up") return "listening";
+    if (state2 === "submitting") return "thinking";
+    return null;
   }
   function clearResponseRetentionTimer() {
     responseRetentionGeneration += 1;
@@ -6371,6 +6368,16 @@ function App($$anchor, $$props) {
   legacy_pre_effect(() => get(displayView), () => {
     set(promptKey, get(displayView).prompt === null ? "" : JSON.stringify(get(displayView).prompt));
   });
+  legacy_pre_effect(() => get(handsFreeState), () => {
+    set(localHandsFreeState, handsFreeSurfaceState(get(handsFreeState)));
+  });
+  legacy_pre_effect(() => (get(localHandsFreeState), get(displayView)), () => {
+    set(surfaceView, get(localHandsFreeState) !== null && get(displayView).state === "idle" ? {
+      ...get(displayView),
+      state: get(localHandsFreeState),
+      status_text: null
+    } : get(displayView));
+  });
   legacy_pre_effect_reset();
   init();
   var fragment = root_11();
@@ -6378,7 +6385,7 @@ function App($$anchor, $$props) {
   var node = child(div);
   StateSurface(node, {
     get snapshot() {
-      return get(displayView);
+      return get(surfaceView);
     },
     get connectionState() {
       return get(connectionState);

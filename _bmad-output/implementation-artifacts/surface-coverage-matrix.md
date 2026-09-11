@@ -7,6 +7,7 @@ sources:
   - _bmad-output/planning-artifacts/epics.md
   - _bmad-output/implementation-artifacts/sprint-status.yaml
   - _bmad-output/implementation-artifacts/epic-1-context.md
+  - _bmad-output/implementation-artifacts/spec-continuous-wake-free-follow-ups.md
   - _bmad-output/implementation-artifacts/spec-1-wk-1-one-shared-w-k-browser-voice-plus-display-surface-for-author.md
   - _bmad-output/implementation-artifacts/spec-2-wk-2-render-active-capture-room-local-transcription-response-and.md
   - _bmad-output/implementation-artifacts/spec-5-stream-audio-to-host-after-a-validated-wake.md
@@ -78,8 +79,8 @@ Python host / DisplaySnapshot contract
 | I | `I-1`–`I-3` | `hermes-relay-ios` | Implementation and device-validation evidence exists in the sibling repository. |
 | P | `P-1`–`P-4` | Puck delivery work | The audio bridge has real-device evidence for wake, VAD-gated capture, chunked upload, host transcription, and host response playback, and now always mints a distinct bridge session identity rather than colliding with a profile's other doorway. Chunked upload is confirmed reliable on a strong WiFi signal (six consecutive full uploads, no stalls) -- the earlier -89/-90 dB transport stall is resolved. A full spoken Hermes round trip is still unverified: the on-device VAD now closes every capture at ~1 second regardless of continued speech, so no real command content reaches transcription (see deferred-work.md). Puck-side response playback and the remaining bounded/recovery validation stay open in the implementation record. |
 | E | `E-1`–`E-5` | `hermes-relay-tui` / firmware | Native display/reducer evidence exists for parts of E-2/E-5; voice capture and response-audio adapter work remains. |
-| W/K | `WK-1` | `hermes-relay-tui` / web | Browser voice/display foundation and verified PCM delivery exist; the approved follow-on spec covers bounded post-playback hands-free recovery, while kiosk, accessibility, device, and delivery validation remain. |
-| T | `T-1`–`T-4` | `hermes-relay-tui` | Local implementation artifacts and regression evidence exist; formal status remains in the TUI tracker. |
+| W/K | `WK-1` | `hermes-relay-tui` / web | Browser voice/display foundation and verified PCM delivery exist; continuous wake-free follow-up implementation and regression evidence are recorded in [the cross-surface spec](spec-continuous-wake-free-follow-ups.md), while kiosk, accessibility, device, and delivery validation remain. |
+| T | `T-1`–`T-4` | `hermes-relay-tui` | Local implementation artifacts and regression evidence now include the continuous wake-free follow-up slice; formal status remains in the TUI tracker. |
 
 ## Epic 2 — See and trust what the room is doing
 

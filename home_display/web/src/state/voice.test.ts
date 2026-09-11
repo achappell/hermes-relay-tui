@@ -132,7 +132,7 @@ describe("BrowserVoiceController", () => {
 describe("BrowserHandsFreeController", () => {
   afterEach(() => vi.useRealTimers());
 
-  it("discards the wake phrase and sends one initial turn plus one follow-up", async () => {
+  it("discards the wake phrase and keeps sending wake-free follow-ups", async () => {
     vi.useFakeTimers();
     const recognitions: FakeRecognition[] = [];
     const sendText = vi.fn(() => true);
@@ -167,9 +167,18 @@ describe("BrowserHandsFreeController", () => {
     recognitions[1].result({ isFinal: true, transcript: "and tomorrow?" });
     expect(sendText).toHaveBeenCalledTimes(2);
     controller.turnFinished();
+    await Promise.resolve();
+    expect(states.at(-1)).toBe("follow_up");
+    expect(recognitions).toHaveLength(3);
+    recognitions[2].result({ isFinal: true, transcript: "what about Friday?" });
+    expect(sendText).toHaveBeenCalledTimes(3);
+    controller.turnFinished();
+    await Promise.resolve();
+    expect(states.at(-1)).toBe("follow_up");
+    expect(recognitions).toHaveLength(4);
+    recognitions[3].result({ isFinal: true, transcript: "STOP." });
+    expect(sendText).toHaveBeenCalledTimes(3);
     expect(states.at(-1)).toBe("wake_ready");
-    recognitions.at(-1)?.result({ isFinal: true, transcript: "another question" });
-    expect(sendText).toHaveBeenCalledTimes(2);
     controller.disarm();
   });
 

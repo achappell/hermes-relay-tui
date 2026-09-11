@@ -629,11 +629,12 @@ and speaker playback; ops receives only the recognized turn text and does not
 open a local audio device. After the display is connected and idle, tap
 **Enable hands-free** to grant permission and listen for the active profile's
 configured wake phrase. The browser discards ambient speech, strips the wake
-phrase before sending a question, opens one eight-second wake-free follow-up
-window after a completed answer, and treats exactly `stop` as a silent local
-cancel. A disconnect, server error, or recognition failure turns hands-free
-off; it never replays an uncertain transcript. The browser reconnects to the
-same-origin state channel after an ops/container restart:
+phrase before sending a question, opens an eight-second wake-free follow-up
+window after each completed answer, and reopens that window after every
+non-empty follow-up. Exactly `stop` is a silent local cancel. A disconnect,
+server error, or recognition failure turns hands-free off; it never replays an
+uncertain transcript. The browser reconnects to the same-origin state channel
+after an ops/container restart:
 
 ```bash
 hermes-relay-home --browser-voice \
@@ -677,7 +678,7 @@ works on a clean machine and on a network that is not up yet when it boots.
 | `--wake-confirmation-frames` | `3` | Consecutive over-threshold frames required to fire. |
 | `--wake-refractory-seconds` | `2.0` | Minimum gap between two fires. |
 | `--wake-listen-timeout` | `8.0` | How long to wait for speech to begin after the phrase. |
-| `--wake-followup-seconds` | `8.0` | How long to wait for a follow-up after the reply, without another wake phrase. |
+| `--wake-followup-seconds` | `8.0` | How long to wait in each wake-free follow-up window after a completed response; every non-empty follow-up opens another window. |
 | `--wake-barge-in` | off | Let calibrated local speech energy interrupt the active response; no second wake phrase is needed. See the warning below. |
 | `--no-earcons` | tones on | Silence the acknowledgement tones. Does not disable the wake word. |
 
@@ -712,28 +713,30 @@ configured launch arms the microphone only after the initial connection:
 
 | Command | What happens |
 |---|---|
-| `/wake on` | Starts wake mode without freezing the TUI. The status line and transcript show wake-model loading and microphone opening; once ready, saying the phrase runs a turn and leaves an 8-second follow-up window after the reply so one next question needs no wake phrase. |
+| `/wake on` | Starts wake mode without freezing the TUI. The status line and transcript show wake-model loading and microphone opening; once ready, saying the phrase runs a turn and opens an 8-second wake-free follow-up window after each successful answer. Every non-empty follow-up reopens it without another wake phrase. |
 | `/wake off` | Stops the listener **and closes the stream**, so the system microphone indicator clears and other applications get the device back. |
 | `/wake` or `/wake status` | Whether it is armed, and the model and threshold in use. |
 
-During the follow-up window, the wake detector is paused while the same local
+During each follow-up window, the wake detector is paused while the same local
 capture path waits for speech. Silence returns to wake-word listening; spoken
-text starts one normal turn, then returns to wake-word listening. Say exactly
-`stop` to close this follow-up window silently; matching ignores case and
-surrounding whitespace, plus normal terminal punctuation from transcription,
-while longer phrases such as `stop the timer` remain ordinary turns. The
-initial wake capture also treats `stop` as a local cancel; `Ctrl+R` remains an
-ordinary voice turn. Set the window with `--wake-followup-seconds` or
-`VOICE_SESSION_WAKE_FOLLOWUP_SECONDS`. The normal TUI silence endpoint is 1.5
-seconds, so it no longer waits three seconds after the user stops talking.
+text starts one normal turn, and completed response playback opens another
+follow-up window. Say exactly `stop` to close the conversation silently;
+matching ignores case and surrounding whitespace, plus normal terminal
+punctuation from transcription, while longer phrases such as `stop the timer`
+remain ordinary turns. The initial wake capture also treats `stop` as a local
+cancel; `Ctrl+R` remains an ordinary voice turn. Set each window with
+`--wake-followup-seconds` or `VOICE_SESSION_WAKE_FOLLOWUP_SECONDS`. Failed or
+interrupted turns do not invite another window. The normal TUI silence endpoint
+is 1.5 seconds, so it no longer waits three seconds after the user stops
+talking.
 
-The Home appliance also opens exactly one follow-up window after a successful
-wake-triggered answer, using the same `--wake-followup-seconds` setting. It
-shows Listening without another wake tone and retains the answer while waiting.
-Silence or exact spoken `stop` returns to wake detection; a follow-up answer
-does not open another window. Failed or interrupted turns do not invite a
-follow-up. The shared microphone remains open for wake detection while the
-appliance runs; shutdown cancels capture before releasing the recorder.
+The Home appliance follows the same continuous contract, using the same
+`--wake-followup-seconds` setting. It shows Listening without another wake tone
+and retains the answer while waiting; each successful follow-up response opens
+the next bounded window. Silence or exact spoken `stop` returns to wake
+detection. Failed or interrupted turns do not invite another window. The
+shared microphone remains open for wake detection while the appliance runs;
+shutdown cancels capture before releasing the recorder.
 
 With `--wake-barge-in`, the armed TUI also taps the same microphone stream while
 Hermes is generating, buffering, or speaking. A calibrated, windowed energy

@@ -595,9 +595,14 @@ async def test_wake_capture_uses_the_initial_and_follow_up_timeouts():
         assert session.capture_wait_timeouts == [6.0, 5.0]
 
 
-async def test_wake_turn_can_send_a_follow_up_without_a_second_wake():
+async def test_wake_turn_keeps_sending_follow_ups_without_a_second_wake():
     app, fakes, session = make_app()
-    session.capture_results = iter(["what is the weather", "and tomorrow"])
+    session.capture_results = iter([
+        "what is the weather",
+        "and tomorrow",
+        "what about Friday",
+        "STOP",
+    ])
     async with app.run_test() as pilot:
         await pilot.pause()
         await app._handle_wake_command("on")
@@ -612,8 +617,11 @@ async def test_wake_turn_can_send_a_follow_up_without_a_second_wake():
         assert session.sent_turns == [
             ("what is the weather", "local"),
             ("and tomorrow", "local"),
+            ("what about Friday", "local"),
         ]
-        assert session.capture_wait_timeouts == [8.0, 8.0]
+        assert session.capture_wait_timeouts == [8.0, 8.0, 8.0, 8.0]
+        assert False not in fakes.listener.paused[1:-1]
+        assert fakes.listener.paused[-1] is False
 
 
 async def test_tui_wake_sender_reports_a_failed_turn_as_unsuccessful():

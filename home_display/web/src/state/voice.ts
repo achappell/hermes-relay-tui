@@ -298,7 +298,6 @@ export class BrowserHandsFreeController {
   private followUpRetryTimer: ReturnType<typeof setTimeout> | null = null;
   private followUpWatchdogTimer: ReturnType<typeof setTimeout> | null = null;
   private followUpAttempt = 0;
-  private followUpEligible = false;
   private turnInFlight = false;
 
   constructor(options: BrowserHandsFreeControllerOptions) {
@@ -357,7 +356,6 @@ export class BrowserHandsFreeController {
     const generation = this.generation;
     this.armed = true;
     this.phase = "wake_ready";
-    this.followUpEligible = false;
     this.turnInFlight = false;
     this.emit("arming");
 
@@ -373,7 +371,6 @@ export class BrowserHandsFreeController {
     this.generation += 1;
     this.armed = false;
     this.phase = "off";
-    this.followUpEligible = false;
     this.turnInFlight = false;
     this.clearTimers();
     this.stopRecognition();
@@ -392,12 +389,7 @@ export class BrowserHandsFreeController {
     const generation = this.generation;
     this.turnInFlight = false;
     this.clearCaptureTimer();
-    if (this.followUpEligible) {
-      this.followUpEligible = false;
-      this.beginFollowUp(generation);
-      return;
-    }
-    this.enterWakeReady(generation);
+    this.beginFollowUp(generation);
   }
 
   private stateForPhase(): HandsFreeState {
@@ -644,13 +636,11 @@ export class BrowserHandsFreeController {
 
   private submit(text: string, generation: number): void {
     if (!this.isCurrent(generation)) return;
-    const isFollowUp = this.phase === "follow_up";
     this.clearCaptureTimer();
     this.clearHeardTimer();
     this.clearFollowUpRetryTimer();
     this.stopRecognition();
     this.phase = "submitting";
-    this.followUpEligible = !isFollowUp;
     this.turnInFlight = true;
     this.emit("submitting");
 
@@ -673,7 +663,6 @@ export class BrowserHandsFreeController {
     this.generation += 1;
     this.armed = false;
     this.phase = "off";
-    this.followUpEligible = false;
     this.turnInFlight = false;
     this.clearTimers();
     this.stopRecognition();

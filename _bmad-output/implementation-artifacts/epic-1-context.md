@@ -42,7 +42,14 @@ dependency.
 - Expose normalized session and turn events through the shared SessionProtocol. Front ends must not parse Hermes wire frames or invent assistant responses.
 - Preserve one Active Turn per doorway and one initial submission per accepted initiation. A request that may have reached Hermes is never automatically replayed.
 - Surfaces expose only observed phases: `heard`, `listening`, `transcribing`, `thinking`, `buffering`, `speaking`, `complete`, and honest Disconnected State. A doorway must not advance or regress before the corresponding event, and completed text remains available when audio is unavailable.
-- Puck follow-up is bounded—eight seconds by default—and exact `stop` closes local capture silently without a replacement turn. The ESP32 Touch and W/K browser follow-up windows, if enabled for their initiation modes, must be separately bounded and must preserve the same silent-stop/no-replay semantics. Blocking capture/playback stays outside UI event loops.
+- Any wake-capable adapter uses a separately bounded wake-free follow-up window
+  after each successful response; exact `stop` closes local capture silently
+  without a replacement turn, and failures never replay. The current Puck
+  bridge still accepts one already-transcribed upload and has no follow-up
+  capture adapter; the ESP32 Touch transport still has no microphone/session
+  path. Their owning stories must adopt the repeated-window contract when
+  those adapters are delivered. Blocking capture/playback stays outside UI
+  event loops.
 - Credentials remain in the owning local process/profile. Raw Puck and ESP32 Touch audio plus shared-device transcripts are transient; only deliberate iOS/TUI Local History may persist by default.
 - Developer and CI validation uses fake Hermes sessions/WebSockets and local fixtures. Live text/voice smoke testing is an explicit runtime check, not a test fixture.
 
