@@ -125,6 +125,9 @@ paths to accommodate one unobserved Samsung error.
   recovery, bounded by the configured follow-up deadline. Browser recognition
   errors are reduced to an allowlisted safe category and terminal recovery
   reports that category in the user-facing state.
+- 2026-09-11 — Kept the safe recognition category visible on narrow displays;
+  browser voice error paragraphs now wrap instead of truncating the diagnostic
+  with an ellipsis.
 - Automated validation passed: 184 web tests, `npm run check`, `npm run
   build`, and 947 Python tests.
 - Manual gate status: existing iPad/Safari evidence remains recorded, but no
@@ -143,6 +146,10 @@ paths to accommodate one unobserved Samsung error.
   layers were launched twice but timed out without returning findings. The
   local audit verified the retry-state defect, and the focused, full, type,
   build, and Python checks were rerun after the patch.
+- `low` / `patch` — `home_display/web/src/styles.css` — The shared one-line
+  ellipsis rule hid the browser recognition error category on narrow display
+  surfaces. Error paragraphs now wrap while ordinary status text remains
+  compact; focused tests, type checking, and the production build pass.
 
 ## Validation Plan
 
@@ -170,3 +177,5 @@ paths to accommodate one unobserved Samsung error.
   `spec-continuous-wake-free-follow-ups.md` supersedes the one-follow-up
   boundary recorded here for future W/K behavior; the current implementation
   and acceptance are tracked by that cross-surface spec.
+- 2026-09-11 — Review follow-up made terminal recognition categories visible
+  on narrow displays.
