@@ -72,9 +72,7 @@ esphome:
         # The XMOS chip mutes its speaker output by default. Without this
         # the I2S writes all succeed and nothing is audible -- which looks
         # exactly like a broken output path.
-        - lambda: |-
-            id(respeaker).unmute_speaker();
-            id(puck_speaker).set_volume(0.6f);
+        - lambda: id(respeaker).unmute_speaker();
         # PUCK-01.7 task 2 proof: stream a real WAV over HTTP through
         # ESPHome's own audio stack. Deliberately a STATIC, complete file
         # with a known Content-Length -- that isolates the plumbing
@@ -133,6 +131,46 @@ ota:
 http_request:
   id: http_client
   timeout: 5s
+
+# Volume/transport control that does not require Home Assistant. The API
+# above only helps if something speaks it; this project's bridge does not,
+# and there is no HA in this installation. A built-in web UI means volume
+# is reachable from any browser on the LAN (http://respeaker-lite.local)
+# -- the media_player renders with a volume slider and stop control.
+#
+# Added after the first real playback: there was no way to turn the thing
+# down or shut it up without reflashing, which is not an acceptable
+# property for a speaker in a house with sleeping children.
+web_server:
+  port: 80
+  version: 3
+  # `local: true` is the load-bearing line, not the version. By default
+  # EVERY web_server version serves only a ~174-byte HTML shell that pulls
+  # its JavaScript from https://oi.esphome.io (verified on-device: v3 and
+  # v2 differ only in the CDN path). That would make the volume control
+  # for this appliance depend on the house's internet connection and phone
+  # out to esphome.io on every load -- both wrong for a device whose whole
+  # premise is home-LAN-only operation (PRD NFR3). This embeds the assets
+  # in flash instead: costs space, which this build has to spare, and
+  # works when the internet does not.
+  local: true
+
+# Physical "make it stop" control. A web slider is fine for setting a
+# level; it is useless when audio is blaring and you want it off NOW and
+# your hands are not already on a browser. GPIO3 is the board's user
+# button (pin config mirrors respeaker-lite-stock-test.yaml:390-397).
+binary_sensor:
+  - platform: gpio
+    id: user_button
+    name: "User button"
+    pin:
+      number: GPIO3
+      inverted: true
+    filters:
+      - delayed_on: 50ms
+      - delayed_off: 50ms
+    on_press:
+      - media_player.stop: puck_media_player
 
 wifi:
   ssid: !secret wifi_ssid
@@ -373,6 +411,21 @@ media_source:
 media_player:
   - platform: speaker_source
     id: puck_media_player
+    name: "Puck"
+    # Volume lives here, NOT in a set_volume() lambda at boot. A hardcoded
+    # speaker->set_volume() fights the media player's own volume state:
+    # the player is the thing that persists, increments, and reports
+    # volume, so anything setting the speaker directly is silently
+    # overridden the first time the player touches it.
+    #
+    # 0.25 initial and a 0.8 ceiling are deliberate for a device that sits
+    # in a room with people: first playback at 0.6 was, by direct report,
+    # "quite loud", and an appliance that can be cranked to full by an
+    # errant command is an appliance that can hurt. The ceiling is the
+    # important half -- the initial value is merely polite.
+    volume_initial: 0.25
+    volume_max: 0.8
+    volume_increment: 0.05
     announcement_pipeline:
       speaker: puck_resampler
       sources:
