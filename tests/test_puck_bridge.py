@@ -257,7 +257,12 @@ def test_complete_capture_with_valid_token_transcribes_and_delivers(tmp_path):
             body=frame_b,
             token="s3cret",
         )
-        assert status_a == 200
+        # 202 = chunk accepted into an incomplete reassembly; 200 = the
+        # capture is now whole. This test previously asserted 200 for both,
+        # which encoded the very ambiguity that let three captures be lost
+        # silently on 2026-09-10 -- the firmware could not distinguish
+        # "bytes accepted" from "capture delivered".
+        assert status_a == 202
         assert status_b == 200
         assert sink.event.wait(5.0)
     finally:
@@ -498,3 +503,60 @@ def test_build_session_args_never_substitutes_another_profile(monkeypatch):
     # The resolved identity is derived from the configured profile alone;
     # no other profile's name may leak in as a substitute.
     assert "amanda" not in args.session_id
+
+
+# --- upload completion signalling ------------------------------------------
+
+
+def test_incomplete_chunks_get_202_and_the_final_chunk_gets_200(tmp_path):
+    """The firmware cannot otherwise tell "you accepted my bytes" from "you
+    have the whole capture". With a flat 200 on every chunk it logged
+    "Uploaded wake capture" even on runs the bridge had already evicted on
+    its reassembly TTL -- three turns were lost that way on 2026-09-10 with
+    neither side reporting a failure."""
+    sink = _RecordingSink()
+    transcribe = _fake_transcribe(transcript="hello")
+    handler_cls = make_handler(
+        expected_token="s3cret",
+        on_transcript=sink,
+        transcribe_fn=transcribe,
+        work_dir=tmp_path,
+    )
+    server = _start_server(handler_cls)
+    try:
+        frame_a = struct.pack("<i", 0) + struct.pack("<i", 1 << 6)
+        frame_b = struct.pack("<i", 0) + struct.pack("<i", 2 << 6)
+        port = server.server_address[1]
+        first = _post_chunk(port, seq=7, chunk=0, total=2, body=frame_a, token="s3cret")
+        last = _post_chunk(port, seq=7, chunk=1, total=2, body=frame_b, token="s3cret")
+        assert sink.event.wait(5.0)
+    finally:
+        server.shutdown()
+
+    assert first == 202, "an accepted-but-incomplete chunk must not claim completion"
+    assert last == 200, "the chunk that completes the capture must say so"
+    # Both are 2xx, so the firmware's existing chunk_ok check and
+    # puck_identity's 2xx -> AUTHORIZED transition are unaffected.
+    assert 200 <= first < 300 and 200 <= last < 300
+
+
+def test_a_single_chunk_capture_completes_immediately_with_200(tmp_path):
+    sink = _RecordingSink()
+    transcribe = _fake_transcribe(transcript="hi")
+    handler_cls = make_handler(
+        expected_token="s3cret",
+        on_transcript=sink,
+        transcribe_fn=transcribe,
+        work_dir=tmp_path,
+    )
+    server = _start_server(handler_cls)
+    try:
+        frame = struct.pack("<i", 0) + struct.pack("<i", 1 << 6)
+        status = _post_chunk(
+            server.server_address[1], seq=8, chunk=0, total=1, body=frame, token="s3cret"
+        )
+        assert sink.event.wait(5.0)
+    finally:
+        server.shutdown()
+
+    assert status == 200

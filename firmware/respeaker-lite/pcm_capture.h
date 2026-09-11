@@ -104,7 +104,22 @@ inline void write(const uint8_t *data, size_t len) {
 // flaky link before completing -- this is a mitigation for a genuinely
 // weak signal, not a fix for it; moving the device closer to the AP
 // remains the real fix.
-static const size_t UPLOAD_CHUNK_BYTES = 2000;  // ~2KB per POST body
+//
+// RESTORED to 16000 on 2026-09-11, because that real fix happened: the
+// Puck was relocated and now reads -54 dBm (versus -89/-90), and six
+// consecutive captures uploaded with zero chunk failures. The mitigation
+// outlived the condition it mitigated, and it was expensive -- ESPHome's
+// IDF http_request backend opens a FRESH esp_http_client connection per
+// post() call, so nearly all of the measured 77ms per chunk was
+// connection setup rather than transfer. At 2KB a full 8s capture is 512
+// POSTs (~39.5s at the measured 25.3 KB/s), which exceeded the bridge's
+// 30s reassembly TTL and silently lost every long capture. At 16KB the
+// same capture is 64 POSTs, cutting the per-connection tax by 8x.
+//
+// If this device is ever moved back to a weak-signal location, this is
+// the first knob to turn back down -- the failure mode there is
+// mid-transfer write stalls, not throughput.
+static const size_t UPLOAD_CHUNK_BYTES = 16000;  // ~16KB per POST body
 
 // Called from a slow `interval:` tick, never from the real-time audio
 // path. Blocks on each POST (fine here -- main loop, not the mic task),
@@ -367,7 +382,9 @@ inline void upload(esphome::http_request::HttpRequestComponent *client, const st
 
   size_t total_chunks = (write_pos + pcm_capture::UPLOAD_CHUNK_BYTES - 1) / pcm_capture::UPLOAD_CHUNK_BYTES;
   bool ok = true;
+  bool reassembly_confirmed = false;
   int consecutive_failures = 0;
+  const uint32_t upload_started_ms = millis();
   for (size_t chunk = 0; chunk < total_chunks; ++chunk) {
     size_t offset = chunk * pcm_capture::UPLOAD_CHUNK_BYTES;
     size_t len = std::min(pcm_capture::UPLOAD_CHUNK_BYTES, write_pos - offset);
@@ -380,6 +397,14 @@ inline void upload(esphome::http_request::HttpRequestComponent *client, const st
     auto response = client->post(full_url, body, headers);
     uint32_t heap_after = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
     bool chunk_ok = response != nullptr && response->status_code >= 200 && response->status_code < 300;
+    // The bridge answers 202 for a chunk accepted into an incomplete
+    // reassembly and 200 only when the capture is whole. Without this
+    // distinction the loop below reported success purely because no POST
+    // failed -- which stayed true even when the bridge had already evicted
+    // the reassembly on its 30s TTL and the turn was lost.
+    if (chunk_ok && response->status_code == 200) {
+      reassembly_confirmed = true;
+    }
     // 1-p-1: feed the identity gate. A 401 means a reachable bridge
     // actively refused this credential -- fail closed for every subsequent
     // wake. No response at all (status <= 0) is unreachability, which is
@@ -420,9 +445,21 @@ inline void upload(esphome::http_request::HttpRequestComponent *client, const st
     // function's comment above.
     vTaskDelay(pdMS_TO_TICKS(30));
   }
-  if (ok) {
-    ESP_LOGD(TAG, "Uploaded wake capture %u (%u bytes, %u chunks)", (unsigned) sample_index, (unsigned) write_pos,
-             (unsigned) total_chunks);
+  const uint32_t elapsed_ms = millis() - upload_started_ms;
+  if (ok && reassembly_confirmed) {
+    ESP_LOGI(TAG, "Wake capture %u delivered (%u bytes, %u chunks, %ums)", (unsigned) sample_index,
+             (unsigned) write_pos, (unsigned) total_chunks, (unsigned) elapsed_ms);
+  } else if (ok) {
+    // Every chunk was accepted but the bridge never confirmed a complete
+    // reassembly -- almost certainly its TTL evicting a capture we were
+    // still uploading. This is the turn-losing case that used to report
+    // success; say so plainly, with the timing that explains it.
+    ESP_LOGE(TAG, "Wake capture %u LOST: all %u chunks accepted but the bridge never confirmed reassembly "
+                   "(%u bytes in %ums -- likely exceeded the receiver's reassembly TTL)",
+             (unsigned) sample_index, (unsigned) total_chunks, (unsigned) write_pos, (unsigned) elapsed_ms);
+  } else {
+    ESP_LOGE(TAG, "Wake capture %u FAILED: chunk upload errors (%u bytes, %u chunks, %ums)",
+             (unsigned) sample_index, (unsigned) write_pos, (unsigned) total_chunks, (unsigned) elapsed_ms);
   }
 
   sample_index++;
