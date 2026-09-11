@@ -110,6 +110,38 @@ logged nothing, `player.failure` was never read, and a capture dropped by
 the single-flight coordinator said nothing. Those were the reason the
 underlying defects took as long to find as they did.
 
+## Task 3 unknown RESOLVED — 2026-09-11 (read from source, no hardware needed)
+
+The spec's headline risk was that a live WAV has no known length when the
+header is written, and that `micro_wav` might reject a sentinel. **It does
+not.** Read from the vendored decoder
+(`.esphome/.espressif/.../esphome__micro-wav_0.2.0/src/wav_decoder.cpp`):
+
+- The only header validation is `num_channels_ == 0 || sample_rate_ == 0`,
+  plus `bits_per_sample_` divisibility. **`data_chunk_size_` is not
+  validated at all** — it is copied straight into `data_bytes_remaining_`
+  (`uint32_t`) and counted down.
+- Decoding stops when the *input* runs out, independently of that counter
+  (`count = min(input_avail, output_avail, data_avail)`).
+
+So: declare a sentinel data size, stream, and close the connection when the
+answer ends. **No FLAC encoder and no buffer-then-serve required** — both
+fallbacks in the original risk list are unnecessary.
+
+Two real constraints surfaced from `audio/audio_reader.cpp` instead, and
+they shape the bridge endpoint more than the framing does:
+
+- **The reader times out on silence.** It fails the stream when
+  `millis() - last_data_read_ms_ > MAX_FETCHING_HEADER_ATTEMPTS *
+  CONNECTION_TIMEOUT_MS` = **6 x 5000ms = 30s** since the last *successful*
+  read. So `/response` cannot simply hold an idle connection open waiting
+  for Hermes to start speaking — it must emit the WAV header promptly and
+  must not stall more than ~30s at any point.
+- **A zero-length read is treated as a timeout, not EOF.** End of stream is
+  detected via `esp_http_client_is_complete_data_received()`, so the bridge
+  must terminate the body definitively (correct chunked terminator, or
+  close), or the Puck will keep waiting.
+
 ## Risks & Open Questions
 
 - **Streaming WAV length is the main unknown.** A live WAV has no known length at header time. Either emit a header with a sentinel/oversized data length and rely on `micro_wav`'s tolerance, or use chunked transfer encoding. **Prototype this first** — if `micro_wav` rejects it, fall back to FLAC (the stock config's own choice for announcements, and the least CPU-intensive per its comment) or buffer-then-serve at the cost of latency.
