@@ -40,6 +40,8 @@ esphome:
   # patterns that crash-looped the device in a prior session.
   includes:
     - pcm_capture.h
+    # 1-p-1: identity gate -- consulted before capture, fed by upload status.
+    - puck_identity.h
   # micro_wake_word does not start listening on its own -- MicroWakeWord::setup()
   # never calls start(), and its own data callback explicitly drops audio while
   # state_ == STOPPED. Without a voice_assistant: component (which normally
@@ -60,6 +62,11 @@ esphome:
         # Story 5: the VAD-gated, single-shot, wake-triggered capture
         # buffer, separate from the training-data capture buffer above.
         - lambda: pcm_capture::wake_capture::setup();
+        # 1-p-1: establish identity BEFORE micro_wake_word can fire a
+        # capture. Starts UNAUTHORIZED and only opens if a token is
+        # actually configured -- a build shipped without one must refuse,
+        # not capture.
+        - lambda: puck_identity::setup("${puck_device_token}");
     - priority: -200  # after the capture buffer is allocated above
       then:
         - lambda: pcm_capture::start();
@@ -533,6 +540,13 @@ interval:
             ESP_LOGW("mww_diag", "mww stopped -- restarting");
             id(mww).start();
           }
+          // 1-p-1: identity state is otherwise only logged once at boot,
+          // which is easy to miss -- the API log stream attaches seconds
+          // after boot and the line has already scrolled past. Same reason
+          // and same shape as the mww is_running poll above.
+          ESP_LOGI("puck_identity", "state: %s (may_capture=%s)",
+                   puck_identity::state_name(puck_identity::state),
+                   puck_identity::may_capture() ? "true" : "false");
   # Story 5: disabled the story-3 serial-dump diagnostic wiring that used
   # to run here (pcm_capture::dump_over_serial(), still defined in
   # pcm_capture.h but no longer called). MAX_DUMPS=15 full ~256KB captures

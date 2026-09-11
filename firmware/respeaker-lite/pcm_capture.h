@@ -21,6 +21,10 @@
 #include "esphome/core/hal.h"
 #include "esphome/core/log.h"
 #include "esphome/components/http_request/http_request.h"
+// 1-p-1: identity gate, fed by the upload path below and consulted before
+// any capture starts. Separate header -- this file owns capture, not
+// authorization.
+#include "puck_identity.h"
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 #include <algorithm>
@@ -262,6 +266,15 @@ inline void setup() {
 // restarting the buffer mid-write, matching the "one wake, one upload"
 // rule -- the next wake after this one finishes gets a clean window.
 inline void start(const std::string &wake_word) {
+  // 1-p-1: authorization is a PRECONDITION of capture, checked before the
+  // buffer is touched -- not afterwards at upload time, which is where the
+  // only check used to live. A refused device must record nothing at all,
+  // so this is deliberately the very first statement in the function.
+  if (!puck_identity::may_capture()) {
+    ESP_LOGW(TAG, "wake refused (wake_word=%s): identity %s -- no capture, no upload, no fallback",
+             wake_word.c_str(), puck_identity::state_name(puck_identity::state));
+    return;
+  }
   if (buffer == nullptr || capturing || capture_pending_upload) {
     ESP_LOGD(TAG, "wake capture ignored (wake_word=%s, already busy)", wake_word.c_str());
     return;
@@ -357,6 +370,11 @@ inline void upload(esphome::http_request::HttpRequestComponent *client, const st
     auto response = client->post(full_url, body, headers);
     uint32_t heap_after = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
     bool chunk_ok = response != nullptr && response->status_code >= 200 && response->status_code < 300;
+    // 1-p-1: feed the identity gate. A 401 means a reachable bridge
+    // actively refused this credential -- fail closed for every subsequent
+    // wake. No response at all (status <= 0) is unreachability, which is
+    // DEGRADED and deliberately keeps capturing; see puck_identity.h.
+    puck_identity::note_upload_status(response != nullptr ? response->status_code : -1);
     if (!chunk_ok) {
       ESP_LOGW(TAG, "Wake upload %u chunk %u failed (status %d) -- internal heap before=%u after=%u min_ever=%u",
                (unsigned) sample_index, (unsigned) chunk, response ? response->status_code : -1,
