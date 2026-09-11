@@ -74,7 +74,7 @@ Scope note: this story owns **both** halves of Puck audio output. The original `
 3. **Bridge: serve the response stream.** Add `GET /response?seq=N`, token-checked, that holds the connection until TTS begins and then streams WAV as chunks arrive. *Acceptance:* `curl` against it yields playable audio; a second request for the same `seq` does not duplicate a turn.
 4. **Bridge: move playback off the Mac.** `_run_turn` publishes `audio_chunk` data to the response stream instead of `self._player`. *Acceptance:* answer is audible on the Puck, not the Mac.
 5. **Firmware: trigger playback after upload.** On upload completion, call `media_player.play_media` with the templated `/response?seq=N` URL. *Acceptance:* full hands-free round trip — wake, speak, hear the answer from the Puck.
-6. **Reshape the turn timeout.** `SEND_TIMEOUT_SECONDS = 10.0` currently bounds the *entire* turn including playback, so it fires on every real answer (observed 2026-09-10). Re-bound it to time-to-first-audio, with a separate stall guard for a mid-stream gap. Fix deferred item #36 in the same pass: a timeout must cancel the orphaned `_run_turn` coroutine, which can otherwise still write to a shared sink behind a later turn. *Acceptance:* a long answer completes; a genuinely unresponsive Hermes still returns to idle.
+6. **[DONE 2026-09-11] Reshape the turn timeout.** `SEND_TIMEOUT_SECONDS = 10.0` currently bounds the *entire* turn including playback, so it fires on every real answer (observed 2026-09-10). Re-bound it to time-to-first-audio, with a separate stall guard for a mid-stream gap. Fix deferred item #36 in the same pass: a timeout must cancel the orphaned `_run_turn` coroutine, which can otherwise still write to a shared sink behind a later turn. *Acceptance:* a long answer completes; a genuinely unresponsive Hermes still returns to idle.
 
 7. **Status audio: acknowledge the wake out loud.** Epic 1's UX rules require the Puck to stay *status-only* — "response text and transcript history do not belong on its TFT" — so on an audio-only device, status is carried by sound. `HOME-10` ("Wake acknowledgement and the silence before the answer") established this for the home-display appliance; the Puck has had no way to do it until task 1 gave it a speaker. Play a short acknowledgement on `on_wake_word_detected`, before capture completes, so a person knows they were heard during the several seconds before any answer arrives. *Acceptance:* a wake produces an audible acknowledgement within ~200ms; it does not leak into the captured audio (see the echo risk below) and does not delay or truncate capture.
 
@@ -84,6 +84,31 @@ Scope note: this story owns **both** halves of Puck audio output. The original `
 - **`speaker->start()` is asynchronous and must not be busy-waited.** The state transition happens in the component's `loop()`, so blocking inside an automation lambda deadlocks it — loop never runs, state never advances. Use ESPHome's `delay:`, which yields.
 - **Never write audio synchronously from the main loop.** Task 1's blocking tone helper starved the loop for 354ms, tripped `"a scheduled task took a long time"`, dropped WiFi mid-boot, and left `play_media` firing into a dead network. Playback belongs to `media_player`'s own task. This is the concrete reason this story does not hand-roll the audio path.
 - **The resampler is wired but not yet exercised.** The task-2 test WAV was already 48kHz mono. Real 24kHz TTS will be its first genuine workout in task 3.
+
+## Task 6 verification — 2026-09-11
+
+First fully hands-free round trip: wake -> capture -> upload -> transcribe
+-> Hermes -> spoken answer, nothing typed and no test harness.
+
+```
+puck bridge turn complete: 442 audio chunks spoken in 77.2s
+```
+
+**77.2 seconds of speech.** The previous bound killed every turn at 10s, so
+this ran nearly 8x longer than the old ceiling and completed cleanly --
+because the bound is now on responsiveness (gaps between events), not total
+duration. Capture was a full 8.000s at 0.98 language confidence.
+
+Delivered across #150 and #155. #150 reshaped the timeout and fixed
+deferred #36 (an abandoned turn is now cancelled, not merely un-awaited).
+#155 closed the gap #150 left: the per-event deadlines bound *fetching*
+events from Hermes, not *processing* them, so a blocking `player.write` had
+no timeout around it and one wedged turn poisoned the next.
+
+Three silent-failure sites were closed along the way -- a successful turn
+logged nothing, `player.failure` was never read, and a capture dropped by
+the single-flight coordinator said nothing. Those were the reason the
+underlying defects took as long to find as they did.
 
 ## Risks & Open Questions
 
