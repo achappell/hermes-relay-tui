@@ -50,11 +50,12 @@ esphome:
     - priority: -100  # run after all components finish setup(), not during boot
       then:
         - micro_wake_word.start
-        # TEMPORARY (story 3 differential diagnostic): only the first model
-        # in `models:` is enabled by default (see __init__.py's
-        # "default_enabled = i == 0") -- okay_nabu, listed second, was
-        # silently never invoked without this.
-        - micro_wake_word.enable_model: okay_nabu
+        # Only the first model in `models:` is enabled by default (see
+        # __init__.py's "default_enabled = i == 0") -- hey_missy, listed
+        # first below, gets this for free. Every model after it needs its
+        # own explicit enable_model call or it's silently never invoked.
+        - micro_wake_word.enable_model: hey_bestie
+        - micro_wake_word.enable_model: hey_skippy
         - lambda: pcm_capture::setup();
         # Story 5: the VAD-gated, single-shot, wake-triggered capture
         # buffer, separate from the training-data capture buffer above.
@@ -242,11 +243,11 @@ microphone:
       # Story 5: same bounded-memcpy shape, into the separate VAD-gated
       # wake-capture buffer. A no-op whenever a wake capture isn't active.
       - lambda: pcm_capture::wake_capture::write(x.data(), x.size());
-# On-device wake-word detection. Wake phrase is the pretrained community
-# model `hey_jarvis` (bundled with micro_wake_word, zero training
-# required) — NOT "hey hermes"; see README.md. The `stop` model is
-# ESPHome's bundled internal model, kept internal (not exposed as a
-# separately toggleable Home Assistant entity).
+# On-device wake-word detection. Wake phrase candidates are microwakeword.com-
+# trained models (hey_missy/hey_bestie/hey_skippy below), A/B'd live against
+# each other on real hardware -- see README.md for the "not hey hermes"
+# history. The `stop` model is ESPHome's bundled internal model, kept
+# internal (not exposed as a separately toggleable Home Assistant entity).
 micro_wake_word:
   id: mww
   microphone:
@@ -259,19 +260,24 @@ micro_wake_word:
     # Limitation and story 3's Implementation Notes for the full record.
     gain_factor: 4
   models:
-    - model: wake_models/hey_jarvis.json
-      id: hey_jarvis
+    # Trained via microwakeword.com (see hey_missy.tflite/.json's own
+    # README for provenance). Primary/default wake word -- listed first so
+    # micro_wake_word's "default_enabled = i == 0" picks it up without an
+    # explicit enable_model call.
+    - model: wake_models/hey_missy.json
+      id: hey_missy
     - model: wake_models/stop.json
       id: stop
       internal: true
-    # TEMPORARY differential diagnostic (story 3 follow-up): hey_jarvis's
-    # raw probability flatlined at 0/255 across a whole loud-speech test
-    # while the VAD model, fed the identical shared audio features,
-    # responded normally -- ruling out the audio pipeline. Added to test
-    # whether ANY wake-word-class model flatlines the same way (a generic
-    # WakeWordModel bug) or if it's specific to hey_jarvis.
-    - model: wake_models/okay_nabu.json
-      id: okay_nabu
+    # Also trained via microwakeword.com, same A/B purpose as hey_missy
+    # above -- comparing candidate wake phrases live, not primary.
+    - model: wake_models/hey_bestie.json
+      id: hey_bestie
+    # Also trained via microwakeword.com, same A/B purpose as hey_missy
+    # and hey_bestie above -- comparing candidate wake phrases live, not
+    # primary.
+    - model: wake_models/hey_skippy.json
+      id: hey_skippy
   vad:
     model: wake_models/vad.json
     probability_cutoff: 0.05
