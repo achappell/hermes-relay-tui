@@ -2,9 +2,10 @@
 title: 'Recover W/K hands-free after response playback'
 type: 'bugfix'
 created: '2026-09-10'
-status: 'ready-for-dev'
+status: 'in-review'
 route: 'correct-course'
 review_loop_iteration: 0
+baseline_commit: '959dc2b7ea89c83d4d1908560ef9f4115ed84b81'
 source_story: 'WK-1'
 change_proposal: '{project-root}/_bmad-output/planning-artifacts/sprint-change-proposal-2026-09-10.md'
 context:
@@ -78,14 +79,15 @@ paths to accommodate one unobserved Samsung error.
 
 **Execution:**
 
-- [ ] Preserve the existing Safari prime/watchdog/retry behavior while making
+- [x] Preserve the existing Safari prime/watchdog/retry behavior while making
   post-playback error handling explicit for other browser implementations.
-- [ ] Retain a safe recognition error category and expose a specific,
+- [x] Retain a safe recognition error category and expose a specific,
   recoverable user state after bounded retry exhaustion.
-- [ ] Add fake-recognition coverage for a successful first turn followed by a
+- [x] Add fake-recognition coverage for a successful first turn followed by a
   vendor error, retry, recovery, bounded failure, disarm, and late callback.
-- [ ] Update the browser smoke note with the Samsung Bespoke observation and
-  the exact error category once captured without sensitive content.
+- [x] Update the browser smoke note with the Samsung Bespoke observation and
+  the safe error-category capture procedure; the exact category remains a
+  manual review gate because the existing observation did not expose it.
 
 **Acceptance Criteria:**
 
@@ -119,6 +121,28 @@ paths to accommodate one unobserved Samsung error.
   vendor-specific evidence gap; it does not reopen the frozen Safari intent.
 - The browser remains a presentation and capture adapter. Hermes remains the
   answer authority, session owner, and no-replay boundary.
+- 2026-09-10 — Implemented generation-safe post-playback retry and watchdog
+  recovery, bounded by the configured follow-up deadline. Browser recognition
+  errors are reduced to an allowlisted safe category and terminal recovery
+  reports that category in the user-facing state.
+- Automated validation passed: 184 web tests, `npm run check`, `npm run
+  build`, and 947 Python tests.
+- Manual gate status: existing iPad/Safari evidence remains recorded, but no
+  live Chrome, iPad, or Samsung surface was available for recapture in this
+  session. The Samsung exact error category is therefore still unobserved;
+  keep the story in review until the physical/browser gates are rerun.
+
+## Review Triage Log
+
+- `medium` / `patch` — `home_display/web/src/state/voice.ts` — A successful
+  post-playback retry left recovery marked pending, so a quiet follow-up could
+  be reported as failed at the capture deadline even though recognition had
+  restarted. Clearing the pending flag on the recognizer's current `onstart`
+  callback and adding a quiet-recovery test removes that false failure.
+- The configured Blind Hunter, Edge Case Hunter, and Verification Gap review
+  layers were launched twice but timed out without returning findings. The
+  local audit verified the retry-state defect, and the focused, full, type,
+  build, and Python checks were rerun after the patch.
 
 ## Validation Plan
 
@@ -126,6 +150,10 @@ paths to accommodate one unobserved Samsung error.
   first.
 - `npm run check` and `npm run build` from `home_display/web`.
 - `venv/bin/pytest` from the repository root.
+- Matrix audit: `voice.test.ts` covers `FOLLOW_UP_READY`,
+  `TRANSIENT_RESTART`, `SILENT_HANG`, `VENDOR_ERROR`, and `LATE_CALLBACK`;
+  `App.test.ts` covers the rendered terminal error and `DISCONNECT`. All ran
+  in the 184-test web suite.
 - Manual Chrome and physical iPad/Safari follow-up checks, then Samsung
   Bespoke first-turn/follow-up validation with the safe error category
   recorded if recovery still fails.
@@ -134,6 +162,10 @@ paths to accommodate one unobserved Samsung error.
 
 - 2026-09-10 — Created through the approved BMad Correct Course proposal
   after live Samsung Bespoke feedback.
+- 2026-09-10 — Implementation complete; moved to review with manual browser
+  and device gates explicitly retained as pending evidence.
+- 2026-09-10 — Local review fixed a stale recovery-pending flag and added safe
+  category sanitization coverage.
 - 2026-09-10 — The approved cross-surface
   `spec-continuous-wake-free-follow-ups.md` supersedes the one-follow-up
   boundary recorded here for future W/K behavior; the current implementation

@@ -4,6 +4,7 @@ import {
   BrowserHandsFreeController,
   BrowserVoiceController,
   PcmAudioPlayer,
+  classifySpeechRecognitionError,
   type AudioBufferLike,
   type SpeechRecognitionLike,
 } from "./voice";
@@ -39,6 +40,14 @@ class FakeRecognition implements SpeechRecognitionLike {
         0: { transcript: result.transcript },
       })),
     });
+  }
+
+  error(category?: string): void {
+    this.onerror?.({ error: category });
+  }
+
+  end(): void {
+    this.onend?.();
   }
 }
 
@@ -131,6 +140,11 @@ describe("BrowserVoiceController", () => {
 
 describe("BrowserHandsFreeController", () => {
   afterEach(() => vi.useRealTimers());
+
+  it("reduces unrecognized browser error details to the safe unknown category", () => {
+    expect(classifySpeechRecognitionError("permission denied: private detail")).toBe("unknown");
+    expect(classifySpeechRecognitionError({ error: "network" })).toBe("unknown");
+  });
 
   it("discards the wake phrase and keeps sending wake-free follow-ups", async () => {
     vi.useFakeTimers();
@@ -268,6 +282,117 @@ describe("BrowserHandsFreeController", () => {
     controller.disarm();
   });
 
+  it("retries a transient vendor error after playback and recovers exactly once", async () => {
+    vi.useFakeTimers();
+    const recognitions: FakeRecognition[] = [];
+    const sendText = vi.fn(() => true);
+    const controller = new BrowserHandsFreeController({
+      recognitionFactory: () => {
+        const recognition = new FakeRecognition();
+        recognitions.push(recognition);
+        return recognition;
+      },
+      wakePhrases: ["hey hermes"],
+      sendText,
+    });
+
+    await expect(controller.arm()).resolves.toBe(true);
+    recognitions[0].result({
+      isFinal: true,
+      transcript: "hey hermes what is the weather",
+    });
+    controller.turnFinished();
+    await Promise.resolve();
+    expect(recognitions).toHaveLength(2);
+
+    const staleResult = recognitions[1].onresult;
+    const staleEnd = recognitions[1].onend;
+    recognitions[1].error("network");
+    expect(controller.lastRecognitionError).toBe("network");
+    expect(controller.state).toBe("follow_up");
+
+    vi.advanceTimersByTime(300);
+    expect(recognitions).toHaveLength(3);
+
+    staleResult?.({
+      resultIndex: 0,
+      results: [{ isFinal: true, 0: { transcript: "stale duplicate" } }],
+    });
+    staleEnd?.();
+    expect(sendText).toHaveBeenCalledTimes(1);
+    expect(controller.state).toBe("follow_up");
+
+    recognitions[2].result({ isFinal: true, transcript: "and tomorrow?" });
+    expect(sendText).toHaveBeenCalledTimes(2);
+    expect(sendText).toHaveBeenLastCalledWith("and tomorrow?");
+    controller.disarm();
+  });
+
+  it("returns to wake-ready when a recovered follow-up stays quiet", async () => {
+    vi.useFakeTimers();
+    const recognitions: FakeRecognition[] = [];
+    const controller = new BrowserHandsFreeController({
+      recognitionFactory: () => {
+        const recognition = new FakeRecognition();
+        recognitions.push(recognition);
+        return recognition;
+      },
+      wakePhrases: ["hey hermes"],
+      followUpSeconds: 2,
+      sendText: () => true,
+    });
+
+    await expect(controller.arm()).resolves.toBe(true);
+    recognitions[0].result({
+      isFinal: true,
+      transcript: "hey hermes what is the weather",
+    });
+    controller.turnFinished();
+    await Promise.resolve();
+    expect(recognitions).toHaveLength(2);
+
+    recognitions[1].error("network");
+    vi.advanceTimersByTime(300);
+    expect(recognitions).toHaveLength(3);
+
+    vi.advanceTimersByTime(1_700);
+    expect(controller.isArmed).toBe(true);
+    expect(controller.state).toBe("wake_ready");
+    controller.disarm();
+  });
+
+  it("reports a specific safe category for a terminal post-playback error", async () => {
+    const recognitions: FakeRecognition[] = [];
+    const errors: string[] = [];
+    const controller = new BrowserHandsFreeController({
+      recognitionFactory: () => {
+        const recognition = new FakeRecognition();
+        recognitions.push(recognition);
+        return recognition;
+      },
+      wakePhrases: ["hey hermes"],
+      sendText: () => true,
+      onError: (message) => errors.push(message),
+    });
+
+    await expect(controller.arm()).resolves.toBe(true);
+    recognitions[0].result({
+      isFinal: true,
+      transcript: "hey hermes what is the weather",
+    });
+    controller.turnFinished();
+    await Promise.resolve();
+    recognitions[1].error("service-not-allowed");
+
+    expect(controller.lastRecognitionError).toBe("service-not-allowed");
+    expect(controller.isArmed).toBe(false);
+    expect(controller.state).toBe("off");
+    expect(errors).toEqual([
+      "Speech recognition failed after playback (error category: service-not-allowed); "
+        + "hands-free is off. Enable hands-free to try again.",
+    ]);
+  });
+
   it("retries when Safari reports started but never returns follow-up speech", async () => {
     vi.useFakeTimers();
     const recognitions: FakeRecognition[] = [];
@@ -396,7 +521,43 @@ describe("BrowserHandsFreeController", () => {
 
     expect(controller.isArmed).toBe(false);
     expect(controller.state).toBe("off");
-    expect(errors).toEqual(["Speech recognition could not resume after playback"]);
+    expect(errors).toEqual([
+      "Speech recognition could not resume after playback; hands-free is off. "
+        + "Enable hands-free to try again.",
+    ]);
+  });
+
+  it("fails honestly when the follow-up recovery reaches its configured deadline", async () => {
+    vi.useFakeTimers();
+    const recognitions: FakeRecognition[] = [];
+    const errors: string[] = [];
+    const controller = new BrowserHandsFreeController({
+      recognitionFactory: () => {
+        const recognition = new FakeRecognition(recognitions.length === 0);
+        recognitions.push(recognition);
+        return recognition;
+      },
+      wakePhrases: ["hey hermes"],
+      followUpSeconds: 2,
+      sendText: () => true,
+      onError: (message) => errors.push(message),
+    });
+
+    await expect(controller.arm()).resolves.toBe(true);
+    recognitions[0].result({
+      isFinal: true,
+      transcript: "hey hermes what is the weather",
+    });
+    controller.turnFinished();
+    await Promise.resolve();
+    vi.advanceTimersByTime(2_000);
+
+    expect(controller.isArmed).toBe(false);
+    expect(controller.state).toBe("off");
+    expect(errors).toEqual([
+      "Speech recognition could not resume after playback before the follow-up recovery window expired; "
+        + "hands-free is off. Enable hands-free to try again.",
+    ]);
   });
 
   it("handles wake-plus-text and exact stop locally", async () => {
@@ -527,7 +688,10 @@ describe("BrowserHandsFreeController", () => {
     recognition.onerror?.({ error: "not-allowed" });
     expect(controller.isArmed).toBe(false);
     expect(controller.state).toBe("off");
-    expect(errors).toEqual(["Microphone or speech recognition is unavailable"]);
+    expect(errors).toEqual([
+      "Speech recognition failed (error category: not-allowed); hands-free is off. "
+        + "Enable hands-free to try again.",
+    ]);
   });
 
   it("ignores a late result or error from a previous armed generation", async () => {

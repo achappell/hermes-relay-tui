@@ -16,6 +16,37 @@ export interface SpeechRecognitionErrorEventLike {
   error?: string;
 }
 
+export type SpeechRecognitionErrorCategory =
+  | "aborted"
+  | "audio-capture"
+  | "bad-grammar"
+  | "language-not-supported"
+  | "network"
+  | "no-speech"
+  | "not-allowed"
+  | "phrases-not-supported"
+  | "service-not-allowed"
+  | "unknown";
+
+const SAFE_RECOGNITION_ERROR_CATEGORIES = new Set<SpeechRecognitionErrorCategory>([
+  "aborted",
+  "audio-capture",
+  "bad-grammar",
+  "language-not-supported",
+  "network",
+  "no-speech",
+  "not-allowed",
+  "phrases-not-supported",
+  "service-not-allowed",
+]);
+
+export function classifySpeechRecognitionError(error: unknown): SpeechRecognitionErrorCategory {
+  const category = typeof error === "string" ? error.trim().toLowerCase() : "";
+  return SAFE_RECOGNITION_ERROR_CATEGORIES.has(category as SpeechRecognitionErrorCategory)
+    ? category as SpeechRecognitionErrorCategory
+    : "unknown";
+}
+
 export interface SpeechRecognitionLike {
   continuous: boolean;
   interimResults: boolean;
@@ -298,6 +329,11 @@ export class BrowserHandsFreeController {
   private followUpRetryTimer: ReturnType<typeof setTimeout> | null = null;
   private followUpWatchdogTimer: ReturnType<typeof setTimeout> | null = null;
   private followUpAttempt = 0;
+  private followUpDeadlineAt: number | null = null;
+  private followUpRecoveryPending = false;
+  private followUpErrorCategory: SpeechRecognitionErrorCategory | null = null;
+  private lastRecognitionErrorCategory: SpeechRecognitionErrorCategory | null = null;
+  private followUpEligible = false;
   private turnInFlight = false;
 
   constructor(options: BrowserHandsFreeControllerOptions) {
@@ -341,6 +377,10 @@ export class BrowserHandsFreeController {
     return this.armed;
   }
 
+  get lastRecognitionError(): SpeechRecognitionErrorCategory | null {
+    return this.lastRecognitionErrorCategory;
+  }
+
   get state(): HandsFreeState {
     return this.stateForPhase();
   }
@@ -356,10 +396,13 @@ export class BrowserHandsFreeController {
     const generation = this.generation;
     this.armed = true;
     this.phase = "wake_ready";
+    this.lastRecognitionErrorCategory = null;
+    this.followUpEligible = false;
     this.turnInFlight = false;
     this.emit("arming");
 
-    if (!this.startRecognition(generation)) {
+    if (!this.startRecognition(generation) || !this.isCurrent(generation)) {
+      if (!this.isCurrent(generation)) return false;
       this.fail("Microphone or speech recognition is unavailable");
       return false;
     }
@@ -371,6 +414,10 @@ export class BrowserHandsFreeController {
     this.generation += 1;
     this.armed = false;
     this.phase = "off";
+    this.followUpDeadlineAt = null;
+    this.followUpRecoveryPending = false;
+    this.followUpErrorCategory = null;
+    this.followUpEligible = false;
     this.turnInFlight = false;
     this.clearTimers();
     this.stopRecognition();
@@ -421,6 +468,7 @@ export class BrowserHandsFreeController {
       if (!this.isCurrent(generation) || this.recognition !== recognition) return;
       started = true;
       if (this.phase === "follow_up") {
+        this.followUpRecoveryPending = false;
         this.scheduleFollowUpWatchdog(
           generation,
           recognition,
@@ -429,13 +477,17 @@ export class BrowserHandsFreeController {
       }
     };
     recognition.onresult = (event) => {
+      if (!this.isCurrent(generation) || this.recognition !== recognition) return;
+      this.followUpRecoveryPending = false;
       this.clearFollowUpWatchdog();
       this.handleResult(event, generation);
     };
     recognition.onerror = (event) => {
       if (!this.isCurrent(generation) || this.recognition !== recognition) return;
-      const code = event.error?.toLocaleLowerCase();
-      if (code === "no-speech" || code === "aborted") {
+      const category = classifySpeechRecognitionError(event.error);
+      this.lastRecognitionErrorCategory = category;
+      if (this.phase === "follow_up") this.followUpErrorCategory = category;
+      if (category === "no-speech" || category === "aborted") {
         if (this.phase === "follow_up") {
           this.stopRecognition();
           this.scheduleFollowUpRetry(generation);
@@ -444,7 +496,16 @@ export class BrowserHandsFreeController {
         }
         return;
       }
-      this.fail("Microphone or speech recognition is unavailable");
+      if (this.phase === "follow_up" && isTransientFollowUpError(category)) {
+        this.stopRecognition();
+        this.scheduleFollowUpRetry(generation);
+        return;
+      }
+      if (this.phase === "follow_up") {
+        this.fail(followUpRecognitionErrorMessage(category));
+        return;
+      }
+      this.fail(recognitionErrorMessage(category));
     };
     recognition.onend = () => {
       if (!this.isCurrent(generation) || this.recognition !== recognition) return;
@@ -547,6 +608,10 @@ export class BrowserHandsFreeController {
     if (!this.isCurrent(generation)) return;
     this.phase = "follow_up";
     this.followUpAttempt = 0;
+    this.followUpDeadlineAt = Date.now()
+      + Math.min(this.followUpSeconds, MAX_HANDS_FREE_TIMER_SECONDS) * 1000;
+    this.followUpRecoveryPending = false;
+    this.followUpErrorCategory = null;
     this.emit("follow_up");
     this.startCaptureTimer(generation, this.followUpSeconds);
     void this.prepareAndStartFollowUp(generation);
@@ -571,19 +636,32 @@ export class BrowserHandsFreeController {
 
     const nextAttempt = this.followUpAttempt + 1;
     const delay = FOLLOW_UP_RETRY_DELAYS_MS[nextAttempt - 1];
+    this.followUpRecoveryPending = true;
     if (delay === undefined) {
-      this.fail("Speech recognition could not resume after playback");
+      this.fail(followUpRecoveryFailureMessage(this.followUpErrorCategory));
+      return;
+    }
+
+    const remaining = this.followUpDeadlineAt === null
+      ? delay
+      : this.followUpDeadlineAt - Date.now();
+    if (remaining <= 0) {
+      this.fail(followUpRecoveryFailureMessage(this.followUpErrorCategory, true));
       return;
     }
 
     this.followUpRetryTimer = setTimeout(() => {
       this.followUpRetryTimer = null;
       if (!this.isCurrent(generation) || this.phase !== "follow_up") return;
+      if (this.followUpDeadlineAt !== null && Date.now() >= this.followUpDeadlineAt) {
+        this.fail(followUpRecoveryFailureMessage(this.followUpErrorCategory, true));
+        return;
+      }
       this.followUpAttempt = nextAttempt;
       if (!this.startRecognition(generation)) {
         this.scheduleFollowUpRetry(generation);
       }
-    }, delay);
+    }, Math.min(delay, remaining));
   }
 
   private scheduleFollowUpWatchdog(
@@ -607,6 +685,9 @@ export class BrowserHandsFreeController {
   private enterWakeReady(generation: number, deferRecognition = false): void {
     if (!this.isCurrent(generation)) return;
     this.clearFollowUpRetryTimer();
+    this.followUpDeadlineAt = null;
+    this.followUpRecoveryPending = false;
+    this.followUpErrorCategory = null;
     this.phase = "wake_ready";
     this.clearHeardTimer();
     this.emit("wake_ready");
@@ -629,6 +710,10 @@ export class BrowserHandsFreeController {
       this.captureTimer = null;
       if (!this.isCurrent(generation)) return;
       this.onTranscript("", true);
+      if (this.phase === "follow_up" && this.followUpRecoveryPending) {
+        this.fail(followUpRecoveryFailureMessage(this.followUpErrorCategory, true));
+        return;
+      }
       this.stopRecognition();
       this.enterWakeReady(generation, true);
     }, Math.min(seconds, MAX_HANDS_FREE_TIMER_SECONDS) * 1000);
@@ -663,6 +748,10 @@ export class BrowserHandsFreeController {
     this.generation += 1;
     this.armed = false;
     this.phase = "off";
+    this.followUpDeadlineAt = null;
+    this.followUpRecoveryPending = false;
+    this.followUpErrorCategory = null;
+    this.followUpEligible = false;
     this.turnInFlight = false;
     this.clearTimers();
     this.stopRecognition();
@@ -733,6 +822,32 @@ export class BrowserHandsFreeController {
   private emit(state: HandsFreeState): void {
     this.onState(state);
   }
+}
+
+function isTransientFollowUpError(category: SpeechRecognitionErrorCategory): boolean {
+  return category === "audio-capture" || category === "network" || category === "unknown";
+}
+
+function recognitionErrorMessage(category: SpeechRecognitionErrorCategory): string {
+  return `Speech recognition failed (error category: ${category}); hands-free is off. `
+    + "Enable hands-free to try again.";
+}
+
+function followUpRecognitionErrorMessage(category: SpeechRecognitionErrorCategory): string {
+  return `Speech recognition failed after playback (error category: ${category}); `
+    + "hands-free is off. Enable hands-free to try again.";
+}
+
+function followUpRecoveryFailureMessage(
+  category: SpeechRecognitionErrorCategory | null,
+  deadline = false,
+): string {
+  const categoryDetail = category === null ? "" : ` (error category: ${category})`;
+  const reason = deadline
+    ? " before the follow-up recovery window expired"
+    : "";
+  return `Speech recognition could not resume after playback${categoryDetail}${reason}; `
+    + "hands-free is off. Enable hands-free to try again.";
 }
 
 function positiveSeconds(value: number | undefined): number {

@@ -5329,6 +5329,21 @@ class DisplayBridge {
     }
   }
 }
+const SAFE_RECOGNITION_ERROR_CATEGORIES = /* @__PURE__ */ new Set([
+  "aborted",
+  "audio-capture",
+  "bad-grammar",
+  "language-not-supported",
+  "network",
+  "no-speech",
+  "not-allowed",
+  "phrases-not-supported",
+  "service-not-allowed"
+]);
+function classifySpeechRecognitionError(error) {
+  const category = typeof error === "string" ? error.trim().toLowerCase() : "";
+  return SAFE_RECOGNITION_ERROR_CATEGORIES.has(category) ? category : "unknown";
+}
 function defaultRecognitionFactory() {
   const windowWithSpeech = window;
   const Constructor = windowWithSpeech.SpeechRecognition ?? windowWithSpeech.webkitSpeechRecognition;
@@ -5517,6 +5532,14 @@ class BrowserHandsFreeController {
     __publicField(this, "followUpRetryTimer", null);
     __publicField(this, "followUpWatchdogTimer", null);
     __publicField(this, "followUpAttempt", 0);
+<<<<<<<< HEAD:home_display/static/assets/index-4-_N7Rxp.js
+========
+    __publicField(this, "followUpDeadlineAt", null);
+    __publicField(this, "followUpRecoveryPending", false);
+    __publicField(this, "followUpErrorCategory", null);
+    __publicField(this, "lastRecognitionErrorCategory", null);
+    __publicField(this, "followUpEligible", false);
+>>>>>>>> d1da0fd (fix(web): recover hands-free after playback):home_display/static/assets/index-BtRfo_B_.js
     __publicField(this, "turnInFlight", false);
     this.sendText = options.sendText;
     this.wakePhrases = options.wakePhrases.map(normaliseSpeech).filter(Boolean);
@@ -5550,6 +5573,9 @@ class BrowserHandsFreeController {
   get isArmed() {
     return this.armed;
   }
+  get lastRecognitionError() {
+    return this.lastRecognitionErrorCategory;
+  }
   get state() {
     return this.stateForPhase();
   }
@@ -5563,9 +5589,15 @@ class BrowserHandsFreeController {
     const generation = this.generation;
     this.armed = true;
     this.phase = "wake_ready";
+<<<<<<<< HEAD:home_display/static/assets/index-4-_N7Rxp.js
+========
+    this.lastRecognitionErrorCategory = null;
+    this.followUpEligible = false;
+>>>>>>>> d1da0fd (fix(web): recover hands-free after playback):home_display/static/assets/index-BtRfo_B_.js
     this.turnInFlight = false;
     this.emit("arming");
-    if (!this.startRecognition(generation)) {
+    if (!this.startRecognition(generation) || !this.isCurrent(generation)) {
+      if (!this.isCurrent(generation)) return false;
       this.fail("Microphone or speech recognition is unavailable");
       return false;
     }
@@ -5576,6 +5608,13 @@ class BrowserHandsFreeController {
     this.generation += 1;
     this.armed = false;
     this.phase = "off";
+<<<<<<<< HEAD:home_display/static/assets/index-4-_N7Rxp.js
+========
+    this.followUpDeadlineAt = null;
+    this.followUpRecoveryPending = false;
+    this.followUpErrorCategory = null;
+    this.followUpEligible = false;
+>>>>>>>> d1da0fd (fix(web): recover hands-free after playback):home_display/static/assets/index-BtRfo_B_.js
     this.turnInFlight = false;
     this.clearTimers();
     this.stopRecognition();
@@ -5626,6 +5665,7 @@ class BrowserHandsFreeController {
       if (!this.isCurrent(generation) || this.recognition !== recognition) return;
       started = true;
       if (this.phase === "follow_up") {
+        this.followUpRecoveryPending = false;
         this.scheduleFollowUpWatchdog(
           generation,
           recognition,
@@ -5634,14 +5674,17 @@ class BrowserHandsFreeController {
       }
     };
     recognition.onresult = (event2) => {
+      if (!this.isCurrent(generation) || this.recognition !== recognition) return;
+      this.followUpRecoveryPending = false;
       this.clearFollowUpWatchdog();
       this.handleResult(event2, generation);
     };
     recognition.onerror = (event2) => {
-      var _a2;
       if (!this.isCurrent(generation) || this.recognition !== recognition) return;
-      const code = (_a2 = event2.error) == null ? void 0 : _a2.toLocaleLowerCase();
-      if (code === "no-speech" || code === "aborted") {
+      const category = classifySpeechRecognitionError(event2.error);
+      this.lastRecognitionErrorCategory = category;
+      if (this.phase === "follow_up") this.followUpErrorCategory = category;
+      if (category === "no-speech" || category === "aborted") {
         if (this.phase === "follow_up") {
           this.stopRecognition();
           this.scheduleFollowUpRetry(generation);
@@ -5650,7 +5693,16 @@ class BrowserHandsFreeController {
         }
         return;
       }
-      this.fail("Microphone or speech recognition is unavailable");
+      if (this.phase === "follow_up" && isTransientFollowUpError(category)) {
+        this.stopRecognition();
+        this.scheduleFollowUpRetry(generation);
+        return;
+      }
+      if (this.phase === "follow_up") {
+        this.fail(followUpRecognitionErrorMessage(category));
+        return;
+      }
+      this.fail(recognitionErrorMessage(category));
     };
     recognition.onend = () => {
       if (!this.isCurrent(generation) || this.recognition !== recognition) return;
@@ -5737,6 +5789,9 @@ class BrowserHandsFreeController {
     if (!this.isCurrent(generation)) return;
     this.phase = "follow_up";
     this.followUpAttempt = 0;
+    this.followUpDeadlineAt = Date.now() + Math.min(this.followUpSeconds, MAX_HANDS_FREE_TIMER_SECONDS) * 1e3;
+    this.followUpRecoveryPending = false;
+    this.followUpErrorCategory = null;
     this.emit("follow_up");
     this.startCaptureTimer(generation, this.followUpSeconds);
     void this.prepareAndStartFollowUp(generation);
@@ -5753,18 +5808,28 @@ class BrowserHandsFreeController {
     if (!this.isCurrent(generation) || this.phase !== "follow_up" || this.followUpRetryTimer !== null) return;
     const nextAttempt = this.followUpAttempt + 1;
     const delay = FOLLOW_UP_RETRY_DELAYS_MS[nextAttempt - 1];
+    this.followUpRecoveryPending = true;
     if (delay === void 0) {
-      this.fail("Speech recognition could not resume after playback");
+      this.fail(followUpRecoveryFailureMessage(this.followUpErrorCategory));
+      return;
+    }
+    const remaining = this.followUpDeadlineAt === null ? delay : this.followUpDeadlineAt - Date.now();
+    if (remaining <= 0) {
+      this.fail(followUpRecoveryFailureMessage(this.followUpErrorCategory, true));
       return;
     }
     this.followUpRetryTimer = setTimeout(() => {
       this.followUpRetryTimer = null;
       if (!this.isCurrent(generation) || this.phase !== "follow_up") return;
+      if (this.followUpDeadlineAt !== null && Date.now() >= this.followUpDeadlineAt) {
+        this.fail(followUpRecoveryFailureMessage(this.followUpErrorCategory, true));
+        return;
+      }
       this.followUpAttempt = nextAttempt;
       if (!this.startRecognition(generation)) {
         this.scheduleFollowUpRetry(generation);
       }
-    }, delay);
+    }, Math.min(delay, remaining));
   }
   scheduleFollowUpWatchdog(generation, recognition, delay) {
     this.clearFollowUpWatchdog();
@@ -5778,6 +5843,9 @@ class BrowserHandsFreeController {
   enterWakeReady(generation, deferRecognition = false) {
     if (!this.isCurrent(generation)) return;
     this.clearFollowUpRetryTimer();
+    this.followUpDeadlineAt = null;
+    this.followUpRecoveryPending = false;
+    this.followUpErrorCategory = null;
     this.phase = "wake_ready";
     this.clearHeardTimer();
     this.emit("wake_ready");
@@ -5798,6 +5866,10 @@ class BrowserHandsFreeController {
       this.captureTimer = null;
       if (!this.isCurrent(generation)) return;
       this.onTranscript("", true);
+      if (this.phase === "follow_up" && this.followUpRecoveryPending) {
+        this.fail(followUpRecoveryFailureMessage(this.followUpErrorCategory, true));
+        return;
+      }
       this.stopRecognition();
       this.enterWakeReady(generation, true);
     }, Math.min(seconds, MAX_HANDS_FREE_TIMER_SECONDS) * 1e3);
@@ -5829,6 +5901,13 @@ class BrowserHandsFreeController {
     this.generation += 1;
     this.armed = false;
     this.phase = "off";
+<<<<<<<< HEAD:home_display/static/assets/index-4-_N7Rxp.js
+========
+    this.followUpDeadlineAt = null;
+    this.followUpRecoveryPending = false;
+    this.followUpErrorCategory = null;
+    this.followUpEligible = false;
+>>>>>>>> d1da0fd (fix(web): recover hands-free after playback):home_display/static/assets/index-BtRfo_B_.js
     this.turnInFlight = false;
     this.clearTimers();
     this.stopRecognition();
@@ -5890,6 +5969,20 @@ class BrowserHandsFreeController {
   emit(state2) {
     this.onState(state2);
   }
+}
+function isTransientFollowUpError(category) {
+  return category === "audio-capture" || category === "network" || category === "unknown";
+}
+function recognitionErrorMessage(category) {
+  return `Speech recognition failed (error category: ${category}); hands-free is off. Enable hands-free to try again.`;
+}
+function followUpRecognitionErrorMessage(category) {
+  return `Speech recognition failed after playback (error category: ${category}); hands-free is off. Enable hands-free to try again.`;
+}
+function followUpRecoveryFailureMessage(category, deadline = false) {
+  const categoryDetail = category === null ? "" : ` (error category: ${category})`;
+  const reason = deadline ? " before the follow-up recovery window expired" : "";
+  return `Speech recognition could not resume after playback${categoryDetail}${reason}; hands-free is off. Enable hands-free to try again.`;
 }
 function positiveSeconds(value) {
   return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : DEFAULT_HANDS_FREE_SECONDS;
