@@ -29,7 +29,7 @@
 # - Dev moves story to 'review', then runs code-review (fresh context, different LLM recommended)
 # - Retrospective appends its action items to action_items; the status view surfaces open ones
 generated: 09-08-2026 00:00
-last_updated: 09-10-2026 09:08
+last_updated: 09-10-2026 20:42
 project: hermes-relay-tui
 project_key: NOKEY
 tracking_system: file-system
@@ -53,7 +53,8 @@ development_status:
   1-e-3-response-audio-delivery: backlog
   1-e-4-bounded-follow-up-and-exact-stop: backlog
   1-e-5-recovery-without-replay: backlog
-  1-wk-1-one-shared-w-k-browser-voice-plus-display-surface-for-author: backlog
+  1-wk-1-one-shared-w-k-browser-voice-plus-display-surface-for-author:
+    ready-for-dev
   epic-1-retrospective: optional
 
   epic-2: backlog
@@ -66,7 +67,8 @@ development_status:
   2-e-3-mirror-hermes-prompts-without-creating-touch-response-action: backlog
   2-e-4-render-honest-disconnected-state-and-safe-cached-context-on: backlog
   2-wk-1-render-the-shared-room-scoped-ambient-surface-for-web-and-ip: backlog
-  2-wk-2-render-active-capture-room-local-transcription-response-and: backlog
+  2-wk-2-render-active-capture-room-local-transcription-response-and:
+    ready-for-dev
   2-wk-3-mirror-hermes-prompts-without-touch-approval-or-a-second-ses: backlog
   2-wk-4-render-honest-disconnected-state-cached-context-and-accessib: backlog
   2-t-1-keep-the-direct-tui-doorway-s-capture-and-phase-state-visibl: backlog

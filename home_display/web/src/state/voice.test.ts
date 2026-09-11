@@ -509,6 +509,49 @@ describe("PcmAudioPlayer", () => {
     expect(source.stop).toHaveBeenCalledOnce();
   });
 
+  it("carries an incomplete PCM frame into the next chunk", () => {
+    const source = {
+      buffer: null as AudioBufferLike | null,
+      onended: null as (() => void) | null,
+      connect: vi.fn(),
+      start: vi.fn(),
+      stop: vi.fn(),
+    };
+    const buffer = {
+      duration: 1,
+      copyToChannel: vi.fn(),
+    };
+    const context = {
+      state: "running" as const,
+      currentTime: 0,
+      destination: {},
+      resume: vi.fn(async () => {}),
+      createBuffer: vi.fn(() => buffer),
+      createBufferSource: vi.fn(() => source),
+    };
+    const player = new PcmAudioPlayer({ audioContextFactory: () => context });
+
+    player.start({
+      type: "audio_start",
+      schema: 1,
+      turn_id: "turn-partial-frame",
+      sample_rate: 24000,
+      channels: 1,
+      sample_width: 2,
+    });
+    player.append(new Uint8Array([0x00]).buffer);
+
+    expect(context.createBuffer).not.toHaveBeenCalled();
+
+    player.append(new Uint8Array([0x80, 0xff, 0x7f]).buffer);
+
+    expect(context.createBuffer).toHaveBeenCalledWith(1, 2, 24000);
+    expect(buffer.copyToChannel).toHaveBeenCalledWith(
+      new Float32Array([-1, 32767 / 32768]),
+      0,
+    );
+  });
+
   it("reports playback completion only after scheduled sources end", () => {
     const source = {
       buffer: null as AudioBufferLike | null,
