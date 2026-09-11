@@ -1,5 +1,5 @@
 ---
-title: 'P-2: Puck status and response audio'
+title: 'Status and response audio delivery'
 type: 'feature'
 created: '2026-09-10'
 status: 'in-progress'
@@ -15,9 +15,11 @@ context:
 
 ## Identifier reconciliation
 
-This spec was first drafted as `PUCK-01.7`, a candidate label proposed in `docs/friction-log.md`'s 2026-09-09 entry. That predates the **2026-09-10 surface decomposition** of Epic 1 in `epic-1-context.md`, which assigns the ReSpeaker Puck the story set `P-1`–`P-4` and gives **`P-2`** ownership of "status and response audio". `PUCK-01.7` is superseded and was never filed as a board item; this is `P-2`.
+This spec was first drafted as `PUCK-01.7`, a candidate label proposed in `docs/friction-log.md`'s 2026-09-09 entry. That predates the **2026-09-10 surface decomposition** of Epic 1 in `epic-1-context.md`, which assigns the ReSpeaker Puck the story set `P-1`–`P-4` and gives the Puck's **`1-p-2-status-and-response-audio-delivery`** ownership of "status and response audio" (the slug in `sprint-status.yaml`). `PUCK-01.7` is superseded and was never filed as a board item.
 
-Scope note: `P-2` owns **both** halves of Puck audio output. The original `PUCK-01.7` framing covered only the response half. Status audio is added as task 7 below rather than left to be discovered later.
+Note the epic prefix is load-bearing: `sprint-status.yaml` carries a `2-p-2` and a `3-p-2` as well, so a bare "P-2" is ambiguous. Always use the full slug.
+
+Scope note: this story owns **both** halves of Puck audio output. The original `PUCK-01.7` framing covered only the response half. Status audio is added as task 7 below rather than left to be discovered later.
 
 ## Intent
 
