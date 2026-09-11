@@ -410,6 +410,21 @@ media_source:
   - platform: audio_http
     id: puck_http_source
     buffer_size: 100000
+  # 1-p-1 task 3: local sounds, embedded in flash. A refusal must NOT
+  # depend on the network -- the whole point is to be audible when
+  # something about the bridge relationship is wrong. Addressed as
+  # `audio-file://<audio_file id>`.
+  - platform: audio_file
+    id: puck_local_source
+
+# 1-p-1 task 3: the refusal sound. Descending pair (660Hz -> 440Hz), which
+# reads as "no" almost universally and stays distinct from a future
+# ASCENDING wake acknowledgement (1-p-2 task 7). 16kHz mono keeps it to
+# ~11KB in flash; the resampler already in front of the speaker handles
+# the rate difference.
+audio_file:
+  - id: refused_sound
+    file: sounds/refused.wav
 
 # 1-p-2 task 2: the player itself. Deliberately ONE pipeline -- a
 # spoken reply is an announcement, and a second (media) pipeline would only
@@ -437,6 +452,7 @@ media_player:
       speaker: puck_resampler
       sources:
         - puck_http_source
+        - puck_local_source
       format: WAV
       sample_rate: 48000
       num_channels: 1
@@ -512,7 +528,20 @@ micro_wake_word:
   # capture window still has to close (see the fast interval below) before
   # there is anything to upload.
   on_wake_word_detected:
+    # 1-p-1: the gate lives inside wake_capture::start() -- deliberately,
+    # so no caller can route around it -- and reports whether it refused.
+    # A refusal must be AUDIBLE: an appliance that silently ignores a wake
+    # is indistinguishable from a broken one, which is a worse outcome
+    # than the refusal itself.
     - lambda: pcm_capture::wake_capture::start(wake_word);
+    - if:
+        condition:
+          lambda: return pcm_capture::wake_capture::last_wake_refused;
+        then:
+          - media_player.play_media:
+              id: puck_media_player
+              media_url: "audio-file://refused_sound"
+              announcement: true
 
 # TEMPORARY diagnostic: mww's on_boot state-transition log (STOPPED ->
 # STARTING -> DETECTING_WAKE_WORD) only fires once, right at boot, and is

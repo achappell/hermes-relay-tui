@@ -252,6 +252,14 @@ static bool capture_pending_upload = false;
 static uint32_t silence_start_ms = 0;
 static uint32_t sample_index = 0;
 
+// 1-p-1 task 3: set by start() when the identity gate refuses a wake, so
+// the automation can sound the refusal. Deliberately set HERE rather than
+// having the automation re-evaluate may_capture() itself: the gate and
+// the signal that it fired must be the same decision, or they can drift
+// apart and the device could refuse silently (or beep while capturing).
+// Cleared on every wake so it only ever describes the most recent one.
+static bool last_wake_refused = false;
+
 inline void setup() {
   buffer = static_cast<uint8_t *>(heap_caps_malloc(WAKE_CAPTURE_BYTES, MALLOC_CAP_SPIRAM));
   if (buffer == nullptr) {
@@ -270,7 +278,9 @@ inline void start(const std::string &wake_word) {
   // buffer is touched -- not afterwards at upload time, which is where the
   // only check used to live. A refused device must record nothing at all,
   // so this is deliberately the very first statement in the function.
+  last_wake_refused = false;
   if (!puck_identity::may_capture()) {
+    last_wake_refused = true;
     ESP_LOGW(TAG, "wake refused (wake_word=%s): identity %s -- no capture, no upload, no fallback",
              wake_word.c_str(), puck_identity::state_name(puck_identity::state));
     return;
