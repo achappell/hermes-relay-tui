@@ -90,9 +90,11 @@ Rules:
   so installing the TUI does not drag in appliance hardware libraries.
 
 **Repository boundary:** the native Apple client lives in the sibling
-`~/Development/hermes-relay-ios` repository. That split is intentional: keep
-SwiftUI, Apple platform services, and terminal-specific UI assumptions in
-their respective delivery repositories. Extracting a shared
+`~/Development/hermes-relay-ios` repository, and the feature-parity native
+Android client is planned for the sibling `~/Development/hermes-relay-android`
+repository. Those splits are intentional: keep SwiftUI, Android platform
+services, mobile lifecycle/audio/secure-storage concerns, and terminal-specific
+UI assumptions in their respective delivery repositories. Extracting a shared
 `hermes-relay-core` package remains gated by a demonstrated dependency or
 ownership conflict, not by speculative growth. The repository name and
 published package remain `hermes-relay-tui`; see `DIST-02` for release

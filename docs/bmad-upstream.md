@@ -4,7 +4,7 @@ Hermes Home product planning is canonical in the Personal Vault hub:
 
 `~/Documents/Vaults/Personal Vault/projects/hermes-home/hermes-home.md`
 
-This repository is the downstream TUI/home-display implementation and the historical source of the imported product-planning snapshot. It owns terminal/home-display presentation and local interaction while respecting the shared Hermes protocol boundary.
+This repository is the downstream TUI/home-display implementation and the historical source of the imported product-planning snapshot. It owns terminal/home-display presentation and local interaction while respecting the shared Hermes protocol boundary. The planned native Android Client is a separate downstream delivery boundary with capability parity to the native iOS Client; it does not belong in this Python repository.
 
 ## Before planning or building
 
@@ -22,7 +22,7 @@ Every substantive TUI item must have a Project #3 card with an outcome, acceptan
 
 ## Parallel work
 
-`TUI-*`/`HOME-*` cards belong here; `IOS-*` cards belong in `hermes-relay-ios`; shared Hermes protocol work belongs in its owning repository. One active slice is allowed per repository/workstream, so independent TUI and iOS slices may both be in `Building`. Shared contract or protocol work remains a prerequisite when both clients depend on it.
+`TUI-*`/`HOME-*` cards belong here; `IOS-*` cards belong in `hermes-relay-ios`; planned `ANDROID-*` cards belong in `hermes-relay-android`; shared Hermes protocol work belongs in its owning repository. One active slice is allowed per repository/workstream, so independent TUI, iOS, and Android slices may all be in `Building` when their shared behavior is settled and their files do not contend. Shared contract or protocol work remains a prerequisite when multiple clients depend on it.
 
 ## Current upstream baseline
 
