@@ -54,3 +54,10 @@
 - source_spec: `_bmad-output/implementation-artifacts/spec-web-epic-1-reliable-conversation.md`
   summary: Run the physical Safari/iPad HTTPS/WSS, permission, audio, and direct-touch gate for the restored DOM kiosk.
   evidence: The local fake-state and automated browser checks pass, but no physical iPad/Safari session was available in this worktree to verify Guided Access, secure state-channel hydration, microphone permission, audio playback, and touch-button operation on the supported device.
+
+## Deferred from: code review of spec-1-4-recover-without-replaying-an-uncertain-turn (2026-09-10)
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-1-4-recover-without-replaying-an-uncertain-turn.md`
+  summary: Move wake listener and recorder teardown off the Textual event loop.
+  evidence: The new `/reconnect` handler calls synchronous `_disarm_wake`; that existing path joins the wake listener and calls `recorder.shutdown()` directly, even though both can wait on native audio/thread cleanup. The concern is real, but the fix requires refactoring the shared wake lifecycle and its synchronous callback callers rather than changing only recovery.
+  reason: pre-existing lifecycle boundary; deferred outside the T-4 recovery slice.

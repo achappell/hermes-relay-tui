@@ -102,3 +102,27 @@ context:
 
 **Manual checks (if no CLI):**
 - Against a deliberately unavailable endpoint, run `/reconnect` and verify bounded failure, disconnected state, no wake re-arm, and no queue drain; after restoring the endpoint, run `/reconnect` and verify ready state before submitting a fresh prompt. No bearer token or live endpoint is required for automated validation.
+
+**Review closure evidence (2026-09-10):**
+- `venv/bin/pytest -q tests/test_app.py tests/test_app_wake.py` — 248 passed.
+- `venv/bin/pytest -q` — 941 passed; one known pre-existing `websockets.legacy` deprecation warning.
+- `git diff --check` — passed.
+
+### Review Findings
+
+- [x] [Review][Patch] Preserve FIFO order when a prompt arrives during reconnect recovery [app.py:3299-3346] — verdict: medium; with queued prompts present, the `start_queued` path popped the queue head before `_run_turn`'s reconnect guard re-appended it, so a new prompt could move ahead of older queued work. `_submit_text` and `/queue` now retain submissions until recovery completes, with a concurrent regression covering the ordering.
+- [x] [Review][Patch] Create a genuinely fresh Hermes session identity on reconnect [app.py:1190; session.py:102-127] — verdict: high; constructing the replacement with the same `args.session_id` sent the previous requested identity again, so configured-session recovery could resume the old remote session instead of the fresh session promised by the command and acceptance criteria. Recovery now passes a copied argument set with a new UUID session identity.
+- [x] [Review][Patch] Bound each reconnect handshake, including a server that never acknowledges hello [app.py:1094-1109,1224] — verdict: medium; `session.connect()` had no handshake deadline, so a socket that opened and never returned `hello_ack` could leave `/reconnect` in flight forever instead of exhausting bounded recovery. `_connect` now applies `HANDSHAKE_TIMEOUT` and reports timeout failures explicitly.
+- [x] [Review][Patch] Bound cleanup after a replacement session fails to connect [app.py:1094-1109,1224] — verdict: medium; the recovery path awaited `self.session.close()` without a timeout after a failed fresh-session handshake, so a dead close could prevent the retry ladder and failure state from completing. All connection-failure cleanup now uses the bounded retained-task helper.
+- [x] [Review][Patch] Keep late reconnect-close diagnostics content-safe [app.py:1238-1283] — verdict: medium; a timed-out close task was retained and its done callback logged `exc_info=True`, allowing a later close exception's message and traceback to enter diagnostics despite the reconnect handler's type-only logging. Late cleanup now records exception types only.
+- [x] [Review][Patch] Verify bounded old-session cleanup during reconnect [tests/test_app.py:471-671] — verdict: medium; the new timeout/exception containment path had only normally completing close coverage, so stalled and raising close doubles now prove recovery completes and remains safe.
+- [x] [Review][Patch] Verify replacement-session construction failure [tests/test_app.py:471-671] — verdict: low; a factory-failure regression now proves the old closed session cannot appear connected, queued work and partial response state remain intact, the failure is visible, and the single-flight guard clears.
+- [x] [Review][Patch] Verify uncertain response preservation when reconnect itself fails [tests/test_app.py:600-665] — verdict: medium; the failure suite now checks partial response text and ambiguous prompt status as well as the no-replay guarantee.
+- [x] [Review][Patch] Prevent the initial-connect race from rearming wake during explicit reconnect [app.py:1071-1145,1170-1224] — verdict: medium; an initial handshake could snapshot `reconnecting=False`, while `/reconnect` waited for the lock, then auto-arm configured wake before the recovery guard took effect. The launch path now checks the in-flight recovery guard, including during wake startup, with a gated regression.
+- [x] [Review][Defer] Move blocking wake teardown off the Textual event loop [app.py:1172-1176,1588-1653] — deferred: pre-existing `_disarm_wake` synchronously joins the listener and shuts down the recorder; correcting that lifecycle boundary requires a broader wake-shutdown refactor outside this recovery slice.
+
+#### Rejected
+
+- false — Concurrent profile switching is serialized by `_connection_lock` and is itself an explicit session-replacement action; the cited path does not establish an independent incorrect final state.
+- false — Session identifiers are protocol metadata already logged elsewhere; the new diagnostic excludes prompt, response, and audio contents, and no concrete harmful outcome or separate bounds contract was established.
+- false — Raw PCM frames carry no session identity and remain on the old websocket; reconnect is refused during an active turn, while domain generation and late-event guards cover the reachable cross-session event path.
