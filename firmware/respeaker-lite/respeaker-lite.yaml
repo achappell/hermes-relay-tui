@@ -40,9 +40,8 @@ esphome:
   # patterns that crash-looped the device in a prior session.
   includes:
     - pcm_capture.h
-    # PUCK-01.7 task 1 diagnostic: output-direction proof-of-life. Kept in
-    # its own header so the capture path stays untangled from playback.
-    - speaker_tone.h
+    # 1-p-1: identity gate -- consulted before capture, fed by upload status.
+    - puck_identity.h
   # micro_wake_word does not start listening on its own -- MicroWakeWord::setup()
   # never calls start(), and its own data callback explicitly drops audio while
   # state_ == STOPPED. Without a voice_assistant: component (which normally
@@ -63,34 +62,45 @@ esphome:
         # Story 5: the VAD-gated, single-shot, wake-triggered capture
         # buffer, separate from the training-data capture buffer above.
         - lambda: pcm_capture::wake_capture::setup();
+        # 1-p-1: establish identity BEFORE micro_wake_word can fire a
+        # capture. Starts UNAUTHORIZED and only opens if a token is
+        # actually configured -- a build shipped without one must refuse,
+        # not capture.
+        - lambda: puck_identity::setup("${puck_device_token}");
     - priority: -200  # after the capture buffer is allocated above
       then:
         - lambda: pcm_capture::start();
-    # PUCK-01.7 task 1: output proof-of-life, last thing at boot so a
-    # failure here cannot delay wake-word setup above. The XMOS chip mutes
-    # its speaker output by default -- without this unmute the I2S writes
-    # succeed and nothing is audible, which would look exactly like a
-    # broken output path. Delay lets the XU316 finish its own init (it is
-    # the bus master for both directions) before the first DMA write.
+    # 1-p-2: bring the output path up last, so a failure here cannot
+    # delay wake-word setup above. The delay lets the XU316 finish its own
+    # init -- it is the bus master for both directions.
     - priority: -300
       then:
         - delay: 3s
-        - lambda: |-
-            id(respeaker).unmute_speaker();
-            id(puck_speaker).set_volume(0.6f);
-            speaker_tone::arm(id(puck_speaker));
-        # The speaker's start() is ASYNCHRONOUS: it only reaches
-        # STATE_RUNNING once the component's own loop() has run and its
-        # FreeRTOS task has come up. A busy-wait inside the lambda above
-        # would deadlock that -- blocking in an automation stops the main
-        # loop, so loop() never runs, so the state never transitions, so
-        # the wait never ends. ESPHome's `delay:` is the opposite: it
-        # yields back to the main loop and resumes later, which is exactly
-        # what lets the speaker finish starting. (First attempt skipped
-        # this and every play() call returned 0 against a still-starting
-        # speaker, ~120ms before it logged "Starting".)
+        # The XMOS chip mutes its speaker output by default. Without this
+        # the I2S writes all succeed and nothing is audible -- which looks
+        # exactly like a broken output path.
+        - lambda: id(respeaker).unmute_speaker();
+        # 1-p-2 task 2 proof: stream a real WAV over HTTP through
+        # ESPHome's own audio stack. Deliberately a STATIC, complete file
+        # with a known Content-Length -- that isolates the plumbing
+        # (fetch -> decode -> resample -> I2S) from the live-stream
+        # framing problem, which is a separate unknown tracked in the spec.
+        # Prove the pipe before proving the stream.
+        #
+        # Task 1's blocking tone helper was REMOVED here rather than kept
+        # as a canary: writing 400ms of audio straight to the speaker from
+        # an automation lambda starved the main loop for 354ms ("a
+        # scheduled task took a long time... max is 50 ms"), which dropped
+        # WiFi mid-boot and left play_media firing into a dead network
+        # (HTTP_CLIENT: Connection failed, sock < 0). That is precisely why
+        # playback belongs to media_player's own task and not to anything
+        # synchronous on the main loop -- an object lesson in why this
+        # story does not hand-roll the audio path.
         - delay: 2s
-        - lambda: speaker_tone::play(id(puck_speaker), 440, 400);
+        - media_player.play_media:
+            id: puck_media_player
+            media_url: http://${puck_bridge_host}:8767/test.wav
+            announcement: true
 esp32:
   board: seeed_xiao_esp32s3
   variant: esp32s3
@@ -128,6 +138,46 @@ ota:
 http_request:
   id: http_client
   timeout: 5s
+
+# Volume/transport control that does not require Home Assistant. The API
+# above only helps if something speaks it; this project's bridge does not,
+# and there is no HA in this installation. A built-in web UI means volume
+# is reachable from any browser on the LAN (http://respeaker-lite.local)
+# -- the media_player renders with a volume slider and stop control.
+#
+# Added after the first real playback: there was no way to turn the thing
+# down or shut it up without reflashing, which is not an acceptable
+# property for a speaker in a house with sleeping children.
+web_server:
+  port: 80
+  version: 3
+  # `local: true` is the load-bearing line, not the version. By default
+  # EVERY web_server version serves only a ~174-byte HTML shell that pulls
+  # its JavaScript from https://oi.esphome.io (verified on-device: v3 and
+  # v2 differ only in the CDN path). That would make the volume control
+  # for this appliance depend on the house's internet connection and phone
+  # out to esphome.io on every load -- both wrong for a device whose whole
+  # premise is home-LAN-only operation (PRD NFR3). This embeds the assets
+  # in flash instead: costs space, which this build has to spare, and
+  # works when the internet does not.
+  local: true
+
+# Physical "make it stop" control. A web slider is fine for setting a
+# level; it is useless when audio is blaring and you want it off NOW and
+# your hands are not already on a browser. GPIO3 is the board's user
+# button (pin config mirrors respeaker-lite-stock-test.yaml:390-397).
+binary_sensor:
+  - platform: gpio
+    id: user_button
+    name: "User button"
+    pin:
+      number: GPIO3
+      inverted: true
+    filters:
+      - delayed_on: 50ms
+      - delayed_off: 50ms
+    on_press:
+      - media_player.stop: puck_media_player
 
 wifi:
   ssid: !secret wifi_ssid
@@ -212,7 +262,7 @@ respeaker_lite:
 # input. Pin assignments sourced from Seeed's own wiki tutorial for this
 # exact board (wiki.seeedstudio.com/respeaker_lite_ha/), also used by
 # formatBCE/Respeaker-Lite-ESPHome-integration.
-# PUCK-01.7 task 1: split into two buses so the board can both listen and
+# 1-p-2 task 1: split into two buses so the board can both listen and
 # speak. Input and output are separate `i2s_audio` entries that SHARE the
 # same three clock pins -- the XU316 is the bus master for both directions,
 # so lrclk/bclk/mclk are genuinely one set of wires driving two DMA
@@ -297,7 +347,7 @@ microphone:
       # Story 5: same bounded-memcpy shape, into the separate VAD-gated
       # wake-capture buffer. A no-op whenever a wake capture isn't active.
       - lambda: pcm_capture::wake_capture::write(x.data(), x.size());
-# PUCK-01.7 task 1: the board's onboard TLV320AIC3204 codec, reached over
+# 1-p-2 task 1: the board's onboard TLV320AIC3204 codec, reached over
 # the same internal I2C bus the respeaker_lite component already uses to
 # talk to the XMOS chip. The speaker below drives volume through this.
 audio_dac:
@@ -305,7 +355,7 @@ audio_dac:
     id: aic3204_dac
     i2c_id: internal_i2c
 
-# PUCK-01.7 task 1: output path. Mirrors the mic's format exactly (48kHz,
+# 1-p-2 task 1: output path. Mirrors the mic's format exactly (48kHz,
 # 32-bit, stereo, secondary mode) because both directions ride the same
 # XU316-mastered clocks -- a mismatched output rate would fight the shared
 # bclk/lrclk. Values match formatBCE's proven reference block for this
@@ -313,7 +363,7 @@ audio_dac:
 #
 # `timeout: never` keeps the I2S peripheral from tearing itself down
 # between utterances; `buffer_duration: 100ms` is the DMA cushion that
-# absorbs network jitter once PUCK-01.7 task 2 streams real TTS through
+# absorbs network jitter once P-2 task 2 streams real TTS through
 # here. Story-5's chunked-upload path is deliberately untouched by all of
 # this -- this is a second, independent direction on the bus.
 speaker:
@@ -329,6 +379,83 @@ speaker:
     channel: stereo
     timeout: never
     buffer_duration: 100ms
+
+  # 1-p-2 task 2: resampling stage in front of the hardware speaker.
+  # Task 1 established the hard constraint this exists to satisfy -- the
+  # XU316 masters the I2S clocks, so the speaker runs in secondary/slave
+  # mode and CANNOT reconfigure the bus; a stream whose sample rate differs
+  # from 48000 is rejected outright with "Incompatible stream settings"
+  # (i2s_audio_speaker_standard.cpp:366). Hermes TTS will not necessarily
+  # be 48kHz, so everything routes through here rather than at the metal.
+  # Bit depth does not need to match -- only the sample rate is fixed in
+  # slave mode -- so 16-bit in / 32-bit out is fine and is what formatBCE's
+  # reference chain does (respeaker-lite-stock-test.yaml:1208-1217).
+  - platform: resampler
+    id: puck_resampler
+    output_speaker: puck_speaker
+    sample_rate: 48000
+    bits_per_sample: 16
+
+# 1-p-2 task 2: ESPHome's own HTTP streaming media source. This is the
+# component that makes Puck-side playback viable at all -- it holds ONE
+# persistent connection and reads it incrementally (esp_http_client_read),
+# instead of pcm_capture.h's upload path which opens a fresh connection per
+# 2KB chunk. Measured 2026-09-10, that upload path sustains 25.3 KB/s,
+# while 16-bit TTS needs 32-48 KB/s: roughly half real-time, before
+# counting its documented ESP_FAIL wedging and per-failure heap loss.
+# Buffer is the latency/underrun tradeoff -- 100KB is ~1s of 48kHz 16-bit
+# mono, enough to ride out household WiFi jitter without a long silence
+# before Missy starts speaking.
+media_source:
+  - platform: audio_http
+    id: puck_http_source
+    buffer_size: 100000
+  # 1-p-1 task 3: local sounds, embedded in flash. A refusal must NOT
+  # depend on the network -- the whole point is to be audible when
+  # something about the bridge relationship is wrong. Addressed as
+  # `audio-file://<audio_file id>`.
+  - platform: audio_file
+    id: puck_local_source
+
+# 1-p-1 task 3: the refusal sound. Descending pair (660Hz -> 440Hz), which
+# reads as "no" almost universally and stays distinct from a future
+# ASCENDING wake acknowledgement (1-p-2 task 7). 16kHz mono keeps it to
+# ~11KB in flash; the resampler already in front of the speaker handles
+# the rate difference.
+audio_file:
+  - id: refused_sound
+    file: sounds/refused.wav
+
+# 1-p-2 task 2: the player itself. Deliberately ONE pipeline -- a
+# spoken reply is an announcement, and a second (media) pipeline would only
+# add a mixer stage with nothing to mix. Sources feed in from the HTTP
+# source above; decoded audio lands in the resampler, then the speaker.
+media_player:
+  - platform: speaker_source
+    id: puck_media_player
+    name: "Puck"
+    # Volume lives here, NOT in a set_volume() lambda at boot. A hardcoded
+    # speaker->set_volume() fights the media player's own volume state:
+    # the player is the thing that persists, increments, and reports
+    # volume, so anything setting the speaker directly is silently
+    # overridden the first time the player touches it.
+    #
+    # 0.25 initial and a 0.8 ceiling are deliberate for a device that sits
+    # in a room with people: first playback at 0.6 was, by direct report,
+    # "quite loud", and an appliance that can be cranked to full by an
+    # errant command is an appliance that can hurt. The ceiling is the
+    # important half -- the initial value is merely polite.
+    volume_initial: 0.25
+    volume_max: 0.8
+    volume_increment: 0.05
+    announcement_pipeline:
+      speaker: puck_resampler
+      sources:
+        - puck_http_source
+        - puck_local_source
+      format: WAV
+      sample_rate: 48000
+      num_channels: 1
 
 # On-device wake-word detection. Wake phrase candidates are microwakeword.com-
 # trained models (hey_missy/hey_bestie/hey_skippy below), A/B'd live against
@@ -401,7 +528,20 @@ micro_wake_word:
   # capture window still has to close (see the fast interval below) before
   # there is anything to upload.
   on_wake_word_detected:
+    # 1-p-1: the gate lives inside wake_capture::start() -- deliberately,
+    # so no caller can route around it -- and reports whether it refused.
+    # A refusal must be AUDIBLE: an appliance that silently ignores a wake
+    # is indistinguishable from a broken one, which is a worse outcome
+    # than the refusal itself.
     - lambda: pcm_capture::wake_capture::start(wake_word);
+    - if:
+        condition:
+          lambda: return pcm_capture::wake_capture::last_wake_refused;
+        then:
+          - media_player.play_media:
+              id: puck_media_player
+              media_url: "audio-file://refused_sound"
+              announcement: true
 
 # TEMPORARY diagnostic: mww's on_boot state-transition log (STOPPED ->
 # STARTING -> DETECTING_WAKE_WORD) only fires once, right at boot, and is
@@ -429,6 +569,13 @@ interval:
             ESP_LOGW("mww_diag", "mww stopped -- restarting");
             id(mww).start();
           }
+          // 1-p-1: identity state is otherwise only logged once at boot,
+          // which is easy to miss -- the API log stream attaches seconds
+          // after boot and the line has already scrolled past. Same reason
+          // and same shape as the mww is_running poll above.
+          ESP_LOGI("puck_identity", "state: %s (may_capture=%s)",
+                   puck_identity::state_name(puck_identity::state),
+                   puck_identity::may_capture() ? "true" : "false");
   # Story 5: disabled the story-3 serial-dump diagnostic wiring that used
   # to run here (pcm_capture::dump_over_serial(), still defined in
   # pcm_capture.h but no longer called). MAX_DUMPS=15 full ~256KB captures

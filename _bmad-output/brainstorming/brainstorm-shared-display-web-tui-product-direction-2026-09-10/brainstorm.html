@@ -1,0 +1,2333 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#10131b">
+  <meta name="description" content="A visual keepsake of the shared display, web/iPad, and TUI product direction.">
+  <title>From Answer to Instrument</title>
+  <style>
+    :root {
+      --ink: #f4f1e8;
+      --muted: #a9acbb;
+      --dim: #727789;
+      --night: #10131b;
+      --night-2: #161a24;
+      --panel: rgba(27, 32, 45, .78);
+      --panel-solid: #1b202d;
+      --line: rgba(244, 241, 232, .14);
+      --line-strong: rgba(244, 241, 232, .25);
+      --coral: #ff765f;
+      --apricot: #ffba7a;
+      --cyan: #75e0d2;
+      --violet: #af9aff;
+      --lime: #d9f27c;
+      --blue: #83a7ff;
+      --shadow: 0 28px 80px rgba(0, 0, 0, .28);
+      --sans: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      --mono: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+    }
+
+    * { box-sizing: border-box; }
+
+    html {
+      scroll-behavior: smooth;
+      background: var(--night);
+    }
+
+    body {
+      margin: 0;
+      color: var(--ink);
+      background:
+        radial-gradient(circle at 15% 0%, rgba(175, 154, 255, .12), transparent 29rem),
+        radial-gradient(circle at 91% 14%, rgba(117, 224, 210, .08), transparent 25rem),
+        var(--night);
+      font-family: var(--sans);
+      font-size: 16px;
+      line-height: 1.55;
+      overflow-x: hidden;
+    }
+
+    body::before {
+      position: fixed;
+      inset: 0;
+      z-index: -1;
+      pointer-events: none;
+      content: "";
+      opacity: .38;
+      background-image:
+        linear-gradient(rgba(255,255,255,.025) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(255,255,255,.025) 1px, transparent 1px);
+      background-size: 42px 42px;
+      mask-image: linear-gradient(to bottom, black, transparent 82%);
+    }
+
+    a { color: inherit; }
+
+    button {
+      color: inherit;
+      font: inherit;
+    }
+
+    button:focus-visible,
+    a:focus-visible {
+      outline: 2px solid var(--apricot);
+      outline-offset: 4px;
+    }
+
+    .progress-rail {
+      position: fixed;
+      top: 0;
+      left: 0;
+      z-index: 20;
+      width: 100%;
+      height: 3px;
+      background: rgba(255,255,255,.08);
+    }
+
+    .progress-bar {
+      display: block;
+      width: 0;
+      height: 100%;
+      background: linear-gradient(90deg, var(--coral), var(--apricot), var(--cyan));
+      transition: width .15s ease-out;
+    }
+
+    .topbar {
+      position: sticky;
+      top: 0;
+      z-index: 10;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 1rem;
+      min-height: 64px;
+      padding: .85rem clamp(1.2rem, 4vw, 4rem);
+      border-bottom: 1px solid rgba(244,241,232,.09);
+      background: rgba(16, 19, 27, .72);
+      backdrop-filter: blur(18px);
+    }
+
+    .brand {
+      display: inline-flex;
+      align-items: center;
+      gap: .65rem;
+      color: var(--ink);
+      font-family: var(--mono);
+      font-size: .72rem;
+      letter-spacing: .12em;
+      text-decoration: none;
+      text-transform: uppercase;
+    }
+
+    .brand-mark {
+      display: inline-grid;
+      width: 1.35rem;
+      height: 1.35rem;
+      place-items: center;
+      border: 1px solid var(--coral);
+      border-radius: 50%;
+      color: var(--coral);
+      font-size: .75rem;
+    }
+
+    .nav {
+      display: flex;
+      align-items: center;
+      gap: .35rem;
+      overflow-x: auto;
+      scrollbar-width: none;
+    }
+
+    .nav::-webkit-scrollbar { display: none; }
+
+    .nav a {
+      padding: .35rem .55rem;
+      color: var(--muted);
+      font-family: var(--mono);
+      font-size: .65rem;
+      letter-spacing: .08em;
+      text-decoration: none;
+      text-transform: uppercase;
+      white-space: nowrap;
+      transition: color .2s ease, background .2s ease;
+    }
+
+    .nav a:hover,
+    .nav a.active {
+      color: var(--ink);
+      background: rgba(255,255,255,.08);
+    }
+
+    .wrap {
+      width: min(1220px, calc(100% - 2.4rem));
+      margin: 0 auto;
+    }
+
+    .hero {
+      position: relative;
+      display: grid;
+      grid-template-columns: minmax(0, 1.05fr) minmax(300px, .95fr);
+      align-items: center;
+      gap: clamp(2rem, 8vw, 8rem);
+      min-height: calc(100vh - 64px);
+      padding: clamp(4rem, 9vw, 8.5rem) 0 clamp(4rem, 8vw, 7rem);
+    }
+
+    .hero::after {
+      position: absolute;
+      right: 7%;
+      bottom: 7%;
+      width: 1px;
+      height: 13rem;
+      content: "";
+      background: linear-gradient(to bottom, transparent, var(--coral), transparent);
+      opacity: .55;
+    }
+
+    .eyebrow,
+    .section-number,
+    .micro-label,
+    .surface-label,
+    .data-label,
+    .trust-label {
+      color: var(--apricot);
+      font-family: var(--mono);
+      font-size: .68rem;
+      font-weight: 700;
+      letter-spacing: .16em;
+      line-height: 1.4;
+      text-transform: uppercase;
+    }
+
+    .hero h1 {
+      max-width: 720px;
+      margin: 1.2rem 0 1.5rem;
+      font-size: clamp(3.8rem, 9vw, 8.6rem);
+      font-weight: 700;
+      letter-spacing: -.085em;
+      line-height: .88;
+    }
+
+    .hero h1 span {
+      display: block;
+      color: var(--coral);
+    }
+
+    .hero-copy {
+      max-width: 34rem;
+      margin: 0;
+      color: var(--muted);
+      font-size: clamp(1.05rem, 1.6vw, 1.3rem);
+      line-height: 1.55;
+    }
+
+    .hero-meta {
+      display: flex;
+      flex-wrap: wrap;
+      gap: .7rem;
+      margin-top: 2.5rem;
+    }
+
+    .meta-chip,
+    .tag {
+      display: inline-flex;
+      align-items: center;
+      gap: .4rem;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      color: var(--muted);
+      font-family: var(--mono);
+      font-size: .72rem;
+      letter-spacing: .04em;
+      padding: .45rem .7rem;
+    }
+
+    .meta-chip::before {
+      display: block;
+      width: .42rem;
+      height: .42rem;
+      border-radius: 50%;
+      background: var(--cyan);
+      content: "";
+    }
+
+    .scroll-note {
+      display: inline-flex;
+      align-items: center;
+      gap: .7rem;
+      margin-top: 4rem;
+      color: var(--dim);
+      font-family: var(--mono);
+      font-size: .68rem;
+      letter-spacing: .12em;
+      text-transform: uppercase;
+    }
+
+    .scroll-note::before {
+      width: 3rem;
+      height: 1px;
+      background: var(--line-strong);
+      content: "";
+    }
+
+    .hero-visual {
+      position: relative;
+      min-height: 510px;
+    }
+
+    .orbit-plate {
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      width: min(34rem, 88vw);
+      aspect-ratio: 1;
+      transform: translate(-50%, -50%);
+    }
+
+    .orbit {
+      position: absolute;
+      inset: 7%;
+      border: 1px solid rgba(244,241,232,.16);
+      border-radius: 50%;
+      transform: rotate(-14deg);
+    }
+
+    .orbit:nth-child(2) {
+      inset: 19%;
+      border-color: rgba(117,224,210,.26);
+      transform: rotate(43deg);
+    }
+
+    .orbit:nth-child(3) {
+      inset: 33%;
+      border-color: rgba(255,118,95,.36);
+      transform: rotate(74deg);
+    }
+
+    .orbit-dot {
+      position: absolute;
+      width: .7rem;
+      height: .7rem;
+      border: 2px solid var(--night);
+      border-radius: 50%;
+      background: var(--apricot);
+      box-shadow: 0 0 0 .35rem rgba(255,186,122,.12), 0 0 30px rgba(255,186,122,.65);
+    }
+
+    .dot-a { top: 14%; left: 70%; }
+    .dot-b { top: 67%; left: 14%; background: var(--cyan); box-shadow: 0 0 0 .35rem rgba(117,224,210,.11), 0 0 30px rgba(117,224,210,.6); }
+    .dot-c { right: 11%; bottom: 23%; background: var(--coral); box-shadow: 0 0 0 .35rem rgba(255,118,95,.11), 0 0 30px rgba(255,118,95,.6); }
+
+    .core-sigil {
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      display: grid;
+      width: 10rem;
+      aspect-ratio: 1;
+      place-items: center;
+      border: 1px solid var(--coral);
+      border-radius: 42% 58% 55% 45%;
+      background: rgba(255,118,95,.08);
+      box-shadow: inset 0 0 50px rgba(255,118,95,.08), 0 0 80px rgba(255,118,95,.12);
+      color: var(--ink);
+      font-family: var(--mono);
+      font-size: .7rem;
+      letter-spacing: .13em;
+      text-align: center;
+      text-transform: uppercase;
+      transform: translate(-50%, -50%) rotate(-9deg);
+    }
+
+    .core-sigil::before,
+    .core-sigil::after {
+      position: absolute;
+      width: .5rem;
+      height: .5rem;
+      border-radius: 50%;
+      background: var(--coral);
+      content: "";
+    }
+
+    .core-sigil::before { top: 12%; right: 19%; }
+    .core-sigil::after { bottom: 14%; left: 18%; background: var(--cyan); }
+
+    .orbit-label {
+      position: absolute;
+      color: var(--muted);
+      font-family: var(--mono);
+      font-size: .65rem;
+      letter-spacing: .1em;
+      text-transform: uppercase;
+      white-space: nowrap;
+    }
+
+    .label-conversation { top: 20%; left: 3%; }
+    .label-artifact { top: 9%; right: 4%; color: var(--apricot); }
+    .label-surface { right: 0; bottom: 22%; color: var(--cyan); }
+    .label-event { bottom: 9%; left: 19%; color: var(--coral); }
+
+    .section {
+      position: relative;
+      padding: clamp(5rem, 11vw, 10rem) 0;
+      border-top: 1px solid var(--line);
+    }
+
+    .section-head {
+      display: grid;
+      grid-template-columns: minmax(150px, .3fr) minmax(0, 1fr);
+      gap: 2rem;
+      align-items: start;
+      margin-bottom: 3.5rem;
+    }
+
+    .section-number {
+      display: inline-flex;
+      align-items: center;
+      gap: .6rem;
+      color: var(--coral);
+    }
+
+    .section-number::before {
+      display: block;
+      width: 1.8rem;
+      height: 1px;
+      background: currentColor;
+      content: "";
+    }
+
+    .section h2 {
+      max-width: 850px;
+      margin: 0;
+      font-size: clamp(2.2rem, 5vw, 5.5rem);
+      font-weight: 600;
+      letter-spacing: -.065em;
+      line-height: .98;
+    }
+
+    .section-intro {
+      max-width: 42rem;
+      margin: 1.25rem 0 0;
+      color: var(--muted);
+      font-size: 1.05rem;
+    }
+
+    .lens {
+      opacity: 0;
+      transform: translateY(24px);
+      transition: opacity .8s ease, transform .8s ease;
+    }
+
+    .lens.in-view {
+      opacity: 1;
+      transform: translateY(0);
+    }
+
+    .panel {
+      border: 1px solid var(--line);
+      background: linear-gradient(145deg, rgba(32,37,51,.88), rgba(20,24,34,.72));
+      box-shadow: var(--shadow);
+    }
+
+    .job-grid {
+      display: grid;
+      grid-template-columns: .72fr 1.28fr;
+      gap: 1.3rem;
+      align-items: stretch;
+    }
+
+    .job-statement {
+      display: flex;
+      min-height: 400px;
+      flex-direction: column;
+      justify-content: space-between;
+      padding: clamp(1.5rem, 4vw, 3rem);
+      background:
+        radial-gradient(circle at 18% 13%, rgba(255,186,122,.18), transparent 11rem),
+        var(--panel-solid);
+    }
+
+    .job-statement h3 {
+      max-width: 18rem;
+      margin: 2.6rem 0 0;
+      font-size: clamp(2rem, 4vw, 3.8rem);
+      font-weight: 500;
+      letter-spacing: -.06em;
+      line-height: .98;
+    }
+
+    .job-statement h3 em {
+      color: var(--apricot);
+      font-style: normal;
+    }
+
+    .job-footer {
+      display: flex;
+      align-items: end;
+      justify-content: space-between;
+      gap: 1rem;
+      color: var(--dim);
+      font-family: var(--mono);
+      font-size: .7rem;
+    }
+
+    .job-mark {
+      display: grid;
+      width: 4rem;
+      height: 4rem;
+      place-items: center;
+      border: 1px solid var(--apricot);
+      border-radius: 50%;
+      color: var(--apricot);
+      font-size: 1.7rem;
+    }
+
+    .pipeline-panel {
+      padding: clamp(1.3rem, 3vw, 2.4rem);
+      overflow: hidden;
+    }
+
+    .pipeline-top {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 1rem;
+      margin-bottom: 2.5rem;
+    }
+
+    .pipeline-top p {
+      max-width: 23rem;
+      margin: 0;
+      color: var(--muted);
+      font-size: .95rem;
+    }
+
+    .not-chat {
+      color: var(--cyan);
+      font-family: var(--mono);
+      font-size: .65rem;
+      letter-spacing: .12em;
+      text-transform: uppercase;
+      white-space: nowrap;
+    }
+
+    .pipeline {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      min-height: 255px;
+      align-items: center;
+      gap: 0;
+    }
+
+    .pipeline-step {
+      position: relative;
+      display: flex;
+      min-height: 180px;
+      flex-direction: column;
+      justify-content: center;
+      gap: .7rem;
+      padding: 1rem;
+      border: 1px solid var(--line);
+      background: rgba(255,255,255,.025);
+    }
+
+    .pipeline-step:not(:last-child)::after {
+      position: absolute;
+      top: 50%;
+      right: -1.1rem;
+      width: 2.2rem;
+      height: 1px;
+      z-index: 1;
+      background: var(--coral);
+      content: "";
+    }
+
+    .pipeline-step:not(:last-child)::before {
+      position: absolute;
+      top: calc(50% - 4px);
+      right: -.98rem;
+      z-index: 2;
+      width: .5rem;
+      height: .5rem;
+      border-top: 1px solid var(--coral);
+      border-right: 1px solid var(--coral);
+      content: "";
+      transform: rotate(45deg);
+    }
+
+    .step-index {
+      color: var(--coral);
+      font-family: var(--mono);
+      font-size: .65rem;
+    }
+
+    .pipeline-step strong {
+      font-size: 1.15rem;
+      font-weight: 600;
+      letter-spacing: -.025em;
+    }
+
+    .pipeline-step span:last-child {
+      color: var(--muted);
+      font-size: .86rem;
+    }
+
+    .role-grid {
+      display: grid;
+      grid-template-columns: 1.15fr .85fr;
+      gap: 1.3rem;
+    }
+
+    .role-stage {
+      position: relative;
+      display: grid;
+      min-height: 520px;
+      place-items: center;
+      overflow: hidden;
+      background:
+        radial-gradient(circle at 50% 50%, rgba(117,224,210,.14), transparent 12rem),
+        var(--panel-solid);
+    }
+
+    .role-stage::before,
+    .role-stage::after {
+      position: absolute;
+      border: 1px solid rgba(117,224,210,.2);
+      border-radius: 50%;
+      content: "";
+    }
+
+    .role-stage::before { width: 25rem; height: 25rem; }
+    .role-stage::after { width: 36rem; height: 36rem; border-color: rgba(244,241,232,.08); }
+
+    .role-object {
+      position: relative;
+      z-index: 2;
+      display: grid;
+      width: 9.5rem;
+      height: 9.5rem;
+      place-items: center;
+      border: 1px solid var(--cyan);
+      border-radius: 47% 53% 40% 60%;
+      background: rgba(117,224,210,.1);
+      color: var(--cyan);
+      font-family: var(--mono);
+      font-size: .7rem;
+      letter-spacing: .1em;
+      line-height: 1.4;
+      text-align: center;
+      text-transform: uppercase;
+      transform: rotate(8deg);
+    }
+
+    .role-object::after {
+      position: absolute;
+      inset: .65rem;
+      border: 1px dashed rgba(117,224,210,.45);
+      border-radius: inherit;
+      content: "";
+    }
+
+    .role-orbit-label {
+      position: absolute;
+      z-index: 3;
+      padding: .4rem .55rem;
+      border: 1px solid var(--line);
+      background: rgba(16,19,27,.86);
+      color: var(--muted);
+      font-family: var(--mono);
+      font-size: .65rem;
+      letter-spacing: .06em;
+      text-transform: uppercase;
+      transition: border-color .2s ease, color .2s ease, transform .2s ease;
+    }
+
+    .role-orbit-label.active {
+      border-color: var(--apricot);
+      color: var(--apricot);
+      transform: scale(1.04);
+    }
+
+    .role-a { top: 22%; left: 13%; }
+    .role-j { top: 18%; right: 12%; }
+    .role-c { bottom: 21%; left: 18%; }
+    .role-p { right: 10%; bottom: 20%; color: var(--coral); }
+
+    .role-panel {
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      padding: clamp(1.5rem, 3vw, 2.5rem);
+    }
+
+    .role-panel h3 {
+      margin: 1.5rem 0 1rem;
+      font-size: clamp(1.8rem, 3.3vw, 3.2rem);
+      font-weight: 500;
+      letter-spacing: -.06em;
+      line-height: 1;
+    }
+
+    .role-panel p {
+      margin: 0;
+      color: var(--muted);
+    }
+
+    .role-tabs {
+      display: flex;
+      flex-wrap: wrap;
+      gap: .45rem;
+      margin: 2rem 0;
+    }
+
+    .role-tab,
+    .scamp-node,
+    .mode-button,
+    .end-button {
+      border: 1px solid var(--line-strong);
+      border-radius: 999px;
+      background: transparent;
+      cursor: pointer;
+      transition: border-color .2s ease, background .2s ease, color .2s ease, transform .2s ease;
+    }
+
+    .role-tab {
+      padding: .55rem .75rem;
+      color: var(--muted);
+      font-family: var(--mono);
+      font-size: .7rem;
+    }
+
+    .role-tab:hover,
+    .role-tab.active {
+      border-color: var(--cyan);
+      background: rgba(117,224,210,.1);
+      color: var(--cyan);
+    }
+
+    .role-readout {
+      min-height: 7.6rem;
+      padding: 1rem;
+      border-left: 2px solid var(--cyan);
+      background: rgba(117,224,210,.06);
+    }
+
+    .role-readout strong {
+      display: block;
+      margin-bottom: .45rem;
+      color: var(--ink);
+      font-size: 1.05rem;
+    }
+
+    .role-readout span {
+      color: var(--muted);
+      font-size: .9rem;
+    }
+
+    .rule-line {
+      display: flex;
+      align-items: center;
+      gap: .8rem;
+      margin-top: 2rem;
+      color: var(--apricot);
+      font-family: var(--mono);
+      font-size: .7rem;
+      letter-spacing: .08em;
+      text-transform: uppercase;
+    }
+
+    .rule-line::before {
+      width: 2.2rem;
+      height: 1px;
+      background: var(--apricot);
+      content: "";
+    }
+
+    .scamper-layout {
+      display: grid;
+      grid-template-columns: minmax(320px, .9fr) 1.1fr;
+      gap: 1.3rem;
+      align-items: stretch;
+    }
+
+    .scamper-wheel {
+      position: relative;
+      display: grid;
+      min-height: 610px;
+      place-items: center;
+      overflow: hidden;
+      background:
+        radial-gradient(circle, rgba(175,154,255,.13) 0 1px, transparent 1px) 0 0 / 19px 19px,
+        var(--panel-solid);
+    }
+
+    .scamper-wheel::before {
+      position: absolute;
+      width: 18rem;
+      height: 18rem;
+      border: 1px dashed rgba(175,154,255,.35);
+      border-radius: 50%;
+      content: "";
+    }
+
+    .scamper-wheel::after {
+      position: absolute;
+      width: 32rem;
+      height: 32rem;
+      border: 1px solid rgba(255,186,122,.12);
+      border-radius: 50%;
+      content: "";
+    }
+
+    .scamp-center {
+      position: relative;
+      z-index: 2;
+      display: grid;
+      width: 8.2rem;
+      height: 8.2rem;
+      place-items: center;
+      border: 1px solid var(--violet);
+      border-radius: 50%;
+      background: rgba(175,154,255,.12);
+      color: var(--violet);
+      font-family: var(--mono);
+      font-size: .67rem;
+      letter-spacing: .1em;
+      line-height: 1.5;
+      text-align: center;
+      text-transform: uppercase;
+    }
+
+    .scamp-node {
+      position: absolute;
+      z-index: 4;
+      width: 5.9rem;
+      height: 2.55rem;
+      padding: .3rem;
+      color: var(--muted);
+      font-family: var(--mono);
+      font-size: .66rem;
+      letter-spacing: .05em;
+      text-transform: uppercase;
+    }
+
+    .scamp-node:hover,
+    .scamp-node.active {
+      border-color: var(--apricot);
+      background: rgba(255,186,122,.11);
+      color: var(--apricot);
+      transform: scale(1.06);
+    }
+
+    .scamp-substitute { top: 15%; left: 50%; transform: translateX(-50%); }
+    .scamp-combine { top: 27%; right: 8%; }
+    .scamp-adapt { right: 7%; bottom: 27%; }
+    .scamp-modify { bottom: 12%; left: 50%; transform: translateX(-50%); }
+    .scamp-repurpose { bottom: 27%; left: 7%; }
+    .scamp-eliminate { top: 27%; left: 7%; }
+    .scamp-reverse { top: 49%; right: 2%; }
+
+    .scamp-detail {
+      display: flex;
+      min-height: 610px;
+      flex-direction: column;
+      justify-content: space-between;
+      padding: clamp(1.5rem, 4vw, 3rem);
+    }
+
+    .scamp-detail h3 {
+      max-width: 20rem;
+      margin: 1.4rem 0 1rem;
+      color: var(--violet);
+      font-size: clamp(2.4rem, 5vw, 5rem);
+      font-weight: 500;
+      letter-spacing: -.07em;
+      line-height: .9;
+    }
+
+    .scamp-detail p {
+      max-width: 30rem;
+      margin: 0;
+      color: var(--muted);
+      font-size: 1.07rem;
+    }
+
+    .mutation-track {
+      display: flex;
+      flex-wrap: wrap;
+      gap: .5rem;
+      margin-top: 3rem;
+    }
+
+    .mutation-track span {
+      padding: .4rem .55rem;
+      border: 1px solid var(--line);
+      color: var(--dim);
+      font-family: var(--mono);
+      font-size: .65rem;
+      letter-spacing: .06em;
+      text-transform: uppercase;
+    }
+
+    .feature-layout {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 1.3rem;
+      align-items: stretch;
+    }
+
+    .feature-quote {
+      display: flex;
+      min-height: 510px;
+      flex-direction: column;
+      justify-content: center;
+      padding: clamp(1.5rem, 4vw, 3.5rem);
+      background:
+        linear-gradient(130deg, rgba(255,118,95,.16), transparent 55%),
+        var(--panel-solid);
+    }
+
+    .feature-quote blockquote {
+      max-width: 33rem;
+      margin: 0;
+      color: var(--ink);
+      font-size: clamp(2rem, 4vw, 4.4rem);
+      font-weight: 500;
+      letter-spacing: -.07em;
+      line-height: .98;
+    }
+
+    .feature-quote blockquote em {
+      color: var(--coral);
+      font-style: normal;
+    }
+
+    .feature-quote footer {
+      margin-top: 2.5rem;
+      color: var(--muted);
+      font-family: var(--mono);
+      font-size: .72rem;
+      letter-spacing: .08em;
+      text-transform: uppercase;
+    }
+
+    .typed-object {
+      position: relative;
+      display: flex;
+      min-height: 510px;
+      flex-direction: column;
+      justify-content: space-between;
+      padding: clamp(1.5rem, 3vw, 2.5rem);
+      overflow: hidden;
+      background:
+        radial-gradient(circle at 92% 6%, rgba(217,242,124,.18), transparent 12rem),
+        var(--panel-solid);
+    }
+
+    .typed-object::before {
+      position: absolute;
+      right: -4rem;
+      bottom: -5rem;
+      width: 18rem;
+      height: 18rem;
+      border: 1px solid rgba(217,242,124,.22);
+      border-radius: 50%;
+      content: "";
+    }
+
+    .object-heading {
+      position: relative;
+      display: flex;
+      justify-content: space-between;
+      gap: 1rem;
+    }
+
+    .object-type {
+      color: var(--lime);
+      font-family: var(--mono);
+      font-size: .68rem;
+      letter-spacing: .1em;
+      text-transform: uppercase;
+    }
+
+    .object-pulse {
+      width: .7rem;
+      height: .7rem;
+      border-radius: 50%;
+      background: var(--lime);
+      box-shadow: 0 0 0 .45rem rgba(217,242,124,.11), 0 0 24px rgba(217,242,124,.55);
+    }
+
+    .object-body {
+      position: relative;
+      z-index: 1;
+      margin: 3rem 0;
+    }
+
+    .object-body h3 {
+      max-width: 20rem;
+      margin: 0 0 1.5rem;
+      font-size: clamp(2rem, 4vw, 3.5rem);
+      font-weight: 500;
+      letter-spacing: -.06em;
+      line-height: .95;
+    }
+
+    .object-body p {
+      max-width: 23rem;
+      margin: 0;
+      color: var(--muted);
+    }
+
+    .object-fields {
+      display: grid;
+      position: relative;
+      z-index: 1;
+      grid-template-columns: repeat(2, 1fr);
+      gap: .55rem;
+    }
+
+    .object-field {
+      padding: .75rem;
+      border: 1px solid var(--line);
+      background: rgba(255,255,255,.035);
+    }
+
+    .object-field strong {
+      display: block;
+      margin-top: .25rem;
+      font-size: .86rem;
+      font-weight: 500;
+    }
+
+    .object-field .data-label { color: var(--lime); font-size: .58rem; }
+
+    .surface-strip {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: .6rem;
+      margin-top: 1.3rem;
+    }
+
+    .surface-card {
+      padding: 1rem;
+      border: 1px solid var(--line);
+      background: rgba(255,255,255,.025);
+    }
+
+    .surface-card strong {
+      display: block;
+      margin: .55rem 0 .25rem;
+      font-size: .95rem;
+      font-weight: 600;
+    }
+
+    .surface-card p {
+      margin: 0;
+      color: var(--muted);
+      font-size: .82rem;
+    }
+
+    .affinity-map {
+      position: relative;
+      display: grid;
+      grid-template-columns: repeat(6, 1fr);
+      grid-template-rows: repeat(3, minmax(150px, auto));
+      gap: 1rem;
+      min-height: 565px;
+      padding: 1rem;
+    }
+
+    .affinity-map::before,
+    .affinity-map::after {
+      position: absolute;
+      z-index: 0;
+      border: 1px solid rgba(244,241,232,.08);
+      border-radius: 50%;
+      content: "";
+      pointer-events: none;
+    }
+
+    .affinity-map::before {
+      top: 16%;
+      left: 25%;
+      width: 50%;
+      height: 67%;
+    }
+
+    .affinity-map::after {
+      top: 28%;
+      left: 37.5%;
+      width: 25%;
+      height: 43%;
+      border-color: rgba(255,118,95,.23);
+    }
+
+    .cluster {
+      position: relative;
+      z-index: 1;
+      display: flex;
+      min-height: 150px;
+      flex-direction: column;
+      justify-content: space-between;
+      padding: 1.2rem;
+      border: 1px solid var(--line);
+      background: rgba(16,19,27,.82);
+      transition: border-color .2s ease, transform .2s ease;
+    }
+
+    .cluster:hover {
+      border-color: var(--cluster-color, var(--apricot));
+      transform: translateY(-4px);
+    }
+
+    .cluster h3 {
+      margin: 0;
+      color: var(--cluster-color, var(--ink));
+      font-size: 1.2rem;
+      font-weight: 600;
+      letter-spacing: -.04em;
+      line-height: 1.05;
+    }
+
+    .cluster p {
+      margin: 1rem 0 0;
+      color: var(--muted);
+      font-size: .84rem;
+    }
+
+    .cluster-core { grid-column: 3 / 5; grid-row: 2; --cluster-color: var(--coral); justify-content: center; text-align: center; }
+    .cluster-core h3 { font-size: clamp(1.8rem, 3vw, 3rem); }
+    .cluster-core p { color: var(--ink); }
+    .cluster-semantics { grid-column: 1 / 3; grid-row: 1; --cluster-color: var(--apricot); }
+    .cluster-artifact { grid-column: 5 / 7; grid-row: 1; --cluster-color: var(--cyan); }
+    .cluster-context { grid-column: 1 / 3; grid-row: 3; --cluster-color: var(--violet); }
+    .cluster-household { grid-column: 5 / 7; grid-row: 3; --cluster-color: var(--lime); }
+
+    .cluster-line {
+      position: absolute;
+      z-index: 0;
+      background: var(--line-strong);
+      content: "";
+      pointer-events: none;
+    }
+
+    .line-one { top: 32%; left: 24%; width: 20%; height: 1px; transform: rotate(24deg); }
+    .line-two { top: 32%; right: 24%; width: 20%; height: 1px; transform: rotate(-24deg); }
+    .line-three { bottom: 32%; left: 24%; width: 20%; height: 1px; transform: rotate(-24deg); }
+    .line-four { right: 24%; bottom: 32%; width: 20%; height: 1px; transform: rotate(24deg); }
+
+    .moscow-grid {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: .9rem;
+    }
+
+    .moscow-column {
+      min-height: 390px;
+      padding: 1.2rem;
+      border-top: 3px solid var(--column-color);
+      background: linear-gradient(to bottom, color-mix(in srgb, var(--column-color) 10%, transparent), rgba(255,255,255,.025) 10rem);
+    }
+
+    .moscow-column h3 {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: .5rem;
+      margin: 0 0 1.3rem;
+      color: var(--column-color);
+      font-family: var(--mono);
+      font-size: .85rem;
+      letter-spacing: .1em;
+      text-transform: uppercase;
+    }
+
+    .moscow-column h3 span {
+      color: var(--dim);
+      font-size: .64rem;
+      font-weight: 400;
+    }
+
+    .moscow-column ul {
+      display: grid;
+      gap: .7rem;
+      margin: 0;
+      padding: 0;
+      list-style: none;
+    }
+
+    .moscow-column li {
+      padding: .7rem;
+      border: 1px solid var(--line);
+      color: var(--muted);
+      font-size: .88rem;
+    }
+
+    .moscow-column li::before {
+      display: block;
+      width: .35rem;
+      height: .35rem;
+      margin-bottom: .5rem;
+      border-radius: 50%;
+      background: var(--column-color);
+      content: "";
+    }
+
+    .must { --column-color: var(--coral); }
+    .should { --column-color: var(--apricot); }
+    .could { --column-color: var(--violet); }
+    .wont { --column-color: var(--dim); }
+
+    .scope-note {
+      display: flex;
+      align-items: center;
+      gap: 1rem;
+      margin-top: 1.3rem;
+      padding: 1rem 1.2rem;
+      border: 1px solid rgba(255,118,95,.3);
+      background: rgba(255,118,95,.07);
+      color: var(--muted);
+      font-size: .9rem;
+    }
+
+    .scope-note strong {
+      color: var(--coral);
+      font-family: var(--mono);
+      font-size: .68rem;
+      letter-spacing: .1em;
+      text-transform: uppercase;
+      white-space: nowrap;
+    }
+
+    .synthesis {
+      padding-top: clamp(6rem, 13vw, 12rem);
+      padding-bottom: clamp(6rem, 13vw, 12rem);
+      border-top-color: rgba(255,118,95,.38);
+      background:
+        radial-gradient(circle at 12% 12%, rgba(255,118,95,.13), transparent 25rem),
+        radial-gradient(circle at 92% 65%, rgba(117,224,210,.1), transparent 26rem);
+    }
+
+    .synthesis .section-head {
+      margin-bottom: 2.5rem;
+    }
+
+    .synthesis h2 {
+      max-width: 1000px;
+      font-size: clamp(3rem, 8vw, 8.5rem);
+    }
+
+    .synthesis-lede {
+      max-width: 45rem;
+      margin: 0 0 3rem;
+      color: var(--muted);
+      font-size: clamp(1.1rem, 2vw, 1.4rem);
+    }
+
+    .trust-strip {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 1px;
+      margin-bottom: 1rem;
+      border: 1px solid var(--line);
+      background: var(--line);
+    }
+
+    .trust-item {
+      min-height: 78px;
+      padding: .85rem 1rem;
+      background: rgba(16,19,27,.92);
+    }
+
+    .trust-item strong {
+      display: block;
+      margin-top: .35rem;
+      font-size: .86rem;
+      font-weight: 500;
+    }
+
+    .trust-item:last-child strong { color: var(--cyan); }
+
+    .synthesis-layout {
+      display: grid;
+      grid-template-columns: minmax(0, 1.2fr) minmax(270px, .8fr);
+      gap: 1rem;
+      align-items: start;
+    }
+
+    .demo-panel,
+    .transcript-panel {
+      border: 1px solid var(--line-strong);
+      background: rgba(19,23,33,.92);
+      box-shadow: var(--shadow);
+    }
+
+    .demo-panel {
+      padding: clamp(1.2rem, 3vw, 2.2rem);
+      transition: transform .3s ease;
+    }
+
+    .demo-panel:hover { transform: translateY(-3px); }
+
+    .demo-bar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 1rem;
+      margin-bottom: 1.8rem;
+    }
+
+    .demo-bar p {
+      margin: 0;
+      color: var(--dim);
+      font-family: var(--mono);
+      font-size: .67rem;
+      letter-spacing: .1em;
+      text-transform: uppercase;
+    }
+
+    .mode-button,
+    .end-button {
+      padding: .45rem .7rem;
+      color: var(--muted);
+      font-family: var(--mono);
+      font-size: .66rem;
+      letter-spacing: .06em;
+      text-transform: uppercase;
+    }
+
+    .mode-button:hover,
+    .end-button:hover {
+      border-color: var(--cyan);
+      color: var(--cyan);
+    }
+
+    .choice-object {
+      position: relative;
+      overflow: hidden;
+      padding: clamp(1.2rem, 3vw, 2rem);
+      border: 1px solid rgba(217,242,124,.46);
+      background:
+        radial-gradient(circle at 93% 0%, rgba(217,242,124,.12), transparent 14rem),
+        rgba(217,242,124,.035);
+    }
+
+    .choice-object::after {
+      position: absolute;
+      top: -5rem;
+      right: -4rem;
+      width: 13rem;
+      height: 13rem;
+      border: 1px solid rgba(217,242,124,.18);
+      border-radius: 50%;
+      content: "";
+      pointer-events: none;
+    }
+
+    .choice-meta {
+      position: relative;
+      z-index: 1;
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: space-between;
+      gap: .7rem;
+      margin-bottom: 2rem;
+    }
+
+    .choice-meta .surface-label { color: var(--lime); }
+
+    .audience {
+      color: var(--muted);
+      font-family: var(--mono);
+      font-size: .68rem;
+      letter-spacing: .07em;
+      text-transform: uppercase;
+    }
+
+    .choice-object h3 {
+      position: relative;
+      z-index: 1;
+      max-width: 32rem;
+      margin: 0;
+      font-size: clamp(2rem, 4vw, 3.7rem);
+      font-weight: 500;
+      letter-spacing: -.06em;
+      line-height: .98;
+    }
+
+    .choice-object > p {
+      position: relative;
+      z-index: 1;
+      max-width: 32rem;
+      margin: 1rem 0 2rem;
+      color: var(--muted);
+    }
+
+    .choice-options {
+      position: relative;
+      z-index: 1;
+      display: grid;
+      gap: .6rem;
+    }
+
+    .choice-option {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: .7rem;
+      align-items: center;
+      padding: .9rem;
+      border: 1px solid var(--line);
+      background: rgba(16,19,27,.58);
+      transition: border-color .2s ease, background .2s ease;
+    }
+
+    .choice-option.selected {
+      border-color: var(--lime);
+      background: rgba(217,242,124,.1);
+    }
+
+    .choice-option strong {
+      display: block;
+      font-size: .98rem;
+      font-weight: 600;
+    }
+
+    .choice-option small {
+      color: var(--dim);
+      font-family: var(--mono);
+      font-size: .65rem;
+      letter-spacing: .05em;
+      text-transform: uppercase;
+    }
+
+    .option-actions {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: end;
+      gap: .4rem;
+    }
+
+    .option-actions button {
+      border: 1px solid var(--line-strong);
+      border-radius: 999px;
+      padding: .4rem .6rem;
+      background: transparent;
+      cursor: pointer;
+      font-family: var(--mono);
+      font-size: .63rem;
+      letter-spacing: .04em;
+      text-transform: uppercase;
+    }
+
+    .option-actions .choose-action {
+      border-color: var(--lime);
+      color: var(--lime);
+    }
+
+    .option-actions .inspect-action {
+      color: var(--muted);
+    }
+
+    .option-actions button:hover {
+      background: rgba(255,255,255,.1);
+      color: var(--ink);
+    }
+
+    .event-result {
+      display: flex;
+      min-height: 3.4rem;
+      align-items: center;
+      gap: .75rem;
+      margin-top: 1rem;
+      padding: .75rem .9rem;
+      border: 1px solid var(--line);
+      color: var(--muted);
+      font-size: .82rem;
+    }
+
+    .event-result strong {
+      color: var(--cyan);
+      font-family: var(--mono);
+      font-size: .63rem;
+      letter-spacing: .08em;
+      text-transform: uppercase;
+      white-space: nowrap;
+    }
+
+    .transcript-panel {
+      min-height: 100%;
+      padding: 1.4rem;
+      transition: min-height .3s ease, opacity .3s ease;
+    }
+
+    .transcript-heading {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 1rem;
+      padding-bottom: .9rem;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .transcript-heading h3 {
+      margin: 0;
+      font-family: var(--mono);
+      font-size: .72rem;
+      font-weight: 400;
+      letter-spacing: .1em;
+      text-transform: uppercase;
+    }
+
+    .live-dot {
+      width: .5rem;
+      height: .5rem;
+      border-radius: 50%;
+      background: var(--cyan);
+      box-shadow: 0 0 0 .3rem rgba(117,224,210,.1);
+    }
+
+    .transcript {
+      display: grid;
+      gap: .9rem;
+      max-height: 450px;
+      margin: 1.1rem 0;
+      overflow: auto;
+    }
+
+    .transcript-line {
+      padding-left: .85rem;
+      border-left: 1px solid var(--line-strong);
+    }
+
+    .transcript-line .line-who {
+      display: block;
+      margin-bottom: .18rem;
+      color: var(--dim);
+      font-family: var(--mono);
+      font-size: .62rem;
+      letter-spacing: .08em;
+      text-transform: uppercase;
+    }
+
+    .transcript-line p {
+      margin: 0;
+      color: var(--muted);
+      font-size: .84rem;
+    }
+
+    .transcript-line.event {
+      border-left-color: var(--lime);
+    }
+
+    .transcript-line.event p {
+      color: var(--lime);
+      font-family: var(--mono);
+      font-size: .72rem;
+      line-height: 1.5;
+      overflow-wrap: anywhere;
+    }
+
+    .end-session {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 1rem;
+      margin-top: 1.2rem;
+      padding-top: 1rem;
+      border-top: 1px solid var(--line);
+    }
+
+    .end-session span {
+      color: var(--dim);
+      font-size: .77rem;
+    }
+
+    .session-ended .choice-object {
+      border-color: var(--line-strong);
+      opacity: .55;
+    }
+
+    .session-ended .end-button {
+      border-color: var(--coral);
+      color: var(--coral);
+    }
+
+    .synthesis.focus-conversation .demo-panel {
+      transform: translateX(0);
+    }
+
+    .synthesis.focus-conversation .transcript-panel {
+      order: -1;
+    }
+
+    .synthesis.focus-conversation .choice-object {
+      border-style: dashed;
+    }
+
+    .climax-note {
+      display: grid;
+      grid-template-columns: auto 1fr;
+      gap: 1rem;
+      align-items: center;
+      margin: 1.4rem 0 0;
+      color: var(--muted);
+      font-size: .9rem;
+    }
+
+    .climax-note-mark {
+      display: grid;
+      width: 2rem;
+      height: 2rem;
+      place-items: center;
+      border: 1px solid var(--coral);
+      border-radius: 50%;
+      color: var(--coral);
+      font-family: var(--mono);
+      font-size: .7rem;
+    }
+
+    footer.site-footer {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 1rem;
+      padding: 2rem 0 3rem;
+      color: var(--dim);
+      font-family: var(--mono);
+      font-size: .65rem;
+      letter-spacing: .07em;
+      text-transform: uppercase;
+    }
+
+    .site-footer strong { color: var(--coral); font-weight: 400; }
+
+    @media (max-width: 900px) {
+      .hero,
+      .job-grid,
+      .role-grid,
+      .scamper-layout,
+      .feature-layout,
+      .synthesis-layout {
+        grid-template-columns: 1fr;
+      }
+
+      .hero {
+        min-height: auto;
+        padding-top: 5rem;
+      }
+
+      .hero-visual { min-height: 420px; }
+      .job-statement,
+      .feature-quote,
+      .typed-object,
+      .role-stage,
+      .scamp-detail { min-height: 390px; }
+      .scamper-wheel { min-height: 520px; }
+      .moscow-grid { grid-template-columns: repeat(2, 1fr); }
+      .transcript-panel { order: 0; }
+      .synthesis.focus-conversation .transcript-panel { order: 0; }
+    }
+
+    @media (max-width: 650px) {
+      .wrap { width: min(100% - 1.4rem, 1220px); }
+      .topbar { padding: .75rem .7rem; }
+      .brand { font-size: .63rem; }
+      .nav a { font-size: .6rem; }
+      .hero h1 { font-size: clamp(3.5rem, 17vw, 6rem); }
+      .section-head { grid-template-columns: 1fr; gap: .8rem; }
+      .pipeline { grid-template-columns: 1fr 1fr; gap: .6rem; }
+      .pipeline-step { min-height: 140px; }
+      .pipeline-step:not(:last-child)::after,
+      .pipeline-step:not(:last-child)::before { display: none; }
+      .role-stage { min-height: 430px; }
+      .role-stage::before { width: 18rem; height: 18rem; }
+      .role-stage::after { width: 27rem; height: 27rem; }
+      .role-object { width: 7.5rem; height: 7.5rem; }
+      .role-orbit-label { font-size: .58rem; }
+      .role-a { top: 14%; left: 5%; }
+      .role-j { top: 13%; right: 4%; }
+      .role-c { bottom: 12%; left: 5%; }
+      .role-p { right: 3%; bottom: 12%; }
+      .scamper-wheel { min-height: 470px; }
+      .scamp-node { width: 5rem; font-size: .58rem; }
+      .scamp-center { width: 6.8rem; height: 6.8rem; font-size: .58rem; }
+      .scamp-substitute { top: 10%; }
+      .scamp-combine { top: 24%; right: 1%; }
+      .scamp-adapt { right: 1%; bottom: 24%; }
+      .scamp-modify { bottom: 10%; }
+      .scamp-repurpose { bottom: 24%; left: 1%; }
+      .scamp-eliminate { top: 24%; left: 1%; }
+      .scamp-reverse { top: 47%; right: -1%; }
+      .surface-strip,
+      .moscow-grid,
+      .trust-strip { grid-template-columns: 1fr; }
+      .moscow-column { min-height: auto; }
+      .affinity-map {
+        display: flex;
+        min-height: 0;
+        flex-direction: column;
+      }
+      .affinity-map::before,
+      .affinity-map::after,
+      .cluster-line { display: none; }
+      .cluster { min-height: 135px; }
+      .cluster-core { order: -1; text-align: left; }
+      .choice-option { grid-template-columns: 1fr; }
+      .option-actions { justify-content: start; }
+      .demo-bar,
+      .end-session,
+      footer.site-footer { align-items: flex-start; flex-direction: column; }
+      .climax-note { align-items: start; }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      html { scroll-behavior: auto; }
+      *,
+      *::before,
+      *::after {
+        animation-duration: .01ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: .01ms !important;
+        scroll-behavior: auto !important;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="progress-rail" aria-hidden="true"><span class="progress-bar" id="progressBar"></span></div>
+
+  <header class="topbar">
+    <a class="brand" href="#top" aria-label="From Answer to Instrument home">
+      <span class="brand-mark">↗</span>
+      <span>shared display / product direction</span>
+    </a>
+    <nav class="nav" aria-label="Technique navigation">
+      <a href="#job">job</a>
+      <a href="#roles">roles</a>
+      <a href="#scamper">scamper</a>
+      <a href="#feature">one feature</a>
+      <a href="#clusters">clusters</a>
+      <a href="#scope">scope</a>
+      <a href="#synthesis">synthesis</a>
+    </nav>
+  </header>
+
+  <main id="top">
+    <section class="hero wrap">
+      <div class="hero-copy-block">
+        <div class="eyebrow">A keepsake of one product-direction session</div>
+        <h1>From answer<span>to instrument.</span></h1>
+        <p class="hero-copy">A conversation began with a household display, a web/iPad surface, and a TUI. It ended with something more interesting: a way for humans and Hermes to work on shared, evolving representations.</p>
+        <div class="hero-meta" aria-label="Session themes">
+          <span class="meta-chip">conversation</span>
+          <span class="meta-chip">artifact</span>
+          <span class="meta-chip">structured choice</span>
+        </div>
+        <div class="scroll-note">six lenses / one direction</div>
+      </div>
+      <div class="hero-visual" aria-label="A diagram showing conversation becoming an artifact, a surface, and a structured event">
+        <div class="orbit-plate">
+          <div class="orbit"></div>
+          <div class="orbit"></div>
+          <div class="orbit"></div>
+          <span class="orbit-dot dot-a"></span>
+          <span class="orbit-dot dot-b"></span>
+          <span class="orbit-dot dot-c"></span>
+          <div class="core-sigil">shared<br>evolving<br>representation</div>
+          <span class="orbit-label label-conversation">conversation</span>
+          <span class="orbit-label label-artifact">focused artifact</span>
+          <span class="orbit-label label-surface">native surface</span>
+          <span class="orbit-label label-event">structured event</span>
+        </div>
+      </div>
+    </section>
+
+    <section class="section lens" id="job">
+      <div class="wrap">
+        <div class="section-head">
+          <div class="section-number">01 / Job to Be Done</div>
+          <div>
+            <h2>Find the job beneath the back-and-forth.</h2>
+            <p class="section-intro">The product is not chiefly a chatbot. The job is to externalize a situation into an operable interface, with conversation as one input channel rather than the whole product.</p>
+          </div>
+        </div>
+        <div class="job-grid">
+          <article class="panel job-statement">
+            <div>
+              <div class="micro-label">underlying household job</div>
+              <h3>Make the situation <em>something we can work on together.</em></h3>
+            </div>
+            <div class="job-footer">
+              <span>prose explains / objects invite action</span>
+              <span class="job-mark" aria-hidden="true">↗</span>
+            </div>
+          </article>
+          <article class="panel pipeline-panel">
+            <div class="pipeline-top">
+              <p>A response can carry a choice. A surface can render it. A manipulation can return as input.</p>
+              <span class="not-chat">not just chat</span>
+            </div>
+            <div class="pipeline" aria-label="The product transformation">
+              <div class="pipeline-step">
+                <span class="step-index">01</span>
+                <strong>Conversation</strong>
+                <span>prose explains the situation</span>
+              </div>
+              <div class="pipeline-step">
+                <span class="step-index">02</span>
+                <strong>Choice object</strong>
+                <span>typed, inspectable, ranked</span>
+              </div>
+              <div class="pipeline-step">
+                <span class="step-index">03</span>
+                <strong>Manipulation</strong>
+                <span>native to the surface</span>
+              </div>
+              <div class="pipeline-step">
+                <span class="step-index">04</span>
+                <strong>Structured input</strong>
+                <span>the chosen action returns</span>
+              </div>
+            </div>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <section class="section lens" id="roles">
+      <div class="wrap">
+        <div class="section-head">
+          <div class="section-number">02 / Role Playing</div>
+          <div>
+            <h2>Shared visibility is not the same thing as authority.</h2>
+            <p class="section-intro">A household surface has more than one audience. The object can be transparent to the room while the consequence of committing remains explicit.</p>
+          </div>
+        </div>
+        <div class="role-grid">
+          <div class="panel role-stage" aria-label="People orbiting a shared decision object">
+            <div class="role-object">decision<br>object</div>
+            <button class="role-orbit-label role-a active" data-role="amanda">addressed to Amanda</button>
+            <button class="role-orbit-label role-j" data-role="jensen">Jensen can inspect</button>
+            <button class="role-orbit-label role-c" data-role="child">child can explore</button>
+            <button class="role-orbit-label role-p" data-role="commit">commit has a boundary</button>
+          </div>
+          <article class="panel role-panel">
+            <div>
+              <div class="micro-label">the household rule</div>
+              <h3 id="roleTitle">The object is for Amanda.</h3>
+              <p id="roleDescription">That does not make the shared display private. Jensen may inspect it, and the room can understand what is being considered.</p>
+              <div class="role-tabs" role="tablist" aria-label="Role-play perspectives">
+                <button class="role-tab active" data-role-tab="amanda" role="tab" aria-selected="true">Amanda</button>
+                <button class="role-tab" data-role-tab="jensen" role="tab" aria-selected="false">Jensen</button>
+                <button class="role-tab" data-role-tab="child" role="tab" aria-selected="false">child</button>
+                <button class="role-tab" data-role-tab="commit" role="tab" aria-selected="false">commit</button>
+              </div>
+              <div class="role-readout" id="roleReadout">
+                <strong>Shared display: permissive by default.</strong>
+                <span>Actor identity may be recorded when known, but ordinary actions on the shared surface do not wait for it.</span>
+              </div>
+            </div>
+            <div class="rule-line">soft exploration / hard commitment</div>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <section class="section lens" id="scamper">
+      <div class="wrap">
+        <div class="section-head">
+          <div class="section-number">03 / SCAMPER Method</div>
+          <div>
+            <h2>Mutate the idea until its shape tells the truth.</h2>
+            <p class="section-intro">The decision object survives seven mutations. Each lens removes a little generic chat and adds a little more native, inspectable action.</p>
+          </div>
+        </div>
+        <div class="scamper-layout">
+          <div class="panel scamper-wheel" aria-label="SCAMPER wheel">
+            <div class="scamp-center">mutate<br>the object</div>
+            <button class="scamp-node scamp-substitute active" data-scamp="substitute">substitute</button>
+            <button class="scamp-node scamp-combine" data-scamp="combine">combine</button>
+            <button class="scamp-node scamp-adapt" data-scamp="adapt">adapt</button>
+            <button class="scamp-node scamp-modify" data-scamp="modify">modify</button>
+            <button class="scamp-node scamp-repurpose" data-scamp="repurpose">repurpose</button>
+            <button class="scamp-node scamp-eliminate" data-scamp="eliminate">eliminate</button>
+            <button class="scamp-node scamp-reverse" data-scamp="reverse">reverse</button>
+          </div>
+          <article class="panel scamp-detail">
+            <div>
+              <div class="micro-label">selected mutation</div>
+              <h3 id="scampTitle">Substitute.</h3>
+              <p id="scampDescription">Replace yes/no language with a native control. The simplest valuable interaction is a response containing multiple options where the user chooses one through the UI.</p>
+            </div>
+            <div>
+              <div class="mutation-track" aria-label="SCAMPER sequence">
+                <span>replace</span>
+                <span>bind</span>
+                <span>translate</span>
+                <span>rank</span>
+                <span>surface</span>
+                <span>remove</span>
+                <span>invert</span>
+              </div>
+              <p class="section-intro">The semantic interaction vocabulary is the point: Hermes declares the decision type; each surface renders a native manipulation.</p>
+            </div>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <section class="section lens" id="feature">
+      <div class="wrap">
+        <div class="section-head">
+          <div class="section-number">04 / One Feature Only</div>
+          <div>
+            <h2>Make one capability exceptionally good.</h2>
+            <p class="section-intro">The first release does not need to be an arbitrary interface. It needs one clear proof that an agent can make a response manipulable.</p>
+          </div>
+        </div>
+        <div class="feature-layout">
+          <article class="panel feature-quote">
+            <blockquote>Turn a Hermes response into a <em>typed manipulable object</em> whose manipulation becomes structured input.</blockquote>
+            <footer>one feature / three native surfaces / one shared intent</footer>
+          </article>
+          <article class="panel typed-object">
+            <div class="object-heading">
+              <span class="object-type">object / interactive choice</span>
+              <span class="object-pulse" aria-hidden="true"></span>
+            </div>
+            <div class="object-body">
+              <h3>Every option can be chosen or explored.</h3>
+              <p>Hermes may emphasize the option that likely needs depth. It cannot hide exploration behind language.</p>
+            </div>
+            <div class="object-fields">
+              <div class="object-field"><span class="data-label">exposes</span><strong>outcome</strong></div>
+              <div class="object-field"><span class="data-label">exposes</span><strong>trade-offs</strong></div>
+              <div class="object-field"><span class="data-label">exposes</span><strong>assumptions</strong></div>
+              <div class="object-field"><span class="data-label">exposes</span><strong>changing factors</strong></div>
+            </div>
+          </article>
+        </div>
+        <div class="surface-strip" aria-label="Native expressions across surfaces">
+          <article class="surface-card">
+            <span class="surface-label">household display</span>
+            <strong>tap / press-and-hold</strong>
+            <p>Choose is primary. Hold an option to ask for more detail.</p>
+          </article>
+          <article class="surface-card">
+            <span class="surface-label">web / iPad</span>
+            <strong>native selection</strong>
+            <p>The same choice and exploration intent, expressed by the surface.</p>
+          </article>
+          <article class="surface-card">
+            <span class="surface-label">TUI</span>
+            <strong>Enter / right arrow</strong>
+            <p>Enter performs the primary choice; the right arrow explores.</p>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <section class="section lens" id="clusters">
+      <div class="wrap">
+        <div class="section-head">
+          <div class="section-number">05 / Affinity Clustering</div>
+          <div>
+            <h2>The core has a small constellation around it.</h2>
+            <p class="section-intro">The accepted working shape is not a pile of features. It is one core idea supported by artifact collaboration, explicit context, household safety, and native surface expression.</p>
+          </div>
+        </div>
+        <div class="panel affinity-map" aria-label="Affinity clusters around the product core">
+          <span class="cluster-line line-one"></span>
+          <span class="cluster-line line-two"></span>
+          <span class="cluster-line line-three"></span>
+          <span class="cluster-line line-four"></span>
+          <article class="cluster cluster-semantics">
+            <div>
+              <div class="micro-label">cluster 01</div>
+              <h3>Interactive agent semantics</h3>
+            </div>
+            <p>Typed objects, operations, and choices are the common medium.</p>
+          </article>
+          <article class="cluster cluster-artifact">
+            <div>
+              <div class="micro-label">cluster 02</div>
+              <h3>Artifact collaboration</h3>
+            </div>
+            <p>A focused artifact can be explained, transformed, diffed, and explicitly applied.</p>
+          </article>
+          <article class="cluster cluster-context">
+            <div>
+              <div class="micro-label">cluster 03</div>
+              <h3>Session / context</h3>
+            </div>
+            <p>The session trail persists; artifact focus is a deliberate lens.</p>
+          </article>
+          <article class="cluster cluster-household">
+            <div>
+              <div class="micro-label">cluster 04</div>
+              <h3>Household participation &amp; safety</h3>
+            </div>
+            <p>Visibility is shared. Consequence-bearing commitment gets a boundary.</p>
+          </article>
+          <article class="cluster cluster-core">
+            <div class="micro-label">the product core</div>
+            <h3>AI collaboration tool</h3>
+            <p>Humans and Hermes work on shared, evolving representations.</p>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <section class="section lens" id="scope">
+      <div class="wrap">
+        <div class="section-head">
+          <div class="section-number">06 / MoSCoW</div>
+          <div>
+            <h2>Protect the proving slice.</h2>
+            <p class="section-intro">The larger direction stays alive. The first release earns its way forward by making typed choices and structured selection work across the three surfaces.</p>
+          </div>
+        </div>
+        <div class="moscow-grid">
+          <article class="moscow-column must">
+            <h3>Must <span>prove now</span></h3>
+            <ul>
+              <li>Hermes emits an interactive choice object.</li>
+              <li>Display, web/iPad, and TUI render native selection and exploration actions.</li>
+              <li>The chosen action returns as structured input.</li>
+              <li>The action remains visible in the session transcript.</li>
+            </ul>
+          </article>
+          <article class="moscow-column should">
+            <h3>Should <span>follow</span></h3>
+            <ul>
+              <li>Deeper exploration of a decision object.</li>
+              <li>Calendar controls for dates.</li>
+              <li>Vault Markdown as a readable, discussable artifact.</li>
+              <li>Richer editing with visible diffs and explicit Apply.</li>
+            </ul>
+          </article>
+          <article class="moscow-column could">
+            <h3>Could <span>stay alive</span></h3>
+            <ul>
+              <li>A persistent trust strip for session, artifact, and Hermes state.</li>
+              <li>Reversible conversation-focus and artifact-focus modes.</li>
+              <li>An anchored artifact reference when conversation takes focus.</li>
+            </ul>
+          </article>
+          <article class="moscow-column wont">
+            <h3>Won’t <span>in first slice</span></h3>
+            <ul>
+              <li>Arbitrary UI.</li>
+              <li>Unreviewed autonomous changes.</li>
+              <li>A generic card for every semantic interaction.</li>
+            </ul>
+          </article>
+        </div>
+        <div class="scope-note"><strong>scope decision</strong><span>Start with the shared decision primitive. Let the richer artifact collaboration direction follow evidence.</span></div>
+      </div>
+    </section>
+
+    <section class="section synthesis lens" id="synthesis">
+      <div class="wrap">
+        <div class="section-head">
+          <div class="section-number">Synthesis / chosen direction</div>
+          <div>
+            <h2>The answer becomes a place to stand.</h2>
+          </div>
+        </div>
+        <p class="synthesis-lede">A session contains a conversational trail plus a focused artifact. Hermes can explain, offer controls, accept direct manipulation, and propose changes. The surface stays native. Consent stays visible.</p>
+
+        <div class="trust-strip" aria-label="Persistent trust state">
+          <div class="trust-item"><span class="trust-label">session</span><strong id="trustSession">active / trail visible</strong></div>
+          <div class="trust-item"><span class="trust-label">context</span><strong id="trustContext">session as a whole</strong></div>
+          <div class="trust-item"><span class="trust-label">artifact</span><strong id="trustArtifact">decision object / focused</strong></div>
+          <div class="trust-item"><span class="trust-label">Hermes</span><strong id="trustHermes">explaining</strong></div>
+        </div>
+
+        <div class="synthesis-layout" id="synthesisLayout">
+          <article class="demo-panel">
+            <div class="demo-bar">
+              <p>live proving slice / one interactive choice</p>
+              <button class="mode-button" id="modeButton" type="button">focus: artifact</button>
+            </div>
+            <div class="choice-object">
+              <div class="choice-meta">
+                <span class="surface-label">typed choice / decision object</span>
+                <span class="audience">for Amanda / visible to household</span>
+              </div>
+              <h3>What should Hermes make manipulable next?</h3>
+              <p>Choose one action through the surface. Or inspect the object more deeply. The interaction returns as structured input and stays in the trail.</p>
+              <div class="choice-options" aria-label="Interactive choices">
+                <div class="choice-option" data-option="recommendation">
+                  <div><strong>Choose the recommendation</strong><small>primary choice</small></div>
+                  <div class="option-actions">
+                    <button class="choose-action" type="button">choose</button>
+                    <button class="inspect-action" type="button">more detail</button>
+                  </div>
+                </div>
+                <div class="choice-option" data-option="trade-offs">
+                  <div><strong>Explore the trade-offs</strong><small>deepen the object</small></div>
+                  <div class="option-actions">
+                    <button class="choose-action" type="button">choose</button>
+                    <button class="inspect-action" type="button">more detail</button>
+                  </div>
+                </div>
+                <div class="choice-option" data-option="assumptions">
+                  <div><strong>Inspect the assumptions</strong><small>deepen the object</small></div>
+                  <div class="option-actions">
+                    <button class="choose-action" type="button">choose</button>
+                    <button class="inspect-action" type="button">more detail</button>
+                  </div>
+                </div>
+              </div>
+              <div class="event-result" id="eventResult" aria-live="polite">
+                <strong>waiting</strong>
+                <span>Select or explore an option to return a structured event.</span>
+              </div>
+            </div>
+          </article>
+
+          <aside class="transcript-panel" aria-label="Session transcript">
+            <div class="transcript-heading">
+              <h3>session trail</h3>
+              <span class="live-dot" aria-label="Live"></span>
+            </div>
+            <div class="transcript" id="transcript">
+              <div class="transcript-line">
+                <span class="line-who">Hermes / explaining</span>
+                <p>Here is a decision object. Its options expose outcomes, trade-offs, assumptions, and recommendation-changing factors.</p>
+              </div>
+              <div class="transcript-line">
+                <span class="line-who">surface / ready</span>
+                <p>Choose is primary. Every option remains inspectable.</p>
+              </div>
+            </div>
+            <div class="end-session">
+              <span id="sessionHint">The transcript remains accessible while the artifact takes focus.</span>
+              <button class="end-button" id="endButton" type="button">end session</button>
+            </div>
+          </aside>
+        </div>
+
+        <div class="climax-note">
+          <span class="climax-note-mark">↗</span>
+          <span>This is the first proving slice: one shared interaction semantic, three native expressions, and a visible return path from manipulation to conversation.</span>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="site-footer wrap">
+    <span><strong>session preserved</strong> / 10 September 2026</span>
+    <span>conversation → artifact → action</span>
+  </footer>
+
+  <script>
+    (function () {
+      var body = document.body;
+      var progressBar = document.getElementById('progressBar');
+      var lenses = document.querySelectorAll('.lens');
+      var navLinks = document.querySelectorAll('.nav a');
+
+      function updateProgress() {
+        var scrollable = document.documentElement.scrollHeight - window.innerHeight;
+        var percent = scrollable > 0 ? (window.scrollY / scrollable) * 100 : 0;
+        progressBar.style.width = Math.min(100, Math.max(0, percent)) + '%';
+      }
+
+      window.addEventListener('scroll', updateProgress, { passive: true });
+      updateProgress();
+
+      if ('IntersectionObserver' in window) {
+        var observer = new IntersectionObserver(function (entries) {
+          entries.forEach(function (entry) {
+            if (entry.isIntersecting) entry.target.classList.add('in-view');
+          });
+        }, { threshold: .12 });
+        lenses.forEach(function (lens) { observer.observe(lens); });
+      } else {
+        lenses.forEach(function (lens) { lens.classList.add('in-view'); });
+      }
+
+      var sectionObserver = 'IntersectionObserver' in window
+        ? new IntersectionObserver(function (entries) {
+            entries.forEach(function (entry) {
+              if (entry.isIntersecting) {
+                navLinks.forEach(function (link) {
+                  link.classList.toggle('active', link.getAttribute('href') === '#' + entry.target.id);
+                });
+              }
+            });
+          }, { rootMargin: '-35% 0px -55% 0px', threshold: 0 })
+        : null;
+      if (sectionObserver) {
+        document.querySelectorAll('.section[id]').forEach(function (section) { sectionObserver.observe(section); });
+      }
+
+      var roleData = {
+        amanda: {
+          title: 'The object is for Amanda.',
+          description: 'That does not make the shared display private. Jensen may inspect it, and the room can understand what is being considered.',
+          readout: '<strong>Shared display: permissive by default.</strong><span>Actor identity may be recorded when known, but ordinary actions on the shared surface do not wait for it.</span>'
+        },
+        jensen: {
+          title: 'Jensen can inspect it.',
+          description: 'The object is addressed to one person, but the household surface makes the situation legible to more than one person.',
+          readout: '<strong>Visibility travels farther than ownership.</strong><span>Shared visibility and action authority are distinct states; inspection does not need a private conversation.</span>'
+        },
+        child: {
+          title: 'A child can explore it.',
+          description: 'The surface should support safe manipulation without turning every touch into an adult consequence.',
+          readout: '<strong>Soft exploration.</strong><span>Let children inspect and manipulate safely. Consequence-bearing actions wait for the household boundary.</span>'
+        },
+        commit: {
+          title: 'Commit has a boundary.',
+          description: 'Household policy sets the minimum protection. Hermes may add confirmation based on consequence, but must not silently weaken that floor.',
+          readout: '<strong>Hard commitment.</strong><span>Some actions require confirmation or a household passcode. The visible object is not permission to mutate the source.</span>'
+        }
+      };
+
+      function selectRole(role) {
+        var data = roleData[role];
+        if (!data) return;
+        document.getElementById('roleTitle').textContent = data.title;
+        document.getElementById('roleDescription').textContent = data.description;
+        document.getElementById('roleReadout').innerHTML = data.readout;
+        document.querySelectorAll('[data-role], [data-role-tab]').forEach(function (item) {
+          var itemRole = item.getAttribute('data-role') || item.getAttribute('data-role-tab');
+          item.classList.toggle('active', itemRole === role);
+          if (item.hasAttribute('aria-selected')) item.setAttribute('aria-selected', itemRole === role ? 'true' : 'false');
+        });
+      }
+
+      document.querySelectorAll('[data-role]').forEach(function (button) {
+        button.addEventListener('click', function () { selectRole(button.getAttribute('data-role')); });
+      });
+      document.querySelectorAll('[data-role-tab]').forEach(function (button) {
+        button.addEventListener('click', function () { selectRole(button.getAttribute('data-role-tab')); });
+      });
+
+      var scamperData = {
+        substitute: {
+          title: 'Substitute.',
+          description: 'Replace yes/no language with a native control. The simplest valuable interaction is a response containing multiple options where the user chooses one through the UI.'
+        },
+        combine: {
+          title: 'Combine.',
+          description: 'Bind conversation to a focused, transformable artifact. The session keeps its trail while the artifact gives the conversation somewhere specific to work.'
+        },
+        adapt: {
+          title: 'Adapt.',
+          description: 'Give each semantic type its native manipulation. Picking a date should be a calendar control, not a generic option card.'
+        },
+        modify: {
+          title: 'Modify.',
+          description: 'Make every option inspectable while allowing Hermes to emphasize the affordance that likely needs exploration. Recommendation becomes a decision object.'
+        },
+        repurpose: {
+          title: 'Repurpose.',
+          description: 'Turn vault Markdown into live UI objects. Checklists, dates, links, headings, and selected blocks become readable, discussable, and operable.'
+        },
+        eliminate: {
+          title: 'Eliminate.',
+          description: 'Keep arbitrary UI and unreviewed autonomous changes out. Mutations to source artifacts appear as visible diffs and require explicit Apply.'
+        },
+        reverse: {
+          title: 'Reverse.',
+          description: 'Let the user choose the context lens. An artifact becomes the subject through deliberate focus or attachment; a visible artifact never hijacks an unqualified turn.'
+        }
+      };
+
+      document.querySelectorAll('[data-scamp]').forEach(function (button) {
+        button.addEventListener('click', function () {
+          var key = button.getAttribute('data-scamp');
+          var data = scamperData[key];
+          if (!data) return;
+          document.getElementById('scampTitle').textContent = data.title;
+          document.getElementById('scampDescription').textContent = data.description;
+          document.querySelectorAll('[data-scamp]').forEach(function (node) {
+            node.classList.toggle('active', node.getAttribute('data-scamp') === key);
+          });
+        });
+      });
+
+      var synthesis = document.getElementById('synthesis');
+      var modeButton = document.getElementById('modeButton');
+      var trustContext = document.getElementById('trustContext');
+      var sessionHint = document.getElementById('sessionHint');
+
+      modeButton.addEventListener('click', function () {
+        var conversation = synthesis.classList.toggle('focus-conversation');
+        modeButton.textContent = conversation ? 'focus: conversation' : 'focus: artifact';
+        trustContext.textContent = conversation ? 'conversation / artifact anchored' : 'session as a whole';
+        sessionHint.textContent = conversation
+          ? 'Conversation focus reveals the trail; the artifact remains anchored.'
+          : 'The transcript remains accessible while the artifact takes focus.';
+      });
+
+      var transcript = document.getElementById('transcript');
+      var eventResult = document.getElementById('eventResult');
+      var trustHermes = document.getElementById('trustHermes');
+      var eventCount = 0;
+
+      function optionLabel(option) {
+        return option === 'recommendation' ? 'recommendation'
+          : option === 'trade-offs' ? 'trade-offs'
+          : 'assumptions';
+      }
+
+      function logEvent(action, option) {
+        var label = optionLabel(option);
+        eventCount += 1;
+        document.querySelectorAll('.choice-option').forEach(function (item) {
+          item.classList.toggle('selected', item.getAttribute('data-option') === option);
+        });
+        trustHermes.textContent = action === 'choose' ? 'selection received' : 'exploring ' + label;
+        eventResult.innerHTML = '<strong>structured event</strong><span>' + action + ' / ' + label + ' / visible in trail</span>';
+        var line = document.createElement('div');
+        line.className = 'transcript-line event';
+        var who = document.createElement('span');
+        who.className = 'line-who';
+        who.textContent = 'surface / event ' + String(eventCount).padStart(2, '0');
+        var message = document.createElement('p');
+        message.textContent = '{ object: "decision", action: "' + action + '", option: "' + label + '" }';
+        line.appendChild(who);
+        line.appendChild(message);
+        transcript.appendChild(line);
+        transcript.scrollTop = transcript.scrollHeight;
+      }
+
+      document.querySelectorAll('.choice-option').forEach(function (option) {
+        var optionKey = option.getAttribute('data-option');
+        option.querySelector('.choose-action').addEventListener('click', function () {
+          logEvent('choose', optionKey);
+        });
+        option.querySelector('.inspect-action').addEventListener('click', function () {
+          logEvent('explore', optionKey);
+        });
+      });
+
+      document.getElementById('endButton').addEventListener('click', function () {
+        var ended = body.classList.toggle('session-ended');
+        var endButton = document.getElementById('endButton');
+        var trustSession = document.getElementById('trustSession');
+        if (ended) {
+          trustSession.textContent = 'ended / trail preserved';
+          trustHermes.textContent = 'session ended';
+          eventResult.innerHTML = '<strong>session</strong><span>ended / the visible trail remains preserved</span>';
+          endButton.textContent = 'session ended';
+          document.querySelectorAll('.choice-option button').forEach(function (button) { button.disabled = true; });
+        } else {
+          trustSession.textContent = 'active / trail visible';
+          trustHermes.textContent = 'explaining';
+          eventResult.innerHTML = '<strong>waiting</strong><span>Select or explore an option to return a structured event.</span>';
+          endButton.textContent = 'end session';
+          document.querySelectorAll('.choice-option button').forEach(function (button) { button.disabled = false; });
+        }
+      });
+    }());
+  </script>
+</body>
+</html>

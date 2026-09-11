@@ -67,11 +67,28 @@ dependency.
 - Later room-context epics consume Epic 1’s normalized events and recovery semantics; they must not create alternate protocol paths. A passive Display may mirror an active touch doorway, but must not create a second Session.
 - Physical-device credentials, provisioning, revocation, and wake arbitration belong to the separate device-administration work. This epic consumes an authorized configuration and does not invent that system.
 
-## Next local slice selection — 2026-09-10
+## Next local slice selection — superseded 2026-09-10 22:40
 
-The next local TUI action is the review gate for T-2, represented by the
+> **STALE — do not act on the paragraph below.** It named the T-2 review gate
+> as the next action and warned against opening a second slice. That gate
+> resolved the same day in #134 ("fix: resolve Story 1.2 review findings"),
+> which landed *after* this note was written and moved
+> `1-2-render-honest-turn-phases-and-response-delivery` to `done` with zero
+> unresolved findings. Reading this note later cost real confusion about
+> whether two slices were open in parallel; `sprint-status.yaml` is the
+> authority, not this paragraph.
+>
+> **Current single active slice:** `1-p-2-status-and-response-audio-delivery`
+> (Puck status and response audio), `in-progress`. Tasks 1-2 are implemented
+> and hardware-verified; tasks 3-7 remain. The epic prefix matters — a `2-p-2`
+> and `3-p-2` also exist, so a bare "P-2" is ambiguous.
+
+~~The next local TUI action is the review gate for T-2, represented by the
 numeric local alias `1-2-render-honest-turn-phases-and-response-delivery`.
 It is the first existing in-review slice, has focused and full-suite evidence
 recorded, and closes the phase/response-delivery contract consumed by T-3 and
 T-4. Keep its tracker status at `review` until the fresh code-review gate
-resolves; do not open a second local implementation slice in parallel.
+resolves; do not open a second local implementation slice in parallel.~~
+
+The one-story-per-slice rule itself still stands and is deliberate: keep
+exactly one implementation slice active at a time.

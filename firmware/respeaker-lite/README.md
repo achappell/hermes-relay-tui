@@ -106,17 +106,55 @@ Compile:
 venv-firmware/bin/esphome compile firmware/respeaker-lite/respeaker-lite.yaml
 ```
 
-Flash (device confirmed as the reSpeaker Lite at this port):
+Flash **over the network (preferred)** once the device has WiFi:
 
 ```bash
-venv-firmware/bin/esphome upload firmware/respeaker-lite/respeaker-lite.yaml --device /dev/cu.usbmodem101
+venv-firmware/bin/esphome upload firmware/respeaker-lite/respeaker-lite.yaml --device respeaker-lite.local
+venv-firmware/bin/esphome logs   firmware/respeaker-lite/respeaker-lite.yaml --device respeaker-lite.local
 ```
 
-Watch logs over the same serial port to confirm boot/WiFi status:
+OTA needs no USB cable and, importantly, is immune to the stale-firmware
+hazard described below: it uploads `respeaker-lite.bin` directly rather
+than the separately-generated `firmware.factory.bin`.
+
+> **A failed `ping` does not mean the device is down.** These ESP32s do not
+> answer ICMP, so ping fails even while the device is happily serving OTA,
+> logs, and its web UI. Check with
+> `dns-sd -t 3 -G v4 respeaker-lite.local` or just attempt the upload.
+
+Flash over serial (first flash, or when WiFi is broken). Confirm the real
+port first — it varies by cable/port, e.g. `/dev/cu.usbmodem1101`:
 
 ```bash
-venv-firmware/bin/esphome logs firmware/respeaker-lite/respeaker-lite.yaml --device /dev/cu.usbmodem101
+ls /dev/cu.usbmodem*
+venv-firmware/bin/esphome upload firmware/respeaker-lite/respeaker-lite.yaml --device /dev/cu.usbmodem1101
+venv-firmware/bin/esphome logs   firmware/respeaker-lite/respeaker-lite.yaml --device /dev/cu.usbmodem1101
 ```
+
+> **⚠️ Serial flashing can silently flash STALE firmware.** `esphome compile`
+> can emit a transient `ERROR Failed to create factory.bin` while still
+> reporting `INFO Successfully compiled program`. `esphome upload --device
+> <serial>` then flashes whatever `firmware.factory.bin` is left over from
+> an earlier build — and still prints `Successfully uploaded program`.
+> Observed 2026-09-10: an entire test round measured hour-old firmware and
+> produced a confident, completely wrong conclusion. Before trusting a
+> serial flash, check the file is newer than your build:
+>
+> ```bash
+> ls -lT .esphome/build/respeaker-lite/build/firmware.factory.bin
+> ```
+>
+> The byte count `esphome upload` reports writing should also match that
+> file's size. Prefer OTA, which sidesteps this entirely.
+
+### Controlling the speaker
+
+Volume and playback are reachable from any browser on the LAN at
+`http://respeaker-lite.local` (the web UI is embedded in flash via
+`local: true`, so it works without internet access). `volume_max` is
+capped at 0.80 in `respeaker-lite.yaml`. The board's **user button
+(GPIO3) stops playback immediately** — the control to reach for when
+audio is too loud and a browser is not already open.
 
 ---
 
@@ -441,7 +479,7 @@ cannot regress either existing front end:
   happened) against a real `session.py:SessionProtocol`, and plays the
   response on **this host machine's own speakers** via `audio.PCMPlayer`
   (no Puck-side response playback yet — tracked separately, see the
-  friction log's 2026-09-09 entry, candidate `PUCK-01.7`).
+  friction log's 2026-09-09 entry, candidate `P-2`).
 - `puck_bridge/server.py` — wires the two together, resolving the Hermes
   session's connection settings through this project's existing
   `config.py` relay-profile machinery (same profiles the TUI and household

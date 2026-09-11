@@ -473,3 +473,28 @@ def test_build_session_args_suffixes_the_profile_s_own_session_id(monkeypatch):
 def test_build_session_args_honors_an_explicit_session_id_flag():
     args = build_session_args(["--session-id", "custom-id"])
     assert args.session_id == "custom-id"
+
+# --- 1-p-1 task 6: no fallback ---------------------------------------------
+
+
+def test_build_session_args_never_substitutes_another_profile(monkeypatch):
+    """An unusable or unexpected configuration must stay itself or fail --
+    it must never quietly resolve to a *different* profile's identity.
+    Epic 1: unapproved/unavailable identity fails closed and "must not
+    select a fallback"."""
+    from puck_bridge import server
+
+    class _Parsed:
+        session_id = "guest-kiosk"
+        profile_name = "guest"
+
+    class _Parser:
+        def parse_args(self, argv):
+            return _Parsed()
+
+    monkeypatch.setattr(server.config, "build_arg_parser", lambda argv: _Parser())
+    args = server.build_session_args([])
+    assert args.session_id == "guest-kiosk-puck-bridge"
+    # The resolved identity is derived from the configured profile alone;
+    # no other profile's name may leak in as a substitute.
+    assert "amanda" not in args.session_id
