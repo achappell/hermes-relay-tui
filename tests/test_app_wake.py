@@ -705,7 +705,84 @@ async def test_protocol_error_wake_turn_does_not_open_a_follow_up_window():
         assert session.capture_calls == 1
         assert session.sent_turns == [("what is the weather", "local")]
         assert app.wake_armed is True
+        assert app.voice_state == app_module.VOICE_ERROR
+        assert app.domain.state.turn_active is False
+        assert app.domain.state.phase.value == "error"
         assert "wake response failed" in transcript_text(app)
+
+
+async def test_interrupted_wake_turn_does_not_open_a_follow_up_window():
+    class InterruptedWakeSession(FakeSession):
+        def send_turn(self, text, *, stt_source="local"):
+            self.sent_turns.append((text, stt_source))
+
+            async def stream():
+                yield {"type": "text_delta", "text": "partial answer"}
+                yield {
+                    "type": "audio_abort",
+                    "turn_id": "turn-1",
+                    "session_id": "s1",
+                    "error": "client interrupt",
+                }
+                yield {
+                    "type": "turn_interrupted",
+                    "turn_id": "turn-1",
+                    "session_id": "s1",
+                }
+
+            return stream()
+
+    session = InterruptedWakeSession()
+    session.capture_results = iter(["what is the weather", "must not capture"])
+    app, fakes, _ = make_app(session=session)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await app._handle_wake_command("on")
+
+        handled = await asyncio.wait_for(
+            asyncio.to_thread(fakes.coordinator.on_wake), 1.0
+        )
+        await pilot.pause()
+
+        assert handled is True
+        assert session.capture_calls == 1
+        assert session.sent_turns == [("what is the weather", "local")]
+        assert app.wake_armed is True
+        assert app.voice_state == app_module.VOICE_INTERRUPTED
+        assert app.domain.state.turn_active is False
+        assert "partial answer" in transcript_text(app)
+        assert "[interrupted]" in transcript_text(app)
+
+
+async def test_wake_stream_without_turn_end_does_not_open_a_follow_up_window():
+    class IncompleteWakeSession(FakeSession):
+        def send_turn(self, text, *, stt_source="local"):
+            self.sent_turns.append((text, stt_source))
+
+            async def stream():
+                yield {"type": "text_delta", "text": "partial answer"}
+
+            return stream()
+
+    session = IncompleteWakeSession()
+    session.capture_results = iter(["what is the weather", "must not capture"])
+    app, fakes, _ = make_app(session=session)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await app._handle_wake_command("on")
+
+        handled = await asyncio.wait_for(
+            asyncio.to_thread(fakes.coordinator.on_wake), 1.0
+        )
+        await pilot.pause()
+
+        assert handled is True
+        assert session.capture_calls == 1
+        assert session.sent_turns == [("what is the weather", "local")]
+        assert app.wake_armed is True
+        assert app.voice_state == app_module.VOICE_ERROR
+        assert app.domain.state.turn_active is False
+        assert "turn ended without a completion event" in transcript_text(app)
 
 
 async def test_timed_out_wake_turn_does_not_open_a_follow_up_window():
@@ -828,6 +905,50 @@ async def test_tui_wake_sender_keeps_the_initial_outcome_when_queue_drains():
             ("typed while wake is active", "local"),
         ]
         assert app._last_prompt_status == app_module.PROMPT_AMBIGUOUS
+
+
+async def test_tui_wake_sender_fails_closed_after_wake_loop_teardown():
+    session = FakeSession()
+    session.capture_results = iter(["what is the weather", "must not capture"])
+    app, fakes, _ = make_app(session=session)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await app._handle_wake_command("on")
+        app._wake_loop = None
+
+        handled = await asyncio.wait_for(
+            asyncio.to_thread(fakes.coordinator.on_wake), 1.0
+        )
+        await pilot.pause()
+
+        assert handled is True
+        assert session.capture_calls == 1
+        assert session.sent_turns == []
+        assert app.wake_armed is True
+
+
+async def test_tui_wake_sender_snapshots_outcome_before_cleanup_queue_mutation():
+    app, _, session = make_app()
+    injected = False
+
+    async def queue_during_cleanup():
+        nonlocal injected
+        if not injected:
+            injected = True
+            assert await app._run_turn("typed during cleanup") is False
+
+    app._stop_caption_clock = queue_during_cleanup
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await app._handle_wake_command("on")
+
+        assert await asyncio.to_thread(app._send_wake_turn, "wake prompt") is True
+
+        assert injected is True
+        assert session.sent_turns == [
+            ("wake prompt", "local"),
+            ("typed during cleanup", "local"),
+        ]
 
 
 async def test_wake_follow_up_stop_is_silent_and_resumes_wake_listening():

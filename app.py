@@ -611,6 +611,7 @@ class HermesStreamingApp(App):
         self._barge_result_task: Optional[asyncio.Task[None]] = None
         self._last_tts_text = ""
         self._wake_loop: Optional[asyncio.AbstractEventLoop] = None
+        self._preserve_wake_terminal_state = False
         self._wake_starting = False
         self._wake_start_cancelled = False
         self._wake_opening = False
@@ -1884,6 +1885,12 @@ class HermesStreamingApp(App):
         up to be scored as a stale wake after the turn. Textual repainting is
         handed back to its event loop.
         """
+        if state in {
+            handsfree.ACKNOWLEDGING,
+            handsfree.CAPTURING,
+            handsfree.SENDING,
+        }:
+            self._preserve_wake_terminal_state = False
         self._set_wake_listening(busy=state != handsfree.IDLE)
         loop = self._wake_loop
         if loop is None:
@@ -1928,6 +1935,11 @@ class HermesStreamingApp(App):
             state == handsfree.IDLE
             and not self._turn_in_flight
             and self._voice_capture_task is None
+            and not (
+                self._preserve_wake_terminal_state
+                and self.voice_state
+                in {VOICE_ERROR, VOICE_INTERRUPTED, VOICE_DISCONNECTED}
+            )
         ):
             self._set_voice_state(VOICE_READY)
 
@@ -3420,9 +3432,16 @@ class HermesStreamingApp(App):
             next_text: Optional[str] = text
             next_stt_source = stt_source
             while next_text is not None:
-                turn_was_sent = await self._run_single_turn(next_text, stt_source=next_stt_source)
+                turn_was_sent, turn_status = await self._run_single_turn(
+                    next_text, stt_source=next_stt_source
+                )
                 if initial_prompt_status is None:
-                    initial_prompt_status = self._last_prompt_status
+                    # `_run_single_turn` snapshots this before its awaited
+                    # cleanup. A prompt submitted during that cleanup may
+                    # update the shared last-prompt fields, but it must not
+                    # change the outcome reported for the initiating wake
+                    # turn.
+                    initial_prompt_status = turn_status
                 if not turn_was_sent:
                     self._queued_prompts.insert(0, next_text)
                     self._refresh_queue_shelf()
@@ -3445,9 +3464,13 @@ class HermesStreamingApp(App):
             self._set_wake_listening(busy=self._barge_capture_active)
         return initial_prompt_status == PROMPT_COMPLETED
 
-    async def _run_single_turn(self, text: str, *, stt_source: str) -> bool:
+    async def _run_single_turn(
+        self, text: str, *, stt_source: str
+    ) -> tuple[bool, str]:
         self._last_prompt = text
         self._last_prompt_status = PROMPT_NOT_SENT
+        turn_status = PROMPT_NOT_SENT
+        turn_was_sent = False
         self._last_tts_text = ""
         diagnostic_logger.debug(
             "app.turn.start index=%s stt_source=%s %s",
@@ -3459,7 +3482,7 @@ class HermesStreamingApp(App):
             if not await self._connect():
                 self._append_block(f"you> {text}")
                 self._append_block("[error] not connected; prompt kept in queue")
-                return False
+                return False, turn_status
 
         index = self.session.turn_index
         self._clear_audio_unavailable()
@@ -3468,6 +3491,8 @@ class HermesStreamingApp(App):
         # stream reports an error, so every post-user-display failure is
         # intentionally treated as ambiguous and is never auto-replayed.
         self._last_prompt_status = PROMPT_AMBIGUOUS
+        turn_status = PROMPT_AMBIGUOUS
+        turn_was_sent = True
         timeout = getattr(self.args, "turn_timeout", 0) or 0
         try:
             domain_turn = self.domain.begin_turn(
@@ -3496,21 +3521,29 @@ class HermesStreamingApp(App):
                 turn_completed = await self._consume_turn(
                     events, index, generation=index
                 )
-            self._last_prompt_status = (
+            turn_status = (
                 PROMPT_COMPLETED if turn_completed else PROMPT_AMBIGUOUS
             )
+            self._last_prompt_status = turn_status
+            self._preserve_wake_terminal_state = turn_status == PROMPT_AMBIGUOUS
         except SessionNotReadyError:
+            turn_was_sent = False
+            turn_status = PROMPT_NOT_SENT
             await self._mark_connection_lost()
-            self._last_prompt_status = PROMPT_NOT_SENT
+            self._last_prompt_status = turn_status
             self._append_block("[error] not connected; prompt kept in queue")
-            return False
+            return turn_was_sent, turn_status
         except asyncio.CancelledError:
+            self._preserve_wake_terminal_state = True
             self._set_voice_state(VOICE_INTERRUPTED)
             self._append_block("[interrupted]")
             self._set_connection_state(CONNECTION_DISCONNECTED)
             self._needs_reconnect = True
             raise
         except (asyncio.TimeoutError, TimeoutError):
+            turn_status = PROMPT_AMBIGUOUS
+            self._last_prompt_status = turn_status
+            self._preserve_wake_terminal_state = True
             self._set_voice_state(VOICE_ERROR)
             await self._mark_connection_lost()
             self._append_block(
@@ -3520,6 +3553,9 @@ class HermesStreamingApp(App):
         except Exception as exc:
             # ConnectionClosed, ConcurrencyError, AttributeError from a dead
             # socket — none of them should take the whole app down.
+            turn_status = PROMPT_AMBIGUOUS
+            self._last_prompt_status = turn_status
+            self._preserve_wake_terminal_state = True
             await self._mark_connection_lost()
             self._set_voice_state(VOICE_ERROR)
             self._append_block(f"[error] {exc}")
@@ -3547,7 +3583,7 @@ class HermesStreamingApp(App):
                 len(self.transcript_text),
                 self.connection_state,
             )
-        return True
+        return turn_was_sent, turn_status
 
     async def _mark_connection_lost(self) -> None:
         """Close a failed stream so the next turn cannot reuse a dead socket."""
