@@ -114,8 +114,9 @@ paths to accommodate one unobserved Samsung error.
 
 - Amanda's Samsung Bespoke browser completed the first voice turn, so initial
   microphone permission and speech recognition are known to work on that
-  device. The precise `SpeechRecognitionErrorEvent.error` value was not
-  captured and must be observed during implementation validation.
+  device. The follow-up recovery screenshot captured the safe
+  `audio-capture` category; the browser failed to reacquire the microphone
+  after playback, rather than proving that the surface is unsupported.
 - The existing Safari recovery artifact remains the regression baseline. This
   slice addresses the post-playback path's generic error handling and
   vendor-specific evidence gap; it does not reopen the frozen Safari intent.
@@ -128,12 +129,16 @@ paths to accommodate one unobserved Samsung error.
 - 2026-09-11 — Kept the safe recognition category visible on narrow displays;
   browser voice error paragraphs now wrap instead of truncating the diagnostic
   with an ellipsis.
-- Automated validation passed: 184 web tests, `npm run check`, `npm run
+- 2026-09-11 — Added a bounded wait for the prior recognizer's release and a
+  short grace period after the temporary microphone probe stops, so embedded
+  browsers do not immediately contend for the same capture device.
+- Automated validation passed: 185 web tests, `npm run check`, `npm run
   build`, and 947 Python tests.
-- Manual gate status: existing iPad/Safari evidence remains recorded, but no
-  live Chrome, iPad, or Samsung surface was available for recapture in this
-  session. The Samsung exact error category is therefore still unobserved;
-  keep the story in review until the physical/browser gates are rerun.
+- Manual gate status: existing iPad/Safari evidence remains recorded. The
+  Samsung screenshot now records `audio-capture` from the pre-fix recovery
+  attempt; no post-fix Chrome, iPad, or Samsung success recapture was available
+  in this session. Keep the story in review until the physical/browser gates
+  are rerun.
 
 ## Review Triage Log
 
@@ -150,6 +155,11 @@ paths to accommodate one unobserved Samsung error.
   ellipsis rule hid the browser recognition error category on narrow display
   surfaces. Error paragraphs now wrap while ordinary status text remains
   compact; focused tests, type checking, and the production build pass.
+- `medium` / `patch` — `home_display/web/src/state/voice.ts` — Samsung
+  follow-up recovery reported `audio-capture` after the previous recognizer or
+  temporary microphone probe had not fully released the device. The controller
+  now waits for `end` with a bounded fallback before replacement recognition;
+  the fake-recognition suite covers the delayed release.
 
 ## Validation Plan
 
@@ -158,9 +168,10 @@ paths to accommodate one unobserved Samsung error.
 - `npm run check` and `npm run build` from `home_display/web`.
 - `venv/bin/pytest` from the repository root.
 - Matrix audit: `voice.test.ts` covers `FOLLOW_UP_READY`,
-  `TRANSIENT_RESTART`, `SILENT_HANG`, `VENDOR_ERROR`, and `LATE_CALLBACK`;
+  `TRANSIENT_RESTART`, `SILENT_HANG`, `VENDOR_ERROR`, `LATE_CALLBACK`, and
+  delayed recognizer release;
   `App.test.ts` covers the rendered terminal error and `DISCONNECT`. All ran
-  in the 184-test web suite.
+  in the 185-test web suite.
 - Manual Chrome and physical iPad/Safari follow-up checks, then Samsung
   Bespoke first-turn/follow-up validation with the safe error category
   recorded if recovery still fails.
@@ -179,3 +190,5 @@ paths to accommodate one unobserved Samsung error.
   and acceptance are tracked by that cross-surface spec.
 - 2026-09-11 — Review follow-up made terminal recognition categories visible
   on narrow displays.
+- 2026-09-11 — Samsung follow-up evidence identified `audio-capture`; added
+  bounded recognizer/probe release handoff and kept physical validation open.

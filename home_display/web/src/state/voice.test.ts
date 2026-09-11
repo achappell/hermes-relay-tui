@@ -21,7 +21,10 @@ class FakeRecognition implements SpeechRecognitionLike {
   starts = 0;
   stops = 0;
 
-  constructor(private readonly announcesStart = true) {}
+  constructor(
+    private readonly announcesStart = true,
+    private readonly announcesEndOnStop = true,
+  ) {}
 
   start(): void {
     this.starts += 1;
@@ -30,6 +33,7 @@ class FakeRecognition implements SpeechRecognitionLike {
 
   stop(): void {
     this.stops += 1;
+    if (this.announcesEndOnStop) this.onend?.();
   }
 
   result(...results: Array<{ isFinal: boolean; transcript: string }>): void {
@@ -49,6 +53,11 @@ class FakeRecognition implements SpeechRecognitionLike {
   end(): void {
     this.onend?.();
   }
+}
+
+async function flushMicrotasks(): Promise<void> {
+  await Promise.resolve();
+  await Promise.resolve();
 }
 
 describe("BrowserVoiceController", () => {
@@ -175,7 +184,7 @@ describe("BrowserHandsFreeController", () => {
     expect(sendText).toHaveBeenCalledWith("what is the weather?");
 
     controller.turnFinished();
-    await Promise.resolve();
+    await flushMicrotasks();
     expect(states).toContain("follow_up");
     expect(recognitions).toHaveLength(2);
     recognitions[1].result({ isFinal: true, transcript: "and tomorrow?" });
@@ -269,11 +278,11 @@ describe("BrowserHandsFreeController", () => {
       transcript: "hey hermes what is the weather",
     });
     controller.turnFinished();
-    await Promise.resolve();
+    await flushMicrotasks();
 
     expect(states.at(-1)).toBe("follow_up");
     expect(recognitions).toHaveLength(2);
-    vi.advanceTimersByTime(1500);
+    await vi.advanceTimersByTimeAsync(1500);
 
     expect(recognitions.length).toBeGreaterThan(2);
     recognitions.at(-1)?.result({ isFinal: true, transcript: "and tomorrow?" });
@@ -302,7 +311,7 @@ describe("BrowserHandsFreeController", () => {
       transcript: "hey hermes what is the weather",
     });
     controller.turnFinished();
-    await Promise.resolve();
+    await flushMicrotasks();
     expect(recognitions).toHaveLength(2);
 
     const staleResult = recognitions[1].onresult;
@@ -311,7 +320,7 @@ describe("BrowserHandsFreeController", () => {
     expect(controller.lastRecognitionError).toBe("network");
     expect(controller.state).toBe("follow_up");
 
-    vi.advanceTimersByTime(300);
+    await vi.advanceTimersByTimeAsync(300);
     expect(recognitions).toHaveLength(3);
 
     staleResult?.({
@@ -348,14 +357,14 @@ describe("BrowserHandsFreeController", () => {
       transcript: "hey hermes what is the weather",
     });
     controller.turnFinished();
-    await Promise.resolve();
+    await flushMicrotasks();
     expect(recognitions).toHaveLength(2);
 
     recognitions[1].error("network");
-    vi.advanceTimersByTime(300);
+    await vi.advanceTimersByTimeAsync(300);
     expect(recognitions).toHaveLength(3);
 
-    vi.advanceTimersByTime(1_700);
+    await vi.advanceTimersByTimeAsync(1_700);
     expect(controller.isArmed).toBe(true);
     expect(controller.state).toBe("wake_ready");
     controller.disarm();
@@ -381,7 +390,7 @@ describe("BrowserHandsFreeController", () => {
       transcript: "hey hermes what is the weather",
     });
     controller.turnFinished();
-    await Promise.resolve();
+    await flushMicrotasks();
     recognitions[1].error("service-not-allowed");
 
     expect(controller.lastRecognitionError).toBe("service-not-allowed");
@@ -414,10 +423,10 @@ describe("BrowserHandsFreeController", () => {
       transcript: "hey hermes what is the weather",
     });
     controller.turnFinished();
-    await Promise.resolve();
+    await flushMicrotasks();
     expect(recognitions).toHaveLength(2);
 
-    vi.advanceTimersByTime(4_000);
+    await vi.advanceTimersByTimeAsync(4_000);
     expect(recognitions.length).toBeGreaterThan(2);
     recognitions.at(-1)?.result({ isFinal: true, transcript: "and tomorrow?" });
     expect(sendText).toHaveBeenCalledTimes(2);
@@ -448,10 +457,44 @@ describe("BrowserHandsFreeController", () => {
       transcript: "hey hermes what is the weather",
     });
     controller.turnFinished();
-    await Promise.resolve();
+    await flushMicrotasks();
 
     expect(prepareRecognition).toHaveBeenCalledOnce();
     expect(events.indexOf("prime")).toBeLessThan(events.lastIndexOf("recognition"));
+    controller.disarm();
+  });
+
+  it("waits for the previous recognizer to release before starting follow-up", async () => {
+    vi.useFakeTimers();
+    const recognitions: FakeRecognition[] = [];
+    const sendText = vi.fn(() => true);
+    const controller = new BrowserHandsFreeController({
+      recognitionFactory: () => {
+        // The first recognizer models an embedded browser that delays its end
+        // event after the initial turn has already produced a final result.
+        const recognition = new FakeRecognition(true, recognitions.length > 0);
+        recognitions.push(recognition);
+        return recognition;
+      },
+      wakePhrases: ["hey hermes"],
+      sendText,
+    });
+
+    await expect(controller.arm()).resolves.toBe(true);
+    recognitions[0].result({
+      isFinal: true,
+      transcript: "hey hermes what is the weather",
+    });
+    controller.turnFinished();
+    await flushMicrotasks();
+
+    expect(recognitions).toHaveLength(1);
+    recognitions[0].end();
+    await flushMicrotasks();
+    expect(recognitions).toHaveLength(2);
+
+    recognitions[1].result({ isFinal: true, transcript: "and tomorrow?" });
+    expect(sendText).toHaveBeenCalledTimes(2);
     controller.disarm();
   });
 
@@ -516,8 +559,8 @@ describe("BrowserHandsFreeController", () => {
       transcript: "hey hermes what is the weather",
     });
     controller.turnFinished();
-    await Promise.resolve();
-    vi.advanceTimersByTime(12_000);
+    await flushMicrotasks();
+    await vi.advanceTimersByTimeAsync(12_000);
 
     expect(controller.isArmed).toBe(false);
     expect(controller.state).toBe("off");
@@ -549,8 +592,8 @@ describe("BrowserHandsFreeController", () => {
       transcript: "hey hermes what is the weather",
     });
     controller.turnFinished();
-    await Promise.resolve();
-    vi.advanceTimersByTime(2_000);
+    await flushMicrotasks();
+    await vi.advanceTimersByTimeAsync(2_000);
 
     expect(controller.isArmed).toBe(false);
     expect(controller.state).toBe("off");
@@ -646,7 +689,7 @@ describe("BrowserHandsFreeController", () => {
     recognitions.at(-1)?.result({ isFinal: true, transcript: "hey hermes what is the weather" });
     expect(sendText).toHaveBeenCalledTimes(1);
     controller.turnFinished();
-    await Promise.resolve();
+    await flushMicrotasks();
     recognitions.at(-1)?.result({ isFinal: true, transcript: "STOP." });
     expect(sendText).toHaveBeenCalledTimes(1);
     expect(controller.state).toBe("wake_ready");
