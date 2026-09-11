@@ -80,27 +80,13 @@ esphome:
         # the I2S writes all succeed and nothing is audible -- which looks
         # exactly like a broken output path.
         - lambda: id(respeaker).unmute_speaker();
-        # 1-p-2 task 2 proof: stream a real WAV over HTTP through
-        # ESPHome's own audio stack. Deliberately a STATIC, complete file
-        # with a known Content-Length -- that isolates the plumbing
-        # (fetch -> decode -> resample -> I2S) from the live-stream
-        # framing problem, which is a separate unknown tracked in the spec.
-        # Prove the pipe before proving the stream.
-        #
-        # Task 1's blocking tone helper was REMOVED here rather than kept
-        # as a canary: writing 400ms of audio straight to the speaker from
-        # an automation lambda starved the main loop for 354ms ("a
-        # scheduled task took a long time... max is 50 ms"), which dropped
-        # WiFi mid-boot and left play_media firing into a dead network
-        # (HTTP_CLIENT: Connection failed, sock < 0). That is precisely why
-        # playback belongs to media_player's own task and not to anything
-        # synchronous on the main loop -- an object lesson in why this
-        # story does not hand-roll the audio path.
-        - delay: 2s
-        - media_player.play_media:
-            id: puck_media_player
-            media_url: http://${puck_bridge_host}:8767/test.wav
-            announcement: true
+        # 1-p-2 task 2's boot-time proof (streaming a static WAV over
+        # HTTP from a dev machine) was REMOVED once verified: it pointed at
+        # an ad-hoc server on a developer's laptop, so every later boot
+        # would fail to fetch it and log an error for a test that had
+        # already passed. The capability it proved is retained and
+        # exercised by the media_player/audio_http stack below; the
+        # evidence lives in the story and in PR #144.
 esp32:
   board: seeed_xiao_esp32s3
   variant: esp32s3
