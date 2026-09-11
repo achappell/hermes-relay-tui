@@ -281,6 +281,26 @@ micro_wake_word:
   vad:
     model: wake_models/vad.json
     probability_cutoff: 0.05
+  # Root cause of the "~1s VAD truncation" finding (2026-09-10 hardware
+  # session): this option defaults to TRUE in micro_wake_word/__init__.py,
+  # and this file never set it. With it true, the DETECTING_WAKE_WORD case
+  # in micro_wake_word.cpp calls stop() in the *same* loop iteration that
+  # fires on_wake_word_detected -- so the instant a wake capture starts,
+  # the inference task tears down: process_probabilities_() stops updating
+  # vad_state_, unload_models_() clears the VAD sliding window, and
+  # microphone_source_->stop() drops the audio source feeding the capture.
+  # get_vad_state() therefore reads false on every 100ms tick from the very
+  # first one, and wake_capture::tick() closes the window at
+  # first-tick + VAD_SILENCE_DEBOUNCE_MS (800ms) -- ~0.9-1.0s, exactly the
+  # 123760-133280 byte / 0.946-1.041s ceiling measured across six captures
+  # regardless of what was spoken. The VAD is not deaf to sustained speech;
+  # it simply is not running any more. Keeping detection alive through the
+  # capture is a hard requirement for VAD-gated capture to mean anything.
+  #
+  # This is also what the 2s "mww stopped -- restarting" self-heal below has
+  # actually been catching on wake-triggered runs (it re-armed detection
+  # within 2s of every wake, masking the stop as intermittent instability).
+  stop_after_detection: false
   # Story 5: turns a validated on-device wake into an actual outbound audio
   # payload for the first time. `wake_word` is the automation variable this
   # component's own trigger provides (see components/micro_wake_word/
