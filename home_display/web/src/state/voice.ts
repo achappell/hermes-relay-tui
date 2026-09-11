@@ -785,6 +785,7 @@ export class PcmAudioPlayer {
   private sampleRate = 0;
   private channels = 0;
   private nextStartAt = 0;
+  private pendingBytes = new Uint8Array();
   private readonly sources = new Set<AudioBufferSourceLike>();
 
   constructor(options: PcmAudioPlayerOptions = {}) {
@@ -826,10 +827,17 @@ export class PcmAudioPlayer {
   append(chunk: ArrayBuffer): void {
     if (this.activeTurnId === null || this.context === null || this.channels <= 0) return;
 
-    const bytes = new Uint8Array(chunk);
+    const incoming = new Uint8Array(chunk);
     const bytesPerFrame = this.channels * 2;
-    const frameCount = Math.floor(bytes.byteLength / bytesPerFrame);
-    if (frameCount === 0) return;
+    const combined = new Uint8Array(this.pendingBytes.byteLength + incoming.byteLength);
+    combined.set(this.pendingBytes);
+    combined.set(incoming, this.pendingBytes.byteLength);
+    const completeByteLength = combined.byteLength - (combined.byteLength % bytesPerFrame);
+    this.pendingBytes = combined.slice(completeByteLength);
+    if (completeByteLength === 0) return;
+
+    const bytes = combined.subarray(0, completeByteLength);
+    const frameCount = completeByteLength / bytesPerFrame;
 
     try {
       const buffer = this.context.createBuffer(this.channels, frameCount, this.sampleRate);
@@ -864,6 +872,7 @@ export class PcmAudioPlayer {
   end(turnId: string): void {
     if (this.activeTurnId === turnId) {
       this.activeTurnId = null;
+      this.pendingBytes = new Uint8Array();
       this.endedTurnId = turnId;
       this.notifyPlaybackFinished();
     }
@@ -886,6 +895,7 @@ export class PcmAudioPlayer {
     this.activeTurnId = null;
     this.endedTurnId = null;
     this.nextStartAt = 0;
+    this.pendingBytes = new Uint8Array();
   }
 
   private notifyPlaybackFinished(): void {

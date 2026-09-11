@@ -4964,6 +4964,7 @@ class StateChannel {
       this.scheduleReconnect();
       return;
     }
+    socket.binaryType = "arraybuffer";
     this.socket = socket;
     this.hasHydratedSocket = false;
     socket.onopen = () => {
@@ -5846,6 +5847,7 @@ class PcmAudioPlayer {
     __publicField(this, "sampleRate", 0);
     __publicField(this, "channels", 0);
     __publicField(this, "nextStartAt", 0);
+    __publicField(this, "pendingBytes", new Uint8Array());
     __publicField(this, "sources", /* @__PURE__ */ new Set());
     this.audioContextFactory = options.audioContextFactory ?? defaultAudioContextFactory;
     this.onError = options.onError ?? (() => {
@@ -5882,10 +5884,16 @@ class PcmAudioPlayer {
   }
   append(chunk) {
     if (this.activeTurnId === null || this.context === null || this.channels <= 0) return;
-    const bytes = new Uint8Array(chunk);
+    const incoming = new Uint8Array(chunk);
     const bytesPerFrame = this.channels * 2;
-    const frameCount = Math.floor(bytes.byteLength / bytesPerFrame);
-    if (frameCount === 0) return;
+    const combined = new Uint8Array(this.pendingBytes.byteLength + incoming.byteLength);
+    combined.set(this.pendingBytes);
+    combined.set(incoming, this.pendingBytes.byteLength);
+    const completeByteLength = combined.byteLength - combined.byteLength % bytesPerFrame;
+    this.pendingBytes = combined.slice(completeByteLength);
+    if (completeByteLength === 0) return;
+    const bytes = combined.subarray(0, completeByteLength);
+    const frameCount = completeByteLength / bytesPerFrame;
     try {
       const buffer = this.context.createBuffer(this.channels, frameCount, this.sampleRate);
       for (let channel = 0; channel < this.channels; channel += 1) {
@@ -5917,6 +5925,7 @@ class PcmAudioPlayer {
   end(turnId) {
     if (this.activeTurnId === turnId) {
       this.activeTurnId = null;
+      this.pendingBytes = new Uint8Array();
       this.endedTurnId = turnId;
       this.notifyPlaybackFinished();
     }
@@ -5936,6 +5945,7 @@ class PcmAudioPlayer {
     this.activeTurnId = null;
     this.endedTurnId = null;
     this.nextStartAt = 0;
+    this.pendingBytes = new Uint8Array();
   }
   notifyPlaybackFinished() {
     if (this.endedTurnId === null || this.sources.size > 0) return;
