@@ -452,3 +452,71 @@ def test_turn_runner_ignores_a_wake_while_a_turn_is_already_in_flight():
         assert session.turns == []
     finally:
         runner.stop()
+
+
+# --- 1-p-1: session identity and fail-closed behaviour ---------------------
+
+
+def _session_args(**overrides):
+    """Minimal stand-in for config.build_arg_parser()'s resolved namespace."""
+    import argparse
+
+    ns = argparse.Namespace(session_id="amanda-kiosk", profile_name="amanda")
+    for key, value in overrides.items():
+        setattr(ns, key, value)
+    return ns
+
+
+def test_bridge_session_id_does_not_inherit_another_doorways_session():
+    """The regression this fixes: the old `if not session_id` guard never
+    fired, because build_arg_parser always resolves a non-empty id first
+    (profile entry, else `<name>-session`, else `hybrid-tui`). The bridge
+    therefore ran under the TUI's own id -- observed live as
+    `amanda-kiosk` -- breaking Epic 1's one-Active-Turn-per-doorway rule."""
+    from puck_bridge.server import _bridge_session_id
+
+    assert _bridge_session_id(_session_args()) == "amanda-kiosk-puck-bridge"
+
+
+def test_bridge_session_id_overrides_even_an_explicit_session_id():
+    """Distinctness is a correctness property of this doorway, not a
+    preference: an explicit --session-id matching the TUI's would otherwise
+    reintroduce the very collision this prevents."""
+    from puck_bridge.server import _bridge_session_id
+
+    args = _session_args(session_id="hybrid-tui")
+    assert _bridge_session_id(args) == "hybrid-tui-puck-bridge"
+
+
+def test_bridge_session_id_is_idempotent():
+    """Re-deriving an already-derived id must not accrete suffixes."""
+    from puck_bridge.server import _bridge_session_id
+
+    once = _bridge_session_id(_session_args())
+    twice = _bridge_session_id(_session_args(session_id=once))
+    assert once == twice == "amanda-kiosk-puck-bridge"
+
+
+def test_bridge_session_id_is_stable_across_restarts():
+    """Deterministic, not random. A uuid suffix would also be distinct but
+    would mint a new Hermes session on every bridge restart and throw away
+    conversation continuity."""
+    from puck_bridge.server import _bridge_session_id
+
+    assert _bridge_session_id(_session_args()) == _bridge_session_id(_session_args())
+
+
+def test_bridge_session_id_falls_back_to_profile_name_when_empty():
+    from puck_bridge.server import _bridge_session_id
+
+    assert _bridge_session_id(_session_args(session_id="")) == "amanda-puck-bridge"
+
+
+def test_bridge_session_id_never_substitutes_another_profile():
+    """1-p-1 task 6: no fallback. An unusable configuration must fail or
+    stay itself -- it must never quietly resolve to a different profile."""
+    from puck_bridge.server import _bridge_session_id
+
+    resolved = _bridge_session_id(_session_args(session_id="", profile_name=""))
+    assert resolved == "puck-bridge"
+    assert "amanda" not in resolved

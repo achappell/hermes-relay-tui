@@ -61,9 +61,49 @@ def build_session_args(remaining_argv: Sequence[str]) -> argparse.Namespace:
     """
     session_parser = config.build_arg_parser(list(remaining_argv))
     session_args = session_parser.parse_args(list(remaining_argv))
-    if not getattr(session_args, "session_id", None):
-        session_args.session_id = f"{session_args.profile_name}-puck-bridge"
+    session_args.session_id = _bridge_session_id(session_args)
     return session_args
+
+
+# Suffix marking a session id as this bridge's own.
+BRIDGE_SESSION_SUFFIX = "-puck-bridge"
+
+
+def _bridge_session_id(session_args: argparse.Namespace) -> str:
+    """Derive a session id that cannot collide with another doorway's.
+
+    The previous guard here was `if not session_args.session_id`, which
+    never fired: `config.build_arg_parser()` always resolves a non-empty
+    session_id before this runs -- from the profile entry (`session_id`,
+    else `f"{name}-session"`, config.py:479) or the `hybrid-tui` fallback
+    (config.py:497-499). So the bridge silently inherited whatever the TUI
+    was using, observed live as `amanda-kiosk`. Epic 1 requires one Active
+    Turn *per doorway*; two doorways sharing a session id breaks that, and
+    the failure stays invisible until two turns interleave.
+
+    Applied unconditionally rather than only-when-unset, because
+    distinctness is a correctness property of this doorway, not a user
+    preference -- an explicit `--session-id` that happened to match the
+    TUI's would otherwise reintroduce exactly the collision this prevents.
+
+    Deliberately deterministic, not random: a uuid suffix would also
+    guarantee distinctness, but would mint a brand-new Hermes session on
+    every bridge restart and discard conversation continuity. The same
+    profile must return to the same bridge session across restarts.
+
+    Idempotent, so re-deriving an already-derived id is a no-op rather
+    than accreting suffixes.
+    """
+    base = str(getattr(session_args, "session_id", "") or "").strip()
+    if not base:
+        base = str(getattr(session_args, "profile_name", "") or "").strip()
+    if not base:
+        # Nothing to qualify. Still a valid, distinct bridge id -- and
+        # still not another doorway's.
+        return BRIDGE_SESSION_SUFFIX.lstrip("-")
+    if base.endswith(BRIDGE_SESSION_SUFFIX):
+        return base
+    return f"{base}{BRIDGE_SESSION_SUFFIX}"
 
 
 def main(argv: list[str] | None = None) -> int:

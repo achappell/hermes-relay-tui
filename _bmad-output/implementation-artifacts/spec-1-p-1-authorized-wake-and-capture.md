@@ -63,11 +63,11 @@ This is a deliberate, human-owned narrowing of the AC and must be reviewed as su
 ## Tasks & Acceptance
 
 1. **[DONE — see the contract above] Define the Puck's authorized-identity precondition.**
-2. **Gate capture on that precondition.** `on_wake_word_detected:` consults identity state before `wake_capture::start()`. *Acceptance:* with identity unavailable, a wake produces zero captured bytes and zero upload attempts.
+2. **[DONE 2026-09-10 — permit path verified on hardware; refusal path not yet] Gate capture on that precondition.** `on_wake_word_detected:` consults identity state before `wake_capture::start()`. *Acceptance:* with identity unavailable, a wake produces zero captured bytes and zero upload attempts.
 3. **Make refusal observable.** An unauthorized wake gives an audible "unavailable" distinct from the normal acknowledgement. Depends on P-2 task 1 (speaker), already delivered. *Acceptance:* a person can tell refusal from breakage without reading logs.
-4. **Learn that identity has been rejected.** The device transitions to `UNAUTHORIZED` when the bridge answers `401`. Unreachability transitions to `DEGRADED` and must NOT block capture (see the contract). *Acceptance:* after a `401`, the next wake fails closed; after a connection failure, the next wake still captures.
-5. **Fix the bridge session-identity collision (deferred #40).** `build_session_args()` populates `session_id` from the profile's YAML (e.g. `amanda-kiosk`) before the "only set when unset" guard runs, so the bridge always inherits the TUI's session id. Needs a decision — unconditional distinct suffix, or a bridge-specific config key — not a one-line patch. *Acceptance:* a Puck turn and a concurrent TUI session never share a `session_id`.
-6. **No fallback on failure.** Verify no path silently selects another profile when the configured one is unusable. *Acceptance:* a test asserts refusal rather than substitution.
+4. **[CODE DONE 2026-09-10 — not yet hardware-verified] Learn that identity has been rejected.** The device transitions to `UNAUTHORIZED` when the bridge answers `401`. Unreachability transitions to `DEGRADED` and must NOT block capture (see the contract). *Acceptance:* after a `401`, the next wake fails closed; after a connection failure, the next wake still captures.
+5. **[DONE 2026-09-10] Fix the bridge session-identity collision (deferred #40).** `build_session_args()` populates `session_id` from the profile's YAML (e.g. `amanda-kiosk`) before the "only set when unset" guard runs, so the bridge always inherits the TUI's session id. Needs a decision — unconditional distinct suffix, or a bridge-specific config key — not a one-line patch. *Acceptance:* a Puck turn and a concurrent TUI session never share a `session_id`.
+6. **[DONE 2026-09-10] No fallback on failure.** Verify no path silently selects another profile when the configured one is unusable. *Acceptance:* a test asserts refusal rather than substitution.
 
 ## Risks & Open Questions
 
