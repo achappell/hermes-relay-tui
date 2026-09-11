@@ -37,10 +37,6 @@
   evidence: `future.result(timeout=...)` only stops waiting on the caller's side; the coroutine itself is not cancelled. A second turn starting while the first's orphaned `_run_turn` is still draining `send_turn()` could interleave writes to the same `self._player`. Real but low-likelihood (requires an actual Hermes hang exceeding 10s, already an anomalous condition), and a correct fix needs careful cross-thread cancellation (`future.cancel()` plus confirming the async generator actually unwinds) rather than a one-line change -- deferred rather than rushed into this fix round.
 
 - source_spec: `_bmad-output/implementation-artifacts/spec-5-stream-audio-to-host-after-a-validated-wake.md`
-  summary: puck_bridge/server.py's build_session_args() silently reuses the TUI's own session_id for the selected profile instead of a distinct one, risking a real session collision.
-  evidence: Found live during this story's hardware smoke test. The fix-round patch for finding #5 (only default session_id when falsy) is correct against an explicit `--session-id` CLI override, but config.build_arg_parser() already populates a non-empty session_id from the profile's own YAML config (e.g. "amanda-kiosk") before that check runs -- so the "only set when unset" guard never actually fires for a normal profile-based invocation, and the bridge always inherits the TUI's own session id. Needs a design decision (unconditional distinct suffix, or a bridge-specific config key) rather than a one-line fix.
-
-- source_spec: `_bmad-output/implementation-artifacts/spec-5-stream-audio-to-host-after-a-validated-wake.md`
   summary: Complete the live hardware smoke test (a full round-trip Hermes turn from real speech) once the Puck can be positioned with a stronger WiFi signal.
   evidence: This session proved wake detection, VAD-gated capture, chunked upload, and the full receive-to-Whisper pipeline all work on real hardware -- a short 5-chunk capture completed end to end. But every capture large enough to contain real speech (hundreds of chunks) stalled partway through upload and was evicted by the TTL cleanup, on a device whose WiFi signal read -89 to -90 dB throughout the session. A live tcpdump trace confirmed the failure is a mid-transfer esp_http_client_write() stall, not a routing/firewall/application bug. The device could not be relocated during this session; based on all evidence gathered, no further code change is expected to be needed for a retest closer to the AP to succeed.
 
@@ -58,3 +54,10 @@
 - source_spec: `_bmad-output/implementation-artifacts/spec-web-epic-1-reliable-conversation.md`
   summary: Run the physical Safari/iPad HTTPS/WSS, permission, audio, and direct-touch gate for the restored DOM kiosk.
   evidence: The local fake-state and automated browser checks pass, but no physical iPad/Safari session was available in this worktree to verify Guided Access, secure state-channel hydration, microphone permission, audio playback, and touch-button operation on the supported device.
+
+## Deferred from: code review of spec-1-4-recover-without-replaying-an-uncertain-turn (2026-09-10)
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-1-4-recover-without-replaying-an-uncertain-turn.md`
+  summary: Move wake listener and recorder teardown off the Textual event loop.
+  evidence: The new `/reconnect` handler calls synchronous `_disarm_wake`; that existing path joins the wake listener and calls `recorder.shutdown()` directly, even though both can wait on native audio/thread cleanup. The concern is real, but the fix requires refactoring the shared wake lifecycle and its synchronous callback callers rather than changing only recovery.
+  reason: pre-existing lifecycle boundary; deferred outside the T-4 recovery slice.

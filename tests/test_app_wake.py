@@ -1496,6 +1496,49 @@ async def test_reconnect_disarms_wake_mode_before_opening_a_new_session():
         assert "wake mode off — connection lost" in transcript_text(app)
 
 
+async def test_initial_connect_does_not_rearm_wake_during_explicit_reconnect():
+    class SlowInitialSession(FakeSession):
+        def __init__(self):
+            super().__init__(connected=False, session_id="initial-session")
+            self.connect_started = asyncio.Event()
+            self.connect_release = asyncio.Event()
+
+        async def connect(self):
+            self.connect_calls += 1
+            self.connect_started.set()
+            await self.connect_release.wait()
+            self.connected = True
+            return self.hello
+
+    initial_session = SlowInitialSession()
+    replacement_session = FakeSession(session_id="replacement-session")
+    sessions = iter((initial_session, replacement_session))
+    fakes = WakeFakes()
+    app = HermesStreamingApp(
+        args=make_args(wake_enabled=True),
+        session_factory=lambda: next(sessions),
+        build_hands_free=fakes.build,
+        recorder_factory=fakes.recorder_factory,
+        barge_listener_factory=fakes.barge_listener_factory,
+    )
+
+    async with app.run_test() as pilot:
+        await initial_session.connect_started.wait()
+        reconnect = asyncio.create_task(app._handle_reconnect_command(""))
+        for _ in range(100):
+            if app._reconnect_in_flight:
+                break
+            await asyncio.sleep(0)
+
+        assert app._reconnect_in_flight is True
+        initial_session.connect_release.set()
+        await asyncio.wait_for(reconnect, 1)
+
+        assert fakes.builds == 0
+        assert fakes.recorders == []
+        assert app.wake_armed is False
+
+
 async def test_explicit_reconnect_does_not_rearm_configured_wake_mode():
     app, fakes, _ = make_app(wake_enabled=True)
 
