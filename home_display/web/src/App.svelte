@@ -28,6 +28,23 @@
   let responseHasAudio = false;
   let playbackFinished = false;
   let pendingAudioTurnId: string | null = null;
+  let audioPlaybackFailed = false;
+  let userTranscript = "";
+  let responseVisible = false;
+  let responseRetentionTimer: ReturnType<typeof setTimeout> | null = null;
+  let responseRetentionGeneration = 0;
+  let trackedResponseText = "";
+  let responseTurnActive = false;
+  let responseRetentionExpired = false;
+
+  const responseActiveStates = new Set([
+    "heard",
+    "listening",
+    "thinking",
+    "buffering",
+    "speaking",
+  ]);
+  const RESPONSE_RETENTION_MS = 60_000;
 
   $: browserVoiceEnabled = displayView.capabilities?.features.includes("browser_voice") ?? false;
   $: browserHandsFreeEnabled = displayView.capabilities?.features.includes("browser_hands_free") ?? false;
@@ -44,6 +61,79 @@
       && displayView.connection_healthy && !displayView.is_busy;
   }
 
+  function clearResponseRetentionTimer(): void {
+    responseRetentionGeneration += 1;
+    if (responseRetentionTimer !== null) {
+      clearTimeout(responseRetentionTimer);
+      responseRetentionTimer = null;
+    }
+  }
+
+  function clearConversationPresentation(): void {
+    clearResponseRetentionTimer();
+    userTranscript = "";
+    responseVisible = false;
+    trackedResponseText = "";
+    responseTurnActive = false;
+    responseRetentionExpired = false;
+  }
+
+  function beginCapturePresentation(): void {
+    clearConversationPresentation();
+  }
+
+  function scheduleResponseRetention(view: DisplayView): void {
+    if (
+      view.state !== "idle" ||
+      (responseHasAudio && !playbackFinished) ||
+      trackedResponseText.length === 0 ||
+      !responseVisible ||
+      responseRetentionExpired ||
+      responseRetentionTimer !== null
+    ) return;
+
+    const generation = responseRetentionGeneration;
+    responseRetentionTimer = setTimeout(() => {
+      if (generation !== responseRetentionGeneration) return;
+      responseRetentionTimer = null;
+      responseVisible = false;
+      responseRetentionExpired = true;
+      userTranscript = "";
+    }, RESPONSE_RETENTION_MS);
+  }
+
+  function updateResponsePresentation(view: DisplayView): void {
+    const activeTurn = responseActiveStates.has(view.state);
+    if (activeTurn) responseTurnActive = true;
+
+    if (view.response_text.length === 0) {
+      trackedResponseText = "";
+      responseVisible = false;
+      responseRetentionExpired = false;
+      clearResponseRetentionTimer();
+      if (view.state === "idle" || view.state === "prompt") responseTurnActive = false;
+    } else if (
+      view.response_text !== trackedResponseText &&
+      (activeTurn || responseTurnActive)
+    ) {
+      trackedResponseText = view.response_text;
+      responseVisible = true;
+      responseRetentionExpired = false;
+      clearResponseRetentionTimer();
+    }
+
+    scheduleResponseRetention(view);
+  }
+
+  function setUserTranscript(text: string): void {
+    userTranscript = text.trim();
+  }
+
+  function handleHandsFreeTranscript(text: string): void {
+    if (text && handsFreeState === "wake_ready") beginCapturePresentation();
+    setUserTranscript(text);
+  }
+
   const stateChannelUrl = () => {
     const scheme = window.location.protocol === "https:" ? "wss:" : "ws:";
     return `${scheme}//${window.location.host}/state`;
@@ -57,6 +147,11 @@
       onView: (view) => {
         displayView = view;
         protocolError = null;
+        if (view.state === "error" || view.state === "disconnected") {
+          clearConversationPresentation();
+        } else {
+          updateResponsePresentation(view);
+        }
         handsFreeController?.configure({
           wakePhrases: view.capabilities?.wake_phrases ?? [],
           wakeListenSeconds: view.capabilities?.wake_listen_seconds,
@@ -90,6 +185,7 @@
       },
       onConnectionState: (state) => {
         connectionState = state;
+        if (state !== "connected") clearConversationPresentation();
         if (state === "disconnected") {
           resetPlayback();
           voiceController?.reset();
@@ -100,6 +196,7 @@
       },
       onProtocolError: (message) => {
         protocolError = message;
+        clearConversationPresentation();
         resetPlayback();
         voiceController?.reset();
         handsFreeController?.abort("Display data unavailable — hands-free is off");
@@ -109,6 +206,8 @@
           responseHasAudio = true;
           playbackFinished = false;
           pendingAudioTurnId = event.turn_id;
+          audioPlaybackFailed = false;
+          clearResponseRetentionTimer();
           audioPlayer?.start(event);
         } else if (event.type === "audio_end") {
           audioPlayer?.end(event.turn_id);
@@ -118,14 +217,15 @@
           maybeCompleteHandsFreeTurn();
         } else {
           audioPlayer?.abort(event.turn_id);
-          if (pendingAudioTurnId === event.turn_id) {
-            playbackFinished = true;
-            handsFreeController?.abort("Response interrupted — hands-free is off");
-          }
+          if (pendingAudioTurnId !== event.turn_id) return;
+          clearConversationPresentation();
+          resetPlayback();
+          handsFreeController?.abort("Response interrupted — hands-free is off");
         }
       },
       onAudioChunk: (chunk) => audioPlayer?.append(chunk),
       onVoiceError: () => {
+        clearConversationPresentation();
         voiceError = "Turn could not be sent";
         voiceState = "error";
       },
@@ -142,12 +242,17 @@
     };
     audioPlayer = new PcmAudioPlayer({
       onError: (message) => {
+        resetPlayback();
+        audioPlaybackFailed = true;
+        handsFreeController?.abort("Audio playback is unavailable — hands-free is off");
+        clearConversationPresentation();
         voiceError = message;
         voiceState = "error";
       },
       onPlaybackFinished: (turnId) => {
         if (pendingAudioTurnId !== turnId) return;
         playbackFinished = true;
+        updateResponsePresentation(displayView);
         maybeCompleteHandsFreeTurn();
       },
     });
@@ -158,25 +263,38 @@
         if (state !== "error") voiceError = null;
       },
       onError: (message) => {
+        clearConversationPresentation();
         voiceError = message;
       },
+      onTranscript: (text) => setUserTranscript(text),
     });
     handsFreeController = new BrowserHandsFreeController({
       sendText: (text) => bridge?.sendVoiceTurn(text) ?? false,
       wakePhrases: [],
       onState: (state) => {
+        const previousState = handsFreeState;
         handsFreeState = state;
+        if (
+          state === "heard" ||
+          state === "follow_up" ||
+          (state === "listening" && previousState !== "heard")
+        ) {
+          beginCapturePresentation();
+        }
         if (state !== "error") handsFreeError = null;
       },
       onError: (message) => {
+        clearConversationPresentation();
         handsFreeError = message;
       },
+      onTranscript: (text) => handleHandsFreeTranscript(text),
     });
     bridge.start();
 
     return () => {
       voiceController?.reset();
       handsFreeController?.disarm();
+      clearResponseRetentionTimer();
       resetPlayback();
       bridge?.stop();
     };
@@ -187,6 +305,7 @@
     responseHasAudio = false;
     playbackFinished = false;
     pendingAudioTurnId = null;
+    audioPlaybackFailed = false;
   }
 
   async function toggleVoice(): Promise<void> {
@@ -200,6 +319,7 @@
     voiceError = null;
     if (audioPlayer !== null && !(await audioPlayer.resume())) return;
     if (!isDisplayReady() || handsFreeController?.isArmed) return;
+    beginCapturePresentation();
     await voiceController.start();
   }
 
@@ -237,6 +357,9 @@
     snapshot={displayView}
     {connectionState}
     protocolError={protocolError}
+    {userTranscript}
+    {responseVisible}
+    {audioPlaybackFailed}
   />
 </div>
 {#if promptVisible && displayView.prompt}

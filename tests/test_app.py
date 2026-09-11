@@ -597,6 +597,215 @@ async def test_reconnect_is_single_flight():
     assert fresh_session.connect_calls == 1
 
 
+async def test_prompt_submitted_during_reconnect_stays_after_existing_queue():
+    class GatedConnectSession(FakeSession):
+        def __init__(self):
+            super().__init__(connected=False, session_id="fresh-session")
+            self.connect_started = asyncio.Event()
+            self.connect_release = asyncio.Event()
+
+        async def connect(self):
+            self.connect_calls += 1
+            self.connect_started.set()
+            await self.connect_release.wait()
+            self.connected = True
+            return self.hello
+
+    old_session = FakeSession(session_id="old-session")
+    fresh_session = GatedConnectSession()
+    sessions = iter((old_session, fresh_session))
+    app = HermesStreamingApp(
+        args=make_args(),
+        session_factory=lambda: next(sessions),
+    )
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app._queued_prompts = ["first queued", "second queued"]
+        app._refresh_queue_shelf()
+
+        reconnect = asyncio.create_task(
+            app._handle_command(parse_slash_command("/reconnect"))
+        )
+        await fresh_session.connect_started.wait()
+
+        await app._submit_text("third queued")
+
+        assert app._queued_prompts == [
+            "first queued",
+            "second queued",
+            "third queued",
+        ]
+        assert fresh_session.sent_turns == []
+
+        fresh_session.connect_release.set()
+        await reconnect
+
+    assert app._queued_prompts == [
+        "first queued",
+        "second queued",
+        "third queued",
+    ]
+
+
+async def test_reconnect_mints_a_fresh_session_identity():
+    factory_args = []
+    sessions = []
+
+    def factory(args):
+        factory_args.append(args)
+        session = FakeSession(session_id=args.session_id)
+        sessions.append(session)
+        return session
+
+    app = HermesStreamingApp(
+        args=make_args(session_id="persisted-session"),
+        session_factory=factory,
+    )
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await app._handle_command(parse_slash_command("/reconnect"))
+
+    assert len(factory_args) == 2
+    assert factory_args[0].session_id == "persisted-session"
+    assert factory_args[1].session_id != "persisted-session"
+    assert app.session.session_id == factory_args[1].session_id
+
+
+async def test_reconnect_handshake_timeout_closes_the_replacement_session(monkeypatch):
+    started = asyncio.Event()
+
+    class NeverHandshakeSession(FakeSession):
+        def __init__(self):
+            super().__init__(connected=False, session_id="fresh-session")
+
+        async def connect(self):
+            self.connect_calls += 1
+            started.set()
+            await asyncio.Event().wait()
+
+    old_session = FakeSession(session_id="old-session")
+    fresh_session = NeverHandshakeSession()
+    sessions = iter((old_session, fresh_session))
+    app = HermesStreamingApp(
+        args=make_args(),
+        session_factory=lambda: next(sessions),
+    )
+    monkeypatch.setattr(app_module, "HANDSHAKE_TIMEOUT", 0.01)
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await asyncio.wait_for(
+            app._handle_command(parse_slash_command("/reconnect")),
+            1,
+        )
+        await started.wait()
+
+        assert fresh_session.closed is True
+        assert app.connection_state == app_module.CONNECTION_DISCONNECTED
+        assert "hello handshake timed out after 0.01s" in transcript_of(app)
+        assert fresh_session.sent_turns == []
+
+
+async def test_reconnect_bounds_old_session_cleanup(monkeypatch):
+    close_started = asyncio.Event()
+    release_close = asyncio.Event()
+
+    class SlowCloseSession(FakeSession):
+        async def close(self):
+            close_started.set()
+            await release_close.wait()
+            self.closed = True
+
+    old_session = SlowCloseSession(session_id="old-session")
+    fresh_session = FakeSession(session_id="fresh-session")
+    sessions = iter((old_session, fresh_session))
+    app = HermesStreamingApp(
+        args=make_args(),
+        session_factory=lambda: next(sessions),
+    )
+    monkeypatch.setattr(app_module, "SHUTDOWN_TASK_TIMEOUT", 0.01)
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await app._handle_command(parse_slash_command("/reconnect"))
+
+        assert close_started.is_set()
+        assert app.session is fresh_session
+        assert "previous session cleanup timed out" in transcript_of(app)
+
+        release_close.set()
+        await asyncio.wait_for(app._wait_for_cleanup_tasks(), 1)
+
+
+async def test_reconnect_contains_old_session_cleanup_failure_without_logging_content(caplog):
+    class ExplodingCloseSession(FakeSession):
+        async def close(self):
+            raise RuntimeError("sensitive cleanup detail")
+
+    old_session = ExplodingCloseSession(session_id="old-session")
+    fresh_session = FakeSession(session_id="fresh-session")
+    sessions = iter((old_session, fresh_session))
+    app = HermesStreamingApp(
+        args=make_args(),
+        session_factory=lambda: next(sessions),
+    )
+
+    caplog.set_level(logging.DEBUG)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await app._handle_command(parse_slash_command("/reconnect"))
+
+    messages = "\n".join(record.getMessage() for record in caplog.records)
+    assert app.session is fresh_session
+    assert "sensitive cleanup detail" not in messages
+    assert "old_session_close.failed type=RuntimeError" in messages
+
+
+async def test_reconnect_session_factory_failure_preserves_state_and_queue():
+    old_session = FakeSession(session_id="old-session")
+    factory_calls = 0
+
+    def factory():
+        nonlocal factory_calls
+        factory_calls += 1
+        if factory_calls == 1:
+            return old_session
+        raise RuntimeError("replacement factory unavailable")
+
+    app = HermesStreamingApp(args=make_args(), session_factory=factory)
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app._queued_prompts = ["pending prompt"]
+        app._refresh_queue_shelf()
+        assert app.domain.begin_turn("uncertain-turn", generation=1).accepted
+        assert app.domain.apply_event(
+            {
+                "type": "text_delta",
+                "turn_id": "uncertain-turn",
+                "text": "partial answer",
+            },
+            generation=1,
+        ).accepted
+        app._append("partial answer")
+        app._last_prompt = "possibly sent"
+        app._last_prompt_status = app_module.PROMPT_AMBIGUOUS
+
+        await app._handle_command(parse_slash_command("/reconnect"))
+        rendered = transcript_of(app)
+
+    assert app.session is old_session
+    assert old_session.closed is True
+    assert app.connection_state == app_module.CONNECTION_DISCONNECTED
+    assert app._reconnect_in_flight is False
+    assert app._queued_prompts == ["pending prompt"]
+    assert app.domain.state.response_text == "partial answer"
+    assert "partial answer" in rendered
+    assert "reconnect session setup failed" in rendered
+
+
 async def test_reconnect_failure_stays_disconnected_and_keeps_queue_intact():
     old_session = FakeSession(session_id="old-session")
     fresh_session = FlakyConnectSession(99, session_id="fresh-session")
@@ -628,6 +837,45 @@ async def test_reconnect_failure_stays_disconnected_and_keeps_queue_intact():
     assert app._queued_prompts == ["do not drain"]
     assert app.wake_armed is False
     assert "reconnect failed; no prompt was sent" in rendered
+
+
+async def test_reconnect_failure_preserves_an_uncertain_response():
+    class UncertainSession(FakeSession):
+        def send_turn(self, text, *, stt_source="local"):
+            self.sent_turns.append((text, stt_source))
+            self.turn_index += 1
+
+            async def stream():
+                yield {"type": "text_delta", "text": "partial answer"}
+                self.connected = False
+                raise ConnectionResetError("socket went away")
+                yield  # pragma: no cover - makes this an async generator
+
+            return stream()
+
+    old_session = UncertainSession(session_id="old-session")
+    fresh_session = FlakyConnectSession(99, session_id="fresh-session")
+    sessions = iter((old_session, fresh_session))
+    app = HermesStreamingApp(
+        args=make_args(connect_retries=0),
+        session_factory=lambda: next(sessions),
+    )
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await app._run_turn("possibly sent")
+        assert app._last_prompt_status == app_module.PROMPT_AMBIGUOUS
+        assert "partial answer" in transcript_of(app)
+
+        await app._handle_command(parse_slash_command("/reconnect"))
+        rendered = transcript_of(app)
+
+    assert old_session.sent_turns == [("possibly sent", "local")]
+    assert fresh_session.sent_turns == []
+    assert app._last_prompt == "possibly sent"
+    assert app._last_prompt_status == app_module.PROMPT_AMBIGUOUS
+    assert "partial answer" in rendered
+    assert app.connection_state == app_module.CONNECTION_DISCONNECTED
 
 
 async def test_reconnect_does_not_replay_an_uncertain_turn_or_hide_partial_text():

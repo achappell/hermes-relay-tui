@@ -4,7 +4,7 @@ type: 'feature'
 created: '2026-09-09'
 status: 'done'
 route: 'dispatch'
-review_loop_iteration: 0
+review_loop_iteration: 1
 baseline_commit: '164500d11922278a81466cf70dce351d4cfce65a'
 context:
   - '{project-root}/_bmad-output/implementation-artifacts/epic-1-context.md'
@@ -135,11 +135,47 @@ enrollment, and new audio hardware behavior are outside this slice.
 - `medium / defer` — edge-case-hunter: dirty SPDIF preload short/error handling can leave setup partially initialized; same pre-existing firmware output root cause as the preload finding above.
 - `medium / defer` — edge-case-hunter: dirty SPDIF callback registration and channel-enable failures are ignored; pre-existing firmware output handling, deferred.
 
+### Review Findings
+
+No decision-needed findings remain after triage.
+
+#### Patch findings
+
+- [x] [Review][Patch] Snapshot the initiating wake outcome before queued submissions can overwrite it [app.py:3366-3368; tests/test_app_wake.py:786-830] — `_run_single_turn` now returns the local turn status captured before awaited cleanup, so a prompt queued during cleanup cannot suppress the initiating wake turn's one follow-up window.
+- [x] [Review][Patch] Complete adapter-level fail-closed wake coverage for interruption and clean stream EOF [app.py:4052-4202; tests/test_app_wake.py:678-710] — adapter tests now prove `audio_abort`/`turn_interrupted` and a stream without `turn_end` each produce one capture, one relay turn, no follow-up capture, and preserve the expected error/interrupted state; protocol-error assertions cover the same state boundary.
+- [x] [Review][Patch] Lock the missing wake-loop handoff to an unsuccessful send [app.py:1914-1927; tests/test_app_wake.py:619-710] — the teardown case now proves a listener reaching delivery after `_wake_loop` is cleared cannot open a follow-up window.
+
+#### Review repair
+
+- 2026-09-10: `_run_single_turn` now returns both its sent/not-sent decision and a prompt outcome captured before awaited cleanup; `_run_turn` uses that immutable per-call outcome for the initiating wake sender. The wake state projection also preserves `error` and `interrupted` after a failed wake turn while allowing local capture cancellation to return to `ready`.
+- 2026-09-10: Added adapter-level coverage for protocol error state, remote interruption with `audio_abort`, clean stream EOF, wake-loop teardown, and queue submission during turn cleanup.
+
+#### Deferred findings
+
+- [x] [Review][Defer] Wake-listener shutdown can join on the Textual event loop during connection recovery [app.py:3495-3507; wake.py:440-445] — deferred: this is a pre-existing lifecycle concern requiring a separate non-blocking listener-stop design, outside the frozen follow-up slice.
+- [x] [Review][Defer] Pre-existing reSpeaker diagnostic, format, lifecycle, output, and provenance findings remain outside the TUI slice [firmware/respeaker-lite/respeaker-lite.yaml:38-40; _bmad-output/implementation-artifacts/deferred-work.md:3-17] — deferred: the existing deferred-work entries already record the firmware guard and verification work; none of it is part of Story 1.3.
+
+#### Rejected
+
+- `false` — The claim that a stream without `turn_end` strands the active turn is refuted by `app.py:4191-4202` and `app.py:3382-3389`: EOF is converted to an error, the domain turn closes, and the outer turn finally clears `_turn_in_flight`; the remaining issue is coverage, recorded above.
+- `false` — Non-stale domain event rejection already fails closed at `app.py:3818-3847`, appending an error and returning before a later `turn_end` can invite follow-up.
+- `false` — Normalized `connection_lost`/`disconnected` events already take the recovery path at `app.py:3848-3852`; the current implementation disarms wake mode and closes the session.
+- `false` — Draining independent prompts after an ambiguous turn is the existing FIFO queue policy at `app.py:3369-3381`; it does not replay the uncertain prompt or act as the hands-free follow-up gate.
+- `false` — The broad `send` annotation in `handsfree.py:306-331` is not an observed TUI defect: both TUI and appliance adapters return booleans, and the coordinator deliberately treats only literal `False` as delivery failure.
+- `low` — Requiring IDs, owners, statuses, and exit criteria for every prose entry in `deferred-work.md` has no repository contract and would be process polish rather than a Story 1.3 correction.
+- `workflow` — `review_loop_iteration: 0` and the pre-review story status are workflow metadata; the review workflow updates them when disposition and status synchronization complete, rather than changing frozen story intent as a code patch.
+- `environment` — Live wake smoke was not run because this worktree has no configured Hermes endpoint or bearer token; the limitation is already recorded in Verification and is not a code defect.
+- `scope` — The commit-claims observation about an unrelated repository-boundary description is not a defect in the reviewed TUI implementation or acceptance behaviour.
+
+#### Review execution
+
+- 2026-09-10: The blind-hunter, edge-case-hunter, verification-gap, and acceptance-auditor passes timed out before returning reports. No automated reviewer findings were collected; the local focused and full-suite gates passed, and this limitation remains explicit rather than being presented as a clean adversarial review.
+
 ## Verification
 
 **Commands:**
-- `venv/bin/pytest -q tests/test_handsfree.py tests/test_app_wake.py tests/test_home_appliance.py tests/test_config.py tests/test_mic.py` -- passed: 210 tests in 11.01 seconds.
-- `venv/bin/pytest` -- passed: 865 tests in 65.67 seconds, with one pre-existing `websockets.legacy` deprecation warning.
+- `venv/bin/pytest -q tests/test_app.py tests/test_app_wake.py tests/test_handsfree.py` -- passed: 283 tests in 47.30 seconds.
+- `venv/bin/pytest` -- passed: 935 tests in 71.80 seconds, with one pre-existing `websockets.legacy` deprecation warning.
 - `git diff --check` -- passed with no whitespace errors.
 
 **Manual checks (if no CLI):**

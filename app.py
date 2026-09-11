@@ -21,6 +21,7 @@ import math
 import os
 import sys
 import time
+import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import Any, AsyncIterator, Awaitable, Callable, Optional
@@ -344,6 +345,7 @@ CONNECTION_CONNECTED = "connected"
 MAX_CONNECT_RETRY_DELAY = 8.0
 REMOTE_INTERRUPT_TIMEOUT = 2.0
 SHUTDOWN_TASK_TIMEOUT = 3.0
+HANDSHAKE_TIMEOUT = 30.0
 RETRY_HINT = "The app remains open; retry when the endpoint recovers."
 VOICE_READY = "ready"
 VOICE_STARTING = "starting…"
@@ -609,6 +611,7 @@ class HermesStreamingApp(App):
         self._barge_result_task: Optional[asyncio.Task[None]] = None
         self._last_tts_text = ""
         self._wake_loop: Optional[asyncio.AbstractEventLoop] = None
+        self._preserve_wake_terminal_state = False
         self._wake_starting = False
         self._wake_start_cancelled = False
         self._wake_opening = False
@@ -1092,7 +1095,8 @@ class HermesStreamingApp(App):
                         self._append_block(f"reconnecting… attempt {attempt + 1}/{attempts}")
 
                 try:
-                    hello = await self.session.connect()
+                    async with asyncio.timeout(HANDSHAKE_TIMEOUT):
+                        hello = await self.session.connect()
                     if not self.session.is_connected():
                         raise ConnectionError("session did not establish a connection")
                 except asyncio.CancelledError:
@@ -1103,12 +1107,17 @@ class HermesStreamingApp(App):
                     last_error = exc
                     self._set_connection_state(CONNECTION_DISCONNECTED)
                     self._set_voice_state(VOICE_DISCONNECTED)
-                    try:
-                        await self.session.close()
-                    except Exception:
-                        pass
+                    await self._close_session_with_timeout(
+                        self.session,
+                        event="app.connect.session_close",
+                        timeout_message=(
+                            "[warning] failed session cleanup timed out; continuing."
+                        ),
+                    )
                     self._append_block(
-                        f"[connection attempt {attempt + 1}/{attempts} failed: {exc}]"
+                        "[connection attempt "
+                        f"{attempt + 1}/{attempts} failed: "
+                        f"{self._connection_error_text(exc)}]"
                     )
                     continue
 
@@ -1138,6 +1147,8 @@ class HermesStreamingApp(App):
                     self._hydrate_transcript(self.session.initial_history)
                 if (
                     not reconnecting
+                    and not self._reconnect_in_flight
+                    and not self._needs_reconnect
                     and not self._launch_wake_attempted
                     and getattr(self.args, "wake_enabled", False)
                 ):
@@ -1148,10 +1159,20 @@ class HermesStreamingApp(App):
             self._set_connection_state(CONNECTION_DISCONNECTED)
             self._set_voice_state(VOICE_DISCONNECTED)
             self._append_block(
-                f"[error] {last_error}; unable to connect after {attempts} attempt(s)"
+                "[error] "
+                f"{self._connection_error_text(last_error)}; unable to connect "
+                f"after {attempts} attempt(s)"
             )
             self._append_block(RETRY_HINT)
             return False
+
+    @staticmethod
+    def _connection_error_text(error: BaseException) -> str:
+        """Describe a connection failure without leaving timeout errors blank."""
+        if isinstance(error, asyncio.TimeoutError):
+            return f"hello handshake timed out after {HANDSHAKE_TIMEOUT:g}s"
+        message = str(error).strip()
+        return message or type(error).__name__
 
     async def _handle_reconnect_command(self, args: str) -> None:
         """Recover the transport with a fresh session and no prompt replay."""
@@ -1187,7 +1208,9 @@ class HermesStreamingApp(App):
                     await self._close_session_for_reconnect(old_session)
 
                 try:
-                    self.session = self._new_session(self.args)
+                    recovery_args = copy.copy(self.args)
+                    recovery_args.session_id = uuid.uuid4().hex
+                    self.session = self._new_session(recovery_args)
                 except Exception as exc:
                     diagnostic_logger.debug(
                         "app.reconnect.new_session_failed type=%s",
@@ -1233,9 +1256,21 @@ class HermesStreamingApp(App):
         finally:
             self._reconnect_in_flight = False
 
-    async def _close_session_for_reconnect(self, session: SessionProtocol) -> None:
-        """Bound old-session cleanup so a dead transport cannot trap recovery."""
-        close_task = asyncio.create_task(session.close())
+    async def _close_session_with_timeout(
+        self,
+        session: SessionProtocol,
+        *,
+        event: str,
+        timeout_message: Optional[str] = None,
+    ) -> None:
+        """Run session cleanup with a bounded wait and safe late-task logging."""
+        try:
+            close_task = asyncio.create_task(session.close())
+        except Exception as exc:
+            diagnostic_logger.debug(
+                "%s.create_failed type=%s", event, type(exc).__name__
+            )
+            return
         self._track_cleanup_task(close_task)
         try:
             await asyncio.wait_for(
@@ -1243,15 +1278,23 @@ class HermesStreamingApp(App):
                 SHUTDOWN_TASK_TIMEOUT,
             )
         except asyncio.TimeoutError:
-            diagnostic_logger.warning("app.reconnect.old_session_close_timeout")
-            self._append_block(
-                "[warning] previous session cleanup timed out; continuing with a fresh session."
-            )
+            diagnostic_logger.warning("%s.timeout", event)
+            if timeout_message:
+                self._append_block(timeout_message)
         except Exception as exc:
             diagnostic_logger.debug(
-                "app.reconnect.old_session_close_failed type=%s",
-                type(exc).__name__,
+                "%s.failed type=%s", event, type(exc).__name__
             )
+
+    async def _close_session_for_reconnect(self, session: SessionProtocol) -> None:
+        """Bound old-session cleanup so a dead transport cannot trap recovery."""
+        await self._close_session_with_timeout(
+            session,
+            event="app.reconnect.old_session_close",
+            timeout_message=(
+                "[warning] previous session cleanup timed out; continuing with a fresh session."
+            ),
+        )
 
     async def on_unmount(self) -> None:
         # Release the device before anything else. A quit that leaves the
@@ -1277,9 +1320,9 @@ class HermesStreamingApp(App):
                 done.result()
             except asyncio.CancelledError:
                 pass
-            except Exception:
+            except Exception as exc:
                 diagnostic_logger.debug(
-                    "app.shutdown.cleanup_failed", exc_info=True
+                    "app.shutdown.cleanup_failed type=%s", type(exc).__name__
                 )
 
         task.add_done_callback(finished)
@@ -1400,6 +1443,8 @@ class HermesStreamingApp(App):
         self._append_block(f"wake mode: on — listening · {detail}")
 
     async def _arm_wake(self) -> None:
+        if self._reconnect_in_flight:
+            return
         if self.wake_armed:
             self._append_block("wake mode is already on")
             return
@@ -1442,7 +1487,8 @@ class HermesStreamingApp(App):
                 "wake.start stage=model complete elapsed=%.3f",
                 time.perf_counter() - stage_started,
             )
-            if self._wake_start_cancelled:
+            if self._wake_start_cancelled or self._reconnect_in_flight:
+                self._disarm_wake()
                 return
             if built is None:
                 self._set_voice_state(VOICE_ERROR)
@@ -1453,7 +1499,7 @@ class HermesStreamingApp(App):
             self._wake_loop = asyncio.get_running_loop()
             self._wake_listener = listener
             self._wake_coordinator = coordinator
-            if self._wake_start_cancelled:
+            if self._wake_start_cancelled or self._reconnect_in_flight:
                 self._disarm_wake()
                 return
 
@@ -1523,7 +1569,7 @@ class HermesStreamingApp(App):
                 "wake.start stage=microphone complete elapsed=%.3f",
                 time.perf_counter() - stage_started,
             )
-            if self._wake_start_cancelled:
+            if self._wake_start_cancelled or self._reconnect_in_flight:
                 self._disarm_wake()
                 try:
                     recorder.shutdown()
@@ -1839,6 +1885,12 @@ class HermesStreamingApp(App):
         up to be scored as a stale wake after the turn. Textual repainting is
         handed back to its event loop.
         """
+        if state in {
+            handsfree.ACKNOWLEDGING,
+            handsfree.CAPTURING,
+            handsfree.SENDING,
+        }:
+            self._preserve_wake_terminal_state = False
         self._set_wake_listening(busy=state != handsfree.IDLE)
         loop = self._wake_loop
         if loop is None:
@@ -1883,6 +1935,11 @@ class HermesStreamingApp(App):
             state == handsfree.IDLE
             and not self._turn_in_flight
             and self._voice_capture_task is None
+            and not (
+                self._preserve_wake_terminal_state
+                and self.voice_state
+                in {VOICE_ERROR, VOICE_INTERRUPTED, VOICE_DISCONNECTED}
+            )
         ):
             self._set_voice_state(VOICE_READY)
 
@@ -2651,6 +2708,11 @@ class HermesStreamingApp(App):
             return
 
         self._enqueue_prompt(args.strip())
+        if self._reconnect_in_flight:
+            self._append_block(
+                f"queued until reconnect completes: {self._queue_preview(args.strip())}"
+            )
+            return
         if not self._turn_in_flight:
             next_text = self._queued_prompts.pop(0)
             self._refresh_queue_shelf()
@@ -3287,6 +3349,13 @@ class HermesStreamingApp(App):
             composer.load_text("")
         self._history.append(history_text)
 
+        if self._reconnect_in_flight:
+            self._enqueue_prompt(text)
+            self._append_block(
+                f"queued until reconnect completes: {self._queue_preview(text)}"
+            )
+            return
+
         current_task = asyncio.current_task()
         while self._busy_transition_owner is not None:
             await asyncio.sleep(0)
@@ -3363,9 +3432,16 @@ class HermesStreamingApp(App):
             next_text: Optional[str] = text
             next_stt_source = stt_source
             while next_text is not None:
-                turn_was_sent = await self._run_single_turn(next_text, stt_source=next_stt_source)
+                turn_was_sent, turn_status = await self._run_single_turn(
+                    next_text, stt_source=next_stt_source
+                )
                 if initial_prompt_status is None:
-                    initial_prompt_status = self._last_prompt_status
+                    # `_run_single_turn` snapshots this before its awaited
+                    # cleanup. A prompt submitted during that cleanup may
+                    # update the shared last-prompt fields, but it must not
+                    # change the outcome reported for the initiating wake
+                    # turn.
+                    initial_prompt_status = turn_status
                 if not turn_was_sent:
                     self._queued_prompts.insert(0, next_text)
                     self._refresh_queue_shelf()
@@ -3388,9 +3464,13 @@ class HermesStreamingApp(App):
             self._set_wake_listening(busy=self._barge_capture_active)
         return initial_prompt_status == PROMPT_COMPLETED
 
-    async def _run_single_turn(self, text: str, *, stt_source: str) -> bool:
+    async def _run_single_turn(
+        self, text: str, *, stt_source: str
+    ) -> tuple[bool, str]:
         self._last_prompt = text
         self._last_prompt_status = PROMPT_NOT_SENT
+        turn_status = PROMPT_NOT_SENT
+        turn_was_sent = False
         self._last_tts_text = ""
         diagnostic_logger.debug(
             "app.turn.start index=%s stt_source=%s %s",
@@ -3402,7 +3482,7 @@ class HermesStreamingApp(App):
             if not await self._connect():
                 self._append_block(f"you> {text}")
                 self._append_block("[error] not connected; prompt kept in queue")
-                return False
+                return False, turn_status
 
         index = self.session.turn_index
         self._clear_audio_unavailable()
@@ -3411,6 +3491,8 @@ class HermesStreamingApp(App):
         # stream reports an error, so every post-user-display failure is
         # intentionally treated as ambiguous and is never auto-replayed.
         self._last_prompt_status = PROMPT_AMBIGUOUS
+        turn_status = PROMPT_AMBIGUOUS
+        turn_was_sent = True
         timeout = getattr(self.args, "turn_timeout", 0) or 0
         try:
             domain_turn = self.domain.begin_turn(
@@ -3439,21 +3521,29 @@ class HermesStreamingApp(App):
                 turn_completed = await self._consume_turn(
                     events, index, generation=index
                 )
-            self._last_prompt_status = (
+            turn_status = (
                 PROMPT_COMPLETED if turn_completed else PROMPT_AMBIGUOUS
             )
+            self._last_prompt_status = turn_status
+            self._preserve_wake_terminal_state = turn_status == PROMPT_AMBIGUOUS
         except SessionNotReadyError:
+            turn_was_sent = False
+            turn_status = PROMPT_NOT_SENT
             await self._mark_connection_lost()
-            self._last_prompt_status = PROMPT_NOT_SENT
+            self._last_prompt_status = turn_status
             self._append_block("[error] not connected; prompt kept in queue")
-            return False
+            return turn_was_sent, turn_status
         except asyncio.CancelledError:
+            self._preserve_wake_terminal_state = True
             self._set_voice_state(VOICE_INTERRUPTED)
             self._append_block("[interrupted]")
             self._set_connection_state(CONNECTION_DISCONNECTED)
             self._needs_reconnect = True
             raise
         except (asyncio.TimeoutError, TimeoutError):
+            turn_status = PROMPT_AMBIGUOUS
+            self._last_prompt_status = turn_status
+            self._preserve_wake_terminal_state = True
             self._set_voice_state(VOICE_ERROR)
             await self._mark_connection_lost()
             self._append_block(
@@ -3463,6 +3553,9 @@ class HermesStreamingApp(App):
         except Exception as exc:
             # ConnectionClosed, ConcurrencyError, AttributeError from a dead
             # socket — none of them should take the whole app down.
+            turn_status = PROMPT_AMBIGUOUS
+            self._last_prompt_status = turn_status
+            self._preserve_wake_terminal_state = True
             await self._mark_connection_lost()
             self._set_voice_state(VOICE_ERROR)
             self._append_block(f"[error] {exc}")
@@ -3490,7 +3583,7 @@ class HermesStreamingApp(App):
                 len(self.transcript_text),
                 self.connection_state,
             )
-        return True
+        return turn_was_sent, turn_status
 
     async def _mark_connection_lost(self) -> None:
         """Close a failed stream so the next turn cannot reuse a dead socket."""
