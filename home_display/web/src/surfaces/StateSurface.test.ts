@@ -75,13 +75,105 @@ describe("StateSurface", () => {
     expect(response).toHaveTextContent("one stable block");
   });
 
+  it.each(["thinking", "buffering"])("renders streamed response text while %s", (state) => {
+    const { container } = render(StateSurface, {
+      props: { snapshot: snapshot(state, "partial answer"), connectionState: "connected" },
+    });
+
+    expect(container.querySelector("[data-response-text]")).toHaveTextContent("partial answer");
+    expect(container.querySelector("[data-response-viewport]")).toHaveAttribute(
+      "data-response-phase",
+      state === "buffering" ? "buffering" : "streaming",
+    );
+  });
+
   it("keeps the completed response readable after playback returns to idle", () => {
     const { container } = render(StateSurface, {
       props: { snapshot: snapshot("idle", "The final answer"), connectionState: "connected" },
     });
 
     expect(container.querySelector("[data-response-text]")).toHaveTextContent("The final answer");
-    expect(container.querySelector("[aria-live=polite]")).not.toBeNull();
+    expect(container.querySelector("[data-response-viewport]")).toHaveAttribute(
+      "aria-live",
+      "polite",
+    );
+    expect(container.querySelector("[data-response-viewport]")).toHaveAttribute(
+      "aria-label",
+      "Completed Hermes response",
+    );
+  });
+
+  it("renders user transcription as a distinct accessible live region", () => {
+    const { container } = render(StateSurface, {
+      props: {
+        snapshot: snapshot("listening"),
+        connectionState: "connected",
+        userTranscript: "what is the weather?",
+      },
+    });
+
+    const transcription = container.querySelector("[data-user-transcription]");
+    expect(transcription).toHaveAttribute("aria-label", "Your transcription");
+    expect(transcription).toHaveTextContent("You said what is the weather?");
+    expect(container.querySelector(".state-surface")).toHaveAttribute("aria-live", "polite");
+    expect(container.querySelector("[data-user-transcription-text]")).toHaveAttribute(
+      "aria-live",
+      "off",
+    );
+    expect(container.querySelector("[data-response-text]")).toHaveTextContent("");
+  });
+
+  it("hides a response when its browser-local retention window expires", () => {
+    const { container } = render(StateSurface, {
+      props: {
+        snapshot: snapshot("idle", "The final answer"),
+        connectionState: "connected",
+        responseVisible: false,
+      },
+    });
+
+    expect(container.querySelector(".state-surface")).not.toHaveClass("has-response");
+    expect(container.querySelector("[data-response-text]")).toHaveTextContent("");
+  });
+
+  it("marks terminal response state as unavailable instead of streaming", () => {
+    const { container, rerender } = render(StateSurface, {
+      props: {
+        snapshot: snapshot("error", "stale response"),
+        connectionState: "connected",
+      },
+    });
+
+    expect(container.querySelector("[data-response-viewport]")).toHaveAttribute(
+      "data-response-phase",
+      "unavailable",
+    );
+
+    void rerender({
+      snapshot: snapshot("disconnected", "stale response"),
+      connectionState: "connected",
+    });
+    expect(container.querySelector("[data-response-viewport]")).toHaveAttribute(
+      "data-response-phase",
+      "unavailable",
+    );
+  });
+
+  it("renders a non-speaking state when browser audio playback fails", () => {
+    const { container } = render(StateSurface, {
+      props: {
+        snapshot: snapshot("speaking", "The answer", "Speaking"),
+        connectionState: "connected",
+        audioPlaybackFailed: true,
+      },
+    });
+
+    expect(container.querySelector('[data-state="buffering"]')).not.toBeNull();
+    expect(container.querySelector('[data-state="speaking"]')).toBeNull();
+    expect(container.querySelector("[data-response-text]")).toHaveTextContent("The answer");
+    expect(container.querySelector(".status-text")).toHaveTextContent(
+      "Audio unavailable — response text remains visible",
+    );
   });
 
   it("automatically advances an overflowing response viewport", async () => {

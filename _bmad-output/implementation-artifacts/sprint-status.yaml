@@ -57,7 +57,7 @@ development_status:
     ready-for-dev
   epic-1-retrospective: optional
 
-  epic-2: backlog
+  epic-2: in-progress
   2-i-1-show-the-ios-doorway-s-capture-acknowledgement-and-live-tran: backlog
   2-i-2-show-honest-ios-disconnected-unavailable-state-without-stale: backlog
   2-p-1-expose-the-puck-s-local-capture-response-and-status-phases-w: backlog
@@ -68,7 +68,7 @@ development_status:
   2-e-4-render-honest-disconnected-state-and-safe-cached-context-on: backlog
   2-wk-1-render-the-shared-room-scoped-ambient-surface-for-web-and-ip: backlog
   2-wk-2-render-active-capture-room-local-transcription-response-and:
-    ready-for-dev
+    review
   2-wk-3-mirror-hermes-prompts-without-touch-approval-or-a-second-ses: backlog
   2-wk-4-render-honest-disconnected-state-cached-context-and-accessib: backlog
   2-t-1-keep-the-direct-tui-doorway-s-capture-and-phase-state-visibl: backlog

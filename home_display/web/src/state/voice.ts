@@ -31,11 +31,13 @@ export interface SpeechRecognitionLike {
 export type SpeechRecognitionFactory = () => SpeechRecognitionLike;
 export type VoiceTextSender = (text: string) => Promise<boolean> | boolean;
 export type SpeechRecognitionPreparer = () => Promise<void> | void;
+export type VoiceTranscriptListener = (text: string, isFinal: boolean) => void;
 
 export interface BrowserVoiceControllerOptions {
   sendText: VoiceTextSender;
   onState?: (state: VoiceState) => void;
   onError?: (message: string) => void;
+  onTranscript?: VoiceTranscriptListener;
   recognitionFactory?: SpeechRecognitionFactory;
   language?: string;
 }
@@ -69,6 +71,7 @@ export class BrowserVoiceController {
   private readonly sendText: VoiceTextSender;
   private readonly onState: (state: VoiceState) => void;
   private readonly onError: (message: string) => void;
+  private readonly onTranscript: VoiceTranscriptListener;
   private readonly recognitionFactory: SpeechRecognitionFactory;
   private readonly language: string;
   private recognition: SpeechRecognitionLike | null = null;
@@ -79,6 +82,7 @@ export class BrowserVoiceController {
     this.sendText = options.sendText;
     this.onState = options.onState ?? (() => {});
     this.onError = options.onError ?? (() => {});
+    this.onTranscript = options.onTranscript ?? (() => {});
     this.recognitionFactory = options.recognitionFactory ?? defaultRecognitionFactory;
     this.language = options.language ?? "en-US";
   }
@@ -97,6 +101,7 @@ export class BrowserVoiceController {
         if (this.recognition === recognition) this.recognition = null;
         if (!this.submitting) {
           this.listening = false;
+          this.onTranscript("", true);
           this.emit("idle");
         }
       };
@@ -115,6 +120,7 @@ export class BrowserVoiceController {
     if (!this.listening || this.recognition === null) return;
     this.listening = false;
     this.stopRecognition();
+    this.onTranscript("", true);
     if (!this.submitting) this.emit("idle");
   }
 
@@ -122,21 +128,16 @@ export class BrowserVoiceController {
     this.stopRecognition();
     this.listening = false;
     this.submitting = false;
+    this.onTranscript("", true);
     this.emit("idle");
   }
 
   private handleResult(event: SpeechRecognitionResultEventLike): void {
     if (!this.listening) return;
 
-    const finalText: string[] = [];
-    for (let index = event.resultIndex; index < event.results.length; index += 1) {
-      const result = event.results[index];
-      if (result?.isFinal) {
-        const transcript = result[0]?.transcript?.trim();
-        if (transcript) finalText.push(transcript);
-      }
-    }
-    const text = finalText.join(" ").trim();
+    const { liveText, finalText: text } = recognitionText(event);
+    const visibleText = text || liveText;
+    this.onTranscript(visibleText, text.length > 0);
     if (!text) return;
 
     this.listening = false;
@@ -160,6 +161,7 @@ export class BrowserVoiceController {
     this.stopRecognition();
     this.listening = false;
     this.submitting = false;
+    this.onTranscript("", true);
     this.emit("error");
     this.onError(message);
   }
@@ -200,6 +202,7 @@ export interface BrowserHandsFreeControllerOptions {
   followUpSeconds?: number;
   onState?: (state: HandsFreeState) => void;
   onError?: (message: string) => void;
+  onTranscript?: VoiceTranscriptListener;
   recognitionFactory?: SpeechRecognitionFactory;
   prepareRecognition?: SpeechRecognitionPreparer;
   language?: string;
@@ -249,15 +252,25 @@ function wakeRemainder(text: string, wakePhrases: string[]): string | null {
   return null;
 }
 
-function finalRecognitionText(event: SpeechRecognitionResultEventLike): string {
-  const parts: string[] = [];
+function recognitionText(event: SpeechRecognitionResultEventLike): {
+  liveText: string;
+  finalText: string;
+} {
+  const liveParts: string[] = [];
+  const finalParts: string[] = [];
   for (let index = event.resultIndex; index < event.results.length; index += 1) {
     const result = event.results[index];
-    if (!result?.isFinal) continue;
     const transcript = result[0]?.transcript;
-    if (transcript) parts.push(transcript);
+    if (!transcript) continue;
+    const normalized = normaliseSpeech(transcript);
+    if (!normalized) continue;
+    liveParts.push(normalized);
+    if (result.isFinal) finalParts.push(normalized);
   }
-  return normaliseSpeech(parts.join(" "));
+  return {
+    liveText: normaliseSpeech(liveParts.join(" ")),
+    finalText: normaliseSpeech(finalParts.join(" ")),
+  };
 }
 
 /**
@@ -271,6 +284,7 @@ export class BrowserHandsFreeController {
   private followUpSeconds: number;
   private readonly onState: (state: HandsFreeState) => void;
   private readonly onError: (message: string) => void;
+  private readonly onTranscript: VoiceTranscriptListener;
   private readonly recognitionFactory: SpeechRecognitionFactory;
   private readonly prepareRecognition: SpeechRecognitionPreparer;
   private readonly language: string;
@@ -294,6 +308,7 @@ export class BrowserHandsFreeController {
     this.followUpSeconds = positiveSeconds(options.followUpSeconds);
     this.onState = options.onState ?? (() => {});
     this.onError = options.onError ?? (() => {});
+    this.onTranscript = options.onTranscript ?? (() => {});
     this.recognitionFactory = options.recognitionFactory ?? defaultRecognitionFactory;
     this.prepareRecognition = options.prepareRecognition ?? defaultRecognitionPreparer;
     this.language = options.language ?? "en-US";
@@ -362,6 +377,7 @@ export class BrowserHandsFreeController {
     this.turnInFlight = false;
     this.clearTimers();
     this.stopRecognition();
+    this.onTranscript("", true);
     this.emit("off");
   }
 
@@ -488,10 +504,10 @@ export class BrowserHandsFreeController {
 
   private handleResult(event: SpeechRecognitionResultEventLike, generation: number): void {
     if (!this.isCurrent(generation) || this.phase === "submitting") return;
-    const text = finalRecognitionText(event);
-    if (!text) return;
+    const { liveText, finalText: text } = recognitionText(event);
 
     if (this.phase === "wake_ready") {
+      if (!text) return;
       const remainder = wakeRemainder(text, this.wakePhrases);
       if (remainder === null) return;
       if (!remainder || isLocalStopCommand(remainder)) {
@@ -499,6 +515,7 @@ export class BrowserHandsFreeController {
         else this.beginInitialCapture(generation);
         return;
       }
+      this.onTranscript(remainder, true);
       this.submit(remainder, generation);
       return;
     }
@@ -508,10 +525,15 @@ export class BrowserHandsFreeController {
       this.phase !== "initial_capture" &&
       this.phase !== "follow_up"
     ) return;
+    if (!text) {
+      this.onTranscript(liveText, false);
+      return;
+    }
     if (isLocalStopCommand(text)) {
       this.finishCapture(generation);
       return;
     }
+    this.onTranscript(text, true);
     this.submit(text, generation);
   }
 
@@ -603,6 +625,7 @@ export class BrowserHandsFreeController {
 
   private finishCapture(generation: number): void {
     if (!this.isCurrent(generation)) return;
+    this.onTranscript("", true);
     this.clearCaptureTimer();
     this.stopRecognition();
     this.enterWakeReady(generation, true);
@@ -613,6 +636,7 @@ export class BrowserHandsFreeController {
     this.captureTimer = setTimeout(() => {
       this.captureTimer = null;
       if (!this.isCurrent(generation)) return;
+      this.onTranscript("", true);
       this.stopRecognition();
       this.enterWakeReady(generation, true);
     }, Math.min(seconds, MAX_HANDS_FREE_TIMER_SECONDS) * 1000);
@@ -653,6 +677,7 @@ export class BrowserHandsFreeController {
     this.turnInFlight = false;
     this.clearTimers();
     this.stopRecognition();
+    this.onTranscript("", true);
     this.emit("error");
     this.onError(message);
   }
