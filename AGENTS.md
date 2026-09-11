@@ -257,7 +257,8 @@ Do not put a real token in this file or in the README.
 - Type `/` and a command name directly in the composer, same as any other text; a live, non-blocking suggestion line above the composer shows matching commands and their args/description as you type, and disappears once you've typed a space or the text stops looking like a command.
 - Press `Tab` after `/` to complete a uniquely-matching command name in place, without leaving the composer.
 - While a turn is active, ordinary prompts follow `--busy-mode` (`queue` by default; `steer` or `interrupt` are alternatives).
-- Use `/queue` to inspect or edit queued prompts.
+- Queued prompts are shown in the ambient queue shelf; `/undo` removes the last
+  unsent local prompt.
 - Use `/busy [queue|steer|interrupt]` to change the mode for the current session.
 - Use `/details [show|hide]` or `--hide-thinking` to control thinking/tool detail in the transcript.
 - The voice status line carries a `◉ mic open` marker whenever the input
@@ -298,7 +299,8 @@ Do not put a real token in this file or in the README.
 - Steering happens when an ordinary message is submitted in `--busy-mode steer`; there is no separate slash command.
 - Slash commands are routed before ordinary text; do not silently send an unknown command as a model prompt.
 - `Ctrl+R` captures a local microphone turn and sends its transcript.
-- `F1` displays help in the transcript.
+- `F1` opens temporary keyboard help; Escape closes it without adding help to
+  the transcript.
 - `Ctrl+Q` quits.
 
 ### Important options

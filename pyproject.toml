@@ -65,7 +65,7 @@ hermes-relay-benchmark = "speech_benchmark:main"
 environments = ["sys_platform == 'darwin'"]
 
 [tool.setuptools]
-py-modules = ["app", "attachments", "audio", "clipboard", "client", "commands", "config", "diagnostics", "domain", "earcons", "history", "installer", "mic", "profile_cli", "prompts", "session", "session_picker", "setup_wizard", "shell", "speech_benchmark", "timing", "transcript", "voice", "wake", "handsfree"]
+py-modules = ["app", "attachments", "audio", "clipboard", "client", "commands", "config", "diagnostics", "domain", "earcons", "help_screen", "history", "installer", "mic", "profile_cli", "prompts", "session", "session_picker", "setup_wizard", "shell", "speech_benchmark", "timing", "transcript", "voice", "wake", "handsfree"]
 include-package-data = false
 
 [tool.setuptools.packages.find]

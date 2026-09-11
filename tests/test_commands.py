@@ -28,12 +28,20 @@ def test_unknown_command_stays_a_command_for_gateway_dispatch():
 
 def test_completion_targets_slash_words_and_subcommands():
     assert complete_slash_command("/sta") == ["/status"]
-    assert complete_slash_command("/q") == ["/queue", "/quit"]
+    assert complete_slash_command("/q") == ["/quit"]
     assert complete_slash_command("/session li") == ["/session list"]
     assert complete_slash_command("/session res") == ["/session resume"]
     assert complete_slash_command("/busy q") == ["/busy queue"]
     assert complete_slash_command("/model gpt") == []
     assert complete_slash_command("/session list extra") == []
+
+
+def test_queue_is_automatic_not_a_registered_command():
+    invocation = parse_slash_command("/queue")
+
+    assert invocation is not None
+    assert invocation.command is None
+    assert "/queue" not in help_text()
 
 
 def test_steer_is_not_a_registered_command():

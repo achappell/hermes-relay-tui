@@ -26,7 +26,7 @@ class TranscriptBuffer:
     re-rendered as one Markdown message instead of one widget write per delta.
     """
 
-    _LABELS = {"user": "you> ", "assistant": "hermes: "}
+    _LABELS = {"user": "you> "}
     _STYLES = {
         "user": "bold cyan",
         "assistant": "bold green",
@@ -39,10 +39,21 @@ class TranscriptBuffer:
         "system": "white",
     }
 
-    def __init__(self) -> None:
+    def __init__(self, *, assistant_label: str = "hermes") -> None:
         self.messages: list[TranscriptMessage] = []
         self._active_activity: TranscriptMessage | None = None
         self._streaming_message: TranscriptMessage | None = None
+        self._assistant_label = "assistant"
+        self.set_assistant_label(assistant_label)
+
+    @property
+    def assistant_label(self) -> str:
+        return self._assistant_label
+
+    def set_assistant_label(self, label: str) -> None:
+        """Set the visible response label without changing transcript records."""
+        normalized = " ".join(str(label or "").split()) or "assistant"
+        self._assistant_label = normalized
 
     def clear(self) -> None:
         self.messages.clear()
@@ -124,7 +135,10 @@ class TranscriptBuffer:
         return "\n".join(blocks)
 
     def _plain_message(self, message: TranscriptMessage) -> str:
-        return f"{self._LABELS.get(message.role, '')}{message.text}"
+        label = "you> " if message.role == "user" else (
+            f"{self._assistant_label}: " if message.role == "assistant" else ""
+        )
+        return f"{label}{message.text}"
 
     def render(self, *, show_details: bool = True) -> Group:
         """Build a Rich renderable for the current transcript snapshot."""
@@ -134,7 +148,13 @@ class TranscriptBuffer:
                 continue
             if not message.text:
                 continue
-            label = self._LABELS.get(message.role)
+            label = (
+                "you> "
+                if message.role == "user"
+                else f"{self._assistant_label}: "
+                if message.role == "assistant"
+                else None
+            )
             if label:
                 renderables.append(Text(label.rstrip(), style=self._STYLES[message.role]))
                 if message.role == "user":

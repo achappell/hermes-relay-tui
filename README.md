@@ -15,7 +15,7 @@ This is a client for the existing Hermes voice-session channel. It does not run 
 - Session create/resume through `--session-id`.
 - Bounded reconnect attempts with visible connection state and local prompt preservation.
 - Explicit reconnect recovery that creates a fresh session without replaying an uncertain turn.
-- Structured thinking, status, tool, notification, and background activity rendering with unsupported-event diagnostics.
+- Structured thinking, status, tool, notification, and background activity rendering with unsupported-event diagnostics available on demand.
 - Typed Markdown transcript rendering with `/details [show|hide]` and `--hide-thinking` controls.
 - Connection, timeout, and turn errors shown in the UI instead of crashing the app.
 - Local image staging and `@path` attachment previews with an explicit text-only relay boundary.
@@ -371,11 +371,12 @@ under a profile namespace once named profiles are active, so local continuity
 cannot mix Amanda's and Jensen's prompts.
 
 Richer gateway-style events are normalized when the relay sends them. Thinking
-deltas accumulate into one replaceable detail line and become a short elapsed
-summary when the answer starts. If the relay supplies reasoning only with
-`message.complete`, the client surfaces that fallback through the same lane.
-Tool progress uses the same activity lane, repeated status updates are
-suppressed, and the final assistant text starts on its own `hermes:` line.
+deltas accumulate into one replaceable detail line while a turn is active and
+become a short elapsed summary only when `/details show` is enabled. If the
+relay supplies reasoning only with `message.complete`, the client surfaces that
+fallback through the same lane. Tool progress uses the same activity lane,
+repeated status updates are suppressed, and the final assistant text starts on
+its own configured Profile label.
 Event types the client does not understand are shown as diagnostic transcript
 entries instead of being discarded.
 
@@ -438,7 +439,7 @@ whether a crash report exists and its path.
 | `/undo` | Remove an unsent local prompt from the queue |
 | Mouse drag | Select transcript text; release to copy it automatically and show a brief toast |
 | `Ctrl+C` | Copy the current selection; without one, interrupt the active turn or clear/quit when idle |
-| `F1` | Show keyboard help |
+| `F1` | Open keyboard help |
 | `Ctrl+Q` | Quit |
 
 Shutdown is explicit: `Ctrl+C` during a turn aborts response audio, while
@@ -453,8 +454,8 @@ replaces the active response, and `interrupt` stops the active response without
 sending the new message.
 
 When prompts are waiting, a compact queue shelf above the composer shows the
-pending count and previews; it disappears as the queue drains. Use `/queue` to
-edit or remove pending prompts.
+pending count and previews without ordinal labels; it disappears as the queue
+drains. Queueing is automatic; `/undo` removes the last unsent local prompt.
 
 Slash commands are routed before ordinary prompts. Typing `/` and a command
 name works like any other text — a compact, non-blocking suggestion line
@@ -462,10 +463,8 @@ above the composer lists matching commands and their args/description as you
 type, and disappears once you've typed a space or the text no longer looks
 like a command. `Tab` fills in a uniquely-matching command name without
 moving focus out of the composer. The initial commands
-are `/help`, `/clear`, `/status`, `/profile`, `/queue`, `/busy`, `/details`, `/voice`, `/wake`, `/audio`, `/image`, `/history`, `/save`, `/copy`, `/logs`, `/reconnect`, `/retry`, `/undo`, `/usage`, `/compress`, and `/quit`;
-`/queue`
-also supports `list`, `edit <number> <replacement>`, `drop <number>`, and
-`clear`. `/busy [queue|steer|interrupt]` changes the mode for the current
+are `/help`, `/clear`, `/status`, `/profile`, `/busy`, `/details`, `/voice`, `/wake`, `/audio`, `/image`, `/history`, `/save`, `/copy`, `/logs`, `/reconnect`, `/retry`, `/undo`, `/usage`, `/compress`, and `/quit`;
+`/busy [queue|steer|interrupt]` changes the mode for the current
 session. `/details [show|hide]` controls thinking and tool detail. `/audio`
 shows the current devices; `/audio list` lists PortAudio devices, and
 `/audio input <device>` / `/audio output <device>` select a device for the
@@ -484,6 +483,7 @@ the active target after the current work is idle. Use `hermes-relay profile
 create|edit|delete` before launch for the configuration operations that need
 hidden token input or deletion confirmation.
 
+`/help` opens a temporary overlay; press Escape to return to the composer.
 `/save` and `/copy` use the exact visible transcript projection, so hidden
 thinking and tool detail is excluded while `/details show` includes it. `/save`
 defaults to `hermes-transcript-YYYYMMDD-HHMMSS.txt` in the current directory and

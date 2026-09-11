@@ -38,7 +38,6 @@ COMMAND_REGISTRY: tuple[Command, ...] = (
     ),
     Command("sessions", "List and select Hermes sessions", args_hint="[search]"),
     Command("resume", "Resume a Hermes session", args_hint="[session-id]"),
-    Command("queue", "Queue a prompt for the next turn", args_hint="<prompt>"),
     Command(
         "busy",
         "Show or set active-turn behavior",
