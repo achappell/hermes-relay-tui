@@ -43,7 +43,7 @@ development_status:
   1-4-recover-without-replaying-an-uncertain-turn: review
   1-i-1-authorized-initiation: done
   1-i-2-honest-phases-with-response-audio-delivery: done
-  1-i-3-fresh-recovery-without-replay: backlog
+  1-i-3-fresh-recovery-without-replay: done
   1-p-1-authorized-wake-and-capture: backlog
   1-p-2-status-and-response-audio-delivery: backlog
   1-p-3-bounded-follow-up-and-exact-stop: backlog
