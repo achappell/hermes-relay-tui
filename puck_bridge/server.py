@@ -56,13 +56,23 @@ def build_session_args(remaining_argv: Sequence[str]) -> argparse.Namespace:
     Reuses `config.build_arg_parser` unchanged -- the same CLI-flag >
     env-var > YAML-config > built-in precedence, profile selection, and
     token resolution the TUI and household appliance already rely on. This
-    bridge only adds a distinct `session_id` so its turns land in their own
-    Hermes session rather than colliding with another doorway's.
+    bridge always suffixes the resolved `session_id` so its turns land in
+    their own Hermes session rather than colliding with another doorway's.
+
+    `config.build_arg_parser` always populates a non-empty `session_id`
+    from the selected profile's own YAML config (e.g. "amanda-kiosk"), so
+    an emptiness check here would never fire -- the suffix must be applied
+    unconditionally, except when the caller explicitly passed `--session-id`
+    on this bridge's own command line, which is honored verbatim.
     """
     session_parser = config.build_arg_parser(list(remaining_argv))
     session_args = session_parser.parse_args(list(remaining_argv))
-    if not getattr(session_args, "session_id", None):
-        session_args.session_id = f"{session_args.profile_name}-puck-bridge"
+    explicit_session_id = any(
+        arg == "--session-id" or arg.startswith("--session-id=")
+        for arg in remaining_argv
+    )
+    if not explicit_session_id:
+        session_args.session_id = f"{session_args.session_id}-puck-bridge"
     return session_args
 
 
