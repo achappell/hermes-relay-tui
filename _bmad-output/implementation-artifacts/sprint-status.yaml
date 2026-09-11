@@ -29,7 +29,7 @@
 # - Dev moves story to 'review', then runs code-review (fresh context, different LLM recommended)
 # - Retrospective appends its action items to action_items; the status view surfaces open ones
 generated: 09-08-2026 00:00
-last_updated: 09-11-2026 00:05
+last_updated: 09-11-2026 14:55
 project: hermes-relay-tui
 project_key: NOKEY
 tracking_system: file-system
@@ -44,6 +44,9 @@ development_status:
   1-i-1-authorized-initiation: done
   1-i-2-honest-phases-with-response-audio-delivery: done
   1-i-3-fresh-recovery-without-replay: done
+  1-a-1-authorized-typed-or-tap-to-speak-initiation-bound-to-the-sel: backlog
+  1-a-2-honest-phases-with-response-text-audio-delivery-and-explicit: backlog
+  1-a-3-fresh-recovery-without-replaying-an-uncertain-turn: backlog
   1-p-1-authorized-wake-and-capture: review
   1-p-2-status-and-response-audio-delivery: ready-for-dev
   1-p-3-bounded-follow-up-and-exact-stop: backlog
@@ -60,6 +63,8 @@ development_status:
   epic-2: in-progress
   2-i-1-show-the-ios-doorway-s-capture-acknowledgement-and-live-tran: backlog
   2-i-2-show-honest-ios-disconnected-unavailable-state-without-stale: backlog
+  2-a-1-show-the-android-doorway-s-capture-acknowledgement-and-live: backlog
+  2-a-2-show-honest-android-disconnected-unavailable-state-without-s: backlog
   2-p-1-expose-the-puck-s-local-capture-response-and-status-phases-w: backlog
   2-p-2-fail-closed-and-show-unavailable-disconnected-status-when-th: backlog
   2-e-1-render-the-room-scoped-ambient-surface-in-native-lvgl: backlog
@@ -70,7 +75,7 @@ development_status:
   2-wk-2-render-active-capture-room-local-transcription-response-and: done
   2-wk-3-mirror-hermes-prompts-without-touch-approval-or-a-second-ses: backlog
   2-wk-4-render-honest-disconnected-state-cached-context-and-accessib: backlog
-  2-t-1-keep-the-direct-tui-doorway-s-capture-and-phase-state-visibl: review
+  2-t-1-keep-the-direct-tui-doorway-s-capture-and-phase-state-visibl: done
   2-t-2-keep-tui-disconnect-recovery-presentation-honest-without-rep: backlog
   epic-2-retrospective: optional
 
@@ -81,6 +86,12 @@ development_status:
   3-i-4-configure-and-expose-deterministic-single-device-wake-arbitr: backlog
   3-i-5-show-and-enforce-unavailable-or-revoked-identity-as-a-failed: backlog
   3-i-6-revoke-access-and-require-explicit-verified-re-enrollment: backlog
+  3-a-1-discover-and-connect-an-unconfigured-device-without-granting: backlog
+  3-a-2-approve-a-device-and-guide-room-wake-mapping-and-ready-setup: backlog
+  3-a-3-validate-unique-wake-mappings-and-profile-specific-publish-s: backlog
+  3-a-4-configure-and-expose-deterministic-single-device-wake-arbitr: backlog
+  3-a-5-show-and-enforce-unavailable-or-revoked-identity-as-a-failed: backlog
+  3-a-6-revoke-access-and-require-explicit-verified-re-enrollment: backlog
   3-p-1-advertise-independently-identifiable-unconfigured-state-for: backlog
   3-p-2-apply-approved-room-credential-and-wake-mapping-configuratio: backlog
   3-p-3-enforce-the-selected-wake-mapping-and-profile-before-capture: backlog
@@ -99,5 +110,6 @@ development_status:
 
   epic-5: backlog
   5-i-1-use-ios-as-an-independent-typed-and-tap-to-speak-conversatio: backlog
+  5-a-1-use-android-as-an-independent-typed-and-tap-to-speak-convers: backlog
   5-t-1-use-the-tui-as-an-independent-direct-voice-chat-gateway-with: backlog
   epic-5-retrospective: optional
