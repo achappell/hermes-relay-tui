@@ -40,9 +40,6 @@ esphome:
   # patterns that crash-looped the device in a prior session.
   includes:
     - pcm_capture.h
-    # PUCK-01.7 task 1 diagnostic: output-direction proof-of-life. Kept in
-    # its own header so the capture path stays untangled from playback.
-    - speaker_tone.h
   # micro_wake_word does not start listening on its own -- MicroWakeWord::setup()
   # never calls start(), and its own data callback explicitly drops audio while
   # state_ == STOPPED. Without a voice_assistant: component (which normally
@@ -66,31 +63,39 @@ esphome:
     - priority: -200  # after the capture buffer is allocated above
       then:
         - lambda: pcm_capture::start();
-    # PUCK-01.7 task 1: output proof-of-life, last thing at boot so a
-    # failure here cannot delay wake-word setup above. The XMOS chip mutes
-    # its speaker output by default -- without this unmute the I2S writes
-    # succeed and nothing is audible, which would look exactly like a
-    # broken output path. Delay lets the XU316 finish its own init (it is
-    # the bus master for both directions) before the first DMA write.
+    # PUCK-01.7: bring the output path up last, so a failure here cannot
+    # delay wake-word setup above. The delay lets the XU316 finish its own
+    # init -- it is the bus master for both directions.
     - priority: -300
       then:
         - delay: 3s
+        # The XMOS chip mutes its speaker output by default. Without this
+        # the I2S writes all succeed and nothing is audible -- which looks
+        # exactly like a broken output path.
         - lambda: |-
             id(respeaker).unmute_speaker();
             id(puck_speaker).set_volume(0.6f);
-            speaker_tone::arm(id(puck_speaker));
-        # The speaker's start() is ASYNCHRONOUS: it only reaches
-        # STATE_RUNNING once the component's own loop() has run and its
-        # FreeRTOS task has come up. A busy-wait inside the lambda above
-        # would deadlock that -- blocking in an automation stops the main
-        # loop, so loop() never runs, so the state never transitions, so
-        # the wait never ends. ESPHome's `delay:` is the opposite: it
-        # yields back to the main loop and resumes later, which is exactly
-        # what lets the speaker finish starting. (First attempt skipped
-        # this and every play() call returned 0 against a still-starting
-        # speaker, ~120ms before it logged "Starting".)
+        # PUCK-01.7 task 2 proof: stream a real WAV over HTTP through
+        # ESPHome's own audio stack. Deliberately a STATIC, complete file
+        # with a known Content-Length -- that isolates the plumbing
+        # (fetch -> decode -> resample -> I2S) from the live-stream
+        # framing problem, which is a separate unknown tracked in the spec.
+        # Prove the pipe before proving the stream.
+        #
+        # Task 1's blocking tone helper was REMOVED here rather than kept
+        # as a canary: writing 400ms of audio straight to the speaker from
+        # an automation lambda starved the main loop for 354ms ("a
+        # scheduled task took a long time... max is 50 ms"), which dropped
+        # WiFi mid-boot and left play_media firing into a dead network
+        # (HTTP_CLIENT: Connection failed, sock < 0). That is precisely why
+        # playback belongs to media_player's own task and not to anything
+        # synchronous on the main loop -- an object lesson in why this
+        # story does not hand-roll the audio path.
         - delay: 2s
-        - lambda: speaker_tone::play(id(puck_speaker), 440, 400);
+        - media_player.play_media:
+            id: puck_media_player
+            media_url: http://${puck_bridge_host}:8767/test.wav
+            announcement: true
 esp32:
   board: seeed_xiao_esp32s3
   variant: esp32s3
@@ -329,6 +334,52 @@ speaker:
     channel: stereo
     timeout: never
     buffer_duration: 100ms
+
+  # PUCK-01.7 task 2: resampling stage in front of the hardware speaker.
+  # Task 1 established the hard constraint this exists to satisfy -- the
+  # XU316 masters the I2S clocks, so the speaker runs in secondary/slave
+  # mode and CANNOT reconfigure the bus; a stream whose sample rate differs
+  # from 48000 is rejected outright with "Incompatible stream settings"
+  # (i2s_audio_speaker_standard.cpp:366). Hermes TTS will not necessarily
+  # be 48kHz, so everything routes through here rather than at the metal.
+  # Bit depth does not need to match -- only the sample rate is fixed in
+  # slave mode -- so 16-bit in / 32-bit out is fine and is what formatBCE's
+  # reference chain does (respeaker-lite-stock-test.yaml:1208-1217).
+  - platform: resampler
+    id: puck_resampler
+    output_speaker: puck_speaker
+    sample_rate: 48000
+    bits_per_sample: 16
+
+# PUCK-01.7 task 2: ESPHome's own HTTP streaming media source. This is the
+# component that makes Puck-side playback viable at all -- it holds ONE
+# persistent connection and reads it incrementally (esp_http_client_read),
+# instead of pcm_capture.h's upload path which opens a fresh connection per
+# 2KB chunk. Measured 2026-09-10, that upload path sustains 25.3 KB/s,
+# while 16-bit TTS needs 32-48 KB/s: roughly half real-time, before
+# counting its documented ESP_FAIL wedging and per-failure heap loss.
+# Buffer is the latency/underrun tradeoff -- 100KB is ~1s of 48kHz 16-bit
+# mono, enough to ride out household WiFi jitter without a long silence
+# before Missy starts speaking.
+media_source:
+  - platform: audio_http
+    id: puck_http_source
+    buffer_size: 100000
+
+# PUCK-01.7 task 2: the player itself. Deliberately ONE pipeline -- a
+# spoken reply is an announcement, and a second (media) pipeline would only
+# add a mixer stage with nothing to mix. Sources feed in from the HTTP
+# source above; decoded audio lands in the resampler, then the speaker.
+media_player:
+  - platform: speaker_source
+    id: puck_media_player
+    announcement_pipeline:
+      speaker: puck_resampler
+      sources:
+        - puck_http_source
+      format: WAV
+      sample_rate: 48000
+      num_channels: 1
 
 # On-device wake-word detection. Wake phrase candidates are microwakeword.com-
 # trained models (hey_missy/hey_bestie/hey_skippy below), A/B'd live against
