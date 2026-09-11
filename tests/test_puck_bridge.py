@@ -8,6 +8,7 @@ double `test_handsfree_wiring.py` already uses for `SessionProtocol`.
 
 from __future__ import annotations
 
+import asyncio
 import http.client
 import struct
 import threading
@@ -560,3 +561,133 @@ def test_a_single_chunk_capture_completes_immediately_with_200(tmp_path):
         server.shutdown()
 
     assert status == 200
+
+
+# --- 1-p-2 task 6: turn timeout bounds responsiveness, not duration -------
+
+
+class _SlowSession(FakeSession):
+    """Emits events with a controllable delay before the first one and
+    between subsequent ones."""
+
+    def __init__(self, *, first_delay=0.0, gap=0.0, events=None):
+        super().__init__(events=events)
+        self._first_delay = first_delay
+        self._gap = gap
+
+    def send_turn(self, text: str, *, stt_source: str = "local"):
+        self.turns.append((text, stt_source))
+        first_delay, gap, events = self._first_delay, self._gap, self._events
+
+        async def _events():
+            await asyncio.sleep(first_delay)
+            for i, event in enumerate(events):
+                if i:
+                    await asyncio.sleep(gap)
+                yield event
+
+        return _events()
+
+
+def test_a_long_answer_is_not_timed_out():
+    """The regression this fixes. The old single 10s bound covered the whole
+    turn INCLUDING playing the answer, so every real response "timed out"
+    mid-sentence. Here the stream takes well over the old bound in total,
+    but never stalls -- it must succeed."""
+    import puck_bridge.turn as turn_mod
+
+    many_chunks = [
+        {"type": "audio_start", "sample_rate": 16000, "channels": 1, "sample_width": 2}
+    ] + [{"type": "audio_chunk", "data": b"\x01\x02"} for _ in range(40)]
+    session = _SlowSession(gap=0.02, events=many_chunks)
+    player = FakePlayer()
+    runner = TurnRunner(session, player=player)
+    runner.start()
+    try:
+        # Total stream time far exceeds any single gap budget.
+        assert runner._send("a long question") is True
+    finally:
+        runner.stop()
+    assert len(player.written) == 40
+
+
+def test_an_unresponsive_hermes_still_fails_fast(monkeypatch):
+    """A relay that never produces a first event must not wedge the device."""
+    import puck_bridge.turn as turn_mod
+
+    monkeypatch.setattr(turn_mod, "FIRST_EVENT_TIMEOUT_SECONDS", 0.2)
+    session = _SlowSession(first_delay=5.0)
+    player = FakePlayer()
+    runner = TurnRunner(session, player=player)
+    runner.start()
+    try:
+        assert runner._send("a question nobody answers") is False
+    finally:
+        runner.stop()
+
+
+def test_a_stream_that_dies_midway_is_abandoned(monkeypatch):
+    """A stall mid-response is a dead turn, not a long answer."""
+    import puck_bridge.turn as turn_mod
+
+    monkeypatch.setattr(turn_mod, "STALL_TIMEOUT_SECONDS", 0.2)
+    session = _SlowSession(gap=5.0)
+    player = FakePlayer()
+    runner = TurnRunner(session, player=player)
+    runner.start()
+    try:
+        assert runner._send("a question that stalls") is False
+    finally:
+        runner.stop()
+
+
+def test_the_player_is_closed_when_a_turn_is_abandoned(monkeypatch):
+    """A turn that fails must not leave the shared player open for the next
+    one to interleave into."""
+    import puck_bridge.turn as turn_mod
+
+    monkeypatch.setattr(turn_mod, "STALL_TIMEOUT_SECONDS", 0.2)
+    session = _SlowSession(gap=5.0)
+    player = FakePlayer()
+    runner = TurnRunner(session, player=player)
+    runner.start()
+    try:
+        runner._send("a question that stalls")
+    finally:
+        runner.stop()
+    assert player.active is False
+
+
+def test_a_stream_that_hangs_on_close_does_not_swallow_the_timeout(monkeypatch):
+    """Regression for a hang introduced while fixing the turn timeout: the
+    `finally` block awaited stream.aclose() unbounded, so a generator parked
+    on a socket read waited forever and the TurnTimeout never surfaced. The
+    turn then neither completed, timed out, nor logged anything."""
+    import puck_bridge.turn as turn_mod
+
+    monkeypatch.setattr(turn_mod, "FIRST_EVENT_TIMEOUT_SECONDS", 0.2)
+    monkeypatch.setattr(turn_mod, "STREAM_CLOSE_TIMEOUT_SECONDS", 0.2)
+
+    class _HangingCloseSession(FakeSession):
+        def send_turn(self, text, *, stt_source="local"):
+            self.turns.append((text, stt_source))
+
+            class _Stream:
+                def __aiter__(self_inner):
+                    return self_inner
+
+                async def __anext__(self_inner):
+                    await asyncio.sleep(30)  # never yields
+
+                async def aclose(self_inner):
+                    await asyncio.sleep(30)  # and never closes
+
+            return _Stream()
+
+    runner = TurnRunner(_HangingCloseSession(), player=FakePlayer())
+    runner.start()
+    try:
+        # Must return promptly rather than hanging until the 600s backstop.
+        assert runner._send("a question") is False
+    finally:
+        runner.stop()
