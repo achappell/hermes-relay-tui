@@ -82,14 +82,16 @@ body {
   align-items: center;
   background: rgb(7 19 29 / 84%);
   border: 1px solid rgb(198 217 221 / 36%);
-  border-radius: 999px;
+  border-radius: 1.5rem;
   bottom: clamp(1rem, 4vw, 2.5rem);
   display: flex;
+  flex-wrap: wrap;
   gap: 0.8rem;
   left: 50%;
   max-width: calc(100vw - 2rem);
   padding: 0.5rem 0.65rem 0.5rem 0.9rem;
   position: absolute;
+  justify-content: center;
   transform: translateX(-50%);
   z-index: 2;
 }
@@ -133,10 +135,14 @@ body {
 
 .browser-voice-controls [data-voice-error],
 .browser-voice-controls [data-handsfree-error] {
+  flex: 1 1 100%;
+  max-width: min(30rem, calc(100vw - 2rem));
+  min-width: 0;
   overflow: visible;
+  overflow-wrap: break-word;
   text-overflow: clip;
+  text-align: center;
   white-space: normal;
-  overflow-wrap: anywhere;
 }
 
 .state-surface {

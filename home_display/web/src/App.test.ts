@@ -791,7 +791,7 @@ describe("App", () => {
       onerror: ((event: unknown) => void) | null = null;
       onend: (() => void) | null = null;
       start = vi.fn();
-      stop = vi.fn();
+      stop = vi.fn(() => this.onend?.());
 
       constructor() {
         recognitions.push(this);
@@ -979,7 +979,7 @@ describe("App", () => {
       onerror: ((event: unknown) => void) | null = null;
       onend: (() => void) | null = null;
       start = vi.fn();
-      stop = vi.fn();
+      stop = vi.fn(() => this.onend?.());
 
       constructor() {
         recognitions.push(this);

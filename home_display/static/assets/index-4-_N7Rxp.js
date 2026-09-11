@@ -5358,6 +5358,7 @@ async function defaultRecognitionPreparer() {
   try {
     const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
     for (const track of stream.getTracks()) track.stop();
+    await new Promise((resolve) => setTimeout(resolve, 250));
   } catch {
   }
 }
@@ -5473,6 +5474,7 @@ const MAX_HANDS_FREE_TIMER_SECONDS = 2147483647e-3;
 const FOLLOW_UP_START_TIMEOUT_MS = 1e3;
 const FOLLOW_UP_ACTIVITY_TIMEOUT_MS = 3500;
 const FOLLOW_UP_RETRY_DELAYS_MS = [300, 1e3, 2e3, 3500];
+const RECOGNITION_RELEASE_TIMEOUT_MS = 1e3;
 function normaliseSpeech(text) {
   return text.trim().replace(/\s+/g, " ");
 }
@@ -5541,6 +5543,7 @@ class BrowserHandsFreeController {
     __publicField(this, "followUpEligible", false);
 >>>>>>>> d1da0fd (fix(web): recover hands-free after playback):home_display/static/assets/index-BtRfo_B_.js
     __publicField(this, "turnInFlight", false);
+    __publicField(this, "recognitionRelease", Promise.resolve());
     this.sendText = options.sendText;
     this.wakePhrases = options.wakePhrases.map(normaliseSpeech).filter(Boolean);
     this.wakeListenSeconds = positiveSeconds(options.wakeListenSeconds);
@@ -5596,6 +5599,8 @@ class BrowserHandsFreeController {
 >>>>>>>> d1da0fd (fix(web): recover hands-free after playback):home_display/static/assets/index-BtRfo_B_.js
     this.turnInFlight = false;
     this.emit("arming");
+    await this.waitForRecognitionRelease();
+    if (!this.isCurrent(generation)) return false;
     if (!this.startRecognition(generation) || !this.isCurrent(generation)) {
       if (!this.isCurrent(generation)) return false;
       this.fail("Microphone or speech recognition is unavailable");
@@ -5729,6 +5734,7 @@ class BrowserHandsFreeController {
     } catch {
       this.recognition = null;
       this.clearFollowUpWatchdog();
+      this.releaseRecognition(recognition);
       return false;
     }
   }
@@ -5797,6 +5803,8 @@ class BrowserHandsFreeController {
     void this.prepareAndStartFollowUp(generation);
   }
   async prepareAndStartFollowUp(generation) {
+    await this.waitForRecognitionRelease();
+    if (!this.isCurrent(generation) || this.phase !== "follow_up") return;
     try {
       await this.prepareRecognition();
     } catch {
@@ -5825,11 +5833,18 @@ class BrowserHandsFreeController {
         this.fail(followUpRecoveryFailureMessage(this.followUpErrorCategory, true));
         return;
       }
-      this.followUpAttempt = nextAttempt;
-      if (!this.startRecognition(generation)) {
-        this.scheduleFollowUpRetry(generation);
-      }
+      void this.startFollowUpAttempt(generation, nextAttempt);
     }, Math.min(delay, remaining));
+  }
+  async startFollowUpAttempt(generation, attempt) {
+    await this.waitForRecognitionRelease();
+    if (!this.isCurrent(generation) || this.phase !== "follow_up") return;
+    if (this.followUpDeadlineAt !== null && Date.now() >= this.followUpDeadlineAt) {
+      this.fail(followUpRecoveryFailureMessage(this.followUpErrorCategory, true));
+      return;
+    }
+    this.followUpAttempt = attempt;
+    if (!this.startRecognition(generation)) this.scheduleFollowUpRetry(generation);
   }
   scheduleFollowUpWatchdog(generation, recognition, delay) {
     this.clearFollowUpWatchdog();
@@ -5949,18 +5964,38 @@ class BrowserHandsFreeController {
       this.followUpWatchdogTimer = null;
     }
   }
+  waitForRecognitionRelease() {
+    return this.recognitionRelease;
+  }
   stopRecognition() {
     this.clearFollowUpWatchdog();
     const recognition = this.recognition;
     this.recognition = null;
     if (recognition === null) return;
+    this.releaseRecognition(recognition);
+  }
+  releaseRecognition(recognition) {
     recognition.onstart = null;
     recognition.onresult = null;
     recognition.onerror = null;
-    recognition.onend = null;
+    let settled = false;
+    let resolveRelease = () => {
+    };
+    let releaseTimer = null;
+    this.recognitionRelease = new Promise((resolve) => {
+      resolveRelease = () => {
+        if (settled) return;
+        settled = true;
+        if (releaseTimer !== null) clearTimeout(releaseTimer);
+        resolve();
+      };
+    });
+    recognition.onend = resolveRelease;
+    releaseTimer = setTimeout(resolveRelease, RECOGNITION_RELEASE_TIMEOUT_MS);
     try {
       recognition.stop();
     } catch {
+      resolveRelease();
     }
   }
   isCurrent(generation) {

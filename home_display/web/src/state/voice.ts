@@ -93,6 +93,10 @@ async function defaultRecognitionPreparer(): Promise<void> {
   try {
     const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
     for (const track of stream.getTracks()) track.stop();
+    // Some embedded browsers release the capture device asynchronously after
+    // the last track stops. Let that handoff settle before SpeechRecognition
+    // asks the browser for the same device.
+    await new Promise<void>((resolve) => setTimeout(resolve, 250));
   } catch {
     // SpeechRecognition can still own the already-granted microphone.
   }
@@ -252,6 +256,7 @@ const MAX_HANDS_FREE_TIMER_SECONDS = 2_147_483.647;
 const FOLLOW_UP_START_TIMEOUT_MS = 1_000;
 const FOLLOW_UP_ACTIVITY_TIMEOUT_MS = 3_500;
 const FOLLOW_UP_RETRY_DELAYS_MS = [300, 1_000, 2_000, 3_500];
+const RECOGNITION_RELEASE_TIMEOUT_MS = 1_000;
 
 function normaliseSpeech(text: string): string {
   return text.trim().replace(/\s+/g, " ");
@@ -335,6 +340,7 @@ export class BrowserHandsFreeController {
   private lastRecognitionErrorCategory: SpeechRecognitionErrorCategory | null = null;
   private followUpEligible = false;
   private turnInFlight = false;
+  private recognitionRelease: Promise<void> = Promise.resolve();
 
   constructor(options: BrowserHandsFreeControllerOptions) {
     this.sendText = options.sendText;
@@ -401,6 +407,8 @@ export class BrowserHandsFreeController {
     this.turnInFlight = false;
     this.emit("arming");
 
+    await this.waitForRecognitionRelease();
+    if (!this.isCurrent(generation)) return false;
     if (!this.startRecognition(generation) || !this.isCurrent(generation)) {
       if (!this.isCurrent(generation)) return false;
       this.fail("Microphone or speech recognition is unavailable");
@@ -533,6 +541,7 @@ export class BrowserHandsFreeController {
     } catch {
       this.recognition = null;
       this.clearFollowUpWatchdog();
+      this.releaseRecognition(recognition);
       return false;
     }
   }
@@ -618,6 +627,8 @@ export class BrowserHandsFreeController {
   }
 
   private async prepareAndStartFollowUp(generation: number): Promise<void> {
+    await this.waitForRecognitionRelease();
+    if (!this.isCurrent(generation) || this.phase !== "follow_up") return;
     try {
       await this.prepareRecognition();
     } catch {
@@ -657,11 +668,19 @@ export class BrowserHandsFreeController {
         this.fail(followUpRecoveryFailureMessage(this.followUpErrorCategory, true));
         return;
       }
-      this.followUpAttempt = nextAttempt;
-      if (!this.startRecognition(generation)) {
-        this.scheduleFollowUpRetry(generation);
-      }
+      void this.startFollowUpAttempt(generation, nextAttempt);
     }, Math.min(delay, remaining));
+  }
+
+  private async startFollowUpAttempt(generation: number, attempt: number): Promise<void> {
+    await this.waitForRecognitionRelease();
+    if (!this.isCurrent(generation) || this.phase !== "follow_up") return;
+    if (this.followUpDeadlineAt !== null && Date.now() >= this.followUpDeadlineAt) {
+      this.fail(followUpRecoveryFailureMessage(this.followUpErrorCategory, true));
+      return;
+    }
+    this.followUpAttempt = attempt;
+    if (!this.startRecognition(generation)) this.scheduleFollowUpRetry(generation);
   }
 
   private scheduleFollowUpWatchdog(
@@ -799,19 +818,40 @@ export class BrowserHandsFreeController {
     }
   }
 
+  private waitForRecognitionRelease(): Promise<void> {
+    return this.recognitionRelease;
+  }
+
   private stopRecognition(): void {
     this.clearFollowUpWatchdog();
     const recognition = this.recognition;
     this.recognition = null;
     if (recognition === null) return;
+    this.releaseRecognition(recognition);
+  }
+
+  private releaseRecognition(recognition: SpeechRecognitionLike): void {
     recognition.onstart = null;
     recognition.onresult = null;
     recognition.onerror = null;
-    recognition.onend = null;
+    let settled = false;
+    let resolveRelease = () => {};
+    let releaseTimer: ReturnType<typeof setTimeout> | null = null;
+    this.recognitionRelease = new Promise<void>((resolve) => {
+      resolveRelease = () => {
+        if (settled) return;
+        settled = true;
+        if (releaseTimer !== null) clearTimeout(releaseTimer);
+        resolve();
+      };
+    });
+    recognition.onend = resolveRelease;
+    releaseTimer = setTimeout(resolveRelease, RECOGNITION_RELEASE_TIMEOUT_MS);
     try {
       recognition.stop();
     } catch {
       // A browser may report a late stop after an automatic end.
+      resolveRelease();
     }
   }
 
