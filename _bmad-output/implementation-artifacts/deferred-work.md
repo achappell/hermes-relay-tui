@@ -29,7 +29,7 @@
   evidence: tests/test_puck_bridge.py stops at the receiver/handler-factory/turn-runner layers; main() itself is thin entry-point wiring with no direct coverage.
 
 - source_spec: `_bmad-output/implementation-artifacts/spec-5-stream-audio-to-host-after-a-validated-wake.md`
-  summary: Create the PUCK-01.7 GitHub Project card (Puck-side response playback) once the GitHub API rate limit clears.
+  summary: RESOLVED 2026-09-10 -- PUCK-01.7 is now specced at `_bmad-output/implementation-artifacts/spec-puck-01-7-stream-the-response-to-the-puck-speaker.md`; still needs its GitHub Project card created from that spec.
   evidence: docs/friction-log.md's 2026-09-09 entry names PUCK-01.7 as the candidate card but notes it was not yet created due to a GitHub API rate limit at the time; per this repo's own convention the friction log is not itself a task source, so this needs manual promotion to the board.
 
 - source_spec: `_bmad-output/implementation-artifacts/spec-5-stream-audio-to-host-after-a-validated-wake.md`
