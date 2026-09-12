@@ -100,8 +100,8 @@ At network read and close boundaries, only `ConnectionClosed`, `ConnectionError`
 ## Verification
 
 **Commands:**
-- `venv/bin/pytest -q tests/test_config.py tests/test_client.py tests/test_session.py tests/test_tui_domain.py tests/test_app.py` — `350 passed` in 38.92s.
-- `venv/bin/pytest` — `1,026 passed, 1 skipped, 1 warning` in 127.94s; the warning is the existing `websockets.legacy` deprecation.
+- `venv/bin/pytest -q tests/test_config.py tests/test_client.py tests/test_session.py tests/test_tui_domain.py tests/test_app.py` — `357 passed` in 42.36s after rebasing the PR comparison onto current `main`.
+- `venv/bin/pytest` — `1,064 passed, 1 skipped, 1 warning` in 97.83s; the warning is the existing `websockets.legacy` deprecation.
 - `venv/bin/python -m compileall -q app.py client.py config.py prompts.py session.py` — passed.
 - `git diff --check` — passed.
 

@@ -2,7 +2,7 @@
 title: Surface coverage index across BMad epics
 type: traceability
 status: active
-updated: 2026-09-11
+updated: 2026-09-12
 sources:
   - _bmad-output/planning-artifacts/epics.md
   - _bmad-output/implementation-artifacts/sprint-status.yaml
@@ -75,7 +75,13 @@ Hermes session authority
   microphone or response PCM; voice capture and response audio require a
   bounded audio/session adapter.
 - Exact visual parity between E and W/K is not required. Shared semantics,
-  phase rules, room ownership, capability rules, and normalized actions are.
+  phase rules, room ownership, capability rules, normalized actions, and the
+  typed-choice `choose`/`explore` meaning are.
+- The approved first proving slice gives active ESP32 Touch, direct-use W/K,
+  and TUI surfaces native choice actions. Passive Room Displays mirror the
+  object read-only; the Puck remains status/audio-only. Exact schema and
+  consequence-bearing policy are downstream dependencies, not this index's
+  task queue.
 - iOS and Android require capability and safety parity, not pixel or source
   parity. Each native Client owns its platform lifecycle, permissions, audio,
   secure storage, accessibility, and local history.
@@ -86,10 +92,10 @@ Hermes session authority
 |---|---|---|---|
 | I | `I-1`–`I-3` | `hermes-relay-ios` | Implementation and device-validation evidence exists in the sibling repository. |
 | A | `A-1`–`A-3` | `hermes-relay-android` | Delivered and verified in the sibling repository: `A-1` authorized typed/tap-to-speak initiation, `A-2` honest phases with response text/audio delivery, and `A-3` bounded recovery without replaying an uncertain turn. Unit and Android 16/API 36 instrumentation evidence is recorded in that repository's `spec-a-*` and `validation-a-*` artifacts. Live Hermes transport, credentials, microphone, and speaker work are deliberately absent and are proposed as `A-4`–`A-6` below. |
-| P | `P-1`–`P-11` | Puck delivery work | The audio bridge has real-device evidence for authorized wake, VAD-gated capture, chunked upload, host transcription, distinct bridge session identity, streamed response delivery, Puck playback, and a full hands-free spoken Hermes round trip. The earlier weak-signal upload stall and VAD truncation findings are resolved; P-5 tracks the remaining streamed-playback underrun, P-6 bridge-service lifecycle hardening, P-7 privacy-safe diagnostics, P-8 audio-format verification, P-9 I2S lifecycle safety, P-10 internal-model routing, and P-11 runtime output-failure propagation and recovery, while P-3 bounded follow-up and P-4 recovery validation remain open in the implementation record. |
-| E | `E-1`–`E-5` | `hermes-relay-tui` / firmware | Native display/reducer evidence exists for parts of E-2/E-5; voice capture and response-audio adapter work remains. |
-| W/K | `WK-1` | `hermes-relay-tui` / web | Browser voice/display foundation and verified PCM delivery exist; automated DOM checks now pass (178 tests, zero Svelte diagnostics, production build), while the physical Safari/Guided Access, iPad permission, secure-channel, audio, and touch gate remains open. |
-| T | `T-1`–`T-6` | `hermes-relay-tui` | Local implementation artifacts and regression evidence now include the continuous wake-free follow-up slice; `T-5` records the remaining non-blocking voice-resource lifecycle work and `T-6` records idle relay liveness plus explicit legacy transport classification. Formal status remains in the TUI tracker. |
+| P | `P-1`–`P-11` | Puck delivery work | P-1 and P-2 now have post-review compile/OTA and real-device evidence for authorized wake, acknowledgement-before-capture, VAD-gated capture, chunked upload, host transcription, distinct bridge session identity, streamed response delivery, Puck playback, and a full hands-free spoken Hermes round trip. The earlier weak-signal upload stall and VAD truncation findings are resolved; P-5 tracks the remaining streamed-playback pacing/underrun question, P-6 bridge-service lifecycle hardening, P-7 privacy-safe diagnostics, P-8 audio-format verification, P-9 I2S lifecycle safety, P-10 internal-model routing, and P-11 runtime output-failure propagation and recovery, while P-3 bounded follow-up and P-4 recovery validation remain open in the implementation record. |
+| E | `E-1`–`E-5` | `hermes-relay-tui` / firmware | Native display/reducer evidence exists for parts of E-2/E-5; voice capture, response-audio adapter, and active typed-choice slice `2-E-5` remain. |
+| W/K | `WK-1` | `hermes-relay-tui` / web | Browser voice/display foundation and verified PCM delivery exist; automated DOM checks now pass (178 tests, zero Svelte diagnostics, production build), while physical Safari/Guided Access, iPad permission, secure-channel, audio, and touch validation remain. Direct-use typed-choice rendering `2-WK-6` depends on server authority `2-WK-5`. |
+| T | `T-1`–`T-6` | `hermes-relay-tui` | Local implementation artifacts and regression evidence now include the continuous wake-free follow-up slice; `T-5` records the remaining non-blocking voice-resource lifecycle work and `T-6` records idle relay liveness plus explicit legacy transport classification. Typed-choice presentation `2-T-3` is an approved backlog slice. Formal status remains in the TUI tracker. |
 
 ## Epic 2 — See and trust what the room is doing
 
@@ -98,9 +104,9 @@ Hermes session authority
 | I | `2-I-1`, `2-I-2` | `hermes-relay-ios` | iOS participant implementation evidence exists in the sibling repository. |
 | A | `2-A-1`, `2-A-2` | `hermes-relay-android` (planned) | Android owns the same participant capture/transcription and disconnected-state capability as iOS; implementation and validation are pending. Both depend on the proposed `A-4` relay/credential adapter: every Android story delivered so far is verified against deterministic fakes, and participant timing cannot be honestly validated without a live relay. |
 | P | `2-P-1`, `2-P-2` | Puck delivery work | Puck status-only doorway work remains open. |
-| E | `2-E-1`–`2-E-4` | `hermes-relay-tui` / firmware | Shared snapshot, reducer, and native renderer are foundation; surface story validation remains. |
-| W/K | `2-WK-1`–`2-WK-5` | `hermes-relay-tui` / web | DOM renderer and shared state are foundation; `2-WK-2` now clarifies the optional browser-local `transcribing` interval alongside live/final user transcription and bounded response retention, while `2-WK-5` records the remaining server-side prompt-action authority and browser surface validation remains. |
-| T | `2-T-1`, `2-T-2` | `hermes-relay-tui` | Existing TUI/appliance behavior is foundation for the direct doorway and separate room mirrors. |
+| E | `2-E-1`–`2-E-5` | `hermes-relay-tui` / firmware | Shared snapshot, reducer, and native renderer are foundation; `2-E-5` is the approved active-doorway typed-choice slice, while passive prompt mirroring remains `2-E-3`. |
+| W/K | `2-WK-1`–`2-WK-6` | `hermes-relay-tui` / web | DOM renderer and shared state are foundation; `2-WK-2` clarifies the optional browser-local `transcribing` interval alongside live/final user transcription and bounded response retention; `2-WK-5` is the server-authority prerequisite and `2-WK-6` owns direct-use choice rendering. |
+| T | `2-T-1`–`2-T-3` | `hermes-relay-tui` | Existing TUI/appliance behavior is foundation for the direct doorway and separate room mirrors; `2-T-3` owns native keyboard choice actions and transcript-visible structured input. |
 
 Shared `DisplaySnapshot`, reducer, Room filtering, and normalized event feeds
 are prerequisites. They do not become an unowned closure story.

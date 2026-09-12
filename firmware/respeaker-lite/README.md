@@ -455,6 +455,11 @@ still-blocked real per-device credential system (Epic 3's
 Treat it like a shared household WiFi password, not an individually
 revocable credential — Story 4 replaces it once it exists.
 
+The response fetch uses the same token in `/response?token=...` because
+ESPHome's `audio_http` source cannot attach a custom header. The bridge
+redacts that query value from its request logs, but URL-bearing logs and
+proxies can still expose it; keep this pilot endpoint on the home LAN.
+
 ### The host bridge (`puck_bridge/`)
 
 The upload's landing point is a new, standalone Python package,
@@ -476,10 +481,9 @@ cannot regress either existing front end:
   `handsfree.HandsFreeCoordinator` (not `build_hands_free()`, which
   unconditionally builds a local wake-word engine this pipeline doesn't
   need — the Puck's own on-device wake already decided this moment
-  happened) against a real `session.py:SessionProtocol`, and plays the
-  response on **this host machine's own speakers** via `audio.PCMPlayer`
-  (no Puck-side response playback yet — tracked separately, see the
-  friction log's 2026-09-09 entry, candidate `P-2`).
+  happened) against a real `session.py:SessionProtocol`, and publishes the
+  response to the Puck's `/response` stream. The host speaker remains
+  available only through the explicit `--host-playback` diagnostic fallback.
 - `puck_bridge/server.py` — wires the two together, resolving the Hermes
   session's connection settings through this project's existing
   `config.py` relay-profile machinery (same profiles the TUI and household
@@ -492,6 +496,9 @@ Run it with:
 export PUCK_DEVICE_TOKEN=choose-a-shared-puck-token  # or set it in ~/.hermes-relay-tui/.env
 venv/bin/python -m puck_bridge --port 8766
 ```
+
+Device playback is the default. To deliberately send the answer to the
+bridge host's speakers instead, use `--host-playback`.
 
 Raw Puck audio stays transient end-to-end (NFR3): the receiver's in-memory
 chunk buffer for a capture is discarded as soon as it is reassembled, and
@@ -509,9 +516,10 @@ The pytest suite covers the conversion math, the token/reassembly wire
 protocol (over a real loopback socket), and the turn runner, all against
 fakes — no live Hermes endpoint or hardware required. The actual acceptance
 evidence for the wake-to-upload firmware path and the audible response
-remains a live hardware smoke test: speak "hey jarvis" near the physical
-Puck with the bridge running, and confirm one upload, a correct transcript,
-one completed Hermes turn, and an audible response on the host speakers.
+remains a live hardware smoke test: speak the configured wake phrase near the
+physical Puck with the bridge running, and confirm one upload, a correct
+transcript, one completed Hermes turn, and an audible response from the Puck.
+Use `--host-playback` only when deliberately testing the fallback.
 
 #### Live smoke test status (2026-09-10)
 

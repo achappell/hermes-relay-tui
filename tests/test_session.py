@@ -398,6 +398,23 @@ async def test_session_records_confirmed_model_and_hydrates_history(monkeypatch)
     assert session.capabilities == frozenset()
 
 
+async def test_session_hello_uses_the_doorway_session_identity(monkeypatch):
+    websocket = FakeWebSocket(
+        [json.dumps({"type": "hello_ack", "session_id": "doorway-unique"})]
+    )
+    monkeypatch.setattr(
+        config,
+        "connect_factory",
+        lambda: lambda *args, **kwargs: FakeContextManager(websocket),
+    )
+    session = HermesSession(make_args(session_id="doorway-unique"))
+
+    await session.connect()
+
+    hello = json.loads(websocket.sent[0])
+    assert hello["session_id"] == "doorway-unique"
+
+
 async def test_session_list_sessions_delegates_to_client(monkeypatch):
     websocket = FakeWebSocket(
         [

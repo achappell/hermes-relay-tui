@@ -38,8 +38,8 @@ static const char *const TAG = "puck_identity";
 //     indistinguishable from broken, which is the worse outcome.
 enum class State : uint8_t {
   AUTHORIZED,    // token configured, not rejected -- capture normally
-  UNAUTHORIZED,  // token missing, or bridge answered 401 -- fail closed
-  DEGRADED,      // bridge unreachable -- still captures
+  UNAUTHORIZED,  // token missing, or bridge answered 4xx -- fail closed
+  DEGRADED,      // no response or bridge/server answered 3xx/5xx -- capture
 };
 
 static State state = State::UNAUTHORIZED;  // fail closed until proven otherwise
@@ -75,16 +75,25 @@ inline bool may_capture() { return state != State::UNAUTHORIZED; }
 
 // Called from the upload path with each chunk's HTTP status.
 //
-// status 401  -> the bridge refused this credential. Fail closed from here
-//                on; only a reboot (i.e. a reflash or a restored token)
-//                clears it.
+// status 4xx  -> the reachable bridge rejected the request. Fail closed from
+//                here on; only a reboot (i.e. a reflash or a restored token)
+//                clears it. 401 is the normal credential-rejection response;
+//                the rest are still explicit client-side refusals under the
+//                P-1 contract.
 // status <= 0 -> no HTTP response at all: connection refused, timeout,
 //                DNS failure. DEGRADED, NOT a refusal -- see the enum.
+// status 3xx/5xx -> the bridge or server is reachable but unavailable for
+//                this attempt. DEGRADED, not an identity decision.
 // 2xx         -> identity is good; clears a previous DEGRADED.
 inline void note_upload_status(int status) {
-  if (status == 401) {
+  if (status >= 400 && status < 500) {
     if (state != State::UNAUTHORIZED) {
-      ESP_LOGE(TAG, "bridge rejected our token (401) -- failing closed; no further capture until reboot");
+      if (status == 401) {
+        ESP_LOGE(TAG, "bridge rejected our token (401) -- failing closed; no further capture until reboot");
+      } else {
+        ESP_LOGE(TAG, "bridge rejected the upload (HTTP %d) -- failing closed; no further capture until reboot",
+                 status);
+      }
     }
     state = State::UNAUTHORIZED;
     return;
@@ -101,7 +110,7 @@ inline void note_upload_status(int status) {
     state = State::AUTHORIZED;
   } else {
     if (state != State::DEGRADED) {
-      ESP_LOGW(TAG, "bridge unreachable (status %d) -- state=DEGRADED; still capturing (lost turn, not a leak)",
+      ESP_LOGW(TAG, "bridge unavailable (status %d) -- state=DEGRADED; still capturing (lost turn, not a leak)",
                status);
     }
     state = State::DEGRADED;

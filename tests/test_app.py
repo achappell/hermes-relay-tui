@@ -1069,8 +1069,9 @@ async def test_reconnect_mints_a_fresh_session_identity():
         await app._handle_command(parse_slash_command("/reconnect"))
 
     assert len(factory_args) == 2
-    assert factory_args[0].session_id == "persisted-session"
+    assert factory_args[0].session_id != "persisted-session"
     assert factory_args[1].session_id != "persisted-session"
+    assert factory_args[0].session_id != factory_args[1].session_id
     assert app.session.session_id == factory_args[1].session_id
 
 
@@ -3409,6 +3410,7 @@ async def test_reload_command_picks_up_untouched_config_changes(tmp_path):
     async with app.run_test() as pilot:
         await pilot.pause()
         assert app.show_transcript_details is False
+        active_session_id = app.session.session_id
 
         composer = app.query_one("#composer", Composer)
         composer.text = "/reload"
@@ -3416,8 +3418,14 @@ async def test_reload_command_picks_up_untouched_config_changes(tmp_path):
         await pilot.pause()
 
         assert app.args.turn_timeout == 42
-        assert app.sub_title == "connected · Profile: Amanda streaming TUI · session s2"
-        assert connection_status_of(app) == "● connected · Profile: Amanda streaming TUI · session s2"
+        assert app.args.session_id == "s2"
+        assert app.session.session_id == active_session_id
+        assert app.sub_title == (
+            f"connected · Profile: Amanda streaming TUI · session {active_session_id}"
+        )
+        assert connection_status_of(app) == (
+            f"● connected · Profile: Amanda streaming TUI · session {active_session_id}"
+        )
         assert app.show_transcript_details is False
         assert "config reloaded from" in transcript_of(app)
 
@@ -4613,6 +4621,139 @@ async def test_history_persists_to_disk_across_app_instances(tmp_path):
         await pilot.press("up")
         await pilot.pause()
         assert composer.text == "remembered prompt"
+
+
+async def test_typed_and_voice_prompts_share_prompt_only_history(tmp_path):
+    history_path = tmp_path / "history"
+    session = FakeSession()
+    app = HermesStreamingApp(
+        args=make_args(history_path=history_path), session_factory=lambda: session
+    )
+    async with app.run_test() as pilot:
+        composer = app.query_one("#composer", Composer)
+        composer.text = "typed continuity"
+        await pilot.press("enter")
+        await pilot.pause()
+
+        await app._capture_voice_turn()
+
+    from history import PromptHistory
+
+    assert PromptHistory(history_path).entries == ["typed continuity", "spoken words"]
+
+
+async def test_voice_capture_silence_is_not_retained(tmp_path):
+    history_path = tmp_path / "history"
+    session = FakeSession()
+    session.capture_result = "  \n\t"
+    app = HermesStreamingApp(
+        args=make_args(history_path=history_path), session_factory=lambda: session
+    )
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await app._capture_voice_turn()
+
+    from history import PromptHistory
+
+    assert PromptHistory(history_path).entries == []
+    assert session.sent_turns == []
+
+
+async def test_wake_voice_prompt_is_recorded_in_prompt_history(tmp_path):
+    from history import PromptHistory
+
+    history_path = tmp_path / "history"
+    app = HermesStreamingApp(
+        args=make_args(history_path=history_path),
+        session_factory=lambda: FakeSession(),
+    )
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app._wake_loop = asyncio.get_running_loop()
+        assert await asyncio.to_thread(app._send_wake_turn, "wake words") is True
+
+    assert PromptHistory(history_path).entries == ["wake words"]
+
+
+async def test_named_profile_migrates_legacy_prompt_history(tmp_path):
+    from history import PromptHistory, history_path_for_profile
+
+    legacy = tmp_path / "history"
+    legacy.write_text('"old prompt"\n"old prompt"\n42\n', encoding="utf-8")
+    args = make_args(
+        history_path=legacy,
+        profile_name="amanda",
+        profiles_configured=True,
+        url="wss://relay.example:8792/voice-session",
+    )
+    app = HermesStreamingApp(args=args, session_factory=lambda: FakeSession())
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        destination = history_path_for_profile(
+            args.url,
+            "amanda",
+            configured_path=legacy,
+        )
+        assert app._history.entries == ["old prompt"]
+        assert app._history.path == destination
+        assert PromptHistory(destination).entries == ["old prompt"]
+        assert legacy.read_text(encoding="utf-8") == '"old prompt"\n"old prompt"\n42\n'
+
+
+async def test_named_profile_migrates_endpoint_history_when_history_path_is_absent(
+    tmp_path, monkeypatch
+):
+    import history as history_module
+    from history import PromptHistory, history_path_for_profile, history_path_for_url
+
+    monkeypatch.setattr(history_module, "DEFAULT_HISTORY_DIR", tmp_path / "history")
+    url = "wss://relay.example:8792/voice-session"
+    legacy = history_path_for_url(url)
+    legacy.parent.mkdir(parents=True)
+    original = '"endpoint prompt"\n"endpoint prompt"\n'
+    legacy.write_text(original, encoding="utf-8")
+    args = make_args(
+        url=url,
+        profile_name="amanda",
+        profiles_configured=True,
+        history_path=None,
+    )
+    app = HermesStreamingApp(args=args, session_factory=lambda: FakeSession())
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        destination = history_path_for_profile(url, "amanda")
+        assert app._history.entries == ["endpoint prompt"]
+        assert PromptHistory(destination).entries == ["endpoint prompt"]
+
+    assert legacy.read_text(encoding="utf-8") == original
+
+
+async def test_each_tui_launch_gets_a_distinct_session_identity():
+    factory_args = []
+
+    def factory(args):
+        factory_args.append(args)
+        return FakeSession(session_id=args.session_id)
+
+    first = HermesStreamingApp(
+        args=make_args(session_id="configured-session"), session_factory=factory
+    )
+    second = HermesStreamingApp(
+        args=make_args(session_id="configured-session"), session_factory=factory
+    )
+
+    async with first.run_test() as first_pilot:
+        await first_pilot.pause()
+        assert factory_args[0].session_id in connection_status_of(first)
+    async with second.run_test() as second_pilot:
+        await second_pilot.pause()
+        assert factory_args[1].session_id in connection_status_of(second)
+
+    assert factory_args[0].session_id != "configured-session"
+    assert factory_args[1].session_id != "configured-session"
+    assert factory_args[0].session_id != factory_args[1].session_id
 
 
 async def test_history_does_not_interleave_across_different_hermes_backends():
