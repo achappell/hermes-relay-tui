@@ -330,6 +330,7 @@ the named surface; another surface's implementation is evidence, not closure.
 | `T-2` | TUI | Honest phases and response delivery. The historical numeric artifact 1.2 remains its stable local alias. |
 | `T-3` | TUI | Bounded follow-up and exact `stop`. The historical numeric artifact 1.3 remains its stable local alias. |
 | `T-4` | TUI | Recovery without replay. The historical numeric artifact 1.4 remains its stable local alias. |
+| `T-5` | TUI | Non-blocking wake-listener and microphone teardown during recovery, reload, disarm, and quit. |
 
 The ESP32 Touch stories cannot be closed by the existing `DisplaySnapshot`
 transport alone. The surface must capture voice and deliver response audio as
@@ -475,6 +476,39 @@ So that I can continue safely without duplicate requests, stale responses, or si
 **Given** late events or audio from the prior Session arrive after recovery
 **When** they are received
 **Then** they are discarded without mutating the new Session’s state, transcript, or audio.
+
+### Story T-5: Shut down local voice resources without blocking the TUI
+
+As a TUI user recovering from a connection problem or quitting,
+I want wake listening and microphone teardown to happen without blocking the Textual event loop,
+So that reconnect, reload, disarm, and quit remain responsive and do not leak or reopen native audio resources.
+
+**Covers:** FR5, FR6, FR19; NFR2; explicit shutdown, cancellation ownership, and front-end responsiveness.
+
+**Acceptance Criteria:**
+
+**Given** wake listening or capture is active
+**When** `/reconnect`, connection loss, reload, or quit disarms it
+**Then** the UI handler returns promptly
+**And** worker joins and native recorder shutdown run outside the Textual event loop.
+
+**Given** shutdown is cancelled or a microphone open completes late
+**When** the recorder becomes available after cancellation
+**Then** it is closed exactly once
+**And** a timed-out native close remains poisoned and cannot be reopened.
+
+**Given** a listener is disarmed and later re-armed
+**When** queued frames from the prior listener are present
+**Then** they cannot trigger the old wake or invoke `on_wake` after disarm.
+
+**Given** teardown is requested repeatedly
+**When** each request is processed
+**Then** teardown is idempotent
+**And** no worker, capture task, native stream, or late callback remains owned by the discarded listener.
+
+**Given** the lifecycle changes are implemented
+**When** the focused test suite runs
+**Then** it covers prompt UI return, cancellation, late-open cleanup, stale-frame rejection, idempotence, and the existing successful wake path.
 
 ## Epic 2: See and trust what the room is doing
 

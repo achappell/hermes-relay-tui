@@ -43,6 +43,33 @@ FORMAT_WAIT_SECONDS = 15.0
 # a poll interval, not a deadline.
 CHUNK_POLL_SECONDS = 0.5
 
+# How much audio to accumulate before releasing the first byte of PCM.
+#
+# Hermes produces TTS at roughly real time and the device consumes at
+# exactly real time, so forwarding each chunk the instant it arrives leaves
+# ZERO slack: any hesitation upstream starves the device's DAC and the
+# answer comes out choppy (reported by ear 2026-09-12 -- every byte
+# arrived, so this was never visible in the logs).
+#
+# `audio.py` already solved this for the TUI and documents the real
+# behaviour: "Response audio is generated as it is spoken, so it arrives in
+# fits... 379ms of audio every ~470ms." Near real time, but bursty -- so
+# what is needed is jitter absorption, not a large deficit reserve. The TUI
+# uses DEFAULT_PREBUFFER_SECONDS = 0.6 and plays smoothly.
+#
+# 1.5s rather than the TUI's 0.6s because this path has two extra sources
+# of jitter the TUI does not: a WiFi hop, and on-device decode + resample.
+# Deliberately still small -- it is added directly to the delay before the
+# first word.
+#
+# (An earlier version of this comment claimed the producer runs at 64-75%
+# of real time. That measurement started the clock at TURN start, so it
+# counted Hermes thinking before any audio existed as generation time. It
+# pointed at an architecture change that was not warranted.)
+#
+# Well inside the device's ~30s no-read failure budget.
+PREBUFFER_SECONDS = 1.5
+
 # Total silence a reader tolerates mid-stream before declaring the producer
 # dead. Deliberately under the device's ~30s budget so the bridge ends the
 # body cleanly rather than letting the device time the connection out --
@@ -202,6 +229,28 @@ class ResponseStream:
     def release_reader(self) -> None:
         with self._cv:
             self._reader_active = False
+
+    def wait_for_prebuffer(
+        self, audio_format: tuple[int, int, int], seconds: float = PREBUFFER_SECONDS
+    ) -> None:
+        """Block until `seconds` of audio is queued, or the turn finishes.
+
+        Gives the device a cushion to start playback with. Returns early if
+        the answer is shorter than the prebuffer -- a two-word reply must
+        not wait for audio that will never exist.
+        """
+        sample_rate, channels, width = audio_format
+        target = int(sample_rate * channels * width * seconds)
+        if target <= 0:
+            return
+        with self._cv:
+            self._cv.wait_for(
+                lambda: self._finished
+                or sum(len(c) for c in self._chunks) >= target,
+                # Bounded so a stalled producer cannot hold the device at
+                # the starting line indefinitely.
+                timeout=STREAM_STALL_SECONDS,
+            )
 
     def iter_chunks(self, stall_timeout: float = STREAM_STALL_SECONDS):
         """Yield PCM chunks until the response finishes or the producer stalls.

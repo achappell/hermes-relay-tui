@@ -251,7 +251,7 @@ void MicroWakeWord::inference_task(void *params) {
               for (size_t i = 0; i < PREPROCESSOR_FEATURE_SIZE; ++i) {
                 pos += snprintf(feat_str + pos, sizeof(feat_str) - pos, "%d ", (int) features_buffer[i]);
               }
-              ESP_LOGI("mww_feat", "features min=%d max=%d mean=%.1f : %s", (int) fmin, (int) fmax,
+              ESP_LOGV("mww_feat", "features min=%d max=%d mean=%.1f : %s", (int) fmin, (int) fmax,
                        (float) fsum / PREPROCESSOR_FEATURE_SIZE, feat_str);
               last_feat_log_ms = feat_now;
             }
@@ -597,7 +597,7 @@ bool MicroWakeWord::generate_features_(const int16_t *audio_buffer, size_t sampl
         pmin = std::min(pmin, audio_buffer[i]);
         pmax = std::max(pmax, audio_buffer[i]);
       }
-      ESP_LOGI("mww_pcm", "mww's own 16-bit PCM: min=%d max=%d (of int16 range +-32767), samples=%u", (int) pmin,
+      ESP_LOGV("mww_pcm", "mww's own 16-bit PCM: min=%d max=%d (of int16 range +-32767), samples=%u", (int) pmin,
                (int) pmax, (unsigned) samples_available);
       last_pcm_log_ms = pcm_now;
     }
