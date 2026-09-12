@@ -63,6 +63,18 @@
   summary: Run the physical Safari/iPad HTTPS/WSS, permission, audio, and direct-touch gate for the restored DOM kiosk.
   evidence: The local fake-state and automated browser checks pass, but no physical iPad/Safari session was available in this worktree to verify Guided Access, secure state-channel hydration, microphone permission, audio playback, and touch-button operation on the supported device.
 
+- source_spec: `_bmad-output/implementation-artifacts/spec-5-t-1-use-the-tui-as-an-independent-direct-voice-chat-gateway.md`
+  summary: Define one-time ownership for migrating an unscoped legacy prompt-history file when more than one named profile is later used.
+  evidence: The approved story requires copying an ownerless flat or endpoint-scoped source into the selected profile without deleting it, but does not say whether the same source may seed multiple profiles; a product decision or migration marker is needed to settle the privacy/continuity tradeoff.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-5-t-1-use-the-tui-as-an-independent-direct-voice-chat-gateway.md`
+  summary: Make prompt-history writes safe across separate TUI processes sharing one profile file.
+  evidence: `PromptHistory` serializes writes only within one instance; two simultaneous TUI processes can still read stale entries and atomically replace one another's file. This predates the story's per-instance lock and needs deliberate cross-process locking semantics.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-5-t-1-use-the-tui-as-an-independent-direct-voice-chat-gateway.md`
+  summary: Run physical permission/authorization and first-response latency checks for the independent TUI doorway.
+  evidence: Epic 5's broader context calls for fail-closed identity handling and roughly four-second first spoken response audio, but this slice changed no authorization or audio transport code and no live Hermes, microphone, or PortAudio environment was available for that evidence.
+
 ## Deferred from: code review of spec-1-4-recover-without-replaying-an-uncertain-turn (2026-09-10)
 
 - source_spec: `_bmad-output/implementation-artifacts/spec-1-4-recover-without-replaying-an-uncertain-turn.md`

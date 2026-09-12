@@ -1203,10 +1203,18 @@ async def test_barge_in_uses_its_configured_minimum_speech_duration():
         assert callable(fakes.barge_listener.kwargs["is_playing"])
 
 
-async def test_spoken_follow_up_interrupts_then_starts_exactly_one_new_turn():
+async def test_spoken_follow_up_interrupts_then_starts_exactly_one_new_turn(tmp_path):
+    from history import PromptHistory
+
     fakes = WakeFakes()
     session = BargeInterruptSession()
-    app, _, _ = make_app(fakes=fakes, session=session, wake_barge_in=True)
+    history_path = tmp_path / "history"
+    app, _, _ = make_app(
+        fakes=fakes,
+        session=session,
+        wake_barge_in=True,
+        history_path=history_path,
+    )
     async with app.run_test() as pilot:
         await pilot.pause()
         await app._handle_wake_command("on")
@@ -1230,6 +1238,7 @@ async def test_spoken_follow_up_interrupts_then_starts_exactly_one_new_turn():
             ("first", "local"),
             ("what about Dawn soap?", "local-faster-whisper"),
         ]
+        assert PromptHistory(history_path).entries == ["what about Dawn soap?"]
 
 
 async def test_spoken_barge_in_interrupts_live_playback_before_transcription():
