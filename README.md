@@ -679,6 +679,41 @@ to the iPad. For this story, validate the page in that Safari tab under Guided
 Access. Home Screen/PWA packaging is not included until it has passed a
 physical iPad gate.
 
+### Ops deployment behind Caddy
+
+The repeatable W/K deployment targets the ops Linux box at
+`https://hermes-home.chappell-home.dev`. The appliance binds to loopback on
+the ops host; Caddy owns HTTPS and proxies the page, `/state` WebSocket, and
+`/action` route. The Hermes token stays in the ops systemd environment and is
+never sent to the browser.
+
+Run the one-time bootstrap after adding the documented Caddy import and creating
+`/etc/hermes-relay/home.env` on ops:
+
+```bash
+OPS_HOST=ops.example ./scripts/deploy_ops_web.sh bootstrap \
+  --service-user hermes-home
+```
+
+Then deploy from a clean worktree with:
+
+```bash
+OPS_HOST=ops.example ./scripts/deploy_ops_web.sh deploy
+```
+
+Each deploy builds and verifies an isolated `HEAD` snapshot, installs a
+versioned remote runtime, atomically switches the active release, restarts the
+service, validates/reloads Caddy, and checks the public page plus both browser
+transport routes. Roll back the previous installed release with:
+
+```bash
+OPS_HOST=ops.example ./scripts/deploy_ops_web.sh rollback
+```
+
+See the [ops deployment runbook](docs/ops-web-deployment.md) for SSH/sudo
+prerequisites, the service environment, DNS/TLS, failure recovery, and the
+physical browser voice gate.
+
 **A plain install does not include this.** `pip install hermes-relay-tui` and
 `brew install hermes-relay-tui` give you the typed client and the
 `hermes-relay-home` entry point, but no microphone, speech-to-text, or wake-word

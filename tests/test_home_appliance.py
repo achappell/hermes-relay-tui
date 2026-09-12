@@ -217,6 +217,7 @@ def _args(**overrides):
         "wake_followup_seconds": 6.0,
         "wake_barge_in": False,
         "browser_voice": False,
+        "display_public_origin": None,
     }
     values.update(overrides)
     return types.SimpleNamespace(**values)
@@ -1367,6 +1368,61 @@ def test_display_tls_options_are_optional_paths():
     assert defaults.display_tls_key is None
     assert str(tls.display_tls_cert) == "cert.pem"
     assert str(tls.display_tls_key) == "key.pem"
+
+
+def test_display_public_origin_is_optional_and_explicit():
+    from home_display import appliance
+
+    defaults = appliance.build_arg_parser([]).parse_args([])
+    public = appliance.build_arg_parser([]).parse_args(
+        ["--display-public-origin", "https://hermes-home.chappell-home.dev"]
+    )
+
+    assert defaults.display_public_origin is None
+    assert public.display_public_origin == "https://hermes-home.chappell-home.dev"
+
+
+def test_browser_display_passes_public_origin_to_server(monkeypatch):
+    from home_display import appliance
+
+    captured = {}
+
+    class CapturingServer:
+        def __init__(self, *args, **kwargs):
+            captured.update(kwargs)
+
+    monkeypatch.setattr(appliance, "DisplayServer", CapturingServer)
+    relay = Appliance(
+        _args(
+            browser_voice=True,
+            display_public_origin="https://hermes-home.chappell-home.dev",
+        ),
+        session=FakeSession(),
+    )
+
+    relay._build()
+
+    assert captured["public_origin"] == "https://hermes-home.chappell-home.dev"
+
+
+def test_browser_display_reports_an_invalid_public_origin(monkeypatch):
+    from home_display import appliance
+
+    class RejectingServer:
+        def __init__(self, *args, **kwargs):
+            raise ValueError("public origin must use http or https with a host")
+
+    monkeypatch.setattr(appliance, "DisplayServer", RejectingServer)
+    relay = Appliance(
+        _args(
+            browser_voice=True,
+            display_public_origin="wss://hermes-home.chappell-home.dev/state",
+        ),
+        session=FakeSession(),
+    )
+
+    with pytest.raises(RuntimeError, match="public origin must use http or https"):
+        relay._build()
 
 
 def test_display_tls_is_restricted_to_browser_voice(tmp_path):

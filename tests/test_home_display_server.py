@@ -3,6 +3,7 @@ import json
 import shutil
 import ssl
 import subprocess
+from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
 import pytest
@@ -337,6 +338,94 @@ async def test_state_accepts_the_server_http_origin(tmp_path):
     try:
         async with connect(info.websocket_url, origin=info.http_url) as socket:
             assert json.loads(await socket.recv())["state"] == "idle"
+    finally:
+        await server.close()
+
+
+@pytest.mark.asyncio
+async def test_state_accepts_the_configured_public_origin(tmp_path):
+    (tmp_path / "index.html").write_text("home", encoding="utf-8")
+    public_origin = "https://hermes-home.chappell-home.dev"
+    server = DisplayServer(
+        DisplayStatePublisher(),
+        tmp_path,
+        public_origin=public_origin,
+    )
+    info = await server.start()
+    try:
+        async with connect(info.websocket_url, origin=public_origin) as socket:
+            assert json.loads(await socket.recv())["state"] == "idle"
+        async with connect(info.websocket_url, origin=f"{public_origin}:443/") as socket:
+            assert json.loads(await socket.recv())["state"] == "idle"
+    finally:
+        await server.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "origin",
+    [
+        "http://hermes-home.chappell-home.dev",
+        "https://hermes-home.chappell-home.dev:444",
+        "https://hermes-home.chappell-home.dev.evil",
+        "https://hermes-home.chappell-home.dev/other",
+        "https://hermes-home.chappell-home.dev/?probe=1",
+    ],
+)
+async def test_state_rejects_origins_that_only_resemble_the_public_origin(tmp_path, origin):
+    (tmp_path / "index.html").write_text("home", encoding="utf-8")
+    server = DisplayServer(
+        DisplayStatePublisher(),
+        tmp_path,
+        public_origin="https://hermes-home.chappell-home.dev",
+    )
+    info = await server.start()
+    try:
+        with pytest.raises(InvalidHandshake) as error:
+            await connect(info.websocket_url, origin=origin)
+        response = getattr(error.value, "response", None)
+        status_code = getattr(error.value, "status_code", None)
+        if status_code is None:
+            status_code = getattr(response, "status_code", None)
+        assert status_code == 403
+    finally:
+        await server.close()
+
+
+def test_public_origin_rejects_a_path_or_non_http_scheme(tmp_path):
+    with pytest.raises(ValueError, match="public origin"):
+        DisplayServer(
+            DisplayStatePublisher(),
+            tmp_path,
+            public_origin="wss://hermes-home.chappell-home.dev/state",
+        )
+
+
+@pytest.mark.asyncio
+async def test_public_origin_reaches_action_route_without_dispatching_malformed_action(tmp_path):
+    (tmp_path / "index.html").write_text("home", encoding="utf-8")
+    calls: list[tuple[str, str]] = []
+
+    async def on_action(action_id: str, choice: str) -> None:
+        calls.append((action_id, choice))
+
+    server = DisplayServer(
+        DisplayStatePublisher(),
+        tmp_path,
+        public_origin="https://hermes-home.chappell-home.dev",
+        on_action=on_action,
+    )
+    info = await server.start()
+    try:
+        request = Request(
+            f"http://{info.host}:{info.port}/action",
+            method="POST",
+            headers={"Origin": "https://hermes-home.chappell-home.dev"},
+        )
+        with pytest.raises(HTTPError) as error:
+            await asyncio.to_thread(lambda: urlopen(request))
+        assert error.value.code == 400
+        assert calls == []
     finally:
         await server.close()
 
