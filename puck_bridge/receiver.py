@@ -519,9 +519,8 @@ def make_handler(
                     response_stream.abandon()
                 if delivered is False:
                     logger.warning(
-                        "puck bridge dropped a capture: a turn is already in "
-                        "flight (single-flight coordinator). The question was "
-                        "transcribed but never asked."
+                        "puck bridge dropped a capture or failed its delivery; "
+                        "remote receipt may be uncertain. No automatic replay."
                     )
 
     return Handler
