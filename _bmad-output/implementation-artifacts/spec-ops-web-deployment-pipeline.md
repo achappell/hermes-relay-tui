@@ -96,7 +96,7 @@ documented service/site files only after validating the rendered configuration.
 
 ### Acceptance criteria
 
-- [ ] A browser served from `https://hermes-home.chappell-home.dev` can load the
+- [x] A browser served from `https://hermes-home.chappell-home.dev` can load the
   static display, open `/state`, and post `/action` through Caddy; the automated
   smoke gate proves all three paths without dispatching a real household action.
 - [x] A direct deployment with no public-origin option retains current behavior.
@@ -181,6 +181,7 @@ bootstrap from ordinary local deploys so the repeatable path stays short.
 | 2026-09-12 | Snapshot preflight now skips the Git-checkout-only deployment harness when running from the archived source tree. |
 | 2026-09-12 | First real deploy exposed `readlink -f` treating an absent pointer as a path; missing `current`/`previous` links are now handled as an empty first-deploy state. |
 | 2026-09-12 | Live smoke exposed an explicit `ssl=None` WebSocket argument incompatibility; the checker now omits SSL when using the system trust store. |
+| 2026-09-12 | Ops deployment is live; Caddy page/state/action smoke and a browser readiness check passed. The real spoken-turn and follow-up gate remains an operator test. |
 
 ## Review Log
 

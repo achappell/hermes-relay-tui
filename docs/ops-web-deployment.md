@@ -43,6 +43,11 @@ VOICE_SESSION_ID=hermes-home
 VOICE_SESSION_WAKE_PHRASES=hey hermes
 ```
 
+The client and device identity must already be allowlisted by the Hermes
+endpoint. If ops already has a working appliance, preserve its accepted pair
+unless the relay administrator has added a new identity; an arbitrary new
+pair will connect to the network but be rejected during `hello`.
+
 Keep the real token in this file on ops. Do not copy it into the repository,
 the deployment command, a wheel, or a Caddy file.
 
