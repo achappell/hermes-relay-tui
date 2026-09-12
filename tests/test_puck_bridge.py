@@ -691,3 +691,62 @@ def test_a_stream_that_hangs_on_close_does_not_swallow_the_timeout(monkeypatch):
         assert runner._send("a question") is False
     finally:
         runner.stop()
+
+
+def test_a_dropped_capture_is_logged(tmp_path, caplog):
+    """Single-flight means a capture arriving mid-turn is discarded. That was
+    silent: on 2026-09-11 a wedged turn swallowed a following question with
+    nothing in the log to say it had been thrown away."""
+    import logging
+
+    transcribe = _fake_transcribe(transcript="a question")
+
+    def _busy_sink(_text: str) -> bool:
+        return False  # coordinator is busy
+
+    handler_cls = make_handler(
+        expected_token="s3cret",
+        on_transcript=_busy_sink,
+        transcribe_fn=transcribe,
+        work_dir=tmp_path,
+    )
+    server = _start_server(handler_cls)
+    try:
+        with caplog.at_level(logging.WARNING):
+            frame = struct.pack("<i", 0) + struct.pack("<i", 1 << 6)
+            _post_chunk(
+                server.server_address[1], seq=11, chunk=0, total=1,
+                body=frame, token="s3cret",
+            )
+            import time as _t
+            for _ in range(50):
+                if any("dropped a capture" in r.message for r in caplog.records):
+                    break
+                _t.sleep(0.1)
+    finally:
+        server.shutdown()
+
+    assert any("dropped a capture" in r.message for r in caplog.records), (
+        "a discarded question must say so"
+    )
+
+
+def test_playback_that_never_drains_aborts_the_turn(monkeypatch):
+    """The gap that let a turn hang for minutes: the per-event deadlines
+    bound FETCHING events from Hermes, not PROCESSING them, so a blocking
+    player.write had no timeout around it at all."""
+    import puck_bridge.turn as turn_mod
+
+    monkeypatch.setattr(turn_mod, "PLAYBACK_WRITE_TIMEOUT_SECONDS", 0.2)
+
+    class _StuckPlayer(FakePlayer):
+        def write(self, data):  # noqa: D102
+            import time as _t
+            _t.sleep(30)  # device never accepts the data
+
+    runner = TurnRunner(FakeSession(), player=_StuckPlayer())
+    runner.start()
+    try:
+        assert runner._send("a question") is False
+    finally:
+        runner.stop()
