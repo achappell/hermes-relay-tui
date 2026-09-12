@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import logging
 import threading
+import time
 from collections import deque
 
 logger = logging.getLogger("hermes_relay_tui.puck_bridge.response")
@@ -77,18 +78,40 @@ class ResponseStream:
 
     # -- producer side (the turn) -----------------------------------------
 
-    def expect(self) -> None:
-        """Declare that a turn has been accepted and audio should follow."""
+    def expect(self) -> bool:
+        """Declare that a capture is being processed and audio may follow.
+
+        Refuses while a reader is still streaming a previous answer, and
+        returns False. Without that guard a second wake -- an ordinary
+        follow-up question -- clobbered the shared stream mid-delivery:
+        it cleared the queued tail of the previous answer, un-finished the
+        stream so the active reader blocked for the full stall timeout
+        instead of ending, and if the new turn then called begin() it
+        appended the new answer's PCM to the old body under the OLD WAV
+        header, while the device's fetch for the new one was refused 409.
+        The caller decides what to do about a busy stream; this refuses to
+        corrupt one.
+        """
         with self._cv:
+            if self._reader_active:
+                return False
             self._expecting = True
             self._audio_format = None
             self._finished = False
             self._chunks.clear()
             self._cv.notify_all()
+            return True
 
     def abandon(self) -> None:
-        """Declare that no audio is coming after all (no turn, or it failed)."""
+        """Declare that no audio is coming after all (no turn, or it failed).
+
+        A no-op while a reader is active, for the mirror reason `expect()`
+        refuses: a dropped or empty follow-up capture must not truncate an
+        answer that is still being delivered.
+        """
         with self._cv:
+            if self._reader_active:
+                return
             self._expecting = False
             self._finished = True
             self._cv.notify_all()
@@ -117,9 +140,18 @@ class ResponseStream:
             self._cv.notify_all()
 
     def finish(self) -> None:
-        """Mark the response complete. Idempotent."""
+        """Mark the response complete. Idempotent.
+
+        Also clears `_expecting`: a turn can finish WITHOUT ever declaring a
+        format (a text-only reply, a TTS failure, a stream aborted before
+        audio). Leaving `_expecting` set there left `wait_for_format`'s
+        predicate unsatisfied, so the device waited the full format budget
+        and got a 504 -- exactly the behaviour this class claims to have
+        eliminated.
+        """
         with self._cv:
             self._finished = True
+            self._expecting = False
             self._cv.notify_all()
 
     @property
@@ -146,7 +178,9 @@ class ResponseStream:
             if not self._expecting:
                 return None
             self._cv.wait_for(
-                lambda: self._audio_format is not None or not self._expecting,
+                lambda: self._audio_format is not None
+                or not self._expecting
+                or self._finished,
                 timeout,
             )
             return self._audio_format
@@ -171,19 +205,38 @@ class ResponseStream:
         response is better than an indefinite hang the device would have to
         time out itself.
         """
-        waited = 0.0
+        # NEVER yield while holding _cv. The consumer's blocking socket
+        # write happens during the yield, and the producer writes from the
+        # asyncio event-loop thread -- so holding the lock across the yield
+        # blocks the whole loop, including the very wait_for timeouts that
+        # are supposed to catch a stalled turn. And because the device plays
+        # in real time, TCP backpressure is the NORMAL case here, not an
+        # edge case. Pop under the lock; yield outside it.
+        last_progress = time.monotonic()
         while True:
+            batch: list[bytes] = []
             with self._cv:
                 while self._chunks:
-                    waited = 0.0
-                    yield self._chunks.popleft()
-                if self._finished:
-                    return
-                self._cv.wait(CHUNK_POLL_SECONDS)
-                if self._chunks or self._finished:
-                    continue
-            waited += CHUNK_POLL_SECONDS
-            if waited >= stall_timeout:
+                    batch.append(self._chunks.popleft())
+                if not batch:
+                    if self._finished:
+                        return
+                    self._cv.wait(CHUNK_POLL_SECONDS)
+                    if self._chunks:
+                        continue
+                    if self._finished:
+                        return
+            if batch:
+                last_progress = time.monotonic()
+                for chunk in batch:
+                    yield chunk
+                continue
+            # Measure elapsed time rather than counting poll iterations: a
+            # notify_all() that adds no chunk (a concurrent expect/begin)
+            # returns wait() early, so counting iterations charges the
+            # budget for time that never passed and can declare a healthy
+            # producer dead.
+            if time.monotonic() - last_progress >= stall_timeout:
                 logger.warning(
                     "puck response stream stalled for %.0fs with no audio; "
                     "ending the body so the device is not left waiting",

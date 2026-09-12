@@ -305,16 +305,22 @@ def make_handler(
                 self._respond(409, b"response already streaming")
                 return
 
-            self.send_response(200)
-            self.send_header("Content-Type", "audio/wav")
-            # No Content-Length: the length genuinely is not known yet.
-            # Chunked encoding lets the body be terminated definitively,
-            # which is what the device needs to see end-of-stream.
-            self.send_header("Transfer-Encoding", "chunked")
-            self.end_headers()
-
+            # Everything after acquire_reader() must be inside the try, so
+            # the finally always releases the slot. end_headers() flushes
+            # straight to an unbuffered socket writer, so if the device has
+            # already dropped the connection it raises HERE -- before the
+            # old try began -- leaking _reader_active and making every
+            # later fetch 409. That left the Puck permanently mute until
+            # the bridge process restarted.
             total = 0
             try:
+                self.send_response(200)
+                self.send_header("Content-Type", "audio/wav")
+                # No Content-Length: the length genuinely is not known yet.
+                # Chunked encoding lets the body be terminated definitively,
+                # which is what the device needs to see end-of-stream.
+                self.send_header("Transfer-Encoding", "chunked")
+                self.end_headers()
                 self._write_chunk(streaming_wav_header(audio_format))
                 for chunk in response_stream.iter_chunks():
                     self._write_chunk(chunk)
@@ -414,8 +420,18 @@ def make_handler(
             # that race on 2026-09-11: the turn ran and produced audio with
             # nobody left reading the stream. Every path out of this
             # function that will not produce audio calls abandon().
+            accepted_stream = True
             if response_stream is not None:
-                response_stream.expect()
+                accepted_stream = response_stream.expect()
+                if not accepted_stream:
+                    # A previous answer is still being delivered. Process
+                    # this capture anyway -- the turn itself is worth
+                    # running -- but never touch the stream, so the answer
+                    # in flight is not truncated or spliced.
+                    logger.info(
+                        "puck bridge: a previous answer is still streaming; "
+                        "this capture will not claim the response stream"
+                    )
             raw = capture.assemble()
             os.makedirs(resolved_work_dir, exist_ok=True)
             wav_path = os.path.join(resolved_work_dir, f"puck_{seq}.wav")
@@ -424,7 +440,7 @@ def make_handler(
                 result = transcribe(wav_path)
             except Exception:
                 logger.exception("puck bridge capture processing failed")
-                if response_stream is not None:
+                if response_stream is not None and accepted_stream:
                     response_stream.abandon()
                 return
             finally:
@@ -440,7 +456,7 @@ def make_handler(
                 # Same reason as the empty-transcript path: the device may
                 # already be waiting on /response for audio that will never
                 # be produced.
-                if response_stream is not None:
+                if response_stream is not None and accepted_stream:
                     response_stream.abandon()
                 return
             transcript = str(result.get("transcript") or "").strip()
@@ -449,7 +465,7 @@ def make_handler(
                 # The device may already be fetching /response on the back
                 # of a confirmed upload. Tell it at once that no audio is
                 # coming, rather than letting it wait out the format budget.
-                if response_stream is not None:
+                if response_stream is not None and accepted_stream:
                     response_stream.abandon()
                 return
             try:
@@ -462,10 +478,10 @@ def make_handler(
                 delivered = on_transcript(transcript)
             except Exception:
                 logger.exception("puck bridge turn callback failed")
-                if response_stream is not None:
+                if response_stream is not None and accepted_stream:
                     response_stream.abandon()
             else:
-                if delivered is False and response_stream is not None:
+                if delivered is False and response_stream is not None and accepted_stream:
                     response_stream.abandon()
                 if delivered is False:
                     logger.warning(

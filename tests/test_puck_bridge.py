@@ -1104,3 +1104,126 @@ def test_the_reader_slot_is_released_after_a_stream_ends(tmp_path):
 
     assert first == 200 and second == 200
     assert body[44:] == b"cd"
+
+
+# --- code-review findings: four high-severity regressions ------------------
+
+
+def test_the_producer_is_not_blocked_while_a_consumer_is_mid_yield():
+    """HIGH 1. iter_chunks used to yield while holding the condition lock,
+    so the consumer held it across its blocking socket write. The producer
+    writes from the asyncio event-loop thread, so that blocked the entire
+    loop -- including the wait_for timeouts meant to catch a stalled turn.
+    And since the device plays in real time, backpressure is the NORMAL
+    case."""
+    import threading as _th
+    import time as _t
+    from puck_bridge.response import ResponseStream
+
+    stream = ResponseStream()
+    stream.expect()
+    stream.begin(1, (24000, 1, 2))
+    stream.write(b"first")
+
+    gen = stream.iter_chunks()
+    assert next(gen) == b"first"  # consumer is now suspended at the yield
+
+    produced = _th.Event()
+
+    def _produce():
+        stream.write(b"second")  # must not block on the consumer
+        produced.set()
+
+    _th.Thread(target=_produce, daemon=True).start()
+    assert produced.wait(2.0), (
+        "producer blocked while the consumer sat at a yield -- this is the "
+        "event-loop deadlock"
+    )
+    stream.finish()
+
+
+def test_a_turn_that_finishes_without_audio_releases_the_waiter():
+    """HIGH 2. finish() left _expecting set, so a turn that never emitted
+    audio_start (text-only reply, TTS failure) left the device waiting the
+    full format budget for a 504 -- the exact behaviour this class claims
+    to have removed."""
+    import threading as _th
+    import time as _t
+    from puck_bridge.response import ResponseStream
+
+    stream = ResponseStream()
+    stream.expect()
+
+    def _finish_without_audio():
+        _t.sleep(0.2)
+        stream.finish()
+
+    _th.Thread(target=_finish_without_audio, daemon=True).start()
+    started = _t.monotonic()
+    assert stream.wait_for_format(timeout=10.0) is None
+    assert _t.monotonic() - started < 2.0, "must not wait out the budget"
+
+
+def test_the_reader_slot_survives_a_dead_connection(tmp_path):
+    """HIGH 3. acquire_reader() ran outside the try/finally, so a header
+    write to an already-closed socket leaked the slot and every later fetch
+    got 409 -- the Puck went permanently mute until a bridge restart."""
+    from puck_bridge.response import ResponseStream
+
+    stream = ResponseStream()
+    handler_cls = make_handler(
+        expected_token="s3cret",
+        on_transcript=_RecordingSink(),
+        transcribe_fn=_fake_transcribe(transcript="x"),
+        work_dir=tmp_path,
+        response_stream=stream,
+    )
+    server = _start_server(handler_cls)
+    port = server.server_address[1]
+    try:
+        # Fetch and hang up immediately, mid-headers.
+        for _ in range(3):
+            conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+            stream.expect()
+            stream.begin(1, (24000, 1, 2))
+            conn.request("GET", "/response?seq=1", headers={TOKEN_HEADER: "s3cret"})
+            conn.close()  # drop without reading
+            import time as _t
+            _t.sleep(0.2)
+            stream.finish()
+        # The slot must still be free for a normal fetch.
+        stream.expect()
+        stream.begin(2, (24000, 1, 2))
+        stream.write(b"ok")
+        stream.finish()
+        status, _ = _get_response(port, token="s3cret")
+    finally:
+        server.shutdown()
+
+    assert status != 409, "the reader slot leaked -- device would be mute"
+    assert status == 200
+
+
+def test_a_second_capture_cannot_truncate_an_answer_still_streaming():
+    """HIGH 4. expect() unconditionally cleared the shared stream, so an
+    ordinary follow-up question dropped the tail of the answer already
+    playing, un-finished the stream, and could splice the new answer's PCM
+    into the old body under the old WAV header."""
+    from puck_bridge.response import ResponseStream
+
+    stream = ResponseStream()
+    stream.expect()
+    stream.begin(1, (24000, 1, 2))
+    stream.write(b"answer-one-tail")
+    assert stream.acquire_reader(), "reader should claim the slot"
+
+    # A second wake arrives while answer one is still being delivered.
+    assert stream.expect() is False, "must refuse while a reader is active"
+    stream.abandon()  # must be a no-op too
+
+    stream.finish()
+    remaining = list(stream.iter_chunks(stall_timeout=1.0))
+    assert remaining == [b"answer-one-tail"], (
+        "the in-flight answer was truncated by a follow-up capture"
+    )
+    stream.release_reader()
