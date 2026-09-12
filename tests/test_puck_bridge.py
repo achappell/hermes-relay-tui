@@ -916,3 +916,116 @@ def test_response_endpoint_rejects_a_bad_token(tmp_path):
     finally:
         server.shutdown()
     assert status == 401
+
+
+def test_response_fails_fast_when_no_turn_was_accepted():
+    """The device fetches /response as soon as its upload is confirmed --
+    before the bridge knows whether the capture held a question at all. An
+    empty transcript runs no turn, so making the device wait out the full
+    format budget for audio that never existed is pure latency. Observed
+    2026-09-11 as four 15s waits; this asserts the fast path."""
+    import time
+    from puck_bridge.response import ResponseStream
+
+    stream = ResponseStream()
+    started = time.monotonic()
+    assert stream.wait_for_format(timeout=10.0) is None
+    assert time.monotonic() - started < 1.0, (
+        "must not wait the budget when nothing is expected"
+    )
+
+
+def test_response_waits_when_a_turn_is_actually_coming():
+    """The counterpart: once a turn is accepted, the format wait is real --
+    audio_start arrives slightly after the turn begins."""
+    import threading as _th
+    import time
+    from puck_bridge.response import ResponseStream
+
+    stream = ResponseStream()
+    stream.expect()
+
+    def _late_format():
+        time.sleep(0.3)
+        stream.begin(1, (24000, 1, 2))
+
+    _th.Thread(target=_late_format, daemon=True).start()
+    assert stream.wait_for_format(timeout=5.0) == (24000, 1, 2)
+
+
+def test_abandon_releases_a_waiting_reader():
+    """A turn that fails after being accepted must release the device
+    immediately rather than leaving it on the full budget."""
+    import threading as _th
+    import time
+    from puck_bridge.response import ResponseStream
+
+    stream = ResponseStream()
+    stream.expect()
+
+    def _fail():
+        time.sleep(0.2)
+        stream.abandon()
+
+    _th.Thread(target=_fail, daemon=True).start()
+    started = time.monotonic()
+    assert stream.wait_for_format(timeout=10.0) is None
+    assert time.monotonic() - started < 2.0
+
+
+def test_a_fetch_arriving_during_transcription_waits_for_the_answer(tmp_path):
+    """The race that cost a delivered answer on 2026-09-11.
+
+    The device fetches /response the instant its upload is confirmed, but
+    transcription takes seconds. If `expect()` is set only after the
+    transcript is accepted, that fetch fast-fails with 504 and the turn then
+    produces audio with nobody reading it -- a lost answer that looks like a
+    successful turn in the log. The declaration must happen when capture
+    processing STARTS.
+    """
+    import threading as _th
+    from puck_bridge.response import ResponseStream
+
+    stream = ResponseStream()
+    slow_started = _th.Event()
+
+    def _slow_transcribe(path):
+        slow_started.set()
+        import time as _t
+        _t.sleep(0.8)  # stand in for faster-whisper
+        return {"success": True, "transcript": "a question"}
+
+    def _sink(_text):
+        # The turn produces audio shortly after the transcript lands.
+        def _produce():
+            stream.begin(1, (24000, 1, 2))
+            stream.write(b"\x07\x08" * 4)
+            stream.finish()
+        _th.Thread(target=_produce, daemon=True).start()
+        return True
+
+    handler_cls = make_handler(
+        expected_token="s3cret",
+        on_transcript=_sink,
+        transcribe_fn=_slow_transcribe,
+        work_dir=tmp_path,
+        response_stream=stream,
+    )
+    server = _start_server(handler_cls)
+    port = server.server_address[1]
+    try:
+        frame = struct.pack("<i", 0) + struct.pack("<i", 1 << 6)
+        _th.Thread(
+            target=_post_chunk,
+            kwargs=dict(port=port, seq=21, chunk=0, total=1, body=frame, token="s3cret"),
+            daemon=True,
+        ).start()
+        assert slow_started.wait(5.0), "transcription should have begun"
+        # Fetch mid-transcription, exactly as the device does.
+        status, body = _get_response(port, token="s3cret")
+    finally:
+        server.shutdown()
+
+    assert status == 200, "a fetch during transcription must wait, not 504"
+    assert body[:4] == b"RIFF"
+    assert body[44:] == b"\x07\x08" * 4

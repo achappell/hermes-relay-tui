@@ -55,6 +55,16 @@ BYTES_PER_FRAME = SOURCE_CHANNELS * 4
 Q25_MAX = (1 << 25) - 1
 Q25_MIN = ~Q25_MAX
 
+import re as _re
+
+_TOKEN_IN_URL = _re.compile(r"([?&]token=)[^&\s]+")
+
+
+def _redact_token(text: str) -> str:
+    """Blank a `token=` query value so credentials do not reach the logs."""
+    return _TOKEN_IN_URL.sub(r"\1REDACTED", text)
+
+
 TOKEN_HEADER = "X-Puck-Token"
 UPLOAD_PATH = "/upload"
 RESPONSE_PATH = "/response"
@@ -194,7 +204,13 @@ def make_handler(
         protocol_version = "HTTP/1.1"
 
         def log_message(self, fmt: str, *args: object) -> None:  # noqa: A003
-            logger.debug(fmt, *args)
+            # Redact the query-string credential: /response carries the
+            # device token in the URL because audio_http cannot send a
+            # header (see do_GET), and this handler logs full request lines.
+            safe = tuple(
+                _redact_token(a) if isinstance(a, str) else a for a in args
+            )
+            logger.debug(fmt, *safe)
 
         def _respond(self, code: int, body: bytes = b"") -> None:
             self.send_response(code)
@@ -221,9 +237,24 @@ def make_handler(
                 self._respond(404, b"not found")
                 return
 
-            # Same fail-closed token check as the upload path. Response
-            # audio is as private as the question that produced it.
-            token = self.headers.get(TOKEN_HEADER, "")
+            # Same fail-closed check as the upload path -- response audio
+            # is as private as the question that produced it -- but the
+            # credential has to arrive differently.
+            #
+            # ESPHome's audio_http media source never calls
+            # esp_http_client_set_header(), so the device physically cannot
+            # send X-Puck-Token when fetching this. The token therefore also
+            # comes as a query parameter. That is a real, if small,
+            # downgrade: URLs land in logs and proxies in a way headers do
+            # not, which is why the log line below redacts it. Acceptable
+            # while the credential is a hardcoded home-LAN shared secret
+            # standing in for the device-administration system; revisit when
+            # that lands, since a per-device credential in a URL would be
+            # worth more than this one.
+            query = parse_qs(urlparse(self.path).query)
+            token = self.headers.get(TOKEN_HEADER, "") or (
+                query.get("token", [""])[0]
+            )
             if not expected_token or token != expected_token:
                 logger.warning("puck bridge response rejected: invalid token")
                 self._respond(401, b"invalid token")
@@ -233,12 +264,25 @@ def make_handler(
                 self._respond(503, b"no response stream configured")
                 return
 
+            # Distinguish the two "no audio" cases in the log, because they
+            # mean very different things: nothing was ever coming (no turn
+            # accepted for this capture) versus a turn was accepted but
+            # never produced audio. The first is routine -- an empty
+            # transcript, a false wake -- and the second is a real fault.
+            was_expecting = response_stream.expecting
             audio_format = response_stream.wait_for_format()
             if audio_format is None:
-                logger.warning(
-                    "puck bridge response: no audio format within the wait "
-                    "budget; nothing to stream"
-                )
+                if was_expecting:
+                    logger.warning(
+                        "puck bridge response: a turn was accepted but "
+                        "produced no audio within the wait budget"
+                    )
+                else:
+                    logger.info(
+                        "puck bridge response: nothing to stream for this "
+                        "capture (no turn was accepted); telling the device "
+                        "at once rather than making it wait"
+                    )
                 self._respond(504, b"no response audio")
                 return
 
@@ -338,6 +382,16 @@ def make_handler(
                 self._finish_capture(seq, finished_capture)
 
         def _finish_capture(self, seq: int, capture: _PendingCapture) -> None:
+            # Declare intent HERE, before transcription, not after it.
+            # The device fetches /response the moment its upload is
+            # confirmed, and transcription takes seconds -- so a fetch
+            # arriving mid-transcription must WAIT, not fast-fail. Setting
+            # this after the transcript was accepted introduced exactly
+            # that race on 2026-09-11: the turn ran and produced audio with
+            # nobody left reading the stream. Every path out of this
+            # function that will not produce audio calls abandon().
+            if response_stream is not None:
+                response_stream.expect()
             raw = capture.assemble()
             os.makedirs(resolved_work_dir, exist_ok=True)
             wav_path = os.path.join(resolved_work_dir, f"puck_{seq}.wav")
@@ -346,6 +400,8 @@ def make_handler(
                 result = transcribe(wav_path)
             except Exception:
                 logger.exception("puck bridge capture processing failed")
+                if response_stream is not None:
+                    response_stream.abandon()
                 return
             finally:
                 try:
@@ -357,10 +413,20 @@ def make_handler(
                 logger.warning(
                     "puck bridge transcription failed: %s", result.get("error")
                 )
+                # Same reason as the empty-transcript path: the device may
+                # already be waiting on /response for audio that will never
+                # be produced.
+                if response_stream is not None:
+                    response_stream.abandon()
                 return
             transcript = str(result.get("transcript") or "").strip()
             if not transcript:
                 logger.info("puck bridge capture produced an empty transcript")
+                # The device may already be fetching /response on the back
+                # of a confirmed upload. Tell it at once that no audio is
+                # coming, rather than letting it wait out the format budget.
+                if response_stream is not None:
+                    response_stream.abandon()
                 return
             try:
                 # The return value matters: the coordinator is single-flight,
@@ -372,7 +438,11 @@ def make_handler(
                 delivered = on_transcript(transcript)
             except Exception:
                 logger.exception("puck bridge turn callback failed")
+                if response_stream is not None:
+                    response_stream.abandon()
             else:
+                if delivered is False and response_stream is not None:
+                    response_stream.abandon()
                 if delivered is False:
                     logger.warning(
                         "puck bridge dropped a capture: a turn is already in "

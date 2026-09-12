@@ -58,8 +58,39 @@ class ResponseStream:
         self._audio_format: tuple[int, int, int] | None = None
         self._finished = False
         self._seq: int | None = None
+        # Whether a turn is actually on its way. The device fetches
+        # /response as soon as its upload is confirmed, which happens
+        # BEFORE we know whether the capture produced a question at all --
+        # an empty transcript runs no turn and yields no audio. Without
+        # this the device sat waiting the full format budget for audio that
+        # was never coming (observed 2026-09-11: three fetches, three
+        # "nothing to stream" after a 15s wait each). Only the bridge can
+        # know the difference, so it tells the device immediately.
+        self._expecting = False
 
     # -- producer side (the turn) -----------------------------------------
+
+    def expect(self) -> None:
+        """Declare that a turn has been accepted and audio should follow."""
+        with self._cv:
+            self._expecting = True
+            self._audio_format = None
+            self._finished = False
+            self._chunks.clear()
+            self._cv.notify_all()
+
+    def abandon(self) -> None:
+        """Declare that no audio is coming after all (no turn, or it failed)."""
+        with self._cv:
+            self._expecting = False
+            self._finished = True
+            self._cv.notify_all()
+
+    @property
+    def expecting(self) -> bool:
+        with self._cv:
+            return self._expecting
+
 
     def begin(self, seq: int | None, audio_format: tuple[int, int, int]) -> None:
         """Declare the format and open the stream for writing."""
@@ -103,7 +134,14 @@ class ResponseStream:
         with self._cv:
             if self._audio_format is not None:
                 return self._audio_format
-            self._cv.wait_for(lambda: self._audio_format is not None, timeout)
+            # Nothing is coming: say so at once rather than making the
+            # device wait out the whole budget for silence.
+            if not self._expecting:
+                return None
+            self._cv.wait_for(
+                lambda: self._audio_format is not None or not self._expecting,
+                timeout,
+            )
             return self._audio_format
 
     def iter_chunks(self, stall_timeout: float = STREAM_STALL_SECONDS):

@@ -592,3 +592,26 @@ interval:
       - lambda: |-
           pcm_capture::wake_capture::upload(id(http_client), "http://${puck_bridge_host}:${puck_bridge_port}/upload",
                                              "${puck_device_token}");
+      # 1-p-2 task 5: once the bridge CONFIRMS it reassembled the capture,
+      # fetch and play the spoken answer. Gated on delivery rather than on
+      # "we finished POSTing": every chunk being accepted is not the same
+      # as the capture being whole, and acting on the weaker signal is what
+      # silently lost three turns on 2026-09-10.
+      #
+      # The token rides in the query string, not a header, because
+      # ESPHome's audio_http media source never calls
+      # esp_http_client_set_header() -- the device physically cannot send
+      # X-Puck-Token here. The bridge accepts either and redacts the query
+      # form from its logs.
+      - if:
+          condition:
+            lambda: return pcm_capture::wake_capture::last_upload_delivered;
+          then:
+            - lambda: pcm_capture::wake_capture::last_upload_delivered = false;
+            - media_player.play_media:
+                id: puck_media_player
+                media_url: !lambda |-
+                  return std::string("http://${puck_bridge_host}:${puck_bridge_port}/response?seq=") +
+                         std::to_string(pcm_capture::wake_capture::last_delivered_seq) +
+                         "&token=${puck_device_token}";
+                announcement: true

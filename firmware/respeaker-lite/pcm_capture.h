@@ -275,6 +275,16 @@ static uint32_t sample_index = 0;
 // Cleared on every wake so it only ever describes the most recent one.
 static bool last_wake_refused = false;
 
+// 1-p-2 task 5: set when an upload was confirmed reassembled by the
+// bridge, so the automation can fetch and play the spoken answer. Uses the
+// same pattern as last_wake_refused -- the code that KNOWS the outcome
+// records it, rather than the automation re-deriving it and risking the
+// two drifting apart.
+static bool last_upload_delivered = false;
+// The sequence the bridge reassembled, so the response fetch asks for the
+// right one rather than assuming the latest.
+static uint32_t last_delivered_seq = 0;
+
 inline void setup() {
   buffer = static_cast<uint8_t *>(heap_caps_malloc(WAKE_CAPTURE_BYTES, MALLOC_CAP_SPIRAM));
   if (buffer == nullptr) {
@@ -446,6 +456,8 @@ inline void upload(esphome::http_request::HttpRequestComponent *client, const st
     vTaskDelay(pdMS_TO_TICKS(30));
   }
   const uint32_t elapsed_ms = millis() - upload_started_ms;
+  last_upload_delivered = ok && reassembly_confirmed;
+  last_delivered_seq = sample_index;
   if (ok && reassembly_confirmed) {
     ESP_LOGI(TAG, "Wake capture %u delivered (%u bytes, %u chunks, %ums)", (unsigned) sample_index,
              (unsigned) write_pos, (unsigned) total_chunks, (unsigned) elapsed_ms);
