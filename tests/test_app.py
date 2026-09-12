@@ -296,7 +296,7 @@ async def test_disconnected_surface_is_explicit_and_recoverable():
         assert connection_status_of(app) == "○ disconnected · Profile: hermes · session s1"
         assert connection.has_class("-disconnected")
         assert app.query_one("#voice-status", Static).has_class("-disconnected")
-        assert "The app remains open; retry when the endpoint recovers." in transcript_of(app)
+        assert app_module.RETRY_HINT in transcript_of(app)
 
         app.transcript.clear()
         app._refresh_transcript()
@@ -342,6 +342,10 @@ async def test_connected_idle_disconnect_refreshes_empty_state_copy():
         assert str(empty_state.content) == (
             "Hermes is disconnected. Prompts stay queued until it returns."
         )
+        connection = app.query_one("#connection-status", Static)
+        assert connection.display is True
+        assert connection.has_class("-compact")
+        assert connection.has_class("-disconnected")
         assert connection_status_of(app).startswith("○ disconnected")
 
 
@@ -1082,6 +1086,84 @@ async def test_transport_failure_uses_disconnected_presentation_and_keeps_partia
         assert voice_status_of(app) == "● disconnected"
         assert app.query_one("#voice-status", Static).has_class("-disconnected")
         assert app._queued_prompts == ["pending prompt"]
+
+
+async def test_transport_failure_does_not_reuse_or_close_twice_a_stale_session(monkeypatch):
+    close_started = asyncio.Event()
+    release_close = asyncio.Event()
+
+    class SlowCloseSession(FakeSession):
+        def __init__(self, **kwargs):
+            super().__init__(**kwargs)
+            self.close_calls = 0
+
+        async def close(self):
+            self.close_calls += 1
+            close_started.set()
+            await release_close.wait()
+            self.closed = True
+
+        def send_turn(self, text, *, stt_source="local"):
+            self.sent_turns.append((text, stt_source))
+            self.turn_index += 1
+
+            async def stream():
+                yield {"type": "text_delta", "text": "partial answer"}
+                raise ConnectionResetError("socket went away")
+                yield  # pragma: no cover - makes this an async generator
+
+            return stream()
+
+    old_session = SlowCloseSession(session_id="old-session")
+    fresh_session = FakeSession(session_id="fresh-session")
+    sessions = iter((old_session, fresh_session))
+    app = HermesStreamingApp(
+        args=make_args(),
+        session_factory=lambda: next(sessions),
+    )
+    monkeypatch.setattr(app_module, "SHUTDOWN_TASK_TIMEOUT", 0.01)
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await app._run_turn("possibly sent")
+        assert close_started.is_set()
+
+        await app._run_turn("fresh prompt")
+        assert old_session.sent_turns == [("possibly sent", "local")]
+        assert app._queued_prompts == ["fresh prompt"]
+        assert app.connection_state == app_module.CONNECTION_DISCONNECTED
+
+        await app._handle_command(parse_slash_command("/reconnect"))
+        assert old_session.close_calls == 1
+        assert fresh_session.sent_turns == []
+        assert app.connection_state == app_module.CONNECTION_CONNECTED
+        assert app._queued_prompts == ["fresh prompt"]
+
+        release_close.set()
+        await asyncio.wait_for(app._wait_for_cleanup_tasks(), 1)
+
+
+async def test_domain_rejected_turn_stays_unsent_and_queued(monkeypatch):
+    session = FakeSession()
+    app = HermesStreamingApp(args=make_args(), session_factory=lambda: session)
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        monkeypatch.setattr(
+            app.domain,
+            "begin_turn",
+            lambda *args, **kwargs: types.SimpleNamespace(
+                accepted=False,
+                reason="turn_already_active",
+            ),
+        )
+
+        await app._run_turn("rejected prompt")
+
+        assert session.sent_turns == []
+        assert app._queued_prompts == ["rejected prompt"]
+        assert app._last_prompt_status == app_module.PROMPT_NOT_SENT
+        assert app._turn_in_flight is False
 
 
 _WEBSOCKET_TRANSPORT_FAILURES = [ConnectionClosed(None, None)]

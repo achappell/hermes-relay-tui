@@ -353,7 +353,10 @@ MAX_CONNECT_RETRY_DELAY = 8.0
 REMOTE_INTERRUPT_TIMEOUT = 2.0
 SHUTDOWN_TASK_TIMEOUT = 3.0
 HANDSHAKE_TIMEOUT = 30.0
-RETRY_HINT = "The app remains open; retry when the endpoint recovers."
+RETRY_HINT = (
+    "The app remains open; run /reconnect when the endpoint recovers, "
+    "then submit a fresh prompt."
+)
 VOICE_READY = "ready"
 VOICE_STARTING = "starting…"
 VOICE_CONNECTING = "connecting…"
@@ -633,6 +636,7 @@ class HermesStreamingApp(App):
         self._voice_capture_cancelled = False
         self._shutting_down = False
         self._cleanup_tasks: set[asyncio.Task[Any]] = set()
+        self._session_cleanup_tasks: dict[int, asyncio.Task[Any]] = {}
         # Wake mode remains off unless the user explicitly opts in through
         # configuration or --wake-enabled. A configured launch arms it only
         # after the initial connection; reconnects and reloads never reopen a
@@ -816,6 +820,7 @@ class HermesStreamingApp(App):
         return (
             self.connection_state == CONNECTION_CONNECTED
             and self.session.is_connected()
+            and not self._needs_reconnect
         )
 
     def _refresh_empty_state(self) -> None:
@@ -1131,7 +1136,11 @@ class HermesStreamingApp(App):
                     "wake mode off — connection lost; microphone released. "
                     "Run /wake on after reconnect."
                 )
-            if self.session.is_connected() and not force:
+            if self._needs_reconnect and self.session.is_connected() and not force:
+                self._set_connection_state(CONNECTION_DISCONNECTED)
+                self._set_voice_state(VOICE_DISCONNECTED)
+                return False
+            if self.session.is_connected() and not force and not self._needs_reconnect:
                 self._set_connection_state(CONNECTION_CONNECTED)
                 self._set_voice_state(VOICE_READY)
                 return True
@@ -1332,14 +1341,18 @@ class HermesStreamingApp(App):
         timeout_message: Optional[str] = None,
     ) -> None:
         """Run session cleanup with a bounded wait and safe late-task logging."""
-        try:
-            close_task = asyncio.create_task(session.close())
-        except Exception as exc:
-            diagnostic_logger.debug(
-                "%s.create_failed type=%s", event, type(exc).__name__
-            )
-            return
-        self._track_cleanup_task(close_task)
+        session_key = id(session)
+        close_task = self._session_cleanup_tasks.get(session_key)
+        if close_task is None or close_task.done():
+            try:
+                close_task = asyncio.create_task(session.close())
+            except Exception as exc:
+                diagnostic_logger.debug(
+                    "%s.create_failed type=%s", event, type(exc).__name__
+                )
+                return
+            self._session_cleanup_tasks[session_key] = close_task
+            self._track_cleanup_task(close_task)
         try:
             await asyncio.wait_for(
                 asyncio.shield(close_task),
@@ -1384,6 +1397,9 @@ class HermesStreamingApp(App):
 
         def finished(done: asyncio.Task[Any]) -> None:
             self._cleanup_tasks.discard(done)
+            for session_key, tracked in tuple(self._session_cleanup_tasks.items()):
+                if tracked is done:
+                    self._session_cleanup_tasks.pop(session_key, None)
             try:
                 done.result()
             except asyncio.CancelledError:
@@ -3507,10 +3523,20 @@ class HermesStreamingApp(App):
                 generation=index,
             )
             if not domain_turn.accepted:
-                raise RuntimeError(
+                rejection = (
                     "domain rejected turn start: "
                     + (domain_turn.reason or "unknown")
                 )
+                turn_was_sent = False
+                turn_status = PROMPT_NOT_SENT
+                self._last_prompt_status = turn_status
+                self.domain.apply_event(
+                    {"type": "error", "error": rejection},
+                    generation=index,
+                )
+                self._set_voice_state(VOICE_ERROR)
+                self._append_block(f"[error] {rejection}")
+                return turn_was_sent, turn_status
             self._set_voice_state(VOICE_THINKING)
             events = self.session.send_turn(text, stt_source=stt_source)
             bound_turn = self.domain.bind_turn_id(
