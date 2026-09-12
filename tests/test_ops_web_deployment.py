@@ -10,6 +10,10 @@ import pytest
 
 ROOT = Path(__file__).parents[1]
 SCRIPT = ROOT / "scripts" / "deploy_ops_web.sh"
+pytestmark = pytest.mark.skipif(
+    not (ROOT / ".git").exists(),
+    reason="deployment harness requires a Git checkout",
+)
 
 
 def _run(*args: str, env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
