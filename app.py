@@ -662,7 +662,9 @@ class HermesStreamingApp(App):
         self._wake_starting = False
         self._wake_start_cancelled = False
         self._wake_opening = False
+        self._wake_open_task: Optional[asyncio.Task[Any]] = None
         self._wake_start_task: Optional[asyncio.Task[Any]] = None
+        self._wake_cleanup_tasks: set[asyncio.Task[Any]] = set()
         self._wake_unavailable_reported = False
         self._earcons = earcons_module.EarconPlayer(
             enabled=getattr(args, "earcons", True) and not (args and args.no_play),
@@ -1422,6 +1424,7 @@ class HermesStreamingApp(App):
 
         def finished(done: asyncio.Task[Any]) -> None:
             self._cleanup_tasks.discard(done)
+            self._wake_cleanup_tasks.discard(done)
             for session_key, tracked in tuple(self._session_cleanup_tasks.items()):
                 if tracked is done:
                     self._session_cleanup_tasks.pop(session_key, None)
@@ -1450,6 +1453,28 @@ class HermesStreamingApp(App):
             diagnostic_logger.warning(
                 "app.shutdown.cleanup_timeout count=%d", len(tasks)
             )
+
+    async def _wait_for_wake_cleanup(self) -> bool:
+        """Keep a new listener from racing the old stream's native close."""
+        tasks = [task for task in self._wake_cleanup_tasks if not task.done()]
+        if not tasks:
+            return True
+        gathered = asyncio.gather(*tasks, return_exceptions=True)
+        try:
+            await asyncio.wait_for(
+                asyncio.shield(gathered),
+                SHUTDOWN_TASK_TIMEOUT,
+            )
+        except asyncio.TimeoutError:
+            diagnostic_logger.warning(
+                "app.wake.cleanup_timeout count=%d", len(tasks)
+            )
+            self._append_block(
+                "[error] previous microphone cleanup is still in progress; "
+                "wake mode remains off."
+            )
+            return False
+        return True
 
     async def _close_session_for_shutdown(self) -> None:
         """Give session cleanup a budget so quit cannot wait on a dead socket."""
@@ -1560,6 +1585,8 @@ class HermesStreamingApp(App):
         if self._wake_starting:
             self._append_block("wake mode startup is already in progress")
             return
+        if not await self._wait_for_wake_cleanup():
+            return
 
         start_task = asyncio.current_task()
         self._wake_start_task = start_task
@@ -1660,12 +1687,12 @@ class HermesStreamingApp(App):
             opening = asyncio.create_task(
                 asyncio.to_thread(recorder.open_for_listening)
             )
+            self._wake_open_task = opening
             try:
                 await asyncio.shield(opening)
             except asyncio.CancelledError:
                 if not opening.done():
                     self._disarm_wake()
-                    self._finish_cancelled_wake_open(recorder, opening)
                 else:
                     self._wake_opening = False
                     self._disarm_wake()
@@ -1674,19 +1701,14 @@ class HermesStreamingApp(App):
                 self._wake_opening = False
                 raise
             self._wake_opening = False
+            if self._wake_open_task is opening:
+                self._wake_open_task = None
             diagnostic_logger.debug(
                 "wake.start stage=microphone complete elapsed=%.3f",
                 time.perf_counter() - stage_started,
             )
             if self._wake_start_cancelled or self._reconnect_in_flight:
                 self._disarm_wake()
-                try:
-                    recorder.shutdown()
-                except Exception:
-                    diagnostic_logger.debug(
-                        "closing the cancelled wake recorder failed",
-                        exc_info=True,
-                    )
                 return
 
             self.wake_armed = True
@@ -1710,24 +1732,22 @@ class HermesStreamingApp(App):
             self._wake_start_cancelled = False
             if self._wake_start_task is start_task:
                 self._wake_start_task = None
+            if (
+                self._wake_open_task is not None
+                and self._wake_open_task.done()
+            ):
+                self._wake_open_task = None
 
     def _finish_cancelled_wake_open(self, recorder: Any, opening: Any) -> None:
         """Close a recorder whose native open outlived a cancelled task."""
-        async def finish() -> None:
-            try:
-                try:
-                    await opening
-                except BaseException:
-                    pass
-                await asyncio.to_thread(recorder.shutdown)
-            except Exception:
-                diagnostic_logger.debug(
-                    "closing the late wake recorder failed", exc_info=True
-                )
-            finally:
-                self._wake_opening = False
-
-        self._track_cleanup_task(asyncio.create_task(finish()))
+        self._schedule_wake_cleanup(
+            session=self.session,
+            listener=None,
+            recorder=recorder,
+            barge_listener=None,
+            barge_observer=None,
+            opening=opening,
+        )
 
     def _wake_failure_text(self, error: Exception) -> str:
         """Turn an arming failure into the one sentence that fixes it."""
@@ -1740,13 +1760,68 @@ class HermesStreamingApp(App):
             )
         return str(error)
 
-    def _disarm_wake(self, message: Optional[str] = None) -> None:
-        """Stop listening and give the device back. Safe to call when off."""
+    def _schedule_wake_cleanup(
+        self,
+        *,
+        session: Any,
+        listener: Any,
+        recorder: Any,
+        barge_listener: Any,
+        barge_observer: Any,
+        opening: Any,
+    ) -> Optional[asyncio.Task[Any]]:
+        """Finish detached wake resources without using the Textual loop."""
+        if not any(
+            resource is not None
+            for resource in (listener, recorder, barge_listener, opening)
+        ):
+            return None
+
+        async def invoke(label: str, operation: Any) -> None:
+            if not callable(operation):
+                return
+            try:
+                await asyncio.to_thread(operation)
+            except Exception:
+                diagnostic_logger.debug(
+                    "app.wake.%s_failed type=%s", label, type(operation).__name__
+                )
+
+        async def finish() -> None:
+            # Cancellation must reach an active capture before the listener
+            # joins. Capture and native audio are both blocking operations,
+            # hence every call below stays in the worker thread pool.
+            await invoke("cancel_voice", getattr(session, "cancel_voice", None))
+            if recorder is not None and barge_observer is not None:
+                await invoke(
+                    "remove_barge_observer",
+                    lambda: recorder.remove_frame_observer(barge_observer),
+                )
+            await invoke("listener_stop", getattr(listener, "stop", None))
+            await invoke("barge_listener_stop", getattr(barge_listener, "stop", None))
+            if opening is not None:
+                try:
+                    await asyncio.shield(opening)
+                except BaseException:
+                    pass
+            await invoke("recorder_shutdown", getattr(recorder, "shutdown", None))
+
+        task = asyncio.create_task(finish(), name="wake resource cleanup")
+        self._wake_cleanup_tasks.add(task)
+        self._track_cleanup_task(task)
+        return task
+
+    def _disarm_wake(self, message: Optional[str] = None) -> Optional[asyncio.Task[Any]]:
+        """Detach wake resources now; join and native close them off-loop."""
         was_starting = self._wake_starting
         if was_starting:
             self._wake_start_cancelled = True
         listener, recorder = self._wake_listener, self._wake_recorder
         barge_listener = self._barge_listener
+        opening = self._wake_open_task
+        self._wake_open_task = None
+        session = self.session
+        barge_observer = self._barge_recorder_observer
         try:
             current_task = asyncio.current_task()
         except RuntimeError:
@@ -1757,6 +1832,25 @@ class HermesStreamingApp(App):
         self._barge_interrupt_task = None
         if self._barge_result_task is not current_task:
             self._barge_result_task = None
+        # This is the non-blocking logical shutdown boundary. The real
+        # listener's quiesce() only flips its admission gate and drops no
+        # native resource; the bounded join remains in the tracked cleanup.
+        quiesce = getattr(listener, "quiesce", None)
+        if callable(quiesce):
+            try:
+                quiesce()
+            except Exception:
+                diagnostic_logger.debug(
+                    "quiescing the wake listener failed", exc_info=True
+                )
+        deactivate = getattr(barge_listener, "deactivate", None)
+        if callable(deactivate):
+            try:
+                deactivate()
+            except Exception:
+                diagnostic_logger.debug(
+                    "deactivating the barge-in listener failed", exc_info=True
+                )
         self._wake_listener = None
         self._wake_coordinator = None
         self._wake_recorder = None
@@ -1764,50 +1858,24 @@ class HermesStreamingApp(App):
         self._barge_capture_active = False
         self._barge_was_playing = False
         self._wake_loop = None
+        self._wake_opening = False
         was_armed = self.wake_armed
         self.wake_armed = False
         self._refresh_voice_status()
         if was_starting and not self._turn_in_flight:
             self._set_voice_state(VOICE_READY)
-        if recorder is not None and not self._wake_opening:
-            cancel_voice = getattr(self.session, "cancel_voice", None)
-            if callable(cancel_voice):
-                try:
-                    cancel_voice()
-                except Exception:
-                    diagnostic_logger.debug(
-                        "cancelling the wake capture failed", exc_info=True
-                    )
-        if listener is not None:
-            try:
-                listener.stop()
-            except Exception:
-                diagnostic_logger.debug("stopping the wake listener failed", exc_info=True)
-        if barge_listener is not None and recorder is not None:
-            remove_observer = getattr(recorder, "remove_frame_observer", None)
-            if callable(remove_observer) and self._barge_recorder_observer is not None:
-                try:
-                    remove_observer(self._barge_recorder_observer)
-                except Exception:
-                    diagnostic_logger.debug(
-                        "removing the barge-in observer failed", exc_info=True
-                    )
         self._barge_recorder_observer = None
-        if barge_listener is not None:
-            try:
-                barge_listener.stop()
-            except Exception:
-                diagnostic_logger.debug("stopping the barge-in listener failed", exc_info=True)
-        if recorder is not None and not self._wake_opening:
-            try:
-                # shutdown() closes the input stream on a guarded timeout, so
-                # the microphone indicator clears and other applications get
-                # the device back. Pausing the detector would not do either.
-                recorder.shutdown()
-            except Exception:
-                diagnostic_logger.debug("closing the wake recorder failed", exc_info=True)
+        cleanup = self._schedule_wake_cleanup(
+            session=session,
+            listener=listener,
+            recorder=recorder,
+            barge_listener=barge_listener,
+            barge_observer=barge_observer,
+            opening=opening,
+        )
         if message and was_armed:
             self._append_block(message)
+        return cleanup
 
     def _make_barge_listener(self, recorder: Any) -> Any:
         """Build the local speech tap used during an active remote turn."""

@@ -251,8 +251,10 @@ async def test_wake_open_cancellation_closes_a_late_opened_recorder():
         await asyncio.to_thread(recorder.open_started.wait, 1.0)
 
         app._disarm_wake()
+        app._disarm_wake()
         recorder.open_release.set()
         await opening
+        await app._wait_for_cleanup_tasks()
 
         assert recorder.shutdowns == 1
         assert recorder.listening is False
@@ -445,6 +447,7 @@ async def test_failed_microphone_startup_releases_partial_resources():
         await pilot.pause()
         await app._handle_wake_command("on")
 
+        await app._wait_for_cleanup_tasks()
         assert app.wake_armed is False
         assert app.microphone_is_open is False
         assert fakes.listener.stopped is True
@@ -498,11 +501,83 @@ async def test_wake_off_releases_the_microphone():
         await app._handle_wake_command("on")
         recorder = fakes.recorders[-1]
         await app._handle_wake_command("off")
+        await app._wait_for_cleanup_tasks()
 
         assert app.wake_armed is False
         assert fakes.listener.stopped is True
         assert recorder.shutdowns == 1
         assert recorder.listening is False
+
+
+async def test_wake_off_returns_while_listener_and_native_close_are_blocked():
+    """Disarm must release the UI loop before native teardown finishes."""
+    app, fakes, _ = make_app()
+    stop_started = threading.Event()
+    stop_release = threading.Event()
+    shutdown_started = threading.Event()
+    shutdown_release = threading.Event()
+    stop_threads = []
+    shutdown_threads = []
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await app._handle_wake_command("on")
+        recorder = fakes.recorders[-1]
+        listener = fakes.listener
+
+        def blocked_stop():
+            stop_threads.append(threading.get_ident())
+            stop_started.set()
+            stop_release.wait(1.0)
+            listener.stopped = True
+
+        def blocked_shutdown():
+            shutdown_threads.append(threading.get_ident())
+            shutdown_started.set()
+            shutdown_release.wait(1.0)
+            recorder.shutdowns += 1
+            recorder.listening = False
+
+        listener.stop = blocked_stop
+        recorder.shutdown = blocked_shutdown
+        ui_thread = threading.get_ident()
+
+        await asyncio.wait_for(app._handle_wake_command("off"), 0.1)
+        assert app.wake_armed is False
+        assert await asyncio.to_thread(stop_started.wait, 1.0)
+        assert not shutdown_started.is_set()
+
+        rearm = asyncio.create_task(app._handle_wake_command("on"))
+        await asyncio.sleep(0.05)
+        assert len(fakes.recorders) == 1
+
+        stop_release.set()
+        assert await asyncio.to_thread(shutdown_started.wait, 1.0)
+        assert shutdown_threads[0] != ui_thread
+        shutdown_release.set()
+        await app._wait_for_cleanup_tasks()
+        await rearm
+
+        assert stop_threads[0] != ui_thread
+        assert listener.stopped is True
+        assert recorder.shutdowns == 1
+        assert recorder.listening is False
+        assert len(fakes.recorders) == 2
+        assert fakes.recorders[-1].listening is True
+
+
+async def test_repeated_wake_disarm_is_idempotent():
+    app, fakes, _ = make_app()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await app._handle_wake_command("on")
+        recorder = fakes.recorders[-1]
+
+        app._disarm_wake()
+        app._disarm_wake()
+        await app._wait_for_cleanup_tasks()
+
+        assert recorder.shutdowns == 1
 
 
 async def test_arming_twice_does_not_open_a_second_stream():
@@ -1565,6 +1640,7 @@ async def test_reload_disarms_wake_mode_and_releases_the_microphone(tmp_path):
         recorder = fakes.recorders[-1]
 
         app._handle_reload_command()
+        await app._wait_for_cleanup_tasks()
 
         assert app.wake_armed is False
         assert fakes.listener.stopped is True
@@ -1617,6 +1693,7 @@ async def test_connection_loss_disarms_wake_mode_and_releases_the_microphone():
         recorder = fakes.recorders[-1]
 
         await app._mark_connection_lost()
+        await app._wait_for_cleanup_tasks()
 
         assert app.wake_armed is False
         assert fakes.listener.stopped is True
@@ -1675,6 +1752,7 @@ async def test_reconnect_disarms_wake_mode_before_opening_a_new_session():
         session.connected = False
 
         assert await app._connect() is True
+        await app._wait_for_cleanup_tasks()
 
         assert app.wake_armed is False
         assert fakes.listener.stopped is True
