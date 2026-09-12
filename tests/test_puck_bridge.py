@@ -1538,7 +1538,13 @@ def test_the_reader_slot_is_released_after_a_stream_ends(tmp_path):
     try:
         first, _ = _get_response(port, token="s3cret")
         # A later, non-concurrent fetch must not be refused.
-        stream.expect()
+        import time as _t
+
+        deadline = _t.monotonic() + 2.0
+        while not stream.expect(seq=2):
+            if _t.monotonic() >= deadline:
+                pytest.fail("response reader did not release its slot")
+            _t.sleep(0.01)
         stream.begin(2, (24000, 1, 2))
         stream.write(b"cd")
         stream.finish()

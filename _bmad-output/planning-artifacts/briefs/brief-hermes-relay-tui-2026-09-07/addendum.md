@@ -35,6 +35,15 @@ The memlog contains 144 entries: 61 decisions, 20 acceptance checks, 19 open que
 - The household default departure threshold applies unless an event override exists. The effective card is visual-only, replaces ambient photos on every display while actionable, and clears at event start.
 - Cancellation clears the card. Time or location changes recompute it immediately across displays.
 
+### Interactive Hermes objects — approved 2026-09-12
+
+- The first proving slice treats a Hermes response as both explanation and a bounded typed choice object when Hermes supplies options.
+- The active ESP32 Touch Display, direct-use W/K browser or iPad surface, and TUI render the same `choose` and `explore` semantics through native controls. Touch and keyboard gestures may differ; the meaning does not.
+- `choose` commits one option. `explore` requests more detail about one option without committing it; every option remains explorable even when Hermes recommends one.
+- A passive Room Display may mirror the choice object but exposes no action path. The Puck remains status/audio-only and does not render choice controls.
+- Accepted actions return to the owning Hermes Session as structured input and remain visible in the session trail. Actions are bound to the current session, turn, object, option, advertised capability, and freshness boundary; stale or duplicate actions have no effect.
+- The first proving slice uses harmless choices. Household policy, consequence-aware confirmation, and passcode protection for consequential commits are later work; exploration never triggers the consequence.
+
 ### Voice behavior and hardware
 
 - The puck’s TFT is a wake/turn status surface, not a transcript. Wake acknowledgement and status should appear in roughly one second; roughly four seconds to first spoken Hermes audio is acceptable for v1.
@@ -53,6 +62,7 @@ The memlog contains 144 entries: 61 decisions, 20 acceptance checks, 19 open que
 - Confirm raw audio and media-server transcripts leave no default archive.
 - Cross, cancel, move, and start a calendar event; verify all display promotion, recomputation, clearing, and return to ambient behavior.
 - Verify room-local conversation mirroring and household-wide calendar propagation separately.
+- In one harmless-choice fixture, verify that active ESP32 Touch, W/K, and TUI surfaces render every option, `explore` leaves the object unresolved, `choose` produces one structured transcript-visible action, and passive displays remain read-only.
 
 ## Parked implementation questions
 
@@ -63,6 +73,8 @@ The memlog contains 144 entries: 61 decisions, 20 acceptance checks, 19 open que
 - Immich face-filter representation, exclusions, cache freshness, and the neutral-background asset.
 - Calendar synchronization cadence, missed-update recovery, route refresh, stale estimate rules, and event-threshold editing UX.
 - Exact follow-up duration and any future barge-in qualification.
+- Exact normalized choice-action schema, freshness token, idempotency boundary, and server-side authority implementation.
+- Household policy and confirmation/passcode rules for consequence-bearing choice commits.
 - Product naming and readiness criteria for use beyond the private household pilot.
 
 ## Source ledger

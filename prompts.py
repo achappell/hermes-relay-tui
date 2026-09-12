@@ -38,6 +38,9 @@ class PendingPrompt:
     awaiting_response: bool = False
     rejection_reason: Optional[str] = None
     domain_state: Optional[PromptState] = field(default=None, repr=False, compare=False)
+    # The prompt response must never cross a session replacement boundary.
+    session_identity: Any = field(default=None, repr=False, compare=False)
+    session_generation: int | None = field(default=None, repr=False, compare=False)
 
     @classmethod
     def from_event(cls, event: dict[str, Any]) -> "PendingPrompt":

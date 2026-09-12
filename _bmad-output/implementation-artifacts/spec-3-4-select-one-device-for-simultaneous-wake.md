@@ -82,15 +82,18 @@ owns the decision; no client surface becomes a second live arbiter.
 - `hermes-relay-ios`: mobile configuration UI, local projection, secure
   credentials, and optional iOS Hands-Free Home claimant.
 - `hermes-relay-android`: the corresponding Android administration surface.
-- `hermes-relay-tui`: the local Home service/bridge contract and runtime
-  arbitration implementation, plus TUI and household-surface integration.
+- `hermes-relay-home`: the local Home service, canonical contract, durable
+  configuration, device authentication, and runtime arbitration implementation.
+- `hermes-relay-tui`: terminal interaction and household-surface integration;
+  it consumes the Home service and is not a second household authority.
 - ESP32 Touch and web/iPad Hands-Free Home: wake detection, claim submission,
   grant handling, and fail-closed capture behavior.
 
-The TUI repository owns this shared contract because it is the current home
-for the local Home service and cross-surface bridge work. Surface repositories
-retain their own delivery records and implementation evidence; those records
-must reference this contract rather than fork it.
+The canonical contract now moves to the `hermes-relay-home` repository. This
+TUI copy remains the shared migration record until the Home repository has its
+first published contract release. Surface repositories retain their own
+delivery records and implementation evidence; those records must reference the
+canonical Home contract rather than fork it.
 
 ## Open questions
 

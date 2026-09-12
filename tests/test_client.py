@@ -1,10 +1,13 @@
+import asyncio
 import json
 import logging
 
 import pytest
+from websockets.exceptions import ConnectionClosed
 
 from client import (
     ProtocolError,
+    TransportError,
     send_hello,
     send_interrupt,
     send_prompt_response,
@@ -59,6 +62,78 @@ async def test_send_hello_skips_binary_frames_and_rejects_non_objects():
     ws = FakeWebSocket([b"\x00\x01", json.dumps(["not", "an", "object"])])
     with pytest.raises(ProtocolError):
         await send_hello(ws, client_id="c", device_id="d", session_id="s", display_name="n")
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        ConnectionClosed(None, None),
+        ConnectionError("socket closed"),
+        OSError("socket closed"),
+        EOFError("end of stream"),
+        asyncio.TimeoutError(),
+    ],
+)
+async def test_owned_receive_failures_are_typed_transport_errors(failure):
+    class FailingReceiveWebSocket(FakeWebSocket):
+        async def recv(self):
+            raise failure
+
+    ws = FailingReceiveWebSocket([])
+
+    with pytest.raises(TransportError) as caught:
+        await send_hello(
+            ws,
+            client_id="c",
+            device_id="d",
+            session_id="s",
+            display_name="n",
+        )
+
+    assert caught.value.cause_type == type(failure).__name__
+
+
+async def test_owned_write_failures_are_typed_without_swallowing_programming_errors():
+    class FailingSendWebSocket(FakeWebSocket):
+        async def send(self, data):
+            raise ConnectionError("socket closed")
+
+    with pytest.raises(TransportError):
+        await send_hello(
+            FailingSendWebSocket([]),
+            client_id="c",
+            device_id="d",
+            session_id="s",
+            display_name="n",
+        )
+
+    class ProgrammingFailureWebSocket(FakeWebSocket):
+        async def recv(self):
+            raise RuntimeError("concurrent reader")
+
+    with pytest.raises(RuntimeError, match="concurrent reader"):
+        await send_hello(
+            ProgrammingFailureWebSocket([]),
+            client_id="c",
+            device_id="d",
+            session_id="s",
+            display_name="n",
+        )
+
+
+async def test_turn_receive_transport_failure_is_typed():
+    class FailingTurnWebSocket(FakeWebSocket):
+        async def recv(self):
+            raise EOFError("relay vanished")
+
+    stream = send_turn(
+        FailingTurnWebSocket([]),
+        session_id="s1",
+        text="hello",
+        stt_source="local",
+    )
+    with pytest.raises(TransportError):
+        await stream.__anext__()
 
 
 async def test_send_interrupt_sends_the_active_turn_frame():

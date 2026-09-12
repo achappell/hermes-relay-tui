@@ -22,6 +22,7 @@ from client import (
     send_session_new,
     send_session_switch,
     send_turn,
+    transport_error_for,
 )
 from diagnostics import logger as diagnostic_logger, summarize_text
 from mic import (
@@ -36,6 +37,10 @@ class SessionNotReadyError(RuntimeError):
     """A turn was requested before the selected profile was verified."""
 
 
+class UnsupportedTransportError(RuntimeError):
+    """The websocket surface cannot support the session lifecycle contract."""
+
+
 class SessionProtocol(Protocol):
     """What a front end needs from a session — implemented by `HermesSession`
     and by the test doubles, so there is exactly one code path here."""
@@ -48,6 +53,8 @@ class SessionProtocol(Protocol):
     confirmed_context_limit: int | None
 
     async def connect(self) -> dict[str, Any]: ...
+
+    async def wait_for_disconnect(self) -> None: ...
 
     def is_connected(self) -> bool: ...
 
@@ -177,6 +184,10 @@ class HermesSession:
         try:
             self._connect_cm = connect(self.args.url, **kwargs)
             self.ws = await self._connect_cm.__aenter__()
+            if not callable(getattr(self.ws, "wait_closed", None)):
+                raise UnsupportedTransportError(
+                    "websocket transport does not expose wait_closed()"
+                )
             hello = await send_hello(
                 self.ws,
                 client_id=self.args.client_id,
@@ -242,6 +253,24 @@ class HermesSession:
         """Return true only after the selected profile passed hello_ack."""
         return self.ws is not None and self._hello_verified
 
+    async def wait_for_disconnect(self) -> None:
+        """Wait for this verified websocket to close without reading frames."""
+        if not self.is_connected():
+            raise SessionNotReadyError("Not connected to relay")
+        websocket = self.ws
+        wait_closed = getattr(websocket, "wait_closed", None)
+        if not callable(wait_closed):
+            raise UnsupportedTransportError(
+                "websocket transport does not expose wait_closed()"
+            )
+        try:
+            await wait_closed()
+        except BaseException as exc:
+            transport_error = transport_error_for("connection close wait", exc)
+            if transport_error is not None:
+                raise transport_error from exc
+            raise
+
     async def close(self) -> None:
         self._hello_verified = False
         self.cancel_voice()
@@ -255,6 +284,11 @@ class HermesSession:
         if self._connect_cm is not None:
             try:
                 await self._connect_cm.__aexit__(None, None, None)
+            except BaseException as exc:
+                transport_error = transport_error_for("session close", exc)
+                if transport_error is not None:
+                    raise transport_error from exc
+                raise
             finally:
                 self._connect_cm = None
                 self.ws = None

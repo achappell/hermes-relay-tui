@@ -2,7 +2,7 @@
 title: "Hermes Home Assistant Platform"
 status: final
 created: 2026-09-07
-updated: 2026-09-07
+updated: 2026-09-12
 ---
 
 # Product Brief: Hermes Home Assistant Platform
@@ -19,6 +19,8 @@ Amanda says, “Hey Missy.” The closest approved puck acknowledges the wake, c
 
 After the answer, the active device keeps listening for a bounded follow-up without another wake phrase. Saying exactly “stop” closes that local window silently. The display returns to its ambient surface when the interaction ends. The iOS app and TUI provide full text/voice doorways, local history, setup, recovery, and diagnosis rather than competing assistant personas.
 
+The approved product direction extends Hermes responses into typed, operable objects. When Hermes offers bounded choices, the active ESP32 touch Display, direct-use W/K browser or iPad surface, and TUI present native controls: `choose` commits an option and `explore` requests more detail without committing. A passive Room Display may mirror the object but cannot act, and the Puck remains an audio/status doorway. Accepted actions return as structured input to the owning Hermes Session and remain visible in the session trail.
+
 ## The Problem
 
 Vendor household assistants are convenient but opaque, coupled to someone else’s hardware and account model, and poor at preserving a household’s chosen agent and private knowledge across rooms. A family needs natural voice access to Hermes and its authorized vault context without routing every question through a phone or terminal.
@@ -34,14 +36,14 @@ The platform combines:
 - **Companion doorways:** a separate native iOS/macOS client for device administration, typed and voice conversation, secure profile/device handling, local history, and recovery; and the existing TUI for direct conversation, diagnostics, and setup-adjacent recovery. The TUI is not the household configuration surface.
 - **Shared household rules:** explicit wake-word/profile routing, closest-device arbitration, room-local conversation mirroring, and household-wide visual departure alerts. A shared device may recognize multiple mappings, but each wake phrase maps to exactly one profile.
 
-The first release is a voice doorway into Hermes, not a second smart-home platform. Clients do not duplicate Hermes’ model, vault, timer, media, reminder, or smart-home integrations. Version one answers prompts by voice, keeps active-playback barge-in deferred until the audio route is echo-safe, and avoids touch-based prompt choices.
+The first release is a voice doorway into Hermes, not a second smart-home platform. Clients do not duplicate Hermes’ model, vault, timer, media, reminder, or smart-home integrations. Version one proves one structured interaction as well as voice turns: harmless typed choices can be chosen or explored on active display-capable doorways and the TUI, while active-playback barge-in remains deferred until the audio route is echo-safe.
 
 ## What Makes This Different
 
 - **One agent, several doorways:** Missy and future profiles remain in Hermes; hardware and clients do not invent alternate assistant personalities.
 - **Household-owned behavior:** routing, credentials, room policy, and display rules remain inspectable rather than disappearing into vendor cloud machinery.
 - **Honest degradation:** displays keep showing useful ambient and calendar context during Hermes outages; the puck fails quiet rather than fabricating a local answer.
-- **One semantic contract:** ESP32, Web/WASM, display, and TUI adapters share normalized state and turn semantics without forcing identical presentation.
+- **One semantic contract:** ESP32, Web/WASM, display, and TUI adapters share normalized state, typed-object semantics, and turn semantics without forcing identical presentation.
 
 ## Who This Serves
 
@@ -68,7 +70,7 @@ The first-room pilot succeeds when:
 
 Ship one complete single-room household pilot: one puck, its room-local display, the iPad browser kiosk, the separate iOS/macOS client, and the TUI. Keep contracts and configuration multi-room-ready, but do not make a multi-room hardware rollout a prerequisite.
 
-In scope are Hermes voice/text turns, local wake and capture, media-server transcription over the home LAN, streamed PCM playback, acknowledgement/status feedback, bounded follow-up listening, room-local display mirroring, Immich ambient photos, shared family-calendar departure cards, device enrollment/revocation, recovery states, and shared schema/fixture/conformance tests.
+In scope are Hermes voice/text turns, local wake and capture, media-server transcription over the home LAN, streamed PCM playback, acknowledgement/status feedback, bounded follow-up listening, the first typed-choice proving slice, room-local display mirroring, Immich ambient photos, shared family-calendar departure cards, device enrollment/revocation, recovery states, and shared schema/fixture/conformance tests.
 
 Hermes/vault remains authoritative for agent/profile context, the shared family calendar, household home, and configured travel estimates. iOS is the sole authority for physical-device approval, room assignment, wake-word/profile mappings, per-device credentials, revocation, re-enrollment, Immich face filters, and departure-alert presentation thresholds.
 
@@ -77,7 +79,7 @@ Hermes/vault remains authoritative for agent/profile context, the shared family 
 - Hosting Hermes intelligence or a large model on ESP32.
 - A general smart-home ecosystem, vendor-cloud migration, camera-history product, or media catalog.
 - Full response text on the puck’s small TFT, unconstrained appliance transcript history, or chain-of-thought display.
-- Touch-based Hermes prompt choices and active-playback barge-in before echo-safe audio is proven.
+- Touch-based actions on passive Room Displays or the Puck; arbitrary Hermes-authored UI, vault/calendar mutation, and consequence-bearing autonomous commits remain out of the first proving slice. Active-playback barge-in remains out until echo-safe audio is proven.
 - Unsolicited spoken or audible departure alerts in version one.
 - Repository splitting before a real dependency conflict requires it.
 

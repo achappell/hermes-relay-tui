@@ -1,5 +1,6 @@
 ---
 id: SPEC-hermes-relay-tui
+updated: 2026-09-12
 companions:
   - ../../planning-artifacts/prds/prd-hermes-relay-tui-2026-09-07/prd.md
   - ../../planning-artifacts/briefs/brief-hermes-relay-tui-2026-09-07/addendum.md
@@ -38,7 +39,7 @@ The private household pilot needs natural access to the household's chosen Herme
 
 - **CAP-5**
   - **intent:** Passive Room Displays and the W/K browser surface render shared ambient, active-turn, prompt, and recovery semantics while keeping conversation local to the owning Room; W/K is also an active Epic 1 voice surface when `browser_voice` is advertised.
-  - **success:** ESP32-S3/LVGL and browser fixtures accept the same valid states and actions; the selected Room mirrors profile, live transcription, response, and honest failure; the active W/K path may capture and deliver audio through its browser adapter; other Rooms receive no turn text; prompts are visible but have no touch response action in v1.
+  - **success:** ESP32-S3/LVGL and browser fixtures accept the same valid states and actions; the selected Room mirrors profile, live transcription, response, and honest failure; the active W/K path may capture and deliver audio through its browser adapter; active ESP32 Touch, direct-use W/K, and TUI surfaces can render the first harmless typed choices; passive mirrors remain read-only and other Rooms receive no turn text.
 
 - **CAP-6**
   - **intent:** Displays provide useful idle household context and a consistent visual departure reminder for qualifying shared-calendar events.
@@ -52,11 +53,18 @@ The private household pilot needs natural access to the household's chosen Herme
   - **intent:** iOS and the TUI provide independent portable and terminal doorways into the Hermes relationship, with deliberate local history where supported.
   - **success:** iOS and TUI conversations do not merge live Sessions; each can show its own response and phase state; intentional history persists only on those Client surfaces, and TUI diagnostics are not required for the household pilot.
 
+- **CAP-9**
+  - **intent:** Hermes can return a bounded typed choice object that active surfaces render as native operations and send back as structured input.
+  - **success:** Active ESP32 Touch, direct-use W/K, and TUI surfaces render every option with `choose` and non-committing `explore`; accepted actions are bound to the current Session, turn, object, capability, and freshness context, appear in the session trail, and passive Room Displays plus the Puck expose no action path.
+
 ## Constraints
 
 - Hermes remains authoritative for profile context, answer content, correctness, calendar, household home, and travel estimates; doorways do not create local assistant behavior or fallback answers.
 - Core session/protocol and portable display rules are framework-independent; front ends consume `SessionProtocol` and the shared display contract rather than duplicating policy.
 - Active response text and prompts are Room-local; the visual Departure Card is the explicit household-wide exception.
+- Typed choice objects are data, not arbitrary Hermes-authored UI. Active ESP32 Touch, direct-use W/K, and TUI surfaces render the approved `choose` and `explore` semantics natively; passive Room Displays mirror only, and the Puck remains status/audio-only.
+- `choose` commits an option and `explore` requests detail without committing. The first proving slice uses harmless choices; consequence-bearing commits require a later household-policy and confirmation/passcode decision.
+- Choice actions are session-, turn-, object-, option-, capability-, and freshness-bound, idempotent, and transcript-visible. Exact schema and server authority remain implementation questions.
 - Puck and ESP32 Touch audio are transient and home-LAN-only; the Media Server is not a transcript archive, while iOS/TUI may retain deliberate Local History.
 - Every physical Device uses an individual revocable credential, and unapproved, revoked, or unavailable identity fails closed before capture.
 - The first release is a single-Room pilot with the ReSpeaker-based Puck prototype, ESP32-S3/LVGL Display, iPad browser kiosk, separate iOS/macOS Client boundary, and TUI; contracts remain multi-Room-ready.
@@ -71,7 +79,7 @@ The private household pilot needs natural access to the household's chosen Herme
 
 - Hosting Hermes intelligence or a large model on a Device, or becoming a second assistant.
 - A general smart-home ecosystem, vendor-cloud migration, camera-history product, media catalog, public provisioning system, or commercial multi-household deployment.
-- Touch-based Hermes prompt choices, audible Departure Cards, or unsolicited Puck speech for calendar or outage state.
+- Touch-based choice actions on passive Room Displays or the Puck, arbitrary Hermes-authored UI, consequence-bearing commits before policy/confirmation exists, audible Departure Cards, or unsolicited Puck speech for calendar or outage state.
 - Active-playback barge-in before an echo-safe audio route is proven.
 - Full response text on the Puck's small TFT or default transcript archives on Pucks, passive Displays, or the Media Server. The ESP32 Touch Display may render the active response because it is a voice-capable surface.
 - A native iPad application separate from the W/K browser surface, or a multi-room hardware rollout as an MVP prerequisite.
@@ -79,7 +87,7 @@ The private household pilot needs natural access to the household's chosen Herme
 
 ## Success signal
 
-The single-Room pilot completes the UJ-1 dinner journey without a phone, keyboard, or TUI in at least four of five scripted attempts. Revoked/disconnected tests produce zero audio payloads and zero Hermes turns, display fixtures produce one consistent calendar state across targets, median wake acknowledgement is at or below one second, median first spoken audio is at or below four seconds, and no default raw-audio or Media Server transcript archive appears.
+The single-Room pilot completes the UJ-1 dinner journey without a phone, keyboard, or TUI in at least four of five scripted attempts. A harmless-choice fixture proves `explore` is non-committing, `choose` is one structured transcript-visible action on active ESP32 Touch, direct-use W/K, and TUI surfaces, and passive mirrors remain read-only. Revoked/disconnected tests produce zero audio payloads and zero Hermes turns, display fixtures produce one consistent calendar state across targets, median wake acknowledgement is at or below one second, median first spoken audio is at or below four seconds, and no default raw-audio or Media Server transcript archive appears.
 
 ## Assumptions
 
@@ -95,4 +103,6 @@ The single-Room pilot completes the UJ-1 dinner journey without a phone, keyboar
 - Where are travel estimates keyed in the vault, how is staleness detected, and how are missed calendar updates recovered?
 - What kiosk authentication and offline re-entry behavior does the W/K browser deployment on iPad require?
 - When does a future release earn active-playback barge-in after the v1 audio route proves echo-safe?
+- What exact normalized choice-action schema, freshness token, capability names, and server-side authority implement CAP-9 without breaking existing prompt consumers?
+- Which household policies make a choice consequence-bearing, and when should confirmation or a passcode be required?
 - Which localization targets and child-comprehension checks follow the English pilot, and what exact microcopy and cue durations remain to be chosen?

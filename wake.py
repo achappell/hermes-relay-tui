@@ -287,6 +287,9 @@ class WakeListener:
         self._chunker = chunker
         self._max_buffered_samples = max_buffered_samples
         self.buffered_samples = 0
+        self._state_lock = threading.RLock()
+        self._accepting = threading.Event()
+        self._accepting.set()
         self._paused = False
         self._stopping = threading.Event()
         self._thread: threading.Thread | None = None
@@ -309,43 +312,58 @@ class WakeListener:
 
     def submit(self, frame: Any) -> None:
         """Enqueue a frame from the capture path; never block."""
-        if self._paused:
+        if not self._accepting.is_set():
             return
+        with self._state_lock:
+            if (
+                not self._accepting.is_set()
+                or self._paused
+                or self._stopping.is_set()
+            ):
+                return
 
-        samples = self._samples(frame)
+            samples = self._samples(frame)
 
-        # Drop the oldest rather than the newest: the freshest audio is the
-        # audio most likely to contain the phrase.
-        while (
-            self._max_buffered_samples
-            and self.buffered_samples + samples > self._max_buffered_samples
-            and not self._queue.empty()
-        ):
-            self._discard_oldest()
+            # Drop the oldest rather than the newest: the freshest audio is
+            # the audio most likely to contain the phrase.
+            while (
+                self._max_buffered_samples
+                and self.buffered_samples + samples > self._max_buffered_samples
+                and not self._queue.empty()
+            ):
+                self._discard_oldest()
 
-        try:
-            self._queue.put_nowait(frame)
-        except queue.Full:
-            self._discard_oldest()
             try:
                 self._queue.put_nowait(frame)
             except queue.Full:
-                return
-        self.buffered_samples += samples
+                self._discard_oldest()
+                try:
+                    self._queue.put_nowait(frame)
+                except queue.Full:
+                    return
+            self.buffered_samples += samples
 
     def run_pending(self) -> None:
         """Score everything currently queued, on the calling thread."""
         while True:
-            try:
-                frame = self._queue.get_nowait()
-            except queue.Empty:
-                return
-            self.buffered_samples = max(0, self.buffered_samples - self._samples(frame))
+            with self._state_lock:
+                try:
+                    frame = self._queue.get_nowait()
+                except queue.Empty:
+                    return
+                self.buffered_samples = max(
+                    0, self.buffered_samples - self._samples(frame)
+                )
             self._process(frame)
 
     def _process(self, frame: Any) -> None:
-        if self._paused:
-            return
+        with self._state_lock:
+            if (
+                not self._accepting.is_set()
+                or self._paused
+                or self._stopping.is_set()
+            ):
+                return
 
         if self._silence_monitor is not None and self._peak_of is not None:
             try:
@@ -369,17 +387,29 @@ class WakeListener:
     def _notify(self, callback: Callable[..., Any] | None, *args: Any) -> None:
         if callback is None:
             return
-        try:
-            if args:
-                try:
-                    callback(*args)
-                except TypeError:
+        # Keep the fail-closed check and callback invocation in one critical
+        # section. ``stop`` can therefore not begin after this check and
+        # leave an already-disarmed listener able to call its old consumer.
+        # The callback may block for the duration of a turn; stop() is never
+        # called on the Textual loop and has its own bounded join.
+        with self._state_lock:
+            if (
+                not self._accepting.is_set()
+                or self._paused
+                or self._stopping.is_set()
+            ):
+                return
+            try:
+                if args:
+                    try:
+                        callback(*args)
+                    except TypeError:
+                        callback()
+                else:
                     callback()
-            else:
-                callback()
-        except Exception:
-            # A broken consumer must not take the listener down with it.
-            logger.debug("wake callback failed", exc_info=True)
+            except Exception:
+                # A broken consumer must not take the listener down with it.
+                logger.debug("wake callback failed", exc_info=True)
 
     def _drain(self) -> None:
         """Throw away everything queued but not yet scored.
@@ -402,31 +432,48 @@ class WakeListener:
 
     def pause(self) -> None:
         """Stop scoring — used while a voice turn holds the microphone."""
-        self._paused = True
-        self._drain()
-        self._detector.reset()
-        if self._chunker is not None:
-            self._chunker.reset()
+        with self._state_lock:
+            if self._stopping.is_set():
+                return
+            self._accepting.clear()
+            self._paused = True
+            self._drain()
+            self._detector.reset()
+            if self._chunker is not None:
+                self._chunker.reset()
         logger.debug("wake.pause")
 
     def resume(self) -> None:
         # Drained again on the way back in: the pause and the backlog are
         # filled by different threads, so anything that landed in between is
         # still audio from before the turn.
-        self._drain()
-        self._detector.reset()
-        if self._chunker is not None:
-            self._chunker.reset()
-        self._paused = False
+        with self._state_lock:
+            if self._stopping.is_set():
+                return
+            self._drain()
+            self._detector.reset()
+            if self._chunker is not None:
+                self._chunker.reset()
+            self._paused = False
+            self._accepting.set()
         logger.debug("wake.resume")
 
+    def quiesce(self) -> None:
+        """Fail closed immediately while a worker join happens elsewhere."""
+        self._accepting.clear()
+
     def start(self) -> None:
-        if self._thread is not None:
-            return
-        self._stopping.clear()
-        thread = threading.Thread(target=self._loop, name="wake-listener", daemon=True)
-        self._thread = thread
-        thread.start()
+        with self._state_lock:
+            if self._thread is not None:
+                return
+            self._stopping.clear()
+            if not self._paused:
+                self._accepting.set()
+            thread = threading.Thread(
+                target=self._loop, name="wake-listener", daemon=True
+            )
+            self._thread = thread
+            thread.start()
 
     def _loop(self) -> None:
         while not self._stopping.is_set():
@@ -434,15 +481,34 @@ class WakeListener:
                 frame = self._queue.get(timeout=0.1)
             except queue.Empty:
                 continue
-            self.buffered_samples = max(0, self.buffered_samples - self._samples(frame))
+            with self._state_lock:
+                self.buffered_samples = max(
+                    0, self.buffered_samples - self._samples(frame)
+                )
             self._process(frame)
+        with self._state_lock:
+            if self._thread is threading.current_thread():
+                self._thread = None
 
     def stop(self) -> None:
-        self._stopping.set()
-        thread = self._thread
-        self._thread = None
-        if thread is not None:
+        # Close the logical listener before joining anything. Capture can
+        # continue submitting frames while the native stream unwinds, but
+        # those frames must be discarded and no queued frame may fire the old
+        # wake callback during the join.
+        with self._state_lock:
+            self._paused = True
+            self._accepting.clear()
+            self._stopping.set()
+            self._drain()
+            self._detector.reset()
+            if self._chunker is not None:
+                self._chunker.reset()
+            thread = self._thread
+        if thread is not None and thread is not threading.current_thread():
             thread.join(timeout=2.0)
+        with self._state_lock:
+            if self._thread is thread and thread is not None and not thread.is_alive():
+                self._thread = None
 
 
 def bundled_model_paths() -> dict[str, str]:

@@ -12,7 +12,7 @@ This is a client for the existing Hermes voice-session channel. It does not run 
 - Cancellable microphone capture with session-local input/output device selection.
 - Live signed 16-bit PCM playback through `sounddevice`.
 - WAV output when playback is disabled or `--output` is supplied.
-- Session create/resume through `--session-id`.
+- A unique Hermes Session for every TUI launch and profile selection.
 - Bounded reconnect attempts with visible connection state and local prompt preservation.
 - Explicit reconnect recovery that creates a fresh session without replaying an uncertain turn.
 - Structured thinking, status, tool, notification, and background activity rendering with unsupported-event diagnostics available on demand.
@@ -195,7 +195,7 @@ writes lives in one directory:
 | --- | --- |
 | `~/.hermes-relay-tui/config.yaml` | editable connection defaults |
 | `~/.hermes-relay-tui/.env` | **bearer token** (owner-only) |
-| `~/.hermes-relay-tui/history.jsonl`, `history/` | prompt history, per endpoint/profile |
+| `~/.hermes-relay-tui/history.jsonl`, `history/` | prompt-only history, per endpoint/profile; voice transcripts included, raw audio and assistant replies excluded |
 | `~/.hermes-relay-tui/crash.log` | crash reports; appends until removed |
 | `$TMPDIR/hermes-relay-tui-debug.log` | debug trace, only with `--debug` |
 
@@ -271,7 +271,8 @@ VOICE_SESSION_TOKEN='redacted-token' venv/bin/python app.py
 ```
 
 The default connection is `ws://localhost:8792/voice-session`, assuming a local
-Hermes gateway, with session ID `hybrid-tui`. Set `HERMES_VOICE_SESSION_URL` or
+Hermes gateway. Each launch mints a unique Hermes Session identity, even when
+multiple TUI doorways use the same profile. Set `HERMES_VOICE_SESSION_URL` or
 use `--url` when connecting to a remote gateway:
 
 ```bash
@@ -280,7 +281,7 @@ venv/bin/python app.py \
   --session-id my-session
 ```
 
-The endpoint must be reachable from the machine running the TUI, and the server must accept the supplied bearer token.
+The endpoint must be reachable from the machine running the TUI, and the server must accept the supplied bearer token. Use `/new` or `/resume` inside the TUI when you deliberately want to create or resume a server-side conversation.
 
 ## Named relay profiles
 
@@ -343,6 +344,11 @@ profiles:
     session_id: jensen-session
 ```
 
+The `session_id` values in configuration are retained legacy/config labels,
+not the active Hermes Session for ordinary startup. Each TUI launch and named
+profile selection mints a unique Hermes Session. Use `/new` or `/resume` when
+you deliberately want to create or select a server-side conversation.
+
 When `profiles:` is present, it is canonical for relay connection settings.
 The root-level `url`, `token`, `client_id`, `device_id`, `session_id`,
 `display_name`, and `model` keys are ignored for named profiles; a missing
@@ -368,7 +374,11 @@ selected profile or its endpoint identity changes.
 
 Prompt history, default transcript exports, and response-audio fallbacks live
 under a profile namespace once named profiles are active, so local continuity
-cannot mix Amanda's and Jensen's prompts.
+cannot mix Amanda's and Jensen's prompts. Prompt history retains only bounded,
+de-duplicated prompt text, including successful voice transcripts; it never
+archives assistant responses or raw audio. When a named profile is first used,
+an older flat or endpoint-scoped prompt history is copied oldest-first into its
+profile file without deleting the source.
 
 Richer gateway-style events are normalized when the relay sends them. Thinking
 deltas accumulate into one replaceable detail line while a turn is active and
@@ -541,7 +551,7 @@ never replayed automatically.
 | `--url URL` | Override the voice-session WebSocket URL |
 | `--profile NAME` | Select a named relay profile for this launch |
 | `--token TOKEN` | Supply the bearer token explicitly |
-| `--session-id ID` | Create or resume a server-side session |
+| `--session-id ID` | Configure the legacy/session label used as launch input; the TUI still mints a unique Session per launch |
 | `--profile-env PATH` | `.env` file used for token lookup |
 | `--no-play` | Do not open the local speaker; buffer audio instead |
 | `--output PATH` | Save response audio to WAV |
@@ -879,7 +889,7 @@ hermes-relay
 | `HERMES_VOICE_SESSION_URL` | `ws://localhost:8792/voice-session` |
 | `VOICE_SESSION_CLIENT_ID` | `amanda-laptop` |
 | `VOICE_SESSION_DEVICE_ID` | `amanda-mac` |
-| `VOICE_SESSION_ID` | `hybrid-tui` |
+| `VOICE_SESSION_ID` | Retained legacy/config label; each launch/profile selection mints a unique Hermes Session |
 | `VOICE_SESSION_MIC_MAX_SECONDS` | `15.0` |
 | `VOICE_SESSION_MIC_SILENCE_DURATION` | `1.5` |
 | `VOICE_SESSION_MIC_SILENCE_THRESHOLD` | `200` |
@@ -937,7 +947,7 @@ The PCM stream must be signed 16-bit audio, and `sounddevice` must be able to op
 
 ### A turn times out
 
-The default timeout is 195 seconds. Check the endpoint and server-side model health, then retry with a fresh `--session-id`; a timed-out turn is not replayed automatically because the remote side may already have processed it. Use `--turn-timeout 0` only when an unbounded wait is genuinely wanted.
+The default timeout is 195 seconds. Check the endpoint and server-side model health, then use `/reconnect` to establish a fresh unique Session before starting a new prompt; a timed-out turn is not replayed automatically because the remote side may already have processed it. Use `--turn-timeout 0` only when an unbounded wait is genuinely wanted.
 
 ## Smart Display & Embedded Hardware
 

@@ -7,12 +7,16 @@ render them however it likes.
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import binascii
 import json
 import logging
 import uuid
+from asyncio import IncompleteReadError
 from typing import Any, AsyncIterator, Optional
+
+from websockets.exceptions import ConnectionClosed
 
 from diagnostics import summarize_payload, summarize_text, trace_monotonic_ms
 from timing import normalize_speech_timing
@@ -23,6 +27,54 @@ logger = logging.getLogger("hermes_relay_tui.client")
 
 class ProtocolError(RuntimeError):
     """Raised when the server sends something the client can't handle."""
+
+
+class TransportError(ConnectionError):
+    """A supported network failure at an owned websocket boundary."""
+
+    def __init__(self, operation: str, cause: BaseException) -> None:
+        self.operation = operation
+        self.cause_type = type(cause).__name__
+        super().__init__(f"{operation} failed ({self.cause_type})")
+
+
+_TRANSPORT_ERRORS = (
+    ConnectionClosed,
+    ConnectionError,
+    OSError,
+    EOFError,
+    IncompleteReadError,
+    asyncio.TimeoutError,
+)
+
+
+def transport_error_for(operation: str, error: BaseException) -> TransportError | None:
+    """Convert only the supported websocket boundary failures."""
+    if isinstance(error, TransportError):
+        return error
+    if isinstance(error, _TRANSPORT_ERRORS):
+        return TransportError(operation, error)
+    return None
+
+
+async def _send_frame(ws: Any, data: str, *, operation: str) -> None:
+    try:
+        await ws.send(data)
+    except BaseException as exc:
+        transport_error = transport_error_for(operation, exc)
+        if transport_error is not None:
+            raise transport_error from exc
+        raise
+
+
+async def _receive_frame(ws: Any, *, operation: str) -> Any:
+    try:
+        return await ws.recv()
+    except BaseException as exc:
+        transport_error = transport_error_for(operation, exc)
+        if transport_error is not None:
+            raise transport_error from exc
+        raise
 
 
 def _decode_audio_data(value: Any) -> Optional[bytes]:
@@ -83,7 +135,7 @@ def _final_text_update(
 
 async def _receive_json(ws: Any) -> dict[str, Any]:
     while True:
-        frame = await ws.recv()
+        frame = await _receive_frame(ws, operation="json receive")
         if isinstance(frame, bytes):
             continue
         payload = json.loads(frame)
@@ -107,7 +159,8 @@ async def send_hello(
         session_id,
         display_name,
     )
-    await ws.send(
+    await _send_frame(
+        ws,
         json.dumps(
             {
                 "type": "hello",
@@ -117,7 +170,8 @@ async def send_hello(
                 "session_id": session_id,
                 "display_name": display_name,
             }
-        )
+        ),
+        operation="hello send",
     )
     hello = await _receive_json(ws)
     logger.debug("hello.recv kind=%s %s", hello.get("type"), summarize_payload(hello))
@@ -129,7 +183,8 @@ async def send_hello(
 async def send_interrupt(ws: Any, *, session_id: str, turn_id: str) -> None:
     """Request cancellation of one active remote turn."""
     logger.debug("interrupt.send turn_id=%s session_id=%s", turn_id, session_id)
-    await ws.send(
+    await _send_frame(
+        ws,
         json.dumps(
             {
                 "type": "interrupt",
@@ -137,7 +192,8 @@ async def send_interrupt(ws: Any, *, session_id: str, turn_id: str) -> None:
                 "turn_id": turn_id,
                 "session_id": session_id,
             }
-        )
+        ),
+        operation="interrupt send",
     )
 
 
@@ -180,7 +236,11 @@ async def send_prompt_response(
         summarize_text(reason),
         session_id,
     )
-    await ws.send(json.dumps(payload))
+    await _send_frame(
+        ws,
+        json.dumps(payload),
+        operation="prompt response send",
+    )
 
 
 async def send_session_list(
@@ -198,7 +258,7 @@ async def send_session_list(
     if search:
         payload["search"] = search
     logger.debug("session_list.send limit=%d search=%s", limit, summarize_text(search))
-    await ws.send(json.dumps(payload))
+    await _send_frame(ws, json.dumps(payload), operation="session list send")
     response = await _receive_json(ws)
     logger.debug(
         "session_list.recv kind=%s %s",
@@ -233,7 +293,7 @@ async def send_session_new(
         summarize_text(session_id),
         summarize_text(title),
     )
-    await ws.send(json.dumps(payload))
+    await _send_frame(ws, json.dumps(payload), operation="session new send")
     response = await _receive_json(ws)
     logger.debug(
         "session_new.recv kind=%s %s",
@@ -257,7 +317,7 @@ async def send_session_switch(
         "session_id": session_id,
     }
     logger.debug("session_switch.send session_id=%s", session_id)
-    await ws.send(json.dumps(payload))
+    await _send_frame(ws, json.dumps(payload), operation="session switch send")
     response = await _receive_json(ws)
     logger.debug(
         "session_switch.recv kind=%s %s",
@@ -286,7 +346,8 @@ async def send_turn(
         stt_source,
         summarize_text(text),
     )
-    await ws.send(
+    await _send_frame(
+        ws,
         json.dumps(
             {
                 "type": "turn",
@@ -296,7 +357,8 @@ async def send_turn(
                 "text": text,
                 "stt_source": stt_source,
             }
-        )
+        ),
+        operation="turn send",
     )
 
     rendered_preview = ""
@@ -313,7 +375,7 @@ async def send_turn(
 
     frame_index = 0
     while True:
-        frame = await ws.recv()
+        frame = await _receive_frame(ws, operation="turn receive")
         frame_index += 1
         if isinstance(frame, bytes):
             kind = "audio_file_chunk" if audio_file_active else "audio_chunk"
