@@ -133,14 +133,15 @@ async def check_state_channel(
     timeout: float,
     tls_context: ssl.SSLContext | None,
 ) -> None:
+    connect_kwargs = {
+        "origin": origin,
+        "open_timeout": timeout,
+        "close_timeout": timeout,
+    }
+    if tls_context is not None:
+        connect_kwargs["ssl"] = tls_context
     try:
-        async with connect(
-            websocket_url,
-            origin=origin,
-            ssl=tls_context,
-            open_timeout=timeout,
-            close_timeout=timeout,
-        ) as websocket:
+        async with connect(websocket_url, **connect_kwargs) as websocket:
             frame = await asyncio.wait_for(websocket.recv(), timeout=timeout)
     except Exception as error:
         raise CheckError(f"/state WebSocket check failed: {type(error).__name__}") from error

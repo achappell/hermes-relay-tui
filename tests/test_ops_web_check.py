@@ -165,6 +165,8 @@ def test_action_check_rejects_an_unrelated_bad_request(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_state_check_rejects_an_arbitrary_json_state(monkeypatch):
+    seen = {}
+
     class WebSocket:
         async def __aenter__(self):
             return self
@@ -175,7 +177,11 @@ async def test_state_check_rejects_an_arbitrary_json_state(monkeypatch):
         async def recv(self):
             return json.dumps({"state": "pretend-healthy"})
 
-    monkeypatch.setattr(check, "connect", lambda *args, **kwargs: WebSocket())
+    def fake_connect(_url, **kwargs):
+        seen.update(kwargs)
+        return WebSocket()
+
+    monkeypatch.setattr(check, "connect", fake_connect)
 
     with pytest.raises(check.CheckError, match="invalid initial snapshot"):
         await check.check_state_channel(
@@ -184,6 +190,7 @@ async def test_state_check_rejects_an_arbitrary_json_state(monkeypatch):
             timeout=1.0,
             tls_context=None,
         )
+    assert "ssl" not in seen
 
 
 def test_main_rejects_an_infinite_timeout():
