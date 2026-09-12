@@ -39,6 +39,52 @@ class DisplayServerInfo:
         return f"{scheme}://{_format_url_host(self.host)}:{self.port}/state"
 
 
+@dataclass(frozen=True, slots=True)
+class _Origin:
+    scheme: str
+    hostname: str
+    port: int
+
+
+_DEFAULT_ORIGIN_PORTS = {"http": 80, "https": 443}
+
+
+def _parse_origin(origin: str, *, label: str = "origin") -> _Origin:
+    """Parse an HTTP origin into the scheme/host/effective-port tuple."""
+    if not isinstance(origin, str) or not origin or any(char.isspace() for char in origin):
+        raise ValueError(f"{label} must be an origin URL")
+
+    parsed = urlsplit(origin)
+    scheme = parsed.scheme.casefold()
+    if scheme not in _DEFAULT_ORIGIN_PORTS or parsed.hostname is None:
+        raise ValueError(f"{label} must use http or https with a host")
+    if (
+        parsed.username is not None
+        or parsed.password is not None
+        or parsed.path not in ("", "/")
+        or parsed.query
+        or parsed.fragment
+    ):
+        raise ValueError(f"{label} must not contain credentials, a path, query, or fragment")
+
+    try:
+        explicit_port = parsed.port
+    except ValueError as error:
+        raise ValueError(f"{label} has an invalid port") from error
+    if explicit_port is not None and not 1 <= explicit_port <= 65535:
+        raise ValueError(f"{label} has an invalid port")
+
+    return _Origin(
+        scheme=scheme,
+        hostname=parsed.hostname.casefold(),
+        port=(
+            explicit_port
+            if explicit_port is not None
+            else _DEFAULT_ORIGIN_PORTS[scheme]
+        ),
+    )
+
+
 def _format_url_host(host: str) -> str:
     return f"[{host}]" if ":" in host else host
 
@@ -73,6 +119,7 @@ class DisplayServer:
         on_action: Callable[[str, str], Awaitable[None]] | None = None,
         on_voice_turn: Callable[[str], Awaitable[None]] | None = None,
         ssl_context: ssl.SSLContext | None = None,
+        public_origin: str | None = None,
     ) -> None:
         """Create a display server.
 
@@ -97,6 +144,11 @@ class DisplayServer:
         self._on_action = on_action
         self._on_voice_turn = on_voice_turn
         self._ssl_context = ssl_context
+        self._public_origin = (
+            _parse_origin(public_origin, label="public origin")
+            if public_origin is not None
+            else None
+        )
         self._server: Server | None = None
         self._info: DisplayServerInfo | None = None
         self._state_connections: set[ServerConnection] = set()
@@ -309,21 +361,17 @@ class DisplayServer:
         if self._info is None:
             return False
 
-        parsed_origin = urlsplit(origin)
         try:
-            origin_port = parsed_origin.port
+            parsed_origin = _parse_origin(origin)
         except ValueError:
             return False
-        return (
-            parsed_origin.scheme == ("https" if self._ssl_context is not None else "http")
-            and parsed_origin.hostname == self._info.host
-            and origin_port == self._info.port
-            and parsed_origin.username is None
-            and parsed_origin.password is None
-            and parsed_origin.path in ("", "/")
-            and not parsed_origin.query
-            and not parsed_origin.fragment
+
+        listener_origin = _Origin(
+            scheme="https" if self._ssl_context is not None else "http",
+            hostname=self._info.host.casefold(),
+            port=self._info.port,
         )
+        return parsed_origin in {listener_origin, self._public_origin}
 
     async def _handle_state_connection(self, websocket: ServerConnection) -> None:
         self._state_connections.add(websocket)

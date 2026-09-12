@@ -1348,16 +1348,20 @@ class Appliance:
         tls_context = self._display_tls_context()
         if getattr(self.args, "browser_voice", False):
             if self._server is None:
-                self._server = DisplayServer(
-                    self.publisher,
-                    Path(__file__).with_name("static"),
-                    host=getattr(self.args, "display_host", "127.0.0.1"),
-                    port=getattr(self.args, "display_port", 0),
-                    allow_remote=getattr(self.args, "display_remote", False),
-                    on_action=self._on_action,
-                    on_voice_turn=self._on_browser_voice_turn,
-                    ssl_context=tls_context,
-                )
+                try:
+                    self._server = DisplayServer(
+                        self.publisher,
+                        Path(__file__).with_name("static"),
+                        host=getattr(self.args, "display_host", "127.0.0.1"),
+                        port=getattr(self.args, "display_port", 0),
+                        allow_remote=getattr(self.args, "display_remote", False),
+                        on_action=self._on_action,
+                        on_voice_turn=self._on_browser_voice_turn,
+                        ssl_context=tls_context,
+                        public_origin=getattr(self.args, "display_public_origin", None),
+                    )
+                except ValueError as error:
+                    raise RuntimeError(str(error)) from error
             return
         if self._player is None:
             self._player = audio_module.PCMPlayer(
@@ -1430,14 +1434,18 @@ class Appliance:
             )
         self._listener, self._coordinator = built
         if self._server is None:
-            self._server = DisplayServer(
-                self.publisher,
-                Path(__file__).with_name("static"),
-                host=getattr(self.args, "display_host", "127.0.0.1"),
-                port=getattr(self.args, "display_port", 0),
-                allow_remote=getattr(self.args, "display_remote", False),
-                on_action=self._on_action,
-            )
+            try:
+                self._server = DisplayServer(
+                    self.publisher,
+                    Path(__file__).with_name("static"),
+                    host=getattr(self.args, "display_host", "127.0.0.1"),
+                    port=getattr(self.args, "display_port", 0),
+                    allow_remote=getattr(self.args, "display_remote", False),
+                    on_action=self._on_action,
+                    public_origin=getattr(self.args, "display_public_origin", None),
+                )
+            except ValueError as error:
+                raise RuntimeError(str(error)) from error
         self._session.use_shared_recorder(self._recorder)
 
     def stop(self) -> None:
@@ -1751,6 +1759,15 @@ def build_arg_parser(argv: list[str] | None = None) -> argparse.ArgumentParser:
         "--browser-voice",
         action="store_true",
         help="let the browser own microphone capture and speaker playback",
+    )
+    parser.add_argument(
+        "--display-public-origin",
+        default=None,
+        metavar="URL",
+        help=(
+            "additional exact browser Origin allowed behind a reverse proxy "
+            "(for example, https://hermes-home.chappell-home.dev)"
+        ),
     )
 
     # Only substitute the hands-free default when nobody has said otherwise.
