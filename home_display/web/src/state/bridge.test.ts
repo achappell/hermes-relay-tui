@@ -144,6 +144,24 @@ describe("DisplayBridge", () => {
     bridge.stop();
   });
 
+  it("uses the owning state socket for prompt actions by default", async () => {
+    const socket = new FakeSocket();
+    const bridge = new DisplayBridge({
+      url: "ws://display.test/state",
+      onView: () => {},
+      onConnectionState: () => {},
+      socketFactory: () => socket,
+    });
+
+    bridge.start();
+    socket.open();
+    socket.message(JSON.stringify(snapshot));
+
+    await expect(bridge.dispatchAction(action)).resolves.toBe(true);
+    expect(JSON.parse(socket.sent[0])).toEqual(action);
+    bridge.stop();
+  });
+
   it("sends browser voice text and routes streamed PCM frames", async () => {
     const socket = new FakeSocket();
     const audioEvents: DisplayAudioEvent[] = [];

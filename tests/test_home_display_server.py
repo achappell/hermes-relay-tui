@@ -7,9 +7,10 @@ from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
 import pytest
-from websockets.exceptions import InvalidHandshake
+from websockets.exceptions import ConnectionClosed, InvalidHandshake
 from websockets.legacy.client import connect
 
+import home_display.server as server_module
 from home_display.server import DisplayServer, load_tls_context
 from home_display.state import DisplayStatePublisher
 
@@ -191,6 +192,286 @@ async def test_server_dispatches_browser_voice_turn_text(tmp_path):
             await asyncio.sleep(0.01)
         assert calls == ["what is the weather?"]
     finally:
+        await server.close()
+
+
+@pytest.mark.asyncio
+async def test_isolated_browser_connections_route_state_actions_and_audio_to_the_owner(
+    tmp_path,
+):
+    (tmp_path / "index.html").write_text("ok", encoding="utf-8")
+
+    class Binding:
+        def __init__(self, sender):
+            self.publisher = DisplayStatePublisher()
+            self.sender = sender
+            self.actions: list[tuple[str, str]] = []
+            self.turns: list[str] = []
+            self.closed = False
+
+        async def handle_action(self, action_id: str, choice: str) -> None:
+            self.actions.append((action_id, choice))
+
+        async def handle_voice_turn(self, text: str) -> None:
+            self.turns.append(text)
+
+        async def close(self) -> None:
+            self.closed = True
+
+    bindings: list[Binding] = []
+
+    async def create_binding(_connection_id, sender):
+        binding = Binding(sender)
+        bindings.append(binding)
+        return binding
+
+    server = DisplayServer(
+        DisplayStatePublisher(),
+        tmp_path,
+        on_browser_connect=create_binding,
+    )
+    info = await server.start()
+    try:
+        async with connect(info.websocket_url) as first, connect(info.websocket_url) as second:
+            assert json.loads(await first.recv())["state"] == "idle"
+            assert json.loads(await second.recv())["state"] == "idle"
+            assert len(bindings) == 2
+            assert server.browser_sessions_in_use == 2
+
+            bindings[0].publisher.publish(state="speaking", response_text="first")
+            assert json.loads(await first.recv())["response_text"] == "first"
+            with pytest.raises(asyncio.TimeoutError):
+                await asyncio.wait_for(second.recv(), 0.05)
+
+            bindings[1].publisher.publish(state="thinking", response_text="second")
+            assert json.loads(await second.recv())["response_text"] == "second"
+            with pytest.raises(asyncio.TimeoutError):
+                await asyncio.wait_for(first.recv(), 0.05)
+
+            await first.send(json.dumps({
+                "type": "action",
+                "schema": 1,
+                "action_id": "first-prompt",
+                "choice": "yes",
+            }))
+            await second.send(json.dumps({
+                "type": "voice_turn",
+                "schema": 1,
+                "text": "second question",
+            }))
+            await asyncio.sleep(0.01)
+            assert bindings[0].actions == [("first-prompt", "yes")]
+            assert bindings[0].turns == []
+            assert bindings[1].turns == ["second question"]
+
+            await bindings[0].sender.send_audio_start(
+                turn_id="first-turn",
+                sample_rate=24000,
+                channels=1,
+                sample_width=2,
+            )
+            assert json.loads(await first.recv())["turn_id"] == "first-turn"
+            await bindings[0].sender.send_audio_chunk(b"\x01\x02")
+            assert await first.recv() == b"\x01\x02"
+            with pytest.raises(asyncio.TimeoutError):
+                await asyncio.wait_for(second.recv(), 0.05)
+
+            await bindings[0].sender.send_audio_end(turn_id="first-turn")
+            assert json.loads(await first.recv())["type"] == "audio_end"
+            with pytest.raises(asyncio.TimeoutError):
+                await asyncio.wait_for(second.recv(), 0.05)
+
+            await bindings[1].sender.send_audio_abort(
+                turn_id="second-turn", reason="cancelled"
+            )
+            assert json.loads(await second.recv())["type"] == "audio_abort"
+            with pytest.raises(asyncio.TimeoutError):
+                await asyncio.wait_for(first.recv(), 0.05)
+    finally:
+        await server.close()
+
+
+@pytest.mark.asyncio
+async def test_browser_capacity_rejects_only_the_extra_admitted_socket(tmp_path):
+    (tmp_path / "index.html").write_text("ok", encoding="utf-8")
+    created = []
+
+    class Binding:
+        def __init__(self):
+            self.publisher = DisplayStatePublisher()
+
+        async def handle_action(self, _action_id: str, _choice: str) -> None:
+            pass
+
+        async def handle_voice_turn(self, _text: str) -> None:
+            pass
+
+        async def close(self) -> None:
+            pass
+
+    async def create_binding(_connection_id, _sender):
+        binding = Binding()
+        created.append(binding)
+        return binding
+
+    server = DisplayServer(
+        DisplayStatePublisher(),
+        tmp_path,
+        browser_session_limit=1,
+        on_browser_connect=create_binding,
+    )
+    info = await server.start()
+    first = await connect(info.websocket_url)
+    second = None
+    try:
+        assert json.loads(await first.recv())["state"] == "idle"
+        second = await connect(info.websocket_url)
+        with pytest.raises(ConnectionClosed) as error:
+            await second.recv()
+        assert error.value.code == 1013
+        assert len(created) == 1
+        assert server.browser_sessions_in_use == 1
+
+        created[0].publisher.publish(state="speaking", response_text="still live")
+        assert json.loads(await first.recv())["response_text"] == "still live"
+    finally:
+        await first.close()
+        if second is not None:
+            await second.close()
+        await server.close()
+
+
+@pytest.mark.asyncio
+async def test_browser_factory_failure_releases_capacity_for_the_next_socket(tmp_path):
+    (tmp_path / "index.html").write_text("ok", encoding="utf-8")
+    calls = 0
+
+    class Binding:
+        publisher = DisplayStatePublisher()
+
+        async def handle_action(self, _action_id: str, _choice: str) -> None:
+            pass
+
+        async def handle_voice_turn(self, _text: str) -> None:
+            pass
+
+        async def close(self) -> None:
+            pass
+
+    async def create_binding(_connection_id, _sender):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise RuntimeError("upstream unavailable")
+        return Binding()
+
+    server = DisplayServer(
+        DisplayStatePublisher(),
+        tmp_path,
+        browser_session_limit=1,
+        on_browser_connect=create_binding,
+    )
+    info = await server.start()
+    first = await connect(info.websocket_url)
+    second = None
+    try:
+        with pytest.raises(ConnectionClosed) as error:
+            await first.recv()
+        assert error.value.code == 1011
+        for _ in range(20):
+            if server.browser_sessions_in_use == 0:
+                break
+            await asyncio.sleep(0.01)
+        assert server.browser_sessions_in_use == 0
+
+        second = await connect(info.websocket_url)
+        assert json.loads(await second.recv())["state"] == "idle"
+        assert calls == 2
+    finally:
+        await first.close()
+        if second is not None:
+            await second.close()
+        await server.close()
+
+
+@pytest.mark.asyncio
+async def test_browser_factory_timeout_releases_its_reserved_slot(tmp_path, monkeypatch):
+    (tmp_path / "index.html").write_text("ok", encoding="utf-8")
+    monkeypatch.setattr(server_module, "BROWSER_CONTEXT_SETUP_TIMEOUT", 0.01)
+    release = asyncio.Event()
+
+    async def create_binding(_connection_id, _sender):
+        await release.wait()
+        raise RuntimeError("test factory should be cancelled")
+
+    server = DisplayServer(
+        DisplayStatePublisher(),
+        tmp_path,
+        browser_session_limit=1,
+        on_browser_connect=create_binding,
+    )
+    info = await server.start()
+    socket = await connect(info.websocket_url)
+    try:
+        with pytest.raises(ConnectionClosed) as error:
+            await socket.recv()
+        assert error.value.code == 1011
+        for _ in range(20):
+            if server.browser_sessions_in_use == 0:
+                break
+            await asyncio.sleep(0.01)
+        assert server.browser_sessions_in_use == 0
+    finally:
+        release.set()
+        await socket.close()
+        await server.close()
+
+
+@pytest.mark.asyncio
+async def test_browser_capacity_closes_pending_socket_with_retryable_1013(tmp_path):
+    (tmp_path / "index.html").write_text("ok", encoding="utf-8")
+    admitted = asyncio.Event()
+    release = asyncio.Event()
+
+    class Binding:
+        publisher = DisplayStatePublisher()
+
+        async def handle_action(self, _action_id: str, _choice: str) -> None:
+            pass
+
+        async def handle_voice_turn(self, _text: str) -> None:
+            pass
+
+        async def close(self) -> None:
+            pass
+
+    async def create_binding(_connection_id, _sender):
+        admitted.set()
+        await release.wait()
+        return Binding()
+
+    server = DisplayServer(
+        DisplayStatePublisher(),
+        tmp_path,
+        browser_session_limit=1,
+        on_browser_connect=create_binding,
+    )
+    info = await server.start()
+    first = await connect(info.websocket_url)
+    try:
+        assert await asyncio.wait_for(admitted.wait(), 1.0)
+        assert server.browser_sessions_in_use == 1
+        second = await connect(info.websocket_url)
+        try:
+            with pytest.raises(ConnectionClosed) as error:
+                await second.recv()
+            assert error.value.code == 1013
+            assert str(error.value.reason) == "browser session capacity reached"
+        finally:
+            await second.close()
+    finally:
+        release.set()
+        await first.close()
         await server.close()
 
 

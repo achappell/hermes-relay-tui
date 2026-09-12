@@ -38,7 +38,9 @@
   $: status = protocolError ?? (
     audioPlaybackFailed && displayState === "speaking"
       ? "Audio unavailable — response text remains visible"
-      : snapshot.status_text ?? fallbackStatus[renderedState] ?? null
+      : connectionState === "capacity"
+        ? "All browser sessions are busy — retrying"
+        : snapshot.status_text ?? fallbackStatus[renderedState] ?? null
   );
   $: showResponse = protocolError === null && snapshot.response_text.length > 0
     && responseVisible && ["thinking", "speaking", "buffering", "idle"].includes(renderedState);

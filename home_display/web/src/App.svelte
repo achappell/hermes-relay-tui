@@ -197,11 +197,16 @@
       },
       onConnectionState: (state) => {
         connectionState = state;
+        if (state === "capacity") protocolError = null;
         if (state !== "connected") clearConversationPresentation();
-        if (state === "disconnected") {
+        if (state === "disconnected" || state === "capacity") {
           resetPlayback();
           voiceController?.reset();
-          handsFreeController?.abort("Display disconnected — hands-free is off");
+          handsFreeController?.abort(
+            state === "capacity"
+              ? "Display is at capacity — hands-free is off"
+              : "Display disconnected — hands-free is off",
+          );
         } else if (state === "connecting") {
           handsFreeController?.abort("Display disconnected — hands-free is off");
         }

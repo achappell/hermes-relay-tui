@@ -10,17 +10,21 @@ from __future__ import annotations
 
 import asyncio
 import io
+import json
 import threading
 import types
 import wave
 from dataclasses import replace
 
 import pytest
+from websockets.exceptions import ConnectionClosed
+from websockets.legacy.client import connect
 
 import config
 import handsfree
 from home_display import appliance as appliance_module
 from home_display.appliance import Appliance
+from home_display.state import DisplayPrompt, PromptOption
 
 
 class FakeSession:
@@ -311,6 +315,19 @@ async def _wait_for(predicate, *, timeout=2.0):
             return True
         await asyncio.sleep(0.005)
     return False
+
+
+async def _recv_until(socket, predicate, *, timeout=2.0):
+    deadline = asyncio.get_running_loop().time() + timeout
+    frames = []
+    while True:
+        remaining = deadline - asyncio.get_running_loop().time()
+        if remaining <= 0:
+            raise asyncio.TimeoutError
+        frame = await asyncio.wait_for(socket.recv(), remaining)
+        frames.append(frame)
+        if predicate(frame, frames):
+            return frames
 
 
 async def _run_until_idle(appliance, state, *, wake_after_connect=True, until=None):
@@ -639,6 +656,572 @@ async def test_browser_voice_turn_plays_a_valid_wav_fallback_when_pcm_is_not_str
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await task
+
+
+@pytest.mark.asyncio
+async def test_browser_contexts_get_fresh_profile_sessions_with_unique_ids(monkeypatch):
+    created: list[object] = []
+
+    class Session(FakeSession):
+        def __init__(self, args):
+            super().__init__()
+            self.args = args
+            created.append(self)
+
+    monkeypatch.setattr(appliance_module, "HermesSession", Session)
+    appliance = Appliance(_args(browser_voice=True), publisher=RecordingPublisher())
+
+    first = await appliance._create_browser_context("browser-one", FakeServer())
+    second = await appliance._create_browser_context("browser-two", FakeServer())
+    try:
+        assert len(created) == 2
+        assert created[0].args.session_id == "browser-one"
+        assert created[1].args.session_id == "browser-two"
+        assert created[0].args.client_id == appliance.active_profile.client_id
+        assert created[1].args.device_id == appliance.active_profile.device_id
+        assert set(appliance._browser_contexts) == {"browser-one", "browser-two"}
+    finally:
+        await first.close()
+        await second.close()
+
+
+@pytest.mark.asyncio
+async def test_isolated_browser_run_stops_without_building_a_shared_session():
+    ready = asyncio.Event()
+    appliance = Appliance(
+        _args(browser_voice=True),
+        publisher=RecordingPublisher(),
+        on_ready=lambda _info: ready.set(),
+    )
+    task = asyncio.create_task(appliance.run())
+    try:
+        await asyncio.wait_for(ready.wait(), 2)
+        assert appliance._browser_context_mode is True
+        assert appliance._session is None
+        appliance.stop()
+        await asyncio.wait_for(task, 2)
+        assert appliance._server._server is None
+        assert appliance._browser_contexts == {}
+    finally:
+        if not task.done():
+            appliance.stop()
+            await task
+
+
+@pytest.mark.asyncio
+async def test_two_browser_contexts_keep_turns_and_display_state_isolated(tmp_path):
+    (tmp_path / "index.html").write_text("ok", encoding="utf-8")
+    started: list[asyncio.Event] = []
+    releases: list[asyncio.Event] = []
+    sessions: list[FakeSession] = []
+
+    class Session(FakeSession):
+        def __init__(self, label: str):
+            super().__init__()
+            self.label = label
+            self.args = types.SimpleNamespace(session_id=f"unassigned-{label}")
+            self.started = asyncio.Event()
+            self.release = asyncio.Event()
+            started.append(self.started)
+            releases.append(self.release)
+
+        def send_turn(self, text: str, *, stt_source: str = "local"):
+            self.turns.append(text)
+
+            async def events():
+                self.started.set()
+                yield {"type": "text_delta", "text": f"answer from {self.label}"}
+                await self.release.wait()
+                yield {
+                    "type": "audio_start",
+                    "sample_rate": 24000,
+                    "channels": 1,
+                    "sample_width": 2,
+                }
+                yield {"type": "audio_chunk", "data": self.label.encode()[:2]}
+                yield {"type": "audio_end"}
+                yield {"type": "turn_end"}
+
+            return events()
+
+    all_sessions = [Session("one"), Session("two")]
+    sessions.extend(all_sessions)
+
+    def session_factory(_profile):
+        return sessions.pop(0)
+
+    appliance = Appliance(
+        _args(browser_voice=True),
+        publisher=RecordingPublisher(),
+        session_factory=session_factory,
+    )
+    appliance._build()
+    server = appliance._server
+    info = await server.start()
+    first = await connect(info.websocket_url)
+    second = await connect(info.websocket_url)
+    try:
+        assert json.loads(await first.recv())["state"] == "idle"
+        assert json.loads(await second.recv())["state"] == "idle"
+        await first.send(json.dumps({"type": "voice_turn", "schema": 1, "text": "first"}))
+        await second.send(json.dumps({"type": "voice_turn", "schema": 1, "text": "second"}))
+        assert await _wait_for(lambda: all(event.is_set() for event in started))
+
+        contexts = list(appliance._browser_contexts.values())
+        assert len(contexts) == 2
+        assert {
+            all_sessions[0].args.session_id,
+            all_sessions[1].args.session_id,
+        } == set(appliance._browser_contexts)
+        assert {context.publisher.snapshot.response_text for context in contexts} == {
+            "answer from one",
+            "answer from two",
+        }
+        assert [session.turns for session in all_sessions] == [["first"], ["second"]]
+
+        first_response_frames = await _recv_until(
+            first,
+            lambda frame, _frames: isinstance(frame, str)
+            and json.loads(frame)["response_text"] == "answer from one",
+        )
+        second_response_frames = await _recv_until(
+            second,
+            lambda frame, _frames: isinstance(frame, str)
+            and json.loads(frame)["response_text"] == "answer from two",
+        )
+        first_response = json.loads(first_response_frames[-1])
+        second_response = json.loads(second_response_frames[-1])
+        assert first_response["response_text"] == "answer from one"
+        assert second_response["response_text"] == "answer from two"
+
+        releases[0].set()
+        releases[1].set()
+        first_audio = await _recv_until(
+            first,
+            lambda frame, _frames: isinstance(frame, str)
+            and json.loads(frame).get("type") == "audio_end",
+        )
+        second_audio = await _recv_until(
+            second,
+            lambda frame, _frames: isinstance(frame, str)
+            and json.loads(frame).get("type") == "audio_end",
+        )
+        assert any(frame == b"on" for frame in first_audio)
+        assert any(frame == b"tw" for frame in second_audio)
+        assert await _wait_for(
+            lambda: all(context.publisher.snapshot.state == "idle" for context in contexts)
+        )
+    finally:
+        await first.close()
+        await second.close()
+        await appliance.aclose()
+
+
+@pytest.mark.asyncio
+async def test_browser_context_failure_closes_only_its_socket(tmp_path):
+    (tmp_path / "index.html").write_text("ok", encoding="utf-8")
+
+    class FailingSession(FakeSession):
+        def send_turn(self, text: str, *, stt_source: str = "local"):
+            self.turns.append(text)
+
+            async def events():
+                raise ConnectionError("one upstream failed")
+                yield  # pragma: no cover
+
+            return events()
+
+    healthy = FakeSession([
+        {"type": "text_delta", "text": "still here"},
+        {"type": "turn_end"},
+    ])
+    sessions = [FailingSession(), healthy]
+
+    def session_factory(_profile):
+        return sessions.pop(0)
+
+    appliance = Appliance(
+        _args(browser_voice=True),
+        publisher=RecordingPublisher(),
+        session_factory=session_factory,
+    )
+    appliance._build()
+    info = await appliance._server.start()
+    first = await connect(info.websocket_url)
+    second = await connect(info.websocket_url)
+    try:
+        await first.recv()
+        await second.recv()
+        await first.send(json.dumps({"type": "voice_turn", "schema": 1, "text": "fail"}))
+        await second.send(json.dumps({"type": "voice_turn", "schema": 1, "text": "live"}))
+        assert await _wait_for(lambda: healthy.turns == ["live"])
+        with pytest.raises(ConnectionClosed):
+            while True:
+                await first.recv()
+        assert len(appliance._browser_contexts) == 1
+        assert next(iter(appliance._browser_contexts.values())).publisher.snapshot.response_text == "still here"
+    finally:
+        await first.close()
+        await second.close()
+        await appliance.aclose()
+
+
+@pytest.mark.asyncio
+async def test_browser_disconnect_cancels_only_its_active_turn(tmp_path):
+    (tmp_path / "index.html").write_text("ok", encoding="utf-8")
+
+    class BlockingSession(FakeSession):
+        def __init__(self):
+            super().__init__()
+            self.started = asyncio.Event()
+            self.release = asyncio.Event()
+
+        def send_turn(self, text: str, *, stt_source: str = "local"):
+            self.turns.append(text)
+
+            async def events():
+                self.started.set()
+                yield {"type": "text_delta", "text": "owner response"}
+                await self.release.wait()
+                yield {"type": "turn_end"}
+
+            return events()
+
+    blocked = BlockingSession()
+    healthy = FakeSession(
+        [{"type": "text_delta", "text": "healthy response"}, {"type": "turn_end"}]
+    )
+    sessions = [blocked, healthy]
+    appliance = Appliance(
+        _args(browser_voice=True),
+        publisher=RecordingPublisher(),
+        session_factory=lambda _profile: sessions.pop(0),
+    )
+    appliance._build()
+    info = await appliance._server.start()
+    first = await connect(info.websocket_url)
+    second = await connect(info.websocket_url)
+    try:
+        await first.recv()
+        await second.recv()
+        await first.send(
+            json.dumps({"type": "voice_turn", "schema": 1, "text": "owner"})
+        )
+        assert await _wait_for(blocked.started.is_set)
+
+        await first.close()
+        assert await _wait_for(
+            lambda: blocked.closes == 1
+            and len(appliance._browser_contexts) == 1
+            and appliance._server.browser_sessions_in_use == 1
+        )
+
+        await second.send(
+            json.dumps({"type": "voice_turn", "schema": 1, "text": "healthy"})
+        )
+        assert await _wait_for(lambda: healthy.turns == ["healthy"])
+    finally:
+        blocked.release.set()
+        await first.close()
+        await second.close()
+        await appliance.aclose()
+
+
+@pytest.mark.asyncio
+async def test_browser_context_reconnect_creates_a_fresh_session_without_replay(tmp_path):
+    (tmp_path / "index.html").write_text("ok", encoding="utf-8")
+    all_sessions = [FakeSession(), FakeSession()]
+    sessions = list(all_sessions)
+
+    def session_factory(_profile):
+        return sessions.pop(0)
+
+    appliance = Appliance(
+        _args(browser_voice=True),
+        publisher=RecordingPublisher(),
+        session_factory=session_factory,
+    )
+    appliance._build()
+    info = await appliance._server.start()
+    first = await connect(info.websocket_url)
+    second = None
+    try:
+        await first.recv()
+        first_context_id, first_context = next(iter(appliance._browser_contexts.items()))
+        first_context.publisher.publish(state="speaking", response_text="old answer")
+        await first.close()
+        assert await _wait_for(lambda: not appliance._browser_contexts)
+
+        second = await connect(info.websocket_url)
+        snapshot = json.loads(await second.recv())
+        assert snapshot["state"] == "idle"
+        second_context_id, second_context = next(iter(appliance._browser_contexts.items()))
+        assert second_context_id != first_context_id
+        assert second_context.publisher.snapshot.response_text == ""
+        assert all_sessions[0].closes == 1
+        assert all_sessions[1].connects == 1
+    finally:
+        await first.close()
+        if second is not None:
+            await second.close()
+        await appliance.aclose()
+
+
+@pytest.mark.asyncio
+async def test_a_second_turn_is_busy_only_in_its_browser_context(tmp_path):
+    (tmp_path / "index.html").write_text("ok", encoding="utf-8")
+    session = FakeSession()
+    session.started = asyncio.Event()
+    session.release = asyncio.Event()
+
+    def blocking_turn(text: str, *, stt_source: str = "local"):
+        session.turns.append(text)
+
+        async def events():
+            session.started.set()
+            yield {"type": "text_delta", "text": "first response"}
+            await session.release.wait()
+            yield {"type": "turn_end"}
+
+        return events()
+
+    session.send_turn = blocking_turn
+    other = FakeSession([{"type": "text_delta", "text": "other response"}, {"type": "turn_end"}])
+    all_sessions = [session, other]
+    sessions = list(all_sessions)
+
+    def session_factory(_profile):
+        return sessions.pop(0)
+
+    appliance = Appliance(
+        _args(browser_voice=True),
+        publisher=RecordingPublisher(),
+        session_factory=session_factory,
+    )
+    appliance._build()
+    info = await appliance._server.start()
+    first = await connect(info.websocket_url)
+    second = await connect(info.websocket_url)
+    try:
+        await first.recv()
+        await second.recv()
+        await first.send(json.dumps({"type": "voice_turn", "schema": 1, "text": "first"}))
+        assert await _wait_for(session.started.is_set)
+        await first.send(json.dumps({"type": "voice_turn", "schema": 1, "text": "second"}))
+        await second.send(json.dumps({"type": "voice_turn", "schema": 1, "text": "other"}))
+        first_context = next(
+            context
+            for context in appliance._browser_contexts.values()
+            if context._child._session is session
+        )
+        other_context = next(
+            context
+            for context in appliance._browser_contexts.values()
+            if context._child._session is other
+        )
+        assert await _wait_for(
+            lambda: first_context.publisher.snapshot.status_text
+            == "A response is already in progress"
+        )
+        assert first_context.publisher.snapshot.state in {
+            "heard",
+            "listening",
+            "thinking",
+            "buffering",
+            "speaking",
+        }
+        assert other_context.publisher.snapshot.status_text != "A response is already in progress"
+        assert await _wait_for(lambda: other.turns == ["other"])
+        session.release.set()
+    finally:
+        session.release.set()
+        await first.close()
+        await second.close()
+        await appliance.aclose()
+
+
+@pytest.mark.asyncio
+async def test_browser_prompt_action_cannot_cross_contexts():
+    all_sessions = [FakeSession(), FakeSession()]
+    sessions = list(all_sessions)
+    appliance = Appliance(
+        _args(browser_voice=True),
+        publisher=RecordingPublisher(),
+        session_factory=lambda _profile: sessions.pop(0),
+    )
+    first = await appliance._create_browser_context("browser-one", FakeServer())
+    second = await appliance._create_browser_context("browser-two", FakeServer())
+    prompt = DisplayPrompt(
+        kind="confirm",
+        title="Confirm",
+        body="Use this display?",
+        options=(PromptOption(id="yes", label="Yes"),),
+        action_id="sethome",
+    )
+    try:
+        first._child._pending_prompt_action_id = prompt.action_id
+        first._child._publish_prompt(prompt)
+        await second.handle_action("sethome", "yes")
+        assert first.publisher.snapshot.state == "prompt"
+        assert second.publisher.snapshot.state == "idle"
+        await first.handle_action("sethome", "yes")
+        assert all_sessions[0].turns == ["/sethome"]
+    finally:
+        await first.close()
+        await second.close()
+
+
+@pytest.mark.asyncio
+async def test_browser_prompt_request_and_action_stay_on_the_owning_socket(tmp_path):
+    (tmp_path / "index.html").write_text("ok", encoding="utf-8")
+
+    class PromptSession(FakeSession):
+        supports_structured_prompts = True
+
+        def __init__(self):
+            super().__init__()
+            self.responses = []
+            self.response_ready = asyncio.Event()
+
+        def send_turn(self, text: str, *, stt_source: str = "local"):
+            self.turns.append(text)
+
+            async def events():
+                yield {
+                    "type": "prompt_request",
+                    "kind": "confirm",
+                    "prompt_id": "confirm-1",
+                    "question": "Use the private browser session?",
+                }
+                await self.response_ready.wait()
+                yield {"type": "text_delta", "text": "Confirmed."}
+                yield {"type": "turn_end"}
+
+            return events()
+
+        async def send_prompt_response(self, **payload):
+            self.responses.append(payload)
+            self.response_ready.set()
+            return True
+
+    prompt_session = PromptSession()
+    other_session = FakeSession()
+    sessions = [prompt_session, other_session]
+    appliance = Appliance(
+        _args(browser_voice=True),
+        publisher=RecordingPublisher(),
+        session_factory=lambda _profile: sessions.pop(0),
+    )
+    appliance._build()
+    info = await appliance._server.start()
+    first = await connect(info.websocket_url)
+    second = await connect(info.websocket_url)
+    try:
+        await first.recv()
+        await second.recv()
+        await first.send(
+            json.dumps({"type": "voice_turn", "schema": 1, "text": "confirm"})
+        )
+        prompt_frames = await _recv_until(
+            first,
+            lambda frame, _frames: isinstance(frame, str)
+            and json.loads(frame).get("state") == "prompt",
+        )
+        assert json.loads(prompt_frames[-1])["prompt"]["action_id"] == "confirm-1"
+
+        await second.send(
+            json.dumps(
+                {
+                    "type": "action",
+                    "schema": 1,
+                    "action_id": "confirm-1",
+                    "choice": "yes",
+                }
+            )
+        )
+        await asyncio.sleep(0.01)
+        assert prompt_session.responses == []
+        assert json.loads(prompt_frames[-1])["state"] == "prompt"
+
+        await first.send(
+            json.dumps(
+                {
+                    "type": "action",
+                    "schema": 1,
+                    "action_id": "confirm-1",
+                    "choice": "yes",
+                }
+            )
+        )
+        assert await _wait_for(
+            lambda: prompt_session.responses
+            == [
+                {
+                    "prompt_id": "confirm-1",
+                    "prompt_kind": "confirm",
+                    "option_id": "yes",
+                }
+            ]
+        )
+    finally:
+        await first.close()
+        await second.close()
+        await appliance.aclose()
+
+
+@pytest.mark.asyncio
+async def test_browser_prompt_remains_visible_when_response_is_refused():
+    class RefusingSession(FakeSession):
+        supports_structured_prompts = True
+
+        async def send_prompt_response(self, **_payload):
+            return False
+
+    appliance = Appliance(
+        _args(browser_voice=True),
+        publisher=RecordingPublisher(),
+        session_factory=lambda _profile: RefusingSession(),
+    )
+    context = await appliance._create_browser_context("browser-one", FakeServer())
+    prompt = DisplayPrompt(
+        kind="confirm",
+        title="Confirm",
+        body="Keep waiting?",
+        options=(PromptOption(id="yes", label="Yes"),),
+        action_id="confirm-1",
+    )
+    try:
+        context._child._pending_prompt_action_id = prompt.action_id
+        context._child._publish_prompt(prompt)
+        await context.handle_action("confirm-1", "yes")
+        assert context.publisher.snapshot.state == "prompt"
+        assert context._child._pending_prompt_action_id == "confirm-1"
+    finally:
+        await context.close()
+
+
+@pytest.mark.asyncio
+async def test_browser_gateway_notice_becomes_a_prompt_overlay():
+    publisher = RecordingPublisher()
+    appliance = Appliance(
+        _args(browser_voice=True),
+        session=FakeSession(
+            [
+                {
+                    "type": "text_delta",
+                    "text": "No home channel is set. Type /sethome to configure.",
+                },
+                {"type": "turn_end"},
+            ]
+        ),
+        publisher=publisher,
+        server=FakeServer(),
+    )
+    appliance._connected = True
+
+    assert await appliance._run_browser_turn("hello") is True
+    assert publisher.history[-1][0] == "prompt"
+    assert appliance._pending_prompt_action_id == "sethome"
 
 
 @pytest.mark.asyncio
@@ -1349,6 +1932,18 @@ def test_display_remote_bind_is_opt_in():
     assert remote.display_host == "192.168.1.20"
     assert remote.display_port == 8765
     assert remote.display_remote is True
+
+
+def test_browser_session_limit_is_configurable():
+    from home_display import appliance
+
+    defaults = appliance.build_arg_parser([]).parse_args([])
+    limited = appliance.build_arg_parser([]).parse_args(
+        ["--display-max-browser-sessions", "3"]
+    )
+
+    assert defaults.display_max_browser_sessions == 8
+    assert limited.display_max_browser_sessions == 3
 
 
 def test_display_tls_options_are_optional_paths():

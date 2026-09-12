@@ -76,7 +76,6 @@ export class DisplayBridge {
    */
   constructor(options: DisplayBridgeOptions) {
     this.reducer = options.reducer ?? createDisplayReducer();
-    this.actionTransport = options.actionTransport ?? postDisplayAction;
     this.onActionError = options.onActionError ?? (() => {});
     this.voiceTransport = options.voiceTransport ?? null;
     this.onVoiceError = options.onVoiceError ?? (() => {});
@@ -94,7 +93,7 @@ export class DisplayBridge {
       (state) => {
         if (state === "connecting") {
           this.reducer.reset();
-        } else if (state === "disconnected") {
+        } else if (state === "disconnected" || state === "capacity") {
           this.reducer.setConnectionState?.("disconnected");
         }
         this.deliver(() => options.onConnectionState(state));
@@ -105,6 +104,11 @@ export class DisplayBridge {
       options.onAudioEvent,
       options.onAudioChunk,
     );
+    this.actionTransport = options.actionTransport ?? ((action) => {
+      if (!this.channel.sendAction(action)) {
+        throw new Error("display action unavailable");
+      }
+    });
   }
 
   start(): void {

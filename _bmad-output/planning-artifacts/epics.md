@@ -355,6 +355,7 @@ the named surface; another surface's implementation is evidence, not closure.
 | `E-4` | ESP32 Touch Display | Bounded follow-up and exact `stop`. |
 | `E-5` | ESP32 Touch Display | Recovery without replay. |
 | `WK-1` | Web/iPad | One shared W/K browser voice-plus-display surface for authorized capture, honest phases, streamed/completed response text, response audio, and delivery/error state, including bounded post-playback hands-free recovery across supported browsers. iPad is a deployment target, not a separate surface. |
+| `WK-2` | Web/iPad | Isolate concurrent browser voice/display sessions with one server-owned Hermes session, state publisher, prompt-action route, and response-audio stream per browser connection, bounded admission, and fresh no-replay reconnects. |
 | `T-1` | TUI | Authorized initiation. The historical numeric artifact 1.1 remains its stable local alias. |
 | `T-2` | TUI | Honest phases and response delivery. The historical numeric artifact 1.2 remains its stable local alias. |
 | `T-3` | TUI | Bounded follow-up and exact `stop`. The historical numeric artifact 1.3 remains its stable local alias. |

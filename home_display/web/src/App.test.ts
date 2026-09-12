@@ -10,7 +10,7 @@ import type { DisplayView } from "./state/reducer";
 type BridgeOptions = {
   reducer?: unknown;
   onView: (view: DisplayView) => void;
-  onConnectionState: (state: "connecting" | "connected" | "disconnected") => void;
+  onConnectionState: (state: "connecting" | "connected" | "disconnected" | "capacity") => void;
   onProtocolError: (message: string) => void;
   onValidSnapshot?: () => void;
   onActionError?: (message: string) => void;
@@ -1496,6 +1496,28 @@ describe("App", () => {
     await tick();
     expect(container.querySelector(".prompt-overlay")).toBeNull();
     expect(container.querySelector('[data-state="disconnected"]')).not.toBeNull();
+    unmount();
+  });
+
+  it("shows capacity instead of a stale protocol error while retrying", async () => {
+    const { container, unmount } = render(App);
+    await tick();
+    const options = bridges.options.at(-1);
+
+    options?.onProtocolError("display data unavailable");
+    await tick();
+    expect(container.querySelector(".status-text")).toHaveTextContent(
+      "display data unavailable",
+    );
+
+    options?.onConnectionState("capacity");
+    await tick();
+    expect(container.querySelector(".status-text")).toHaveTextContent(
+      "All browser sessions are busy — retrying",
+    );
+    expect(container.querySelector(".status-text")).not.toHaveTextContent(
+      "display data unavailable",
+    );
     unmount();
   });
 

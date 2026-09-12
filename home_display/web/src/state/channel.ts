@@ -1,6 +1,12 @@
-import { parseAudioEvent, parseSnapshot, type DisplayAudioEvent, type DisplaySnapshot } from "./protocol";
+import {
+  parseAudioEvent,
+  parseSnapshot,
+  type DisplayAction,
+  type DisplayAudioEvent,
+  type DisplaySnapshot,
+} from "./protocol";
 
-export type ConnectionState = "connecting" | "connected" | "disconnected";
+export type ConnectionState = "connecting" | "connected" | "disconnected" | "capacity";
 export type SnapshotListener = (snapshot: DisplaySnapshot) => void;
 export type SocketFactory = (url: string) => WebSocketLike;
 export type ProtocolErrorListener = (message: string) => void;
@@ -8,11 +14,15 @@ export type ValidSnapshotListener = (snapshot: DisplaySnapshot) => void;
 export type AudioEventListener = (event: DisplayAudioEvent) => void;
 export type AudioChunkListener = (chunk: ArrayBuffer) => void;
 
+export interface WebSocketCloseEventLike {
+  code?: number;
+}
+
 export interface WebSocketLike {
   onopen: (() => void) | null;
   onmessage: ((event: MessageEvent<unknown>) => void) | null;
   onerror: (() => void) | null;
-  onclose: (() => void) | null;
+  onclose: ((event?: WebSocketCloseEventLike) => void) | null;
   binaryType?: "blob" | "arraybuffer";
   send?: (data: string) => void;
   close(): void;
@@ -95,7 +105,6 @@ export class StateChannel {
 
       this.socketOpen = true;
       this.lastSequence = -1;
-      this.reconnectAttempt = 0;
     };
     socket.onmessage = (event) => {
       if (!this.isCurrent(socket)) {
@@ -105,14 +114,14 @@ export class StateChannel {
       this.handleMessage(event.data);
     };
     socket.onerror = () => {};
-    socket.onclose = () => {
+    socket.onclose = (event) => {
       if (!this.isCurrent(socket)) {
         return;
       }
 
       this.socket = null;
       this.socketOpen = false;
-      this.deliver(() => this.onConnectionState("disconnected"));
+      this.deliver(() => this.onConnectionState(event?.code === 1013 ? "capacity" : "disconnected"));
       this.scheduleReconnect();
     };
   }
@@ -133,6 +142,23 @@ export class StateChannel {
     }
     try {
       this.socket.send(JSON.stringify({ type: "voice_turn", schema: 1, text: normalized }));
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  sendAction(action: DisplayAction): boolean {
+    if (
+      !this.socketOpen ||
+      !this.hasHydratedSocket ||
+      !this.socket ||
+      typeof this.socket.send !== "function"
+    ) {
+      return false;
+    }
+    try {
+      this.socket.send(JSON.stringify(action));
       return true;
     } catch {
       return false;
@@ -194,6 +220,7 @@ export class StateChannel {
 
     if (!this.hasHydratedSocket) {
       this.hasHydratedSocket = true;
+      this.reconnectAttempt = 0;
       this.deliver(() => this.onConnectionState("connected"));
     }
   }
