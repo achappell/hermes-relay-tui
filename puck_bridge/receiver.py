@@ -344,6 +344,10 @@ def make_handler(
                 self.send_header("Transfer-Encoding", "chunked")
                 self.end_headers()
                 self._write_chunk(streaming_wav_header(audio_format))
+                # Let a cushion build before the first PCM leaves. Without
+                # it the device plays exactly as fast as Hermes speaks and
+                # any upstream hesitation is audible as chop.
+                response_stream.wait_for_prebuffer(audio_format)
                 for chunk in response_stream.iter_chunks():
                     self._write_chunk(chunk)
                     total += len(chunk)

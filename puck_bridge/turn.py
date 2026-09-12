@@ -261,6 +261,9 @@ class TurnRunner:
         file_audio = bytearray()
         spoke = False
         chunks_spoken = 0
+        audio_bytes = 0
+        audio_format: tuple[int, int, int] | None = None
+        first_audio_at: float | None = None
         started_at = time.monotonic()
         # Iterate manually rather than with `async for`, so each individual
         # step can carry its own deadline. `async for` can only be bounded
@@ -306,6 +309,9 @@ class TurnRunner:
                         self._response_stream.write(event["data"])
                         spoke = True
                         chunks_spoken += 1
+                        audio_bytes += len(event["data"])
+                        if first_audio_at is None:
+                            first_audio_at = time.monotonic()
                     elif self._player.active:
                         await self._write_audio(event["data"])
                         spoke = True
@@ -414,9 +420,43 @@ class TurnRunner:
             # identical in the log -- the same silent-success trap that let
             # the upload path lose three captures without complaint. The
             # happy path is exactly when you most want a line to point at.
+            elapsed = time.monotonic() - started_at
             logger.info(
                 "puck bridge turn complete: %d audio chunks spoken in %.1fs",
                 chunks_spoken,
-                time.monotonic() - started_at,
+                elapsed,
             )
+            # Say plainly when the producer is slower than real time. The
+            # device plays at exactly 100%, so a source below that runs it
+            # dry and the answer comes out choppy -- which on 2026-09-12
+            # took an evening to diagnose by ear because nothing measured
+            # it. Bytes are counted against the declared format, so this is
+            # a true audio-seconds-per-wall-second ratio.
+            # Measure from the FIRST AUDIO CHUNK, not from turn start.
+            # Turn start includes Hermes thinking before any audio exists,
+            # and counting that as "generation time" made a healthy stream
+            # look like a 64-75% producer on 2026-09-12 -- which sent the
+            # diagnosis toward an architecture change that was not needed.
+            # audio.py's own note records the real behaviour: "379ms of
+            # audio every ~470ms", i.e. near real time in fits, which a
+            # 0.6s cushion covers for the TUI.
+            stream_elapsed = (
+                time.monotonic() - first_audio_at if first_audio_at else 0.0
+            )
+            if audio_format and stream_elapsed > 0 and audio_bytes:
+                elapsed = stream_elapsed
+                rate, chans, width = audio_format
+                bps = rate * chans * width
+                if bps:
+                    produced = audio_bytes / bps
+                    ratio = produced / elapsed
+                    if ratio < 1.0:
+                        logger.warning(
+                            "puck bridge: TTS generated %.1fs of audio in "
+                            "%.1fs (%.0f%% of real time) -- slower than "
+                            "playback, so a %.1fs cushion is needed to avoid "
+                            "underrun; expect choppy audio on the device",
+                            produced, elapsed, ratio * 100,
+                            max(0.0, produced / ratio - produced),
+                        )
         return True
