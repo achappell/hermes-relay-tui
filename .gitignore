@@ -11,4 +11,6 @@ __pycache__/
 # BMAD workflow snapshots are generated locally and are not project artifacts.
 _bmad/render/
 *.wav
+!firmware/respeaker-lite/sounds/
+!firmware/respeaker-lite/sounds/*.wav
 .pytest_cache/

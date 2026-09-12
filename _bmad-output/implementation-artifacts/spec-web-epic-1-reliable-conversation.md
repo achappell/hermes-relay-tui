@@ -69,6 +69,7 @@ context:
 - Updated the browser distribution, HOME-03 smoke procedure, and shared-display notes so Emscripten/WASM is optional; `npm run build` regenerated the tracked static bundle.
 - Verification completed: 163 web tests, zero `svelte-check` diagnostics, production build, 87 focused Python appliance/server tests, 2 focused prompt-demo tests, 892 full Python tests, and `git diff --check` passed after review patches.
 - Built and installed a local wheel, then verified both hashed browser assets resolve from the installed `home_display/static/` package data.
+- 2026-09-11 automated gate recheck: `npm test` passed 12 files and 178 tests, `npm run check` found zero errors or warnings, and `npm run build` succeeded. No Safari/iPad surface was available for this run, so the physical Guided Access, certificate trust, microphone permission, secure-channel, speaker, and touch gate remains explicitly unverified.
 
 ## Spec Change Log
 

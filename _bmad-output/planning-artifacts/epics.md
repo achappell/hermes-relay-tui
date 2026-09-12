@@ -27,7 +27,7 @@ FR3: Each supported doorway exposes the appropriate Turn Phase—heard, listenin
 
 FR4: The Puck, ESP32 Touch Display, W/K browser voice surface, iOS Client, or Android Client speaks the Hermes response; active text-capable surfaces render their own response text, passive room Displays stream the same room-local response text, and the TUI renders the conversation through its terminal surface.
 
-FR5: After each response, a configured voice doorway may open a bounded follow-up window; the active Puck's v1 window is eight seconds without another Wake Mapping, the W/K browser surface uses its advertised bounded capability, and exactly “stop” during capture or follow-up closes the local window silently.
+FR5: After each response, a configured voice doorway with a wake-capture adapter reopens a bounded silence window without requiring another wake phrase, and continues to do so until an explicit exit; the bound governs each window rather than the number of windows. The active Puck's v1 window is eight seconds and the W/K browser surface uses its advertised bounded capability. Exactly “stop” during capture or follow-up closes the local window silently, as do silence, failure, transport loss, and disarm. Pre-wake idle remains waiting for the wake phrase, and a surface without a wake-capture adapter opens no follow-up.
 
 FR6: After transport loss, a doorway starts a fresh Hermes Session and does not replay or silently resume the prior Active Turn.
 
@@ -61,7 +61,9 @@ FR20: The iOS and Android Clients start voice turns by tap-to-speak and support 
 
 FR21: The TUI starts voice conversation through its own Hermes Session and renders conversation and response state without becoming a second assistant; diagnostic detail is not required for the household journey.
 
-FR22: A passive room Display mirrors an active Hermes clarification or approval prompt while the active Puck, ESP32 Touch Display, W/K browser voice surface, or Client accepts the spoken answer; no passive Display touch action creates, submits, or resumes a prompt response in v1.
+FR22: A passive room Display mirrors an active Hermes clarification or approval prompt while a free-text answer follows the active doorway's Hermes Session; passive Displays never become prompt owners.
+
+FR23: When Hermes emits a bounded typed choice object, the active ESP32 Touch Display, direct-use W/K browser/iPad surface, and TUI render native `choose` and `explore` actions; `choose` commits an option, `explore` requests detail without committing, passive Displays mirror read-only, and the Puck exposes no choice UI.
 
 ### NonFunctional Requirements
 
@@ -75,13 +77,15 @@ NFR4: Every Device uses an individual revocable Device Credential, and unapprove
 
 NFR5: ESP32-S3 Touch and W/K Web/iPad surfaces consume the same visual semantics for Ambient Surface, Active Turn, Departure Card, and Disconnected State; each voice-enabled surface additionally owns its voice capture and response-audio path.
 
+NFR6: Typed choice actions are bound to the current Hermes Session, turn, object, option, advertised capability, and freshness context; accepted actions are idempotent, transcript-visible, and rejected safely when stale, unsupported, expired, replaced, or duplicated.
+
 ### Additional Requirements
 
 - Use ports-and-adapters with functional cores. The Python core owns Hermes protocol normalization, session/turn lifecycle, configuration, and reusable local I/O ports; the portable C display core owns bounded display state and action rules.
 - Core modules must not import Textual or another front-end framework, assume a terminal, or import app.py, home_display/, browser code, or firmware. Front ends depend on SessionProtocol; display-capable front ends also consume the shared display contract.
 - Keep one owner for each state domain: HermesSession owns connection/capabilities/turn facts; appliance coordinators own local device lifecycle and snapshots; shared/display owns reducer validation and stale-sequence rejection; surface-local drafts, queues, presentation, and optional history stay local.
 - Keep Hermes wire behavior behind client.py and session.py. Front ends consume normalized events and typed errors rather than parsing wire frames or inventing payloads; a turn that may have reached Hermes is never automatically replayed.
-- Treat display_snapshot.schema.json, display_action.schema.json, and fixtures as the versioned cross-target contract. The portable C reducer is semantic authority; unknown fields are ignored, malformed known fields are rejected, display epochs establish baselines, sequences increase strictly within an epoch, and actions require advertised capability, current-state validity, and reducer acceptance.
+- Treat display_snapshot.schema.json, display_action.schema.json, and fixtures as the versioned cross-target contract. The portable C reducer is semantic authority; unknown fields are ignored, malformed known fields are rejected, display epochs establish baselines, sequences increase strictly within an epoch, and typed actions require advertised capability, current-state validity, object/turn freshness, and reducer acceptance.
 - Keep Active Turn text, phases, and prompts Room-local. Household-wide propagation is reserved for an explicitly defined state such as a Departure Card.
 - Keep hermes-relay, hermes-relay-home, browser kiosk, and ESP/native display targets as independent deployment units. Do not introduce a shared database, broker, or transcript store.
 - Make recovery and shutdown explicit state transitions: run blocking capture/playback outside UI loops, use bounded reconnect, cancel workers before releasing audio, and require fresh user initiation after recovery.
@@ -129,17 +133,17 @@ UX-DR16: Implement Device Details with readable status, credential/configuration
 
 UX-DR17: Implement Local History only on intentional iOS/Android/TUI Client surfaces; do not expose or rehydrate conversation history on Pucks, Displays, or the Media Server.
 
-UX-DR18: Implement Prompt Mirror as a visible Hermes clarification/approval state that waits for a spoken answer through the active Puck, ESP32 Touch Display, W/K browser voice surface, or Client; passive room Displays have no touch prompt action in v1.
+UX-DR18: Implement Prompt Mirror as a visible Hermes clarification/approval state with explicit active/passive roles; render typed choice objects as native `Choose`/`Explore` controls on active ESP32 Touch, direct-use W/K, and TUI surfaces, while passive room Displays and the Puck remain read-only for choices.
 
 UX-DR19: Implement the TUI Header with active Profile identity and shared phase semantics while keeping diagnostics an engineering capability rather than the household journey.
 
 UX-DR20: Implement child-readable state labels (`Ready`, `Heard`, `Listening`, `Working`, `Speaking`, `Unavailable`, `Stopped`) alongside technical labels; use live regions or announcements once per state transition, not once per transcript delta.
 
-UX-DR21: Implement accessibility behavior: WCAG 2.2 AA contrast targets, reduced-motion static states, iPad accessible DOM status mirror and completion announcement, iOS VoiceOver and Android accessibility order Profile → state → response/Transcription → action with focus restoration, TUI keyboard-equivalent recovery actions, and non-actionable Display prompt mirrors.
+UX-DR21: Implement accessibility behavior: WCAG 2.2 AA contrast targets, reduced-motion static states, iPad accessible DOM status mirror and completion announcement, iOS VoiceOver and Android accessibility order Profile → state → response/Transcription → action with focus restoration, TUI keyboard-equivalent recovery and choice actions (`Enter` choose, `Right Arrow` explore), and non-actionable passive Display prompt mirrors.
 
 UX-DR22: Adapt the shared semantics to the ReSpeaker/TFT Puck, 1024×600 ESP32-S3/LVGL Display, Safari/Guided Access iPad kiosk, native iOS Client, native Android Client, companion macOS behavior, TUI, and native macOS simulator without encoding one-room assumptions or requiring identical geometry.
 
-UX-DR23: Preserve the interaction anti-pattern guardrails: no wrong-profile response, duplicate wake, false phase/recovery claim, cross-Room text, disconnected capture/fallback, replaying Retry, Puck transcript, audible Departure Card, touch prompt response, chain-of-thought display, or pre-echo-safe barge-in.
+UX-DR23: Preserve the interaction anti-pattern guardrails: no wrong-profile response, duplicate wake, false phase/recovery claim, cross-Room text, disconnected capture/fallback, replaying Retry, Puck transcript or choice UI, passive-display choice action, stale/duplicate commit, audible Departure Card, chain-of-thought display, arbitrary Hermes-authored UI, or pre-echo-safe barge-in.
 
 ### FR Coverage Map
 
@@ -147,7 +151,7 @@ FR1: Epic 1 - Authorized Puck/ESP32 Touch/WK doorway or iOS/Android/TUI Client s
 FR2: Epic 1 surface stories + Epic 2 passive mirror - Voice-capable Puck/ESP32 Touch/WK doorway captures; room Displays mirror live capture state and Transcription.
 FR3: Epic 1 - Doorways expose honest Turn Phases.
 FR4: Epic 1 - Hermes response is delivered through Puck, ESP32 Touch, W/K, iOS, Android, TUI, and passive display surfaces.
-FR5: Epic 1 - Configured voice doorways provide bounded follow-up listening and silent stop where supported, including W/K's advertised browser capability.
+FR5: Epic 1 - Configured voice doorways provide continuously reopening bounded follow-up listening and silent stop where supported, including W/K's advertised browser capability.
 FR6: Epic 1 - Reconnect starts a clean Session without replay.
 FR7: Epic 3 - Wake Mappings are unique and profile-specific.
 FR8: Epic 3 - Revoked or unavailable identity fails closed.
@@ -164,7 +168,8 @@ FR18: Epic 3 - iOS and Android revoke Device access and require re-enrollment.
 FR19: Epic 1 - Verified recovery never silently resumes a turn.
 FR20: Epic 5 - iOS and Android provide independent full conversation doorways.
 FR21: Epic 5 - TUI provides an independent direct voice-chat doorway.
-FR22: Epic 2 - Passive Displays mirror voice-only Hermes prompts without touch actions; the active Puck, ESP32 Touch Display, W/K browser voice surface, or Client supplies the spoken answer.
+FR22: Epic 2 - Passive Displays mirror Hermes prompts with explicit active/passive roles; free-text answers follow the owning doorway.
+FR23: Epic 2 - Active ESP32 Touch, direct-use W/K, and TUI surfaces render typed choices with structured choose/explore actions; passive Displays mirror and the Puck remains actionless.
 
 ## Epic List
 
@@ -176,11 +181,11 @@ A configured doorway can complete an honest voice turn, continue briefly after t
 
 ### Epic 2: See and trust what the room is doing
 
-Passive Room Displays and the W/K iPad/web surface's room-context mode show calm ambient context, the owning Room's active conversation, visible prompts, and honest recovery state without becoming another assistant. W/K voice capture/audio and the ESP32 Touch Display's active voice capture, response rendering, and audio delivery remain Epic 1 surface work.
-**FRs covered:** FR2, FR10, FR11, FR12, FR22
+Passive Room Displays and the W/K iPad/web surface's room-context mode show calm ambient context, the owning Room's active conversation, visible prompts, typed choice objects, and honest recovery state without becoming another assistant. Active W/K and ESP32 Touch surfaces, plus the TUI, may operate the approved typed choices; W/K voice capture/audio and the ESP32 Touch Display's active voice capture, response rendering, and audio delivery remain Epic 1 surface work.
+**FRs covered:** FR2, FR10, FR11, FR12, FR22, FR23
 **Natural dependency:** Consumes Epic 1's turn events and the shared display contract; it can be developed and validated independently with display fixtures and does not require calendar or Device administration.
 
-### Surface-specific Epic 2 story map — decision 2026-09-10; Android parity addendum 2026-09-11
+### Surface-specific Epic 2 story map — decision 2026-09-10; Android parity addendum 2026-09-11; interactive-choice amendment 2026-09-12
 
 Epic 2 stories belong to the renderer or doorway that owns the visible
 behavior. The shared `DisplaySnapshot` schema, reducer, Room filtering, and
@@ -198,14 +203,18 @@ second W/K or iPad surface.
 | `2-P-2` | ReSpeaker Puck | Fail closed and show unavailable/disconnected status when the Puck or Hermes path is unavailable. |
 | `2-E-1` | ESP32 Touch Display | Render the Room-scoped Ambient Surface in native LVGL. |
 | `2-E-2` | ESP32 Touch Display | Render room-local active-turn state, live Transcription, and the touch doorway's observed response state. |
-| `2-E-3` | ESP32 Touch Display | Mirror Hermes prompts without creating touch response actions or a second Session. |
+| `2-E-3` | ESP32 Touch Display | Mirror prompts read-only when the renderer is acting as a passive Room Display. |
 | `2-E-4` | ESP32 Touch Display | Render honest disconnected state and safe cached context on the native Display. |
+| `2-E-5` | ESP32 Touch Display | Render and submit native `Choose`/`Explore` actions for current typed choice objects when the touch unit is the active doorway. |
 | `2-WK-1` | W/K browser voice-plus-display surface | Render the shared Room-scoped Ambient Surface for web and iPad deployment. |
 | `2-WK-2` | W/K browser voice-plus-display surface | Render active capture, room-local Transcription, response, and phase state in the browser surface, including live/final user text, streamed/completed response text, explicit audio state, and bounded post-turn response retention. |
-| `2-WK-3` | W/K browser voice-plus-display surface | Mirror Hermes prompts without touch approval or a second Session. |
+| `2-WK-3` | W/K browser voice-plus-display surface | Mirror prompts read-only when the browser is acting as a passive Room Display. |
 | `2-WK-4` | W/K browser voice-plus-display surface | Render honest disconnected state, cached context, and accessible recovery presentation. |
+| `2-WK-5` | W/K browser voice-plus-display surface | Validate direct-use typed-choice actions at the server boundary against current state, object freshness, and capability. |
+| `2-WK-6` | W/K browser voice-plus-display surface | Render accessible native `Choose`/`Explore` actions for current typed choice objects in direct-use mode. |
 | `2-T-1` | TUI | Keep the direct TUI doorway's capture and phase state visible while a Room Display may mirror separately. |
 | `2-T-2` | TUI | Keep TUI disconnect/recovery presentation honest without replaying an uncertain turn. |
+| `2-T-3` | TUI | Render typed choice objects with keyboard `Choose`/`Explore` actions and transcript-visible structured input. |
 
 The generic numeric Stories 2.1–2.5 below retain the original acceptance
 language as the requirements template. The surface keys above are the delivery
@@ -320,6 +329,13 @@ the named surface; another surface's implementation is evidence, not closure.
 | `P-2` | ReSpeaker Puck | Status and response-audio delivery. |
 | `P-3` | ReSpeaker Puck | Bounded follow-up and exact `stop`. |
 | `P-4` | ReSpeaker Puck | Recovery without replay. |
+| `P-5` | ReSpeaker Puck | Complete streamed response playback without underrun. |
+| `P-6` | ReSpeaker Puck | Graceful bridge-service shutdown and entry-point coverage. |
+| `P-7` | ReSpeaker Puck | Make raw PCM diagnostics explicitly opt-in and bounded. |
+| `P-8` | ReSpeaker Puck | Make the vendored reSpeaker audio-format boundary deterministic and testable. |
+| `P-9` | ReSpeaker Puck | Make ReSpeaker I2S channel startup and teardown fail-safe. |
+| `P-10` | ReSpeaker Puck | Keep internal wake models out of ordinary capture routing. |
+| `P-11` | ReSpeaker Puck | Surface runtime audio-output failures honestly and recoverably. |
 | `E-1` | ESP32 Touch Display | Authorized voice capture. |
 | `E-2` | ESP32 Touch Display | Native phases and streamed-response rendering. |
 | `E-3` | ESP32 Touch Display | Response-audio delivery. |
@@ -551,6 +567,243 @@ So that it does not claim to be connected and never replays a turn whose deliver
 **Then** the state transition, classification, reader ownership, and no-replay guarantees are verified
 **And** normal active-turn streaming and explicit user reconnect behavior remain unchanged.
 
+### Story P-5: Deliver streamed Puck responses without underrun
+
+As a household member hearing a Hermes answer on the Puck,
+I want streamed response audio to play continuously to completion,
+So that the device does not stop cleanly halfway through a valid answer while the bridge still has audio available.
+
+**Covers:** FR4, FR6, FR19; NFR1, NFR2, NFR3; bounded streaming, honest failure, and surface-owned audio delivery.
+
+**Acceptance Criteria:**
+
+**Given** a valid authenticated `/response?seq=N` stream whose audio arrives at normal live pace
+**When** the Puck plays it
+**Then** every response segment is consumed through EOF
+**And** the answer is audible to completion without a premature transition to `IDLE`.
+
+**Given** the same audio is served with fixed-length or chunked transfer framing
+**When** playback is tested
+**Then** both paths remain complete
+**And** neither framing mode causes premature `IDLE`.
+
+**Given** a temporary delivery gap or genuine stream failure
+**When** the playback path cannot continue
+**Then** the Puck exposes an explicit unavailable or error outcome
+**And** it returns to a reusable idle state without claiming completion.
+
+**Given** a subsequent response follows completed or failed playback
+**When** it starts
+**Then** it receives an isolated audio path
+**And** no stale bytes, clipped prior stream, or cross-turn corruption is audible.
+
+**Given** the pacing or buffering change is implemented
+**When** focused host tests and a controlled hardware run execute
+**Then** they record buffer-fill and consumption timing for a representative full response
+**And** the implementation does not rely on blindly increasing prebuffer, because larger prebuffers have already produced worse delivery.
+
+### Story P-6: Gracefully stop and directly test the standalone Puck bridge
+
+As an operator running `puck_bridge` as a background or launchd service,
+I want startup failures and termination signals handled explicitly,
+So that the bridge does not leave worker threads, audio resources, or response streams behind.
+
+**Covers:** FR6, FR19; NFR2, NFR4; explicit process lifecycle, bounded cleanup, and tested service wiring.
+
+**Acceptance Criteria:**
+
+**Given** `puck_bridge` is serving
+**When** it receives `SIGTERM` or `SIGINT`
+**Then** `serve_forever()` exits within a bounded interval
+**And** the `TurnRunner` is stopped and owned worker, audio, and response-stream resources are released.
+
+**Given** shutdown is requested more than once
+**When** subsequent signals or cleanup paths run
+**Then** shutdown remains idempotent
+**And** double-stop or double-close does not raise.
+
+**Given** `PUCK_DEVICE_TOKEN` is missing
+**When** `server.main()` starts
+**Then** it exits with a clear nonzero configuration failure
+**And** it does not construct or start the HTTP server or turn runner.
+
+**Given** valid startup configuration
+**When** `server.main()` is invoked under test
+**Then** it wires the expected `ThreadingHTTPServer` and `TurnRunner`
+**And** it performs the same cleanup path when serving is asked to stop.
+
+**Given** the service-lifecycle changes are implemented
+**When** the focused bridge tests run
+**Then** they cover missing-token failure, constructor wiring, signal-triggered termination, bounded cleanup, and idempotence
+**And** no Hermes protocol or firmware behavior changes are required.
+
+### Story P-7: Make raw PCM diagnostics explicitly opt-in
+
+As an operator diagnosing a wake-word or microphone problem,
+I want raw PCM capture and export disabled by default,
+So that ordinary household firmware cannot retain or emit microphone recordings accidentally.
+
+**Covers:** FR5, FR19; NFR3, NFR4; explicit diagnostic ownership, bounded capture, and privacy-safe defaults.
+
+**Acceptance Criteria:**
+
+**Given** the default firmware configuration
+**When** the Puck boots and receives microphone data
+**Then** no training-data PCM buffer is started for export
+**And** no raw PCM or base64 payload is written to logs, serial, or the network.
+
+**Given** an explicit diagnostic opt-in
+**When** bounded capture is enabled
+**Then** the build or configuration makes that choice visible
+**And** it warns that microphone data is being captured and enforces a finite capture/export limit.
+
+**Given** diagnostic capture is active
+**When** the audio callback and export or reset path operate concurrently
+**Then** ownership is synchronized or snapshot-based
+**And** no partial read, data race, buffer overrun, or use-after-reset occurs.
+
+**Given** the normal wake-capture path is running
+**When** diagnostic capture is disabled or completes
+**Then** wake detection, VAD-gated capture, upload, and response playback are unchanged.
+
+**Given** the diagnostic boundary is implemented
+**When** focused host/build checks and a controlled hardware check run
+**Then** they prove default-off behavior and bounded explicit opt-in
+**And** content-safe amplitude and status diagnostics remain separate from raw PCM export.
+
+### Story P-8: Make the vendored reSpeaker audio-format boundary deterministic and testable
+
+As an engineer maintaining the ReSpeaker firmware,
+I want the declared microphone formats and conversion path to agree,
+So that a configuration cannot silently produce malformed or misinterpreted audio.
+
+**Covers:** FR5, FR19; NFR1, NFR2, NFR4; explicit format contracts, safe sample conversion, and repeatable verification.
+
+**Acceptance Criteria:**
+
+**Given** a microphone format outside the proven board path
+**When** firmware configuration is validated
+**Then** it is rejected with a clear reason or handled by an explicitly tested conversion path
+**And** the schema does not imply unsupported combinations.
+
+**Given** signed 32-bit stereo fixture samples, including negative values and boundary values
+**When** the microphone path and diagnostics decode them
+**Then** conversion is defined and produces the expected 16 kHz/channel output
+**And** no shift overflow or undefined signed behavior occurs.
+
+**Given** the supported ReSpeaker configuration—48 kHz, 32-bit, stereo input to the wake-word consumer
+**When** a deterministic fixture runs
+**Then** output sample count, channel selection, duration, and representative sample values match the documented contract.
+
+**Given** the format-boundary changes are applied
+**When** the current wake-word and response paths run
+**Then** wake detection, VAD-gated capture, upload, and response playback retain their existing behavior.
+
+**Given** the conversion contract is implemented
+**When** focused host tests and a firmware/configuration check run
+**Then** they complete repeatably without a live Hermes endpoint
+**And** the fixture and expected output remain in the repository for future component changes.
+
+### Story P-9: Make ReSpeaker I2S channel startup and teardown fail-safe
+
+As an engineer maintaining the ReSpeaker firmware,
+I want microphone and shared-I2S channel lifecycle failures to clean up deterministically,
+So that one partial start cannot strand a lock, stale handle, or unusable audio path.
+
+**Covers:** FR5, FR6, FR19; NFR2, NFR4; explicit resource ownership, safe failure, and reusable audio lifecycle.
+
+**Acceptance Criteria:**
+
+**Given** RX channel allocation succeeds but initialization or enable fails
+**When** startup returns
+**Then** the channel is disabled or deleted as applicable
+**And** the handle is cleared, the parent I2S lock is released exactly once, and the component reports a structured failure.
+
+**Given** startup fails before the driver is locked
+**When** teardown runs
+**Then** it does not unlock an unowned parent or touch an invalid handle.
+
+**Given** disable or delete reports an error during teardown
+**When** cleanup continues
+**Then** the error is logged with the operation and channel context
+**And** all safe cleanup still runs so later starts do not reuse stale ownership.
+
+**Given** shared-bus configuration is generated
+**When** its pins, port, and lifecycle fields are initialized
+**Then** no uninitialized value can reach the ESP-IDF driver
+**And** the input/output ownership contract is explicit.
+
+**Given** the lifecycle changes are implemented
+**When** focused host or mocked-driver checks and a firmware compile exercise allocation, initialization, enable, disable, delete, and retry paths
+**Then** each failure path is repeatable and recoverable
+**And** wake capture and P-5 playback pacing behavior remain unchanged.
+
+### Story P-10: Keep internal wake models out of ordinary capture routing
+
+As the Puck’s hands-free conversation path,
+I want internal wake models such as `stop` excluded from normal wake-capture routing,
+So that an internal control signal cannot start a microphone upload or Hermes turn as if it were a public wake phrase.
+
+**Covers:** FR5, FR6, FR19; NFR2, NFR4; internal-control isolation, authorized capture, and fail-closed routing.
+
+**Acceptance Criteria:**
+
+**Given** the internal `stop` model detects while the wake engine is running
+**When** `on_wake_word_detected` executes
+**Then** it does not start `wake_capture`, upload audio, create a Hermes turn, or select a Profile.
+
+**Given** a configured public wake model detects
+**When** the same callback executes
+**Then** the existing authorized capture path is unchanged.
+
+**Given** an internal model is detected
+**When** the event is logged or surfaced for diagnostics
+**Then** it remains content-safe
+**And** it clearly distinguishes internal control from public wake routing.
+
+**Given** the internal model list changes
+**When** firmware configuration is validated
+**Then** internal models cannot accidentally become public wake entities or bypass the routing guard.
+
+**Given** the internal-model boundary is implemented
+**When** focused configuration and firmware checks exercise internal and public detections
+**Then** both routing outcomes are verified
+**And** exact spoken `stop` transcription behavior remains owned by P-3 rather than being redefined here.
+
+### Story P-11: Surface Puck audio-output failures honestly and recoverably
+
+As a household member hearing a response on the Puck,
+I want speaker-path failures to be visible and safely terminated,
+So that clipped or unavailable audio is not reported as a completed answer and the next turn remains usable.
+
+**Covers:** FR4, FR6, FR19; NFR1, NFR2, NFR3; runtime failure propagation, honest terminal state, and turn isolation.
+
+**Acceptance Criteria:**
+
+**Given** callback registration, preload, channel-enable, queue, or DMA-write failure occurs during playback
+**When** the speaker path handles it
+**Then** it records an explicit playback error with operation context and stops or aborts the affected stream safely.
+
+**Given** a partial DMA write or lockstep queue desynchronization
+**When** recovery runs
+**Then** buffer alignment is not reused as valid audio
+**And** the media path does not claim successful completion.
+
+**Given** playback fails after a response stream has begun
+**When** the Puck returns to idle
+**Then** its existing media-player or diagnostic state distinguishes unavailable/error from normal completion
+**And** it leaves the output quiet.
+
+**Given** a later response starts after a failed playback
+**When** its audio path opens
+**Then** it starts from clean queues and state
+**And** no stale bytes or inherited failure state is audible.
+
+**Given** the output-failure boundary is implemented
+**When** focused fault-injection or mocked-driver checks and a controlled hardware check run
+**Then** they cover callback registration, preload, enable, queue overflow or desynchronization, partial writes, and recovery
+**And** P-5 pacing and P-9 channel lifecycle behavior remain unchanged.
+
 ## Epic 2: See and trust what the room is doing
 
 Passive Room Displays and the W/K iPad/web surface's room-context mode show calm ambient context, the owning Room's active conversation, visible prompts, and honest recovery state without becoming another assistant. W/K voice capture/audio and the ESP32 Touch Display's active voice capture, response rendering, and audio delivery remain Epic 1 surface work.
@@ -629,6 +882,33 @@ So that I know the system is listening rather than waiting in mysterious silence
 **When** a wake is recognized
 **Then** the median wake acknowledgement and visible Puck status meet the roughly one-second working target.
 
+**W/K refinement:**
+
+**Given** browser capture has ended and the final SpeechRecognition result is still pending
+**When** the browser has a real interval before submission
+**Then** the W/K surface may paint a local `transcribing` state
+**And** it keeps the final user text visible once available.
+
+**Given** the final SpeechRecognition result arrives immediately when capture ends
+**When** the browser submits the non-empty transcript
+**Then** it does not manufacture a visible `transcribing` interval
+**And** it proceeds through the existing local submission state.
+
+**Given** W/K renders its local transcription interval
+**When** the browser publishes or receives shared display state
+**Then** `transcribing` remains a browser-local presentation decision
+**And** no new `DisplaySnapshot` phase or Hermes wire event is introduced.
+
+**Given** recognition produces an empty, cancelled, or failed final result
+**When** the local capture lifecycle closes
+**Then** the browser clears the temporary transcription state safely
+**And** it submits no empty Hermes turn or stale user text.
+
+**Given** the W/K timing refinement is implemented
+**When** focused browser tests run with immediate and delayed finalization
+**Then** they verify the optional local `transcribing` interval, final-text retention, no artificial phase, and safe empty/error cleanup
+**And** native, TUI, passive-display, shared-state, and Hermes protocol behavior remain unchanged.
+
 ### Story 2.3: Mirror only the owning Room’s Active Turn
 
 As a household member near a Room Display,
@@ -649,7 +929,7 @@ So that the exchange is visible without leaking into other rooms or creating a s
 
 **Given** a passive Display mirrors an Active Turn
 **When** the turn is in progress
-**Then** the Display does not capture audio, speak the response, create another Hermes Session, or expose a touch-based response action.
+**Then** the Display does not capture audio, speak the response, create another Hermes Session, or expose a prompt/choice action.
 
 **Given** an ESP32 Touch Display is the selected active doorway
 **When** the turn is in progress
@@ -678,10 +958,10 @@ So that the exchange is visible without leaking into other rooms or creating a s
 ### Story 2.4: Mirror Hermes prompts without becoming another assistant
 
 As a household member near a Room Display,
-I want Hermes clarification and approval prompts to be visible while I answer by voice,
-So that the room stays informed without creating a second prompt-control surface.
+I want Hermes clarification and approval prompts to be visible with clear surface ownership,
+So that free-text answers remain voice-led and typed choices do not turn a passive mirror into another assistant.
 
-**Covers:** FR22; NFR2, NFR3, NFR5; active-Session ownership, room-local mirroring, and passive Display behavior.
+**Covers:** FR22; NFR2, NFR3, NFR5; active-Session ownership, room-local mirroring, and passive Display behavior. Typed choice operations are covered by Story 2.6 and surface stories `2-E-5`, `2-WK-5`, `2-WK-6`, and `2-T-3`.
 
 **Acceptance Criteria:**
 
@@ -696,7 +976,12 @@ So that the room stays informed without creating a second prompt-control surface
 
 **Given** a prompt is visible
 **When** the user interacts with the Display
-**Then** no touch action can approve, reject, cancel, submit, or create another Hermes turn.
+**Then** a passive Display exposes no touch action that approves, rejects, cancels, submits, or creates another Hermes turn.
+
+**Given** Hermes sends a free-text clarification or approval prompt
+**When** the active doorway receives it
+**Then** the active Puck, ESP32 Touch Display, W/K browser voice surface, or Client waits for the spoken answer through its existing Hermes Session
+**And** no typed choice controls are invented by the doorway.
 
 **Given** a prompt belongs to another Room or Session
 **When** the Display receives it
@@ -746,6 +1031,98 @@ So that the household understands what is offline without hearing a fabricated a
 **Given** recovery fails or identity remains unavailable
 **When** the recovery attempt ends
 **Then** the Display remains visibly disconnected or unavailable.
+
+### Story 2.6: Turn Hermes choices into structured actions
+
+As a household member evaluating a Hermes recommendation,
+I want to inspect or choose a visible option through the surface I am using,
+So that a decision can become structured input without requiring another free-form spoken turn.
+
+**Covers:** FR23; NFR2, NFR5, NFR6; typed object semantics, native controls, active/passive surface roles, freshness, and idempotent action handling.
+
+**Acceptance Criteria:**
+
+**Given** the active Hermes Session emits a current bounded Interactive Choice Object
+**When** an active ESP32 Touch, direct-use W/K, or TUI surface renders it
+**Then** the surface shows Hermes' explanation, the active Profile, every option, a primary `Choose` action, and a visible secondary `Explore` action for each option
+**And** a passive Room Display may mirror the same object without exposing controls.
+
+**Given** Amanda explores an option
+**When** the active surface submits the `explore` action
+**Then** the action is one structured input to the owning Hermes Session
+**And** the choice remains unresolved and its consequence is not triggered.
+
+**Given** Amanda chooses an option
+**When** the active surface submits the `choose` action
+**Then** the action is one structured input to the owning Hermes Session
+**And** the accepted action is visible once in the session trail before the object advances or resolves.
+
+**Given** an action is stale, unsupported, expired, replaced, or duplicated
+**When** the reducer or server boundary evaluates it
+**Then** it rejects the action without changing the current object or invoking a consequence.
+
+**Given** the surface is touch-capable
+**When** an option action is available
+**Then** touch targets and focus treatment meet the shared accessibility rules
+**And** the same operation is available through a visible control rather than press-and-hold alone.
+
+**Given** the surface is the TUI
+**When** a choice object is current
+**Then** `Enter` chooses the focused option and `Right Arrow` explores it
+**And** the action remains visible in the terminal transcript.
+
+**Given** the first proving slice is validated
+**When** choice fixtures run across active ESP32 Touch, direct-use W/K, TUI, and passive-display roles
+**Then** harmless choose/explore behavior, capability/freshness rejection, idempotency, transcript visibility, and read-only mirroring are verified
+**And** consequence-bearing policy/confirmation remains a later slice.
+
+### Story 2-WK-5: Validate direct-use typed-choice actions at the server boundary
+
+As a household member using the direct-use Web/iPad display,
+I want typed-choice actions accepted only when the current server state authorizes them,
+So that stale, unsupported, or out-of-date requests cannot trigger an appliance callback or change Room state.
+
+**Covers:** FR23; NFR2, NFR4, NFR5, NFR6; server-side action authority, stale-object rejection, capability enforcement, idempotency, and direct-use/passive separation.
+
+**Acceptance Criteria:**
+
+**Given** the current published snapshot contains an active typed choice object, advertises the requested `prompt.choose` or `prompt.explore` capability, and lists the requested option
+**When** a direct-use client posts the matching session, turn, object, option, operation, and freshness context
+**Then** the server accepts the request and dispatches one normalized callback for that current object.
+
+**Given** an action context is unknown, expired, replaced, or no longer belongs to the current choice object
+**When** the request reaches `/action`
+**Then** the server rejects it safely
+**And** it does not invoke the appliance callback.
+
+**Given** the requested operation is not currently advertised, the option is not one of the current object options, or the snapshot is not in an actionable choice state
+**When** the request reaches the server
+**Then** it is rejected before callback dispatch
+**And** the published choice object remains unchanged.
+
+**Given** a choice object is replaced, dismissed, or disconnected while an action request is in flight
+**When** validation and dispatch complete
+**Then** the request is evaluated against one consistent current-state boundary
+**And** a stale request cannot affect the replacement or disconnected state.
+
+**Given** a client retries the same action request
+**When** the server has already accepted it
+**Then** it does not invoke the callback more than once for that session, turn, object, option, and operation.
+
+**Given** the operation is `explore`
+**When** the server accepts it
+**Then** it dispatches a non-committing structured input
+**And** it does not resolve the object or trigger the option's consequence.
+
+**Given** the operation is `choose`
+**When** the server accepts it
+**Then** it dispatches the committing structured input exactly once
+**And** the action is available to the session trail for transcript-visible rendering.
+
+**Given** the server-side action boundary is implemented
+**When** focused HTTP and state-transition tests run
+**Then** they cover valid actions, stale prompts, invalid choices, missing capabilities, duplicate requests, prompt replacement, and disconnect
+**And** the display wire contract, browser voice/session transport, and passive-mirror read-only boundary remain explicit.
 
 ## Epic 3: Control household doorway identity and access
 
@@ -862,6 +1239,47 @@ So that a recognized phrase can never route to the wrong identity.
 **Given** a mapping references a different Profile than the one selected for the recognized phrase
 **When** the Device evaluates the mapping
 **Then** it cannot substitute that Profile or fall back silently.
+
+### Story 3-P-3: Carry each detected wake mapping through capture and route it to its bound Hermes Profile
+
+As a household member using a configured Puck,
+I want the recognized Wake Mapping to remain bound to its selected Hermes Profile through capture and submission,
+So that each wake phrase reaches the intended identity and never falls back to one fixed or unrelated Profile.
+
+**Covers:** FR7, FR8; NFR2, NFR4; mapping identity propagation, profile isolation, verified routing, and fail-closed capture.
+
+**Acceptance Criteria:**
+
+**Given** a verified Device has one or more unique Wake Mappings
+**When** a configured public wake phrase is recognized
+**Then** the capture path retains the matching mapping identity through upload
+**And** the mapping is fixed before audio capture or Hermes submission begins.
+
+**Given** a completed capture reaches `puck_bridge`
+**When** the receiver dispatches the transcript
+**Then** it resolves the mapping to its bound Hermes Profile
+**And** submits through a session or turn runner bound to that Profile rather than the bridge's unrelated default.
+
+**Given** the mapping is missing, ambiguous, stale, revoked, or points to an unavailable Profile
+**When** the Device or bridge evaluates the wake
+**Then** it fails closed
+**And** it performs no capture, upload, Hermes submission, or fallback to another Profile.
+
+**Given** multiple valid mappings exist on one Device
+**When** different phrases are recognized across separate turns
+**Then** each turn is dispatched using only the Profile bound to its recognized mapping
+**And** Profile context, session identity, and response state do not cross routes.
+
+**Given** a mapping is changed or removed while a prior capture or turn is in flight
+**When** the in-flight request completes
+**Then** it remains tied to the mapping version that authorized that capture
+**And** if that mapping is no longer valid at dispatch, the request is rejected without rerouting
+**And** a later turn cannot inherit the prior route implicitly.
+
+**Given** mapping propagation and dispatch are implemented
+**When** focused firmware, receiver, and bridge tests run
+**Then** they cover public detection, metadata transport, valid profile selection, missing or stale mappings, unavailable profiles, duplicate mappings, and route isolation
+**And** the Hermes wire protocol and non-Puck front ends remain unchanged.
 
 ### Story 3.4: Select one Device for a simultaneous wake
 

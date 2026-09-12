@@ -282,8 +282,12 @@ Do not put a real token in this file or in the README.
   microphone silently. After each successful wake-triggered response, the TUI
   opens a bounded wake-free follow-up window (`--wake-followup-seconds`,
   default 8 seconds) and reopens it after every non-empty follow-up without
-  another wake phrase. Silence, exact `stop`, failure, disconnect, or disarm
-  returns to wake detection.
+  another wake phrase. Silence, exact `stop`, or a local capture/recognition
+  failure ends that conversation and returns to wake detection. A remote
+  failure or interruption opens no follow-up and leaves its error/interrupted
+  state authoritative; wake detection may resume when the connection remains
+  verified. A transport failure or disconnect disarms wake mode, closes the
+  microphone, and requires `/wake on` after reconnect.
   Saying exactly `stop` during hands-free capture closes it locally and
   silently, both for the initial wake capture and any follow-up window;
   normal terminal punctuation from transcription is ignored, while longer
