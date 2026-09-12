@@ -69,8 +69,8 @@ context:
 - Connection-state changes refresh the empty-state recovery explanation, keeping the disconnected signal visible in compact idle layouts.
 - Added app-level regressions for partial transport loss, compact disconnected presentation, connected-idle state refresh, failed reconnect visibility, and explicit post-recovery submission without replay.
 - Transport classification now limits disconnected presentation to built-in connection errors and WebSocket closure/concurrency errors; application failures remain visible as `error` without forcing recovery.
-- Focused recovery suite: `../../venv/bin/pytest tests/test_app.py tests/test_client.py tests/test_tui_domain.py tests/test_commands.py -q` — 283 passed.
-- Complete suite: `../../venv/bin/pytest -q` — 960 passed, 15 failed. Fourteen failures are native C/WASM/firmware harness link failures caused by the malformed installed macOS SDK (`libSystem.B.tbd` reports unknown `arm64e.x1-macos` architecture). The remaining wake playback-drain failure is pre-existing and reproduced on the unchanged `origin/main` baseline; the targeted wake test also passes in isolation.
+- Focused recovery suite: `venv/bin/pytest tests/test_app.py tests/test_client.py tests/test_tui_domain.py tests/test_commands.py -q` — 285 passed.
+- Complete suite: `venv/bin/pytest` — 999 passed, 1 failed. The remaining failure is `tests/test_app_wake.py::test_tui_waits_for_playback_drain_before_opening_a_follow_up`, the pre-existing timing-sensitive wake playback-drain issue outside this story.
 - `git diff --check` — passed. The four matrix rows are covered by the compact-disconnect, transport-loss, explicit-reconnect, and existing bounded-failure/no-replay tests, all included in the focused run.
 
 ## Spec Change Log
@@ -101,7 +101,24 @@ context:
 - [x] [Review][Patch][high] Post-patch edge hunter: non-transport exceptions could leave a phantom active turn — the exception path applies the terminal domain error transition, and the follow-up prompt regression passes.
 - [x] [Review][Patch][high] Final edge hunter: unconditional `ConcurrencyError` import would break supported websockets 13.x installations — the import now falls back safely when that newer exception is unavailable, and the test collection uses the same compatibility guard.
 - [x] [Review][False][false] Final blind hunter: preferring the live session ID in the status line would break the existing `/reload` contract, which intentionally reflects the current configured session target before a new handshake; the unrelated suggestion was reverted.
-- [x] [Review][False][false] Final verification-gap hunter: reviewer-run totals varied because the wake test is timing-sensitive; the authoritative direct final worktree run was 960 passed/15 failed, with one baseline-reproduced wake failure and fourteen malformed macOS SDK native-link failures, as recorded above.
+- [x] [Review][False][false] Final verification-gap hunter: reviewer-run totals varied because the wake test is timing-sensitive; the authoritative direct final worktree run is the 999 passed/1 failed result recorded above, with the known pre-existing wake failure outside this story.
+
+### Review Findings
+
+- [x] [Review][Patch] Prevent a timed-out failed-session cleanup from being reused or closed twice [app.py:1129-1137,1327-1365,3613-3619] — fixed by guarding reconnect-required sessions from the connected fast path, reusing one session-keyed close task, and adding caller-path coverage for stale connected state, bounded return, and one close call.
+- [x] [Review][Patch] Preserve a domain-rejected turn as an unsent FIFO prompt [app.py:3497-3523] — fixed by resetting the pre-wire rejection to `PROMPT_NOT_SENT`, applying the terminal domain error, and proving no session send plus queue retention.
+- [x] [Review][Patch] Point transport-loss recovery at the explicit reconnect action [app.py:3561-3578; tests/test_app.py:1094-1115] — fixed by naming `/reconnect` and the required fresh prompt in `RETRY_HINT`, with the focused assertion updated.
+- [x] [Review][Patch] Prove the compact connected-to-disconnected transition at the widget boundary [tests/test_app.py:331-357] — fixed by asserting the compact connection widget remains visible and carries the disconnected class.
+- [x] [Review][Defer] Verify legacy websockets 13.x transport classification [app.py:41-46,373-377; tests/test_app.py:15-20,1087-1091] — deferred: `maybe-false`; the current fallback avoids an import failure on websockets 13.x, but the diff does not establish whether that version's concurrent-reader `RuntimeError` should be classified as transport loss, and the one-reader guard makes the path unreachable in normal use. Settle with a supported 13.x test environment and an explicit classification decision before changing the broad `RuntimeError` boundary.
+- [x] [Review][Defer] Detect a relay drop while the TUI is idle [client.py:272-316; app.py:814-819] — deferred: pre-existing and outside `2-T-2`; the client has no idle receive/liveness path, so a remote drop can remain visibly connected until the next operation. This requires a separate liveness policy and is not introduced by the reviewed presentation change.
+
+#### Rejected
+
+- `false` — Plain `OSError` and `EOFError` are not automatically transport failures here: `OSError` can be a local playback failure, while the Hermes websocket path exposes `ConnectionClosed`/`ConnectionError`; broadening the classifier would mislabel local errors as relay loss.
+- `false` — Wake disarm on connection loss is already covered by `tests/test_app_wake.py`, including microphone release and disconnected reporting.
+- `false` — The story/tracker status difference is the intentional review lifecycle; the tracker remains authoritative until this gate closes.
+- `false` — The `../../venv/bin/pytest` commands are valid when run from the implementation-artifact directory, which is the documented context for that recorded command; this is not a product or code defect.
+- `false` — Adding failing test identifiers and baseline command detail would edit the story’s verification prose only; the review workflow does not turn that documentation request into a code finding.
 
 ## Verification
 
