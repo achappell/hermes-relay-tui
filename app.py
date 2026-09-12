@@ -38,6 +38,12 @@ from textual.selection import Selection
 from textual.strip import Strip
 from textual.visual import RenderOptions, RichVisual, Visual, VisualType, visualize
 from textual.widgets import Footer, Header, Input, Static, TextArea
+from websockets.exceptions import ConnectionClosed
+
+try:
+    from websockets.exceptions import ConcurrencyError as WebSocketConcurrencyError
+except ImportError:  # websockets 13.x has no dedicated concurrent-reader error
+    WebSocketConcurrencyError = type(None)
 
 import config
 import earcons as earcons_module
@@ -362,6 +368,13 @@ VOICE_BUFFERING = "buffering…"
 VOICE_AUDIO_UNAVAILABLE = "audio unavailable"
 VOICE_INTERRUPTED = "interrupted"
 VOICE_ERROR = "error"
+
+
+def _is_transport_error(error: BaseException) -> bool:
+    """Return whether a failed turn indicates that the relay stream is gone."""
+    return isinstance(
+        error, (ConnectionError, ConnectionClosed, WebSocketConcurrencyError)
+    )
 
 # A fact about the device, not about a feature. It appears whenever the input
 # stream is open — a Ctrl+R capture, a wake capture, or wake mode holding it
@@ -792,6 +805,11 @@ class HermesStreamingApp(App):
         self.connection_state = state
         self.domain.set_connection_state(state)
         self._refresh_connection_status()
+        # The empty-state copy is the recovery explanation when there is no
+        # transcript to carry the context. Refresh it with the status line so
+        # an idle disconnect cannot leave "Connecting" painted underneath a
+        # disconnected connection.
+        self._refresh_empty_state()
 
     def _connection_is_ready(self) -> bool:
         """Return true only when the selected profile has a verified session."""
@@ -806,6 +824,16 @@ class HermesStreamingApp(App):
         except (NoMatches, ScreenStackError):
             return
         if self.transcript.messages:
+            has_conversation = any(
+                message.role in {"user", "assistant"}
+                and message.text.strip()
+                and (self.show_transcript_details or not message.detail)
+                for message in self.transcript.messages
+            )
+            if has_conversation:
+                widget.display = False
+                return
+        if self.connection_state == CONNECTION_CONNECTED:
             widget.display = False
             return
         messages = {
@@ -3430,7 +3458,7 @@ class HermesStreamingApp(App):
                     self._queued_prompts.insert(0, next_text)
                     self._refresh_queue_shelf()
                     break
-                if not self._queued_prompts:
+                if turn_status != PROMPT_COMPLETED or not self._queued_prompts:
                     break
                 next_text = self._queued_prompts.pop(0)
                 self._refresh_queue_shelf()
@@ -3531,15 +3559,23 @@ class HermesStreamingApp(App):
                 "the remote model may be stalled. Start a fresh session and retry."
             )
         except Exception as exc:
-            # ConnectionClosed, ConcurrencyError, AttributeError from a dead
-            # socket — none of them should take the whole app down.
             turn_status = PROMPT_AMBIGUOUS
             self._last_prompt_status = turn_status
             self._preserve_wake_terminal_state = True
-            await self._mark_connection_lost()
-            self._set_voice_state(VOICE_ERROR)
+            if _is_transport_error(exc):
+                await self._mark_connection_lost()
+            else:
+                # A protocol, rendering, or programming failure is not proof
+                # that the socket died. Keep the verified connection state
+                # honest and reserve recovery presentation for transport loss.
+                self.domain.apply_event(
+                    {"type": "error", "error": str(exc)},
+                    generation=index,
+                )
+                self._set_voice_state(VOICE_ERROR)
             self._append_block(f"[error] {exc}")
-            self._append_block(RETRY_HINT)
+            if _is_transport_error(exc):
+                self._append_block(RETRY_HINT)
         finally:
             # Always tear the stream down; leaving it open leaked a
             # sounddevice stream per failed turn. Interrupted/error turns
@@ -3574,10 +3610,13 @@ class HermesStreamingApp(App):
         self._set_connection_state(CONNECTION_DISCONNECTED)
         self._set_voice_state(VOICE_DISCONNECTED)
         self._needs_reconnect = True
-        try:
-            await self.session.close()
-        except Exception as exc:
-            self._append_block(f"[error] reconnect cleanup: {exc}")
+        await self._close_session_with_timeout(
+            self.session,
+            event="app.turn.session_close",
+            timeout_message=(
+                "[warning] failed session cleanup timed out; continuing recovery."
+            ),
+        )
 
     async def _close_player(self, *, abort: bool = False) -> None:
         """Stop playback without blocking Textual's event loop.

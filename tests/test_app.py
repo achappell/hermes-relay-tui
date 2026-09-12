@@ -12,6 +12,12 @@ from textual.containers import VerticalScroll
 from textual.geometry import Offset
 from textual.selection import Selection
 from textual.widgets import Header, Input, Static
+from websockets.exceptions import ConnectionClosed
+
+try:
+    from websockets.exceptions import ConcurrencyError
+except ImportError:  # websockets 13.x has no dedicated concurrent-reader error
+    ConcurrencyError = None
 
 import app as app_module
 from app import Composer, HermesSession, HermesStreamingApp, TranscriptStatic
@@ -300,6 +306,43 @@ async def test_disconnected_surface_is_explicit_and_recoverable():
         assert str(empty_state.content) == (
             "Hermes is disconnected. Prompts stay queued until it returns."
         )
+
+
+async def test_idle_compact_disconnect_keeps_recovery_signal_visible():
+    session = FlakyConnectSession(99)
+    app = HermesStreamingApp(
+        args=make_args(connect_retries=0), session_factory=lambda: session
+    )
+    async with app.run_test(size=(40, 12)) as pilot:
+        await pilot.pause()
+        app.transcript.clear()
+
+        connection = app.query_one("#connection-status", Static)
+        empty_state = app.query_one("#empty-state", Static)
+        assert connection.display is True
+        assert connection.has_class("-compact")
+        assert connection.has_class("-disconnected")
+        assert connection_status_of(app).startswith("○ disconnected")
+        assert empty_state.display is True
+        assert str(empty_state.content) == (
+            "Hermes is disconnected. Prompts stay queued until it returns."
+        )
+
+
+async def test_connected_idle_disconnect_refreshes_empty_state_copy():
+    app = HermesStreamingApp(args=make_args(), session_factory=lambda: FakeSession())
+    async with app.run_test(size=(40, 12)) as pilot:
+        await pilot.pause()
+        app.transcript.clear()
+        app._set_connection_state(app_module.CONNECTION_DISCONNECTED)
+        await pilot.pause()
+
+        empty_state = app.query_one("#empty-state", Static)
+        assert empty_state.display is True
+        assert str(empty_state.content) == (
+            "Hermes is disconnected. Prompts stay queued until it returns."
+        )
+        assert connection_status_of(app).startswith("○ disconnected")
 
 
 async def test_voice_initiation_keeps_microphone_closed_when_authorization_fails():
@@ -956,9 +999,12 @@ async def test_reconnect_failure_preserves_an_uncertain_response():
         await app._run_turn("possibly sent")
         assert app._last_prompt_status == app_module.PROMPT_AMBIGUOUS
         assert "partial answer" in transcript_of(app)
+        app._queued_prompts = ["pending prompt"]
+        app._refresh_queue_shelf()
 
         await app._handle_command(parse_slash_command("/reconnect"))
         rendered = transcript_of(app)
+        connection = connection_status_of(app)
 
     assert old_session.sent_turns == [("possibly sent", "local")]
     assert fresh_session.sent_turns == []
@@ -966,6 +1012,8 @@ async def test_reconnect_failure_preserves_an_uncertain_response():
     assert app._last_prompt_status == app_module.PROMPT_AMBIGUOUS
     assert "partial answer" in rendered
     assert app.connection_state == app_module.CONNECTION_DISCONNECTED
+    assert connection.startswith("○ disconnected")
+    assert app._queued_prompts == ["pending prompt"]
 
 
 async def test_reconnect_does_not_replay_an_uncertain_turn_or_hide_partial_text():
@@ -1005,6 +1053,102 @@ async def test_reconnect_does_not_replay_an_uncertain_turn_or_hide_partial_text(
     assert app._last_prompt_status == app_module.PROMPT_AMBIGUOUS
     assert "partial answer" in rendered
     assert app.connection_state == app_module.CONNECTION_CONNECTED
+
+
+async def test_transport_failure_uses_disconnected_presentation_and_keeps_partial_text():
+    class UncertainSession(FakeSession):
+        def send_turn(self, text, *, stt_source="local"):
+            self.sent_turns.append((text, stt_source))
+            self.turn_index += 1
+
+            async def stream():
+                yield {"type": "text_delta", "text": "partial answer"}
+                self.connected = False
+                raise ConnectionResetError("socket went away")
+                yield  # pragma: no cover - makes this an async generator
+
+            return stream()
+
+    session = UncertainSession(session_id="old-session")
+    app = HermesStreamingApp(args=make_args(), session_factory=lambda: session)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app._queued_prompts = ["pending prompt"]
+        app._refresh_queue_shelf()
+        await app._run_turn("possibly sent")
+
+        assert "partial answer" in transcript_of(app)
+        assert connection_status_of(app).startswith("○ disconnected")
+        assert voice_status_of(app) == "● disconnected"
+        assert app.query_one("#voice-status", Static).has_class("-disconnected")
+        assert app._queued_prompts == ["pending prompt"]
+
+
+_WEBSOCKET_TRANSPORT_FAILURES = [ConnectionClosed(None, None)]
+if ConcurrencyError is not None:
+    _WEBSOCKET_TRANSPORT_FAILURES.append(
+        ConcurrencyError("another reader owns the socket")
+    )
+
+
+@pytest.mark.parametrize("failure", _WEBSOCKET_TRANSPORT_FAILURES)
+async def test_websocket_transport_failures_use_disconnected_presentation(failure):
+    session = FakeSession(session_id="old-session")
+
+    def fail_send_turn(text, *, stt_source="local"):
+        session.sent_turns.append((text, stt_source))
+
+        async def stream():
+            raise failure
+            yield  # pragma: no cover - makes this an async generator
+
+        return stream()
+
+    session.send_turn = fail_send_turn
+    app = HermesStreamingApp(args=make_args(), session_factory=lambda: session)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await app._run_turn("possibly sent")
+
+        assert connection_status_of(app).startswith("○ disconnected")
+        assert voice_status_of(app) == "● disconnected"
+        assert app_module.RETRY_HINT in transcript_of(app)
+
+
+async def test_explicit_prompt_after_verified_recovery_is_the_only_new_turn():
+    class UncertainSession(FakeSession):
+        def send_turn(self, text, *, stt_source="local"):
+            self.sent_turns.append((text, stt_source))
+            self.turn_index += 1
+
+            async def stream():
+                yield {"type": "text_delta", "text": "partial answer"}
+                self.connected = False
+                raise ConnectionResetError("socket went away")
+                yield  # pragma: no cover - makes this an async generator
+
+            return stream()
+
+    old_session = UncertainSession(session_id="old-session")
+    fresh_session = FakeSession(session_id="fresh-session")
+    sessions = iter((old_session, fresh_session))
+    app = HermesStreamingApp(
+        args=make_args(), session_factory=lambda: next(sessions)
+    )
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await app._run_turn("possibly sent")
+        assert app._last_prompt_status == app_module.PROMPT_AMBIGUOUS
+        await app._handle_command(parse_slash_command("/reconnect"))
+        assert fresh_session.sent_turns == []
+        assert app.connection_state == app_module.CONNECTION_CONNECTED
+        assert app.voice_state == app_module.VOICE_READY
+        assert app.wake_armed is False
+        await app._run_turn("fresh prompt")
+        assert fresh_session.sent_turns == [("fresh prompt", "local")]
+
+    assert old_session.sent_turns == [("possibly sent", "local")]
 
 
 async def test_prompt_is_kept_in_queue_when_recovery_is_exhausted():
@@ -1073,7 +1217,7 @@ async def test_dropped_turn_is_not_replayed_but_next_prompt_recovers():
         assert session.sent_turns == [("first", "local")]
         assert app.connection_state == "disconnected"
         assert "partial" in transcript_of(app)
-        assert app.voice_state == app_module.VOICE_ERROR
+        assert app.voice_state == app_module.VOICE_DISCONNECTED
         assert app.transcript._streaming_message is None
         assert [
             message.text
@@ -3237,6 +3381,32 @@ async def test_a_failing_stream_reports_the_error_and_clears_the_flag():
 
         assert "[error] socket went away" in transcript_of(app)
         assert not app._turn_in_flight
+
+
+async def test_non_transport_turn_failure_stays_error_without_forcing_reconnect():
+    session = FakeSession()
+
+    def exploding_send_turn(text, *, stt_source="local"):
+        session.sent_turns.append((text, stt_source))
+
+        async def stream():
+            raise RuntimeError("rendering failed")
+            yield  # pragma: no cover - makes this an async generator
+
+        return stream()
+
+    session.send_turn = exploding_send_turn
+    app = HermesStreamingApp(args=make_args(), session_factory=lambda: session)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await app._run_turn("hi")
+
+        assert app.connection_state == app_module.CONNECTION_CONNECTED
+        assert app.voice_state == app_module.VOICE_ERROR
+        assert session.closed is False
+        assert "The app remains open; retry when the endpoint recovers." not in transcript_of(app)
+        await app._run_turn("next prompt")
+        assert session.sent_turns == [("hi", "local"), ("next prompt", "local")]
 
 
 async def test_a_stalled_turn_hits_the_configured_timeout():
