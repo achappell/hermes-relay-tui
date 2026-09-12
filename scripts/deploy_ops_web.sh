@@ -519,8 +519,14 @@ else
 	release_installing=0
 fi
 
-current_target="$(readlink -f -- "$base_dir/current" 2>/dev/null || true)"
-previous_target="$(readlink -f -- "$base_dir/previous" 2>/dev/null || true)"
+current_target=""
+if [[ -e "$base_dir/current" || -L "$base_dir/current" ]]; then
+	current_target="$(readlink -f -- "$base_dir/current" 2>/dev/null || true)"
+fi
+previous_target=""
+if [[ -e "$base_dir/previous" || -L "$base_dir/previous" ]]; then
+	previous_target="$(readlink -f -- "$base_dir/previous" 2>/dev/null || true)"
+fi
 if [[ -e "$base_dir/current" && ! -L "$base_dir/current" ]]; then
 	fail "current is not a symlink: $base_dir/current"
 fi
@@ -620,8 +626,14 @@ restart_service() {
 	sudo systemctl is-active --quiet "$service_name"
 }
 
-current_target="$(readlink -f -- "$base_dir/current" 2>/dev/null || true)"
-previous_target="$(readlink -f -- "$base_dir/previous" 2>/dev/null || true)"
+current_target=""
+if [[ -e "$base_dir/current" || -L "$base_dir/current" ]]; then
+	current_target="$(readlink -f -- "$base_dir/current" 2>/dev/null || true)"
+fi
+previous_target=""
+if [[ -e "$base_dir/previous" || -L "$base_dir/previous" ]]; then
+	previous_target="$(readlink -f -- "$base_dir/previous" 2>/dev/null || true)"
+fi
 if [[ -z "$previous_target" ]]; then
 	if [[ "$allow_without_previous" == 1 && -n "$current_target" ]]; then
 		[[ "$current_target" == "$base_dir/releases/"* ]] || fail "current points outside releases"
