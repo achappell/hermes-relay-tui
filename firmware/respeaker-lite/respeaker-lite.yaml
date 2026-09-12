@@ -411,6 +411,13 @@ media_source:
 audio_file:
   - id: refused_sound
     file: sounds/refused.wav
+  # 1-p-2 task 7: wake acknowledgement. ASCENDING (440 -> 660Hz), the exact
+  # inverse of the refusal above, so the two are distinguishable without
+  # having to think about it. Short and quiet on purpose: it plays while
+  # the microphone is ALREADY capturing, so it must not dominate the start
+  # of the recording.
+  - id: heard_sound
+    file: sounds/heard.wav
 
 # 1-p-2 task 2: the player itself. Deliberately ONE pipeline -- a
 # spoken reply is an announcement, and a second (media) pipeline would only
@@ -528,6 +535,21 @@ micro_wake_word:
               id: puck_media_player
               media_url: "audio-file://refused_sound"
               announcement: true
+        # NOTE: the acknowledgement deliberately does NOT play here, on the
+        # wake itself. Measured 2026-09-11: doing so destroys the capture.
+        # Same spoken question, before and after adding it --
+        #
+        #   before:  8.000s captured, 2.4s speech kept, transcript good (0.90)
+        #   after:   4.2s captured,   0s speech kept,   transcript EMPTY (0.57)
+        #
+        # The XMOS AEC suppresses the microphone while the speaker is
+        # active, so VAD sees silence, the window closes early, and the
+        # question lands inside the suppressed period. Playing anything
+        # while recording costs the recording. The acknowledgement moved to
+        # the end of the capture window instead (see the 100ms VAD tick
+        # interval below), which still answers "did it hear me?" well
+        # before the answer arrives -- and arguably says something more
+        # useful: not "I heard a wake word" but "I have your question".
 
 # TEMPORARY diagnostic: mww's on_boot state-transition log (STOPPED ->
 # STARTING -> DETECTING_WAKE_WORD) only fires once, right at boot, and is
@@ -582,6 +604,19 @@ interval:
     then:
       - lambda: |-
           pcm_capture::wake_capture::tick(id(mww).get_vad_state());
+      # 1-p-2 task 7: acknowledge once the capture window has CLOSED, never
+      # while it is open -- see the on_wake_word_detected comment for the
+      # measurement that forced this. By here the microphone is no longer
+      # recording, so the speaker cannot eat the question.
+      - if:
+          condition:
+            lambda: return pcm_capture::wake_capture::last_capture_captured;
+          then:
+            - lambda: pcm_capture::wake_capture::last_capture_captured = false;
+            - media_player.play_media:
+                id: puck_media_player
+                media_url: "audio-file://heard_sound"
+                announcement: true
   # Story 5: the actual outbound upload, from a slow tick (never the
   # real-time audio path or the fast VAD-tick above) -- matches
   # `upload_and_restart`'s existing convention of only ever blocking on a

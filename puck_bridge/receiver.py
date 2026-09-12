@@ -273,9 +273,17 @@ def make_handler(
             audio_format = response_stream.wait_for_format()
             if audio_format is None:
                 if was_expecting:
-                    logger.warning(
-                        "puck bridge response: a turn was accepted but "
-                        "produced no audio within the wait budget"
+                    # `expecting` is set when capture processing starts, so
+                    # this covers the routine cases too -- an empty
+                    # transcript from a false wake abandons the stream and
+                    # lands here. Phrased as a plain fact rather than a
+                    # fault: the earlier wording ("a turn was accepted but
+                    # produced no audio") read as an error for what is
+                    # usually just nobody having said anything.
+                    logger.info(
+                        "puck bridge response: no audio for this capture "
+                        "(no question transcribed, or the turn produced "
+                        "nothing)"
                     )
                 else:
                     logger.info(
@@ -284,6 +292,17 @@ def make_handler(
                         "at once rather than making it wait"
                     )
                 self._respond(504, b"no response audio")
+                return
+
+            # Single consumer: a second concurrent fetch would pop from
+            # the same queue and split the answer between the two, so both
+            # would play garbage. Refuse rather than corrupt.
+            if not response_stream.acquire_reader():
+                logger.warning(
+                    "puck bridge response: a second concurrent fetch was "
+                    "refused; one is already streaming"
+                )
+                self._respond(409, b"response already streaming")
                 return
 
             self.send_response(200)
@@ -305,8 +324,13 @@ def make_handler(
                 self.wfile.write(b"0\r\n\r\n")
                 self.wfile.flush()
             except (BrokenPipeError, ConnectionResetError):
-                logger.info("puck bridge response: device closed the connection")
+                logger.warning(
+                    "puck bridge response: device closed the connection after "
+                    "%d bytes -- the answer was cut short", total
+                )
                 return
+            finally:
+                response_stream.release_reader()
             logger.info("puck bridge response streamed %d bytes of PCM", total)
 
         def _write_chunk(self, data: bytes) -> None:

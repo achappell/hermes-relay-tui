@@ -1029,3 +1029,78 @@ def test_a_fetch_arriving_during_transcription_waits_for_the_answer(tmp_path):
     assert status == 200, "a fetch during transcription must wait, not 504"
     assert body[:4] == b"RIFF"
     assert body[44:] == b"\x07\x08" * 4
+
+
+def test_a_second_concurrent_response_fetch_is_refused(tmp_path):
+    """Two readers would each pop from the same queue and split the answer
+    between them, so both would play garbage. The device was observed
+    opening two connections for a single response on 2026-09-11."""
+    import threading as _th
+    from puck_bridge.response import ResponseStream
+
+    stream = ResponseStream()
+    stream.expect()
+    stream.begin(1, (24000, 1, 2))
+
+    handler_cls = make_handler(
+        expected_token="s3cret",
+        on_transcript=_RecordingSink(),
+        transcribe_fn=_fake_transcribe(transcript="x"),
+        work_dir=tmp_path,
+        response_stream=stream,
+    )
+    server = _start_server(handler_cls)
+    port = server.server_address[1]
+    first_status: list[int] = []
+
+    def _first():
+        # Holds the reader slot while the producer dribbles chunks.
+        first_status.append(_get_response(port, token="s3cret")[0])
+
+    t = _th.Thread(target=_first, daemon=True)
+    t.start()
+    import time as _t
+    _t.sleep(0.4)  # let the first claim the slot
+    try:
+        second_status, _ = _get_response(port, token="s3cret")
+    finally:
+        stream.finish()
+        t.join(timeout=5)
+        server.shutdown()
+
+    assert second_status == 409, "a concurrent fetch must be refused, not served"
+    assert first_status == [200], "the first fetch must be unaffected"
+
+
+def test_the_reader_slot_is_released_after_a_stream_ends(tmp_path):
+    """Otherwise one response would poison every later one."""
+    from puck_bridge.response import ResponseStream
+
+    stream = ResponseStream()
+    stream.expect()
+    stream.begin(1, (24000, 1, 2))
+    stream.write(b"ab")
+    stream.finish()
+
+    handler_cls = make_handler(
+        expected_token="s3cret",
+        on_transcript=_RecordingSink(),
+        transcribe_fn=_fake_transcribe(transcript="x"),
+        work_dir=tmp_path,
+        response_stream=stream,
+    )
+    server = _start_server(handler_cls)
+    port = server.server_address[1]
+    try:
+        first, _ = _get_response(port, token="s3cret")
+        # A later, non-concurrent fetch must not be refused.
+        stream.expect()
+        stream.begin(2, (24000, 1, 2))
+        stream.write(b"cd")
+        stream.finish()
+        second, body = _get_response(port, token="s3cret")
+    finally:
+        server.shutdown()
+
+    assert first == 200 and second == 200
+    assert body[44:] == b"cd"

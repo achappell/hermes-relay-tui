@@ -67,6 +67,13 @@ class ResponseStream:
         # "nothing to stream" after a 15s wait each). Only the bridge can
         # know the difference, so it tells the device immediately.
         self._expecting = False
+        # One consumer at a time. Two concurrent readers would each pop
+        # from the same deque and split the answer between them, so both
+        # would play garbage -- and the device was observed opening two
+        # connections for a single response (ports 52539/52540 on
+        # 2026-09-11), which is exactly that shape. A second reader is
+        # refused rather than silently corrupting the first.
+        self._reader_active = False
 
     # -- producer side (the turn) -----------------------------------------
 
@@ -143,6 +150,18 @@ class ResponseStream:
                 timeout,
             )
             return self._audio_format
+
+    def acquire_reader(self) -> bool:
+        """Claim the single consumer slot. False if one is already active."""
+        with self._cv:
+            if self._reader_active:
+                return False
+            self._reader_active = True
+            return True
+
+    def release_reader(self) -> None:
+        with self._cv:
+            self._reader_active = False
 
     def iter_chunks(self, stall_timeout: float = STREAM_STALL_SECONDS):
         """Yield PCM chunks until the response finishes or the producer stalls.
