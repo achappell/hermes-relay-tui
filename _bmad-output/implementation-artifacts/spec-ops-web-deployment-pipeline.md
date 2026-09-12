@@ -179,6 +179,7 @@ bootstrap from ordinary local deploys so the repeatable path stays short.
 | 2026-09-12 | Approved implementation completed; local and fake-remote gates passed. Live Ops/browser gate remains for the target machine. |
 | 2026-09-12 | Real Ops bootstrap exposed a protected-environment readability edge case; the root-shell check and fake-remote regression are now included. |
 | 2026-09-12 | Snapshot preflight now skips the Git-checkout-only deployment harness when running from the archived source tree. |
+| 2026-09-12 | First real deploy exposed `readlink -f` treating an absent pointer as a path; missing `current`/`previous` links are now handled as an empty first-deploy state. |
 
 ## Review Log
 
