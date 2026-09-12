@@ -173,6 +173,11 @@ binary_sensor:
     pin:
       number: GPIO3
       inverted: true
+      # An unpressed (or unwired) active-low input must stay high. A
+      # floating GPIO3 produced phantom presses that stopped live audio.
+      mode:
+        input: true
+        pullup: true
     filters:
       - delayed_on: 50ms
       - delayed_off: 50ms

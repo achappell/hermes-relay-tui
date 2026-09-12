@@ -418,6 +418,173 @@ def test_turn_runner_submits_exactly_one_turn_and_plays_the_response():
     assert player.closed is True
 
 
+def test_turn_runner_reports_failed_send_without_exposing_content(caplog):
+    from puck_bridge.response import ResponseStream
+
+    class BrokenSession(FakeSession):
+        def send_turn(self, text, *, stt_source="local"):
+            self.turns.append((text, stt_source))
+
+            async def events():
+                raise ConnectionError("private exception detail")
+                yield
+
+            return events()
+
+    session = BrokenSession()
+    response = ResponseStream()
+    response.expect(1)
+    runner = TurnRunner(session, response_stream=response)
+    runner.start()
+    try:
+        with caplog.at_level("INFO"):
+            delivered = runner.submit_transcript("private question")
+        assert delivered is False
+        assert response.finished
+        assert "ConnectionError" in caplog.text
+        assert "private exception detail" not in caplog.text
+        assert "private question" not in caplog.text
+        assert len(session.turns) == 1
+    finally:
+        runner.stop()
+
+
+def test_turn_runner_reconnects_only_for_a_fresh_question_after_failure():
+    class RecoveringSession(FakeSession):
+        connects = 0
+
+        async def connect(self):
+            self.connects += 1
+            return await super().connect()
+
+        def send_turn(self, text, *, stt_source="local"):
+            if self.connects == 1:
+                self.turns.append((text, stt_source))
+
+                async def events():
+                    raise ConnectionError("closed transport")
+                    yield
+
+                return events()
+            return super().send_turn(text, stt_source=stt_source)
+
+    session = RecoveringSession()
+    runner = TurnRunner(session, player=FakePlayer())
+    runner.start()
+    try:
+        assert runner.submit_transcript("first question") is False
+        assert session.connects == 1
+        assert runner.submit_transcript("fresh question") is True
+        assert session.connects == 2
+        assert session.turns == [
+            ("first question", "local"), ("fresh question", "local")
+        ]
+    finally:
+        runner.stop()
+
+
+def test_reconnect_cleanup_keeps_ownership_until_it_finishes(monkeypatch):
+    import puck_bridge.turn as turn_module
+
+    monkeypatch.setattr(turn_module, "RECONNECT_TIMEOUT_SECONDS", 0.02)
+    release = threading.Event()
+    cleaning = threading.Event()
+    cleaned = threading.Event()
+
+    class SlowCleanupSession(FakeSession):
+        connects = 0
+
+        async def connect(self):
+            self.connects += 1
+            if self.connects == 1:
+                return await super().connect()
+            try:
+                await asyncio.sleep(60)
+            finally:
+                cleaning.set()
+                while not release.is_set():
+                    try:
+                        await asyncio.sleep(0.001)
+                    except asyncio.CancelledError:
+                        pass
+                cleaned.set()
+
+    session = SlowCleanupSession()
+    runner = TurnRunner(session, player=FakePlayer())
+    runner.start()
+    runner._needs_reconnect = True
+    try:
+        assert runner.submit_transcript("first") is False
+        assert cleaning.wait(1)
+        assert runner.submit_transcript("second") is False
+        assert session.connects == 2
+        assert session.turns == []
+    finally:
+        release.set()
+        assert cleaned.wait(2)
+        runner.stop()
+
+
+def test_stop_waits_for_reconnect_cleanup_before_closing_session(monkeypatch):
+    import puck_bridge.turn as turn_module
+
+    monkeypatch.setattr(turn_module, "RECONNECT_TIMEOUT_SECONDS", 0.02)
+    monkeypatch.setattr(turn_module, "SHUTDOWN_TIMEOUT_SECONDS", 0.03, raising=False)
+    release = threading.Event()
+    cleaning = threading.Event()
+    cleaned = threading.Event()
+
+    class SlowCleanupSession(FakeSession):
+        connects = 0
+        closed_during_cleanup = False
+
+        async def connect(self):
+            self.connects += 1
+            if self.connects == 1:
+                return await super().connect()
+            try:
+                await asyncio.sleep(60)
+            finally:
+                cleaning.set()
+                while not release.is_set():
+                    await asyncio.sleep(0.001)
+                cleaned.set()
+
+        async def close(self):
+            self.closed_during_cleanup = cleaning.is_set() and not cleaned.is_set()
+            await super().close()
+
+    session = SlowCleanupSession()
+    runner = TurnRunner(session, player=FakePlayer())
+    runner.start()
+    runner._needs_reconnect = True
+    thread = runner._loop_thread
+    try:
+        assert runner.submit_transcript("question") is False
+        assert cleaning.wait(1)
+        runner.stop()
+        assert not session.closed_during_cleanup
+        assert thread.is_alive()
+    finally:
+        release.set()
+        thread.join(2)
+    assert cleaned.is_set()
+    assert not thread.is_alive()
+
+
+def test_turn_runner_reports_remote_error_as_failed_delivery(caplog):
+    session = FakeSession(events=[{"type": "error", "error": "private detail"}])
+    runner = TurnRunner(session, player=FakePlayer())
+    runner.start()
+    try:
+        with caplog.at_level("INFO"):
+            assert runner.submit_transcript("question") is False
+        assert "remote error" in caplog.text
+        assert "private detail" not in caplog.text
+    finally:
+        runner.stop()
+
+
 def test_turn_runner_falls_back_to_the_audio_file_when_no_chunks_streamed(tmp_path):
     from audio import write_wav
 
@@ -729,6 +896,7 @@ def test_a_dropped_capture_is_logged(tmp_path, caplog):
     assert any("dropped a capture" in r.message for r in caplog.records), (
         "a discarded question must say so"
     )
+    assert "never asked" not in caplog.text
 
 
 def test_playback_that_never_drains_aborts_the_turn(monkeypatch):
