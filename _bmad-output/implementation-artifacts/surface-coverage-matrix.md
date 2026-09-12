@@ -85,21 +85,21 @@ Hermes session authority
 | Surface | Story IDs | Owner | Evidence or dependency |
 |---|---|---|---|
 | I | `I-1`–`I-3` | `hermes-relay-ios` | Implementation and device-validation evidence exists in the sibling repository. |
-| A | `A-1`–`A-3` | `hermes-relay-android` (planned) | Android is a feature-parity mobile Client: authorized typed/tap-to-speak conversation, honest phases and response audio, per-profile Local History, and recovery without replay. Repository bootstrap and delivery evidence are pending. |
-| P | `P-1`–`P-4` | Puck delivery work | The audio bridge has real-device evidence for wake, VAD-gated capture, chunked upload, host transcription, and host response playback, and now always mints a distinct bridge session identity rather than colliding with a profile's other doorway. Chunked upload is confirmed reliable on a strong WiFi signal (six consecutive full uploads, no stalls) -- the earlier -89/-90 dB transport stall is resolved. A full spoken Hermes round trip is still unverified: the on-device VAD now closes every capture at ~1 second regardless of continued speech, so no real command content reaches transcription (see deferred-work.md). Puck-side response playback and the remaining bounded/recovery validation stay open in the implementation record. |
+| A | `A-1`–`A-3` | `hermes-relay-android` | Delivered and verified in the sibling repository: `A-1` authorized typed/tap-to-speak initiation, `A-2` honest phases with response text/audio delivery, and `A-3` bounded recovery without replaying an uncertain turn. Unit and Android 16/API 36 instrumentation evidence is recorded in that repository's `spec-a-*` and `validation-a-*` artifacts. Live Hermes transport, credentials, microphone, and speaker work are deliberately absent and are proposed as `A-4`–`A-6` below. |
+| P | `P-1`–`P-11` | Puck delivery work | The audio bridge has real-device evidence for authorized wake, VAD-gated capture, chunked upload, host transcription, distinct bridge session identity, streamed response delivery, Puck playback, and a full hands-free spoken Hermes round trip. The earlier weak-signal upload stall and VAD truncation findings are resolved; P-5 tracks the remaining streamed-playback underrun, P-6 bridge-service lifecycle hardening, P-7 privacy-safe diagnostics, P-8 audio-format verification, P-9 I2S lifecycle safety, P-10 internal-model routing, and P-11 runtime output-failure propagation and recovery, while P-3 bounded follow-up and P-4 recovery validation remain open in the implementation record. |
 | E | `E-1`–`E-5` | `hermes-relay-tui` / firmware | Native display/reducer evidence exists for parts of E-2/E-5; voice capture and response-audio adapter work remains. |
-| W/K | `WK-1` | `hermes-relay-tui` / web | Browser voice/display foundation and verified PCM delivery exist; continuous wake-free follow-up implementation and regression evidence are recorded in [the cross-surface spec](spec-continuous-wake-free-follow-ups.md), while kiosk, accessibility, device, and delivery validation remain. |
-| T | `T-1`–`T-4` | `hermes-relay-tui` | Local implementation artifacts and regression evidence now include the continuous wake-free follow-up slice; formal status remains in the TUI tracker. |
+| W/K | `WK-1` | `hermes-relay-tui` / web | Browser voice/display foundation and verified PCM delivery exist; automated DOM checks now pass (178 tests, zero Svelte diagnostics, production build), while the physical Safari/Guided Access, iPad permission, secure-channel, audio, and touch gate remains open. |
+| T | `T-1`–`T-6` | `hermes-relay-tui` | Local implementation artifacts and regression evidence now include the continuous wake-free follow-up slice; `T-5` records the remaining non-blocking voice-resource lifecycle work and `T-6` records idle relay liveness plus explicit legacy transport classification. Formal status remains in the TUI tracker. |
 
 ## Epic 2 — See and trust what the room is doing
 
 | Surface | Story IDs | Owner | Evidence or dependency |
 |---|---|---|---|
 | I | `2-I-1`, `2-I-2` | `hermes-relay-ios` | iOS participant implementation evidence exists in the sibling repository. |
-| A | `2-A-1`, `2-A-2` | `hermes-relay-android` (planned) | Android owns the same participant capture/transcription and disconnected-state capability as iOS; implementation and validation are pending. |
+| A | `2-A-1`, `2-A-2` | `hermes-relay-android` (planned) | Android owns the same participant capture/transcription and disconnected-state capability as iOS; implementation and validation are pending. Both depend on the proposed `A-4` relay/credential adapter: every Android story delivered so far is verified against deterministic fakes, and participant timing cannot be honestly validated without a live relay. |
 | P | `2-P-1`, `2-P-2` | Puck delivery work | Puck status-only doorway work remains open. |
 | E | `2-E-1`–`2-E-4` | `hermes-relay-tui` / firmware | Shared snapshot, reducer, and native renderer are foundation; surface story validation remains. |
-| W/K | `2-WK-1`–`2-WK-4` | `hermes-relay-tui` / web | DOM renderer and shared state are foundation; the approved `2-WK-2` spec covers live/final user transcription and bounded response retention, while browser surface validation remains. |
+| W/K | `2-WK-1`–`2-WK-5` | `hermes-relay-tui` / web | DOM renderer and shared state are foundation; `2-WK-2` now clarifies the optional browser-local `transcribing` interval alongside live/final user transcription and bounded response retention, while `2-WK-5` records the remaining server-side prompt-action authority and browser surface validation remains. |
 | T | `2-T-1`, `2-T-2` | `hermes-relay-tui` | Existing TUI/appliance behavior is foundation for the direct doorway and separate room mirrors. |
 
 Shared `DisplaySnapshot`, reducer, Room filtering, and normalized event feeds
@@ -110,8 +110,8 @@ are prerequisites. They do not become an unowned closure story.
 | Surface | Story IDs | Owner | Evidence or dependency |
 |---|---|---|---|
 | I | `3-I-1`–`3-I-6` | `hermes-relay-ios` | iOS is one of the co-equal mobile control planes; discovery evidence exists and the remaining administration slices are separate work. |
-| A | `3-A-1`–`3-A-6` | `hermes-relay-android` (planned) | Android mirrors the iOS Device administration capability: discovery, approval/setup, Wake Mapping validation, arbitration configuration, failed-closed verification, revocation, and explicit re-enrollment. Implementation and validation are pending. |
-| P | `3-P-1`–`3-P-6` | Puck delivery work | Device-side identity, mapping, arbitration, and fail-closed enforcement remain paired Puck work. |
+| A | `3-A-1`–`3-A-6` | `hermes-relay-android` (planned) | Android mirrors the iOS Device administration capability: discovery, approval/setup, Wake Mapping validation, arbitration configuration, failed-closed verification, revocation, and explicit re-enrollment. Implementation and validation are pending, and all six depend on the proposed `A-4` adapter — a fail-closed revocation path cannot be validated against a port that was never open. `3-A-4` mirrors `3-I-4`, which has no iOS spec artifact either; both are open. |
+| P | `3-P-1`–`3-P-6` | Puck delivery work | Device-side identity, mapping, arbitration, and fail-closed enforcement remain paired Puck work; `3-P-3` now records the firmware-to-bridge mapping propagation and bound-Profile dispatch gap. |
 | E, W/K, T | N/A in current pilot | — | No administration boundary is assigned to these surfaces. Do not infer one from the mobile or Puck stories. |
 
 ## Epic 4 — Know when the household needs to leave
@@ -130,8 +130,49 @@ Departure Cards remain display-only and must not generate unsolicited audio.
 | Surface | Story IDs | Owner | Evidence or dependency |
 |---|---|---|---|
 | I | `5-I-1` | `hermes-relay-ios` | Independent iOS conversation doorway evidence exists in the sibling repository. |
-| A | `5-A-1` | `hermes-relay-android` (planned) | Android owns an independent full mobile conversation doorway with iOS capability and safety parity; implementation and validation are pending. |
+| A | `5-A-1` | `hermes-relay-android` (planned) | Android owns an independent full mobile conversation doorway with iOS capability and safety parity; implementation and validation are pending. `5-A-1` currently absorbs configuration, credentials, secure storage, transport, and doorway parity in one identity; the proposed `A-4` and `5-A-2` split that load. |
 | T | `5-T-1` | `hermes-relay-tui` | Existing TUI is substantial foundation; the local story still needs its own BMad workflow. |
+
+## Android/iOS capability parity — proposed identities
+
+Story-ID parity between the mobile surfaces is already 1:1 (twelve identities
+each, with Epic 4 correctly assigning no mobile row to either). A capability
+audit recorded in the Android repository at
+`_bmad-output/planning-artifacts/android-ios-parity-audit.md` found that
+story-ID parity is not capability parity: iOS shipped relay configuration and
+credential storage, hands-free capture and barge-in, turn interruption,
+transcript export, prompt history, a visual design pass, and an app icon set,
+none of which hold a story identity on either surface. `UX-DR21` names an
+Android accessibility obligation — order `Profile → state →
+response/Transcription → action` with focus restoration — that no Android story
+owns.
+
+These identities are **proposed, not accepted**. None is real until it is
+written into `epics.md`.
+
+| Proposed | Epic | Surface | Scope |
+|---|---|---|---|
+| `A-4` | 1 | Android | Configure the media-server relay over Tailscale and store its credential in the Android Keystore, with multi-profile add/delete/switch and honest off-tailnet unavailable state. |
+| `A-5` | 1 | Android | Interrupt an active turn and stop response playback without a false phase claim. |
+| `A-6` | 1 | Android | Hands-free continuation capture and echo-safe barge-in, matching shipped iOS behavior. |
+| `5-A-2` | 5 | Android | Accessibility order and focus restoration, satisfying `UX-DR21`. |
+| `I-4` | 1 | iOS | Retroactive: interrupt an active iOS turn (`IOS-26`). |
+| `I-5` | 1 | iOS | Retroactive: iOS hands-free capture and barge-in (`IOS-16`), recorded as intended capability. |
+| `5-I-2` | 5 | iOS | Retroactive: iOS accessibility order and focus restoration. |
+
+Transcript export, prompt history, visual design, and app-icon work are
+proposed as local repository tickets on both surfaces rather than upstream
+story identities, matching how iOS already tracks `IOS-DESIGN-F1` and
+`IOS-BRAND-F1`.
+
+### `FR5` is stale, not the implementation
+
+`FR5` grants a bounded follow-up window to the Puck and the W/K browser surface
+and assigns none to a mobile Client, while iOS shipped hands-free regardless.
+Decision recorded 2026-09-12: the hands-free behavior is correct and intended,
+and the bounded follow-up window no longer applies in many cases. `FR5`
+therefore needs an amendment stating where a bounded window still governs.
+`A-6` and `I-5` depend on that amendment and should not be scheduled before it.
 
 ## Planning handoff
 
