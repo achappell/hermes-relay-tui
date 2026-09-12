@@ -67,6 +67,18 @@
   summary: VERIFY remains open 2026-09-11 -- the automated DOM gate passes, but the physical Safari/iPad HTTPS/WSS, permission, audio, and direct-touch gate still requires the target device.
   evidence: From `home_display/web`, `npm test` passed 12 files and 178 tests, `npm run check` found zero errors or warnings, and `npm run build` produced the production bundle. The available computer-use inventory exposed Chrome on the Mac but no Safari/iPad surface, so Guided Access, iPad certificate trust and secure-channel hydration, microphone permission, speaker playback, and physical touch-button operation remain unverified. The HOME-09 procedure remains the authoritative manual gate; the existing 2026-09-09 iPad follow-up recovery note covers that narrower recovery scenario, not this full kiosk gate.
 
+- source_spec: `_bmad-output/implementation-artifacts/spec-5-t-1-use-the-tui-as-an-independent-direct-voice-chat-gateway.md`
+  summary: Define one-time ownership for migrating an unscoped legacy prompt-history file when more than one named profile is later used.
+  evidence: The approved story requires copying an ownerless flat or endpoint-scoped source into the selected profile without deleting it, but does not say whether the same source may seed multiple profiles; a product decision or migration marker is needed to settle the privacy/continuity tradeoff.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-5-t-1-use-the-tui-as-an-independent-direct-voice-chat-gateway.md`
+  summary: Make prompt-history writes safe across separate TUI processes sharing one profile file.
+  evidence: `PromptHistory` serializes writes only within one instance; two simultaneous TUI processes can still read stale entries and atomically replace one another's file. This predates the story's per-instance lock and needs deliberate cross-process locking semantics.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-5-t-1-use-the-tui-as-an-independent-direct-voice-chat-gateway.md`
+  summary: Run physical permission/authorization and first-response latency checks for the independent TUI doorway.
+  evidence: Epic 5's broader context calls for fail-closed identity handling and roughly four-second first spoken response audio, but this slice changed no authorization or audio transport code and no live Hermes, microphone, or PortAudio environment was available for that evidence.
+
 ## Deferred from: code review of spec-1-4-recover-without-replaying-an-uncertain-turn (2026-09-10)
 
 - source_spec: `_bmad-output/implementation-artifacts/spec-1-4-recover-without-replaying-an-uncertain-turn.md`

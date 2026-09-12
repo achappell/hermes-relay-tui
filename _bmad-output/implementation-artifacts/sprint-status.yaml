@@ -121,8 +121,8 @@ development_status:
   4-wk-2-recompute-and-clear-the-browser-departure-card-while-preserv: backlog
   epic-4-retrospective: optional
 
-  epic-5: backlog
+  epic-5: in-progress
   5-i-1-use-ios-as-an-independent-typed-and-tap-to-speak-conversatio: backlog
   5-a-1-use-android-as-an-independent-typed-and-tap-to-speak-convers: backlog
-  5-t-1-use-the-tui-as-an-independent-direct-voice-chat-gateway-with: backlog
+  5-t-1-use-the-tui-as-an-independent-direct-voice-chat-gateway-with: review
   epic-5-retrospective: optional

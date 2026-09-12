@@ -35,6 +35,8 @@
 # --- session identity ----------------------------------------------------
 # client_id: amanda-laptop
 # device_id: amanda-mac
+# Retained legacy/config label; each TUI launch/profile selection mints a
+# unique Hermes Session. Use /new or /resume for deliberate server sessions.
 # session_id: hybrid-tui
 # display_name: "Amanda streaming TUI"
 
@@ -85,6 +87,7 @@
 #     url: ws://localhost:8792/voice-session
 #     token_env: VOICE_SESSION_TOKEN_AMANDA
 #     client_id: amanda-home
+#     # Retained legacy/config label; the TUI mints a unique Session on launch.
 #     session_id: amanda-kiosk
 #
 #   jensen:
@@ -93,6 +96,7 @@
 #     url: ws://localhost:8793/voice-session
 #     token_env: VOICE_SESSION_TOKEN_JENSEN
 #     client_id: jensen-home
+#     # Retained legacy/config label; the TUI mints a unique Session on launch.
 #     session_id: jensen-kiosk
 
 # The terminal client also uses this same mapping without wake phrases. Its

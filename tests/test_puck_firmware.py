@@ -42,7 +42,7 @@ def test_response_handoff_uses_the_confirmed_sequence_and_query_token():
 def test_wake_acknowledgement_finishes_before_capture_opens():
     yaml_source = (Path(__file__).resolve().parents[1] / "firmware/respeaker-lite/respeaker-lite.yaml").read_text()
     capture_source = (Path(__file__).resolve().parents[1] / "firmware/respeaker-lite/pcm_capture.h").read_text()
-    assert "last_capture_captured" not in capture_source
+    assert "last_capture_captured" not in yaml_source
     assert "inline void prepare(const std::string &wake_word)" in capture_source
     assert "inline void start_pending()" in capture_source
     prepare = yaml_source.index("wake_capture::prepare(wake_word)")

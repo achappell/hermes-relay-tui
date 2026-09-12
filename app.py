@@ -78,6 +78,7 @@ from domain import TuiDomain, TurnPhase, decide_busy
 from history import (
     PromptHistory,
     artifact_path_for_profile,
+    legacy_history_path_for_profile,
     history_path_for_profile,
 )
 from help_screen import HelpModal
@@ -661,7 +662,9 @@ class HermesStreamingApp(App):
         self._wake_starting = False
         self._wake_start_cancelled = False
         self._wake_opening = False
+        self._wake_open_task: Optional[asyncio.Task[Any]] = None
         self._wake_start_task: Optional[asyncio.Task[Any]] = None
+        self._wake_cleanup_tasks: set[asyncio.Task[Any]] = set()
         self._wake_unavailable_reported = False
         self._earcons = earcons_module.EarconPlayer(
             enabled=getattr(args, "earcons", True) and not (args and args.no_play),
@@ -677,7 +680,7 @@ class HermesStreamingApp(App):
         if self.busy_mode not in config.BUSY_MODES:
             self.busy_mode = "queue"
         self._busy_transition_owner: Optional[asyncio.Task[None]] = None
-        self._history = PromptHistory(self._history_path_for_args(args))
+        self._history = self._prompt_history_for_args(args)
         self._history_index: Optional[int] = None
         self._history_draft = ""
         # Set when the user changes these interactively this session, so a later
@@ -905,6 +908,31 @@ class HermesStreamingApp(App):
             legacy=not bool(getattr(args, "profiles_configured", False)),
         )
 
+    def _prompt_history_for_args(self, args: Any) -> PromptHistory:
+        """Open profile-local prompt history and migrate its old local file."""
+        path = self._history_path_for_args(args)
+        legacy_paths: tuple[Path, ...] = ()
+        if bool(getattr(args, "profiles_configured", False)):
+            legacy_path = legacy_history_path_for_profile(
+                getattr(args, "url", None),
+                getattr(args, "profile_name", None)
+                or getattr(args, "profile", None)
+                or "default",
+                configured_path=getattr(args, "history_path", None),
+            )
+            if legacy_path != path:
+                legacy_paths = (legacy_path,)
+        return PromptHistory(path, legacy_paths=legacy_paths)
+
+    @staticmethod
+    def _doorway_session_args(args: Any) -> Any:
+        """Mint one remote Session identity for this launch/profile doorway."""
+        if args is None:
+            return args
+        session_args = copy.copy(args)
+        session_args.session_id = uuid.uuid4().hex
+        return session_args
+
     @staticmethod
     def _profile_display_name_for_args(args: Any) -> str:
         """Return the configured Hermes Profile identity for presentation."""
@@ -949,8 +977,8 @@ class HermesStreamingApp(App):
 
     def _refresh_connection_status(self) -> None:
         session_id = (
-            getattr(self.args, "session_id", None)
-            or getattr(self.session, "session_id", None)
+            getattr(self.session, "session_id", None)
+            or getattr(self.args, "session_id", None)
             or "session"
         )
         symbol = {
@@ -1104,7 +1132,7 @@ class HermesStreamingApp(App):
     # --- lifecycle ------------------------------------------------------------
 
     async def on_mount(self) -> None:
-        self.session = self._new_session(self.args)
+        self.session = self._new_session(self._doorway_session_args(self.args))
         self._refresh_queue_shelf()
         self._refresh_prompt_panel()
         self.query_one("#command-suggestions", Static).display = False
@@ -1285,8 +1313,7 @@ class HermesStreamingApp(App):
                     await self._close_session_for_reconnect(old_session)
 
                 try:
-                    recovery_args = copy.copy(self.args)
-                    recovery_args.session_id = uuid.uuid4().hex
+                    recovery_args = self._doorway_session_args(self.args)
                     self.session = self._new_session(recovery_args)
                 except Exception as exc:
                     diagnostic_logger.debug(
@@ -1397,6 +1424,7 @@ class HermesStreamingApp(App):
 
         def finished(done: asyncio.Task[Any]) -> None:
             self._cleanup_tasks.discard(done)
+            self._wake_cleanup_tasks.discard(done)
             for session_key, tracked in tuple(self._session_cleanup_tasks.items()):
                 if tracked is done:
                     self._session_cleanup_tasks.pop(session_key, None)
@@ -1425,6 +1453,28 @@ class HermesStreamingApp(App):
             diagnostic_logger.warning(
                 "app.shutdown.cleanup_timeout count=%d", len(tasks)
             )
+
+    async def _wait_for_wake_cleanup(self) -> bool:
+        """Keep a new listener from racing the old stream's native close."""
+        tasks = [task for task in self._wake_cleanup_tasks if not task.done()]
+        if not tasks:
+            return True
+        gathered = asyncio.gather(*tasks, return_exceptions=True)
+        try:
+            await asyncio.wait_for(
+                asyncio.shield(gathered),
+                SHUTDOWN_TASK_TIMEOUT,
+            )
+        except asyncio.TimeoutError:
+            diagnostic_logger.warning(
+                "app.wake.cleanup_timeout count=%d", len(tasks)
+            )
+            self._append_block(
+                "[error] previous microphone cleanup is still in progress; "
+                "wake mode remains off."
+            )
+            return False
+        return True
 
     async def _close_session_for_shutdown(self) -> None:
         """Give session cleanup a budget so quit cannot wait on a dead socket."""
@@ -1535,6 +1585,8 @@ class HermesStreamingApp(App):
         if self._wake_starting:
             self._append_block("wake mode startup is already in progress")
             return
+        if not await self._wait_for_wake_cleanup():
+            return
 
         start_task = asyncio.current_task()
         self._wake_start_task = start_task
@@ -1635,12 +1687,12 @@ class HermesStreamingApp(App):
             opening = asyncio.create_task(
                 asyncio.to_thread(recorder.open_for_listening)
             )
+            self._wake_open_task = opening
             try:
                 await asyncio.shield(opening)
             except asyncio.CancelledError:
                 if not opening.done():
                     self._disarm_wake()
-                    self._finish_cancelled_wake_open(recorder, opening)
                 else:
                     self._wake_opening = False
                     self._disarm_wake()
@@ -1649,19 +1701,14 @@ class HermesStreamingApp(App):
                 self._wake_opening = False
                 raise
             self._wake_opening = False
+            if self._wake_open_task is opening:
+                self._wake_open_task = None
             diagnostic_logger.debug(
                 "wake.start stage=microphone complete elapsed=%.3f",
                 time.perf_counter() - stage_started,
             )
             if self._wake_start_cancelled or self._reconnect_in_flight:
                 self._disarm_wake()
-                try:
-                    recorder.shutdown()
-                except Exception:
-                    diagnostic_logger.debug(
-                        "closing the cancelled wake recorder failed",
-                        exc_info=True,
-                    )
                 return
 
             self.wake_armed = True
@@ -1685,24 +1732,22 @@ class HermesStreamingApp(App):
             self._wake_start_cancelled = False
             if self._wake_start_task is start_task:
                 self._wake_start_task = None
+            if (
+                self._wake_open_task is not None
+                and self._wake_open_task.done()
+            ):
+                self._wake_open_task = None
 
     def _finish_cancelled_wake_open(self, recorder: Any, opening: Any) -> None:
         """Close a recorder whose native open outlived a cancelled task."""
-        async def finish() -> None:
-            try:
-                try:
-                    await opening
-                except BaseException:
-                    pass
-                await asyncio.to_thread(recorder.shutdown)
-            except Exception:
-                diagnostic_logger.debug(
-                    "closing the late wake recorder failed", exc_info=True
-                )
-            finally:
-                self._wake_opening = False
-
-        self._track_cleanup_task(asyncio.create_task(finish()))
+        self._schedule_wake_cleanup(
+            session=self.session,
+            listener=None,
+            recorder=recorder,
+            barge_listener=None,
+            barge_observer=None,
+            opening=opening,
+        )
 
     def _wake_failure_text(self, error: Exception) -> str:
         """Turn an arming failure into the one sentence that fixes it."""
@@ -1715,13 +1760,68 @@ class HermesStreamingApp(App):
             )
         return str(error)
 
-    def _disarm_wake(self, message: Optional[str] = None) -> None:
-        """Stop listening and give the device back. Safe to call when off."""
+    def _schedule_wake_cleanup(
+        self,
+        *,
+        session: Any,
+        listener: Any,
+        recorder: Any,
+        barge_listener: Any,
+        barge_observer: Any,
+        opening: Any,
+    ) -> Optional[asyncio.Task[Any]]:
+        """Finish detached wake resources without using the Textual loop."""
+        if not any(
+            resource is not None
+            for resource in (listener, recorder, barge_listener, opening)
+        ):
+            return None
+
+        async def invoke(label: str, operation: Any) -> None:
+            if not callable(operation):
+                return
+            try:
+                await asyncio.to_thread(operation)
+            except Exception:
+                diagnostic_logger.debug(
+                    "app.wake.%s_failed type=%s", label, type(operation).__name__
+                )
+
+        async def finish() -> None:
+            # Cancellation must reach an active capture before the listener
+            # joins. Capture and native audio are both blocking operations,
+            # hence every call below stays in the worker thread pool.
+            await invoke("cancel_voice", getattr(session, "cancel_voice", None))
+            if recorder is not None and barge_observer is not None:
+                await invoke(
+                    "remove_barge_observer",
+                    lambda: recorder.remove_frame_observer(barge_observer),
+                )
+            await invoke("listener_stop", getattr(listener, "stop", None))
+            await invoke("barge_listener_stop", getattr(barge_listener, "stop", None))
+            if opening is not None:
+                try:
+                    await asyncio.shield(opening)
+                except BaseException:
+                    pass
+            await invoke("recorder_shutdown", getattr(recorder, "shutdown", None))
+
+        task = asyncio.create_task(finish(), name="wake resource cleanup")
+        self._wake_cleanup_tasks.add(task)
+        self._track_cleanup_task(task)
+        return task
+
+    def _disarm_wake(self, message: Optional[str] = None) -> Optional[asyncio.Task[Any]]:
+        """Detach wake resources now; join and native close them off-loop."""
         was_starting = self._wake_starting
         if was_starting:
             self._wake_start_cancelled = True
         listener, recorder = self._wake_listener, self._wake_recorder
         barge_listener = self._barge_listener
+        opening = self._wake_open_task
+        self._wake_open_task = None
+        session = self.session
+        barge_observer = self._barge_recorder_observer
         try:
             current_task = asyncio.current_task()
         except RuntimeError:
@@ -1732,6 +1832,25 @@ class HermesStreamingApp(App):
         self._barge_interrupt_task = None
         if self._barge_result_task is not current_task:
             self._barge_result_task = None
+        # This is the non-blocking logical shutdown boundary. The real
+        # listener's quiesce() only flips its admission gate and drops no
+        # native resource; the bounded join remains in the tracked cleanup.
+        quiesce = getattr(listener, "quiesce", None)
+        if callable(quiesce):
+            try:
+                quiesce()
+            except Exception:
+                diagnostic_logger.debug(
+                    "quiescing the wake listener failed", exc_info=True
+                )
+        deactivate = getattr(barge_listener, "deactivate", None)
+        if callable(deactivate):
+            try:
+                deactivate()
+            except Exception:
+                diagnostic_logger.debug(
+                    "deactivating the barge-in listener failed", exc_info=True
+                )
         self._wake_listener = None
         self._wake_coordinator = None
         self._wake_recorder = None
@@ -1739,50 +1858,24 @@ class HermesStreamingApp(App):
         self._barge_capture_active = False
         self._barge_was_playing = False
         self._wake_loop = None
+        self._wake_opening = False
         was_armed = self.wake_armed
         self.wake_armed = False
         self._refresh_voice_status()
         if was_starting and not self._turn_in_flight:
             self._set_voice_state(VOICE_READY)
-        if recorder is not None and not self._wake_opening:
-            cancel_voice = getattr(self.session, "cancel_voice", None)
-            if callable(cancel_voice):
-                try:
-                    cancel_voice()
-                except Exception:
-                    diagnostic_logger.debug(
-                        "cancelling the wake capture failed", exc_info=True
-                    )
-        if listener is not None:
-            try:
-                listener.stop()
-            except Exception:
-                diagnostic_logger.debug("stopping the wake listener failed", exc_info=True)
-        if barge_listener is not None and recorder is not None:
-            remove_observer = getattr(recorder, "remove_frame_observer", None)
-            if callable(remove_observer) and self._barge_recorder_observer is not None:
-                try:
-                    remove_observer(self._barge_recorder_observer)
-                except Exception:
-                    diagnostic_logger.debug(
-                        "removing the barge-in observer failed", exc_info=True
-                    )
         self._barge_recorder_observer = None
-        if barge_listener is not None:
-            try:
-                barge_listener.stop()
-            except Exception:
-                diagnostic_logger.debug("stopping the barge-in listener failed", exc_info=True)
-        if recorder is not None and not self._wake_opening:
-            try:
-                # shutdown() closes the input stream on a guarded timeout, so
-                # the microphone indicator clears and other applications get
-                # the device back. Pausing the detector would not do either.
-                recorder.shutdown()
-            except Exception:
-                diagnostic_logger.debug("closing the wake recorder failed", exc_info=True)
+        cleanup = self._schedule_wake_cleanup(
+            session=session,
+            listener=listener,
+            recorder=recorder,
+            barge_listener=barge_listener,
+            barge_observer=barge_observer,
+            opening=opening,
+        )
         if message and was_armed:
             self._append_block(message)
+        return cleanup
 
     def _make_barge_listener(self, recorder: Any) -> Any:
         """Build the local speech tap used during an active remote turn."""
@@ -1878,6 +1971,7 @@ class HermesStreamingApp(App):
         )
 
     async def _complete_barge_in(self, transcript: str) -> None:
+        history = self._history
         try:
             interrupt_task = self._barge_interrupt_task
             if interrupt_task is None and self._turn_in_flight:
@@ -1908,6 +2002,7 @@ class HermesStreamingApp(App):
                     self._set_voice_state(VOICE_READY)
                 return
             self._set_voice_state(VOICE_TRANSCRIBING)
+            await asyncio.to_thread(history.append, text)
             await self._run_turn(text, stt_source="local-faster-whisper")
         finally:
             if self._barge_result_task is asyncio.current_task():
@@ -2068,10 +2163,19 @@ class HermesStreamingApp(App):
         loop = self._wake_loop
         if loop is None:
             return False
+        if not (text or "").strip():
+            return False
+        history = self._history
         future = asyncio.run_coroutine_threadsafe(
             self._run_turn(text, stt_source="local"), loop
         )
-        return bool(future.result())
+        try:
+            return bool(future.result())
+        finally:
+            # This callback runs on the wake worker, not Textual's event loop.
+            # Persist after the turn is underway so a local fsync cannot delay
+            # the first playback frame or the wake coordinator's timing.
+            history.append(text)
 
     # --- input paths ----------------------------------------------------------
 
@@ -2098,8 +2202,9 @@ class HermesStreamingApp(App):
             event.composer.load_text("")
             self._enqueue_prompt(text)
             return
+        history = self._history
         self.run_worker(
-            self._submit_text(text, composer=event.composer),
+            self._submit_text(text, composer=event.composer, history=history),
             name="chat turn",
             group="interaction",
             exit_on_error=False,
@@ -2480,13 +2585,13 @@ class HermesStreamingApp(App):
 
             self.args = new_args
             self._sync_profile_metadata(new_args)
-            self.session = self._new_session(new_args)
+            self.session = self._new_session(self._doorway_session_args(new_args))
             self.domain.reset_session(
                 getattr(self.session, "session_id", None)
                 or getattr(new_args, "session_id", None)
             )
             self._needs_reconnect = False
-            self._history = PromptHistory(self._history_path_for_args(new_args))
+            self._history = self._prompt_history_for_args(new_args)
             self._queued_prompts.clear()
             self._staged_attachments.clear()
             self._pending_prompt = None
@@ -3115,14 +3220,16 @@ class HermesStreamingApp(App):
 
     def action_voice_turn(self) -> None:
         """Start voice capture off the Textual message-pump path."""
+        history = self._history
         self.run_worker(
-            self._capture_voice_turn(),
+            self._capture_voice_turn(history=history),
             name="voice turn",
             group="interaction",
             exit_on_error=False,
         )
 
-    async def _capture_voice_turn(self) -> None:
+    async def _capture_voice_turn(self, *, history: Optional[PromptHistory] = None) -> None:
+        history = self._history if history is None else history
         if self._turn_in_flight:
             self._append_block("[a turn is already in flight]")
             return
@@ -3179,12 +3286,13 @@ class HermesStreamingApp(App):
                 self._refresh_voice_status()
             if self.voice_state == VOICE_INTERRUPTED:
                 return
-            if not transcript_text:
+            if not transcript_text or not transcript_text.strip():
                 self.domain.apply_event({"type": "capture_empty"})
                 self._set_voice_state(VOICE_READY)
                 self._append_block("no speech detected.")
                 return
             self._set_voice_state(VOICE_TRANSCRIBING)
+            await asyncio.to_thread(history.append, transcript_text)
             # Keep the detector paused through transcription and the whole
             # turn. `_run_turn` owns the matching resume after the reply.
             await self._run_turn(transcript_text, stt_source="local-faster-whisper")
@@ -3319,8 +3427,15 @@ class HermesStreamingApp(App):
     def _shell_policy(self) -> ShellPolicy:
         return ShellPolicy(enabled=bool(getattr(self.args, "allow_shell", False)))
 
-    async def _submit_text(self, text: str, *, composer: Optional[Composer] = None) -> None:
+    async def _submit_text(
+        self,
+        text: str,
+        *,
+        composer: Optional[Composer] = None,
+        history: Optional[PromptHistory] = None,
+    ) -> None:
         """Prepare local references, then apply the busy-turn policy."""
+        history = self._history if history is None else history
         history_text = text
         local_command = standalone_command(text)
         try:
@@ -3374,7 +3489,7 @@ class HermesStreamingApp(App):
         text = prepared_text
         if composer is not None:
             composer.load_text("")
-        self._history.append(history_text)
+        await asyncio.to_thread(history.append, history_text)
 
         if self._reconnect_in_flight:
             self._enqueue_prompt(text)
