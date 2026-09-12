@@ -15,6 +15,8 @@ Give every configured Hermes doorway one honest conversation path: authorization
 - T-5: Non-blocking TUI voice-resource teardown
 - T-6: Idle relay-loss detection and honest no-replay recovery
 - P-1–P-4: ReSpeaker Puck conversation path
+- P-5–P-11: ReSpeaker Puck streaming, bridge lifecycle, diagnostics, format,
+  I2S lifecycle, routing, and runtime audio-failure slices
 - E-1–E-5: ESP32 Touch Display conversation path
 - WK-1: Shared Web/iPad voice-plus-display surface
 - I-1–I-3: iOS conversation path
@@ -31,7 +33,7 @@ acceptance criteria; evidence from another surface does not close it.
 |---|---|---|
 | iOS | `I-1` through `I-3` | Authorized initiation, honest phases with response/audio delivery, and fresh recovery without replay. |
 | Android | `A-1` through `A-3` | Feature-parity mobile initiation, honest phases with response/audio delivery, and fresh recovery without replay. |
-| ReSpeaker Puck | `P-1` through `P-4` | Authorized wake/capture, status and response audio, bounded follow-up/`stop`, and recovery. |
+| ReSpeaker Puck | `P-1` through `P-11` | Authorized wake/capture, status and response audio, bounded follow-up/`stop`, recovery, and explicit streaming/bridge/audio reliability slices. |
 | ESP32 Touch Display | `E-1` through `E-5` | Authorized voice capture, native phase/response rendering, response audio delivery, bounded follow-up/`stop`, and recovery. |
 | Web/iPad (`W/K`) | `WK-1` | One shared browser voice-plus-display surface for authorized capture, honest phases, streamed/completed response text, response audio, and delivery/error state. iPad is not a separate surface story. |
 | TUI | T-1–T-6 | The current TUI-specific authorization, phase/delivery, follow-up, lifecycle, idle-liveness, and recovery slices. Numeric aliases remain stable for implementation history. |
@@ -91,5 +93,6 @@ dependency.
 - The shared authorization, SessionProtocol, display-state, and bounded-audio contracts establish the boundary consumed by each surface-specific story family.
 - The existing local TUI Stories 1.1–1.4 preserve their implementation history; new iOS, Android, Puck, ESP32 Touch, and W/K work is tracked as surface-specific Epic 1 stories rather than inferred from TUI closure.
 - T-5 owns local voice-resource lifecycle; T-6 owns relay liveness and transport classification while preserving T-4’s fresh-session/no-replay contract.
+- P-5 consumes the P-1/P-2 Puck wake, capture, response-stream, and speaker foundation. P-3 follow-up and P-4 recovery remain separate Puck slices; P-6 through P-11 own bridge lifecycle, diagnostics, format, I2S, routing, and low-level output-failure concerns.
 - Later room-context epics consume Epic 1’s normalized events and recovery semantics; they must not create alternate protocol paths. A passive Display may mirror an active touch doorway, but must not create a second Session.
 - Physical-device credentials, provisioning, revocation, and wake arbitration belong to the separate device-administration work. This epic consumes an authorized configuration and does not invent that system.
