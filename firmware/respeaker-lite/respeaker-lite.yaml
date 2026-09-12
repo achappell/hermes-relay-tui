@@ -80,6 +80,7 @@ esphome:
         # the I2S writes all succeed and nothing is audible -- which looks
         # exactly like a broken output path.
         - lambda: id(respeaker).unmute_speaker();
+
         # 1-p-2 task 2's boot-time proof (streaming a static WAV over
         # HTTP from a dev machine) was REMOVED once verified: it pointed at
         # an ad-hoc server on a developer's laptop, so every later boot
@@ -107,6 +108,19 @@ psram:
   mode: octal
 
 logger:
+  # DEBUG, not VERBOSE. The vendored micro_wake_word carries per-inference
+  # diagnostics (mww_prob/mww_feat/mww_pcm) from story 3's non-detection
+  # debugging; they are ESP_LOGV now, so this level compiles them out.
+  # Measured 2026-09-12: they were 15602 of 17166 device log lines over six
+  # minutes -- ~47 lines/second total -- and formatting/shipping that
+  # competed with the audio tasks for CPU. Raise to VERBOSE only while
+  # actually debugging a wake model, and expect audio to suffer while it is.
+  # DEBUG, not VERBOSE. Raising the global level to VERBOSE to inspect the
+  # audio path was tried on 2026-09-12 and is self-defeating: the extra
+  # logging reintroduces the CPU starvation it is meant to diagnose (158
+  # ring-buffer overflows in 20s, versus 0 at DEBUG). The per-inference
+  # micro_wake_word diagnostics are ESP_LOGV so this level compiles them
+  # out -- see components/micro_wake_word/streaming_model.cpp.
   level: DEBUG
 
 # Enables OTA updates and Home Assistant API discovery/auth.
@@ -348,7 +362,7 @@ audio_dac:
 # board (respeaker-lite-stock-test.yaml:1179-1192).
 #
 # `timeout: never` keeps the I2S peripheral from tearing itself down
-# between utterances; `buffer_duration: 100ms` is the DMA cushion that
+# between utterances; `buffer_duration` is the DMA cushion that
 # absorbs network jitter once P-2 task 2 streams real TTS through
 # here. Story-5's chunked-upload path is deliberately untouched by all of
 # this -- this is a second, independent direction on the bus.
@@ -364,7 +378,11 @@ speaker:
     i2s_mode: secondary
     channel: stereo
     timeout: never
-    buffer_duration: 100ms
+    # 100ms was fine for a local file, which arrives far faster than it
+    # plays. A network stream has no such head start, so the DMA buffer is
+    # the last line of defence against an underrun. Raised for the same
+    # choppy-playback report as the media source above.
+    buffer_duration: 250ms
 
   # 1-p-2 task 2: resampling stage in front of the hardware speaker.
   # Task 1 established the hard constraint this exists to satisfy -- the
@@ -395,7 +413,13 @@ speaker:
 media_source:
   - platform: audio_http
     id: puck_http_source
-    buffer_size: 100000
+    # Raised from 100000 after choppy playback was reported by ear
+    # (2026-09-12). Hermes produces TTS at roughly real time and the device
+    # consumes at exactly real time, so a small read-ahead leaves nothing
+    # to absorb upstream jitter. Every byte was arriving -- the chop was
+    # never visible in the logs, only audible. Paired with a bridge-side
+    # prebuffer; this is the device's half of the cushion.
+    buffer_size: 300000
   # 1-p-1 task 3: local sounds, embedded in flash. A refusal must NOT
   # depend on the network -- the whole point is to be audible when
   # something about the bridge relationship is wrong. Addressed as
@@ -438,8 +462,30 @@ media_player:
     # "quite loud", and an appliance that can be cranked to full by an
     # errant command is an appliance that can hurt. The ceiling is the
     # important half -- the initial value is merely polite.
-    volume_initial: 0.25
-    volume_max: 0.8
+    # Free the CPU while speaking. The ESP32-S3 is simultaneously decoding
+    # WAV, upsampling 16kHz -> 48kHz, driving I2S, AND running wake-word
+    # inference on every frame -- and it was already logging
+    # "Not enough free bytes in ring buffer" before playback was added, so
+    # it was starved before this feature existed. Playback came out choppy
+    # by ear even though every byte arrived, which is what CPU contention
+    # looks like from the outside.
+    #
+    # Stopping detection during an announcement also has a second, free
+    # benefit: the device cannot hear its own voice and self-trigger.
+    on_announcement:
+      - lambda: |-
+          if (id(mww).is_running()) {
+            ESP_LOGI("puck_audio", "pausing wake detection while speaking");
+            id(mww).stop();
+          }
+    on_idle:
+      - lambda: |-
+          if (!id(mww).is_running()) {
+            ESP_LOGI("puck_audio", "resuming wake detection after speaking");
+            id(mww).start();
+          }
+    volume_initial: 0.60
+    volume_max: 0.90
     volume_increment: 0.05
     announcement_pipeline:
       speaker: puck_resampler
@@ -573,7 +619,11 @@ interval:
           // underlying instability (still suspected weak-signal-driven,
           // unconfirmed) -- it only keeps wake detection available while
           // that's investigated separately.
-          if (!id(mww).is_running()) {
+          // Skip the self-heal while the speaker is announcing: detection
+          // is stopped ON PURPOSE there (see the media_player block), and
+          // restarting it would both undo that and fight the automation.
+          if (!id(mww).is_running() &&
+              id(puck_media_player).state != media_player::MEDIA_PLAYER_STATE_ANNOUNCING) {
             ESP_LOGW("mww_diag", "mww stopped -- restarting");
             id(mww).start();
           }

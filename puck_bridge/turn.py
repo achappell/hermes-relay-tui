@@ -101,6 +101,9 @@ class TurnRunner:
         # path is additive, not a replacement, until it is proven on
         # hardware.
         self._response_stream = response_stream
+        # The capture this turn answers, so the response stream can be
+        # matched against the device's /response?seq=N request.
+        self._response_seq: int | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
         self._loop_thread: threading.Thread | None = None
         self._pending_transcript: str | None = None
@@ -159,6 +162,16 @@ class TurnRunner:
             thread.join(timeout=5.0)
         self._loop_thread = None
         self._loop = None
+
+    def set_response_seq(self, seq: int | None) -> None:
+        """Tell the next turn which capture it answers.
+
+        The device asks for a specific capture (`/response?seq=N`), so the
+        stream has to know which one it is carrying or the match cannot be
+        made -- without this the seq the firmware sends was never compared
+        against anything.
+        """
+        self._response_seq = seq
 
     def submit_transcript(self, transcript: str) -> bool:
         """Run exactly one Hermes turn for one already-transcribed utterance.
@@ -248,6 +261,9 @@ class TurnRunner:
         file_audio = bytearray()
         spoke = False
         chunks_spoken = 0
+        audio_bytes = 0
+        audio_format: tuple[int, int, int] | None = None
+        first_audio_at: float | None = None
         started_at = time.monotonic()
         # Iterate manually rather than with `async for`, so each individual
         # step can carry its own deadline. `async for` can only be bounded
@@ -285,7 +301,7 @@ class TurnRunner:
                         # header until the format is known, and its audio
                         # reader fails a stream that goes ~30s without a
                         # successful read.
-                        self._response_stream.begin(None, audio_format)
+                        self._response_stream.begin(self._response_seq, audio_format)
                     elif not self._player.active:
                         self._player.start(audio_format)
                 elif kind == "audio_chunk":
@@ -293,6 +309,9 @@ class TurnRunner:
                         self._response_stream.write(event["data"])
                         spoke = True
                         chunks_spoken += 1
+                        audio_bytes += len(event["data"])
+                        if first_audio_at is None:
+                            first_audio_at = time.monotonic()
                     elif self._player.active:
                         await self._write_audio(event["data"])
                         spoke = True
@@ -315,11 +334,25 @@ class TurnRunner:
                                 "puck bridge: undecodable audio fallback, ignoring"
                             )
                             continue
-                        if not self._player.active:
-                            self._player.start(fmt)
-                        if self._player.active:
-                            await self._write_audio(decoded)
+                        # Route the fallback the same way as streamed
+                        # audio. It used to always play on the HOST, so a
+                        # response delivered only as a file (no streamed
+                        # chunks) came out of the Mac in --play-on-device
+                        # mode -- which server.py logs as impossible ("this
+                        # host stays silent") -- while the Puck waited out
+                        # its format budget for a stream that never got one.
+                        if self._response_stream is not None:
+                            self._response_stream.begin(self._response_seq, fmt)
+                            self._response_stream.write(decoded)
                             spoke = True
+                            chunks_spoken += 1
+                        else:
+                            if not self._player.active:
+                                self._player.start(fmt)
+                            if self._player.active:
+                                await self._write_audio(decoded)
+                                spoke = True
+                                chunks_spoken += 1
         finally:
             # Always close the response stream, success or failure: the
             # device is blocked reading it, and an unterminated body leaves
@@ -370,9 +403,15 @@ class TurnRunner:
         # records problems on `.failure` (unsupported format, device error,
         # aborted stream) and nothing here ever read it, so a turn could
         # fail to make a sound while reporting nothing at all.
-        player_failure = getattr(self._player, "failure", None)
-        if player_failure:
-            logger.error("puck bridge playback failed: %s", player_failure)
+        # Only meaningful when THIS turn actually used the player.
+        # PCMPlayer.failure is cleared in start(), so a turn that never
+        # started it -- every turn in --play-on-device mode, and any turn
+        # whose response had no audio -- would otherwise re-read and
+        # re-report the PREVIOUS turn's failure as its own.
+        if self._response_stream is None and self._player.active:
+            player_failure = getattr(self._player, "failure", None)
+            if player_failure:
+                logger.error("puck bridge playback failed: %s", player_failure)
         if not spoke:
             logger.warning("puck bridge turn completed with no audible response")
         else:
@@ -381,9 +420,43 @@ class TurnRunner:
             # identical in the log -- the same silent-success trap that let
             # the upload path lose three captures without complaint. The
             # happy path is exactly when you most want a line to point at.
+            elapsed = time.monotonic() - started_at
             logger.info(
                 "puck bridge turn complete: %d audio chunks spoken in %.1fs",
                 chunks_spoken,
-                time.monotonic() - started_at,
+                elapsed,
             )
+            # Say plainly when the producer is slower than real time. The
+            # device plays at exactly 100%, so a source below that runs it
+            # dry and the answer comes out choppy -- which on 2026-09-12
+            # took an evening to diagnose by ear because nothing measured
+            # it. Bytes are counted against the declared format, so this is
+            # a true audio-seconds-per-wall-second ratio.
+            # Measure from the FIRST AUDIO CHUNK, not from turn start.
+            # Turn start includes Hermes thinking before any audio exists,
+            # and counting that as "generation time" made a healthy stream
+            # look like a 64-75% producer on 2026-09-12 -- which sent the
+            # diagnosis toward an architecture change that was not needed.
+            # audio.py's own note records the real behaviour: "379ms of
+            # audio every ~470ms", i.e. near real time in fits, which a
+            # 0.6s cushion covers for the TUI.
+            stream_elapsed = (
+                time.monotonic() - first_audio_at if first_audio_at else 0.0
+            )
+            if audio_format and stream_elapsed > 0 and audio_bytes:
+                elapsed = stream_elapsed
+                rate, chans, width = audio_format
+                bps = rate * chans * width
+                if bps:
+                    produced = audio_bytes / bps
+                    ratio = produced / elapsed
+                    if ratio < 1.0:
+                        logger.warning(
+                            "puck bridge: TTS generated %.1fs of audio in "
+                            "%.1fs (%.0f%% of real time) -- slower than "
+                            "playback, so a %.1fs cushion is needed to avoid "
+                            "underrun; expect choppy audio on the device",
+                            produced, elapsed, ratio * 100,
+                            max(0.0, produced / ratio - produced),
+                        )
         return True

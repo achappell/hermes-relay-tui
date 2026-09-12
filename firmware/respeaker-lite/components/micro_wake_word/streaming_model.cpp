@@ -264,9 +264,22 @@ bool StreamingModel::perform_streaming_inference(const int8_t features[PREPROCES
       // ever got. This exposes the actual number, throttled to ~1/s per
       // model instance (identified by this->model_start_, a stable
       // per-model pointer) so it doesn't flood the log.
+      // VERBOSE, not INFO: this fires per inference frame per model. At
+      // the 100ms throttle below and four models that is ~40 lines/second
+      // -- measured 2026-09-12 as 12471 of 17166 device log lines in six
+      // minutes. Formatting and shipping that over the API/web server
+      // competes with the audio tasks on the same CPU, which showed up as
+      // constant "Not enough free bytes in ring buffer" warnings and
+      // choppy playback. ESPHome compiles out log calls above the
+      // configured level, so at level: DEBUG this now costs nothing while
+      // remaining available via level: VERBOSE when a wake model needs
+      // debugging again.
+      //
+      // (The old comment claimed "throttled to ~1/s per model"; the
+      // constant was 100ms, so it was ten times noisier than documented.)
       uint32_t now = millis();
       if (now - this->last_prob_log_ms_ > 100) {
-        ESP_LOGI("mww_prob", "model %s raw probability: %u / 255 (cutoff %u)", this->debug_name(),
+        ESP_LOGV("mww_prob", "model %s raw probability: %u / 255 (cutoff %u)", this->debug_name(),
                  (unsigned) output->data.uint8[0], (unsigned) this->probability_cutoff_);
         this->last_prob_log_ms_ = now;
       }
