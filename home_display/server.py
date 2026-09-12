@@ -1,14 +1,16 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import ipaddress
 import json
 import mimetypes
 import ssl
+import uuid
 from dataclasses import dataclass
 from http import HTTPStatus
 from pathlib import Path, PurePosixPath
-from typing import TYPE_CHECKING, Awaitable, Callable
+from typing import TYPE_CHECKING, Any, Awaitable, Callable, Protocol
 from urllib.parse import parse_qs, unquote, urlsplit
 
 from websockets.asyncio.server import Server, ServerConnection, serve
@@ -37,6 +39,122 @@ class DisplayServerInfo:
     def websocket_url(self) -> str:
         scheme = "wss" if self.secure else "ws"
         return f"{scheme}://{_format_url_host(self.host)}:{self.port}/state"
+
+
+DEFAULT_BROWSER_SESSION_LIMIT = 8
+BROWSER_SESSION_CAPACITY_CODE = 1013
+BROWSER_SESSION_CAPACITY_REASON = "browser session capacity reached"
+BROWSER_CONTEXT_SETUP_TIMEOUT = 30.0
+MAX_CONNECTION_TASKS = 8
+CONNECTION_TASK_CLEANUP_TIMEOUT = 3.0
+
+
+class BrowserAudioSender(Protocol):
+    """Connection-scoped response audio owned by the display server."""
+
+    async def send_audio_start(
+        self,
+        *,
+        turn_id: str,
+        sample_rate: int,
+        channels: int,
+        sample_width: int,
+    ) -> None: ...
+
+    async def send_audio_chunk(self, data: bytes) -> None: ...
+
+    async def send_audio_end(self, *, turn_id: str) -> None: ...
+
+    async def send_audio_abort(self, *, turn_id: str, reason: str) -> None: ...
+
+    async def close(self, *, code: int = 1000, reason: str = "") -> None: ...
+
+
+class BrowserSessionBinding(Protocol):
+    """Appliance-owned state and callbacks for one accepted browser socket."""
+
+    publisher: DisplayStatePublisher
+
+    async def handle_action(self, action_id: str, choice: str) -> None: ...
+
+    async def handle_voice_turn(self, text: str) -> None: ...
+
+    async def close(self) -> None: ...
+
+
+class _ConnectionAudioSender:
+    """Send response audio only through one state WebSocket."""
+
+    def __init__(self, server: "DisplayServer", websocket: ServerConnection) -> None:
+        self._server = server
+        self._websocket = websocket
+
+    async def send_audio_start(
+        self,
+        *,
+        turn_id: str,
+        sample_rate: int,
+        channels: int,
+        sample_width: int,
+    ) -> None:
+        self._server._validate_audio_format(
+            turn_id=turn_id,
+            sample_rate=sample_rate,
+            channels=channels,
+            sample_width=sample_width,
+        )
+        sent = await self._server._send_connection_json(
+            self._websocket,
+            {
+                "type": "audio_start",
+                "schema": 1,
+                "turn_id": turn_id,
+                "sample_rate": sample_rate,
+                "channels": channels,
+                "sample_width": sample_width,
+            },
+        )
+        if not sent:
+            raise ConnectionError("browser connection is closed")
+
+    async def send_audio_chunk(self, data: bytes) -> None:
+        if not isinstance(data, bytes):
+            raise TypeError("audio data must be bytes")
+        if data:
+            sent = await self._server._send_connection_frame(self._websocket, data)
+            if not sent:
+                raise ConnectionError("browser connection is closed")
+
+    async def send_audio_end(self, *, turn_id: str) -> None:
+        self._server._validate_turn_id(turn_id)
+        sent = await self._server._send_connection_json(
+            self._websocket,
+            {"type": "audio_end", "schema": 1, "turn_id": turn_id},
+        )
+        if not sent:
+            raise ConnectionError("browser connection is closed")
+
+    async def send_audio_abort(self, *, turn_id: str, reason: str) -> None:
+        self._server._validate_turn_id(turn_id)
+        if not isinstance(reason, str) or not reason:
+            raise ValueError("audio abort reason must be a non-empty string")
+        sent = await self._server._send_connection_json(
+            self._websocket,
+            {
+                "type": "audio_abort",
+                "schema": 1,
+                "turn_id": turn_id,
+                "reason": reason[:256],
+            },
+        )
+        if not sent:
+            raise ConnectionError("browser connection is closed")
+
+    async def close(self, *, code: int = 1000, reason: str = "") -> None:
+        try:
+            await self._websocket.close(code=code, reason=reason)
+        except (ConnectionClosed, OSError):
+            pass
 
 
 @dataclass(frozen=True, slots=True)
@@ -120,6 +238,15 @@ class DisplayServer:
         on_voice_turn: Callable[[str], Awaitable[None]] | None = None,
         ssl_context: ssl.SSLContext | None = None,
         public_origin: str | None = None,
+        browser_session_limit: int = DEFAULT_BROWSER_SESSION_LIMIT,
+        on_browser_connect: Callable[
+            [str, BrowserAudioSender], Awaitable[BrowserSessionBinding]
+        ]
+        | None = None,
+        browser_context_factory: Callable[
+            [str, BrowserAudioSender], Awaitable[BrowserSessionBinding]
+        ]
+        | None = None,
     ) -> None:
         """Create a display server.
 
@@ -129,6 +256,12 @@ class DisplayServer:
                        POST /action?action_id=sethome&choice=yes
         on_voice_turn -- optional coroutine called when a same-origin browser
                         sends a recognized turn over the state WebSocket.
+        on_browser_connect -- optional appliance callback that creates the
+                             connection-scoped state/session binding. The
+                             callback is called after a slot is reserved and
+                             receives a private audio sender for this socket.
+        browser_context_factory -- compatibility spelling for
+                                  on_browser_connect.
         """
         try:
             host_address = ipaddress.ip_address(host)
@@ -136,6 +269,12 @@ class DisplayServer:
             raise ValueError("host must be a loopback IP address") from error
         if not host_address.is_loopback and not allow_remote:
             raise ValueError("host must be a loopback IP address")
+        if type(browser_session_limit) is not int or browser_session_limit <= 0:
+            raise ValueError("browser_session_limit must be a positive integer")
+        if on_browser_connect is not None and browser_context_factory is not None:
+            raise ValueError(
+                "on_browser_connect and browser_context_factory are mutually exclusive"
+            )
 
         self._publisher = publisher
         self._static_dir = Path(static_dir).resolve()
@@ -143,6 +282,8 @@ class DisplayServer:
         self._port = port
         self._on_action = on_action
         self._on_voice_turn = on_voice_turn
+        self._browser_context_factory = on_browser_connect or browser_context_factory
+        self._browser_session_limit = browser_session_limit
         self._ssl_context = ssl_context
         self._public_origin = (
             _parse_origin(public_origin, label="public origin")
@@ -153,6 +294,24 @@ class DisplayServer:
         self._info: DisplayServerInfo | None = None
         self._state_connections: set[ServerConnection] = set()
         self._connection_locks: dict[ServerConnection, asyncio.Lock] = {}
+        self._connection_bindings: dict[ServerConnection, BrowserSessionBinding] = {}
+        self._connection_tasks: dict[ServerConnection, set[asyncio.Task[Any]]] = {}
+        self._connection_cleanup_tasks: set[asyncio.Task[Any]] = set()
+        self._reserved_browser_slots = 0
+
+    @property
+    def browser_session_limit(self) -> int:
+        return self._browser_session_limit
+
+    @property
+    def browser_sessions_in_use(self) -> int:
+        """Return admitted plus pending browser connections."""
+        return self._reserved_browser_slots
+
+    @property
+    def browser_contexts_enabled(self) -> bool:
+        """Whether each state socket receives its own appliance context."""
+        return self._browser_context_factory is not None
 
     async def start(self) -> DisplayServerInfo:
         if self._server is not None:
@@ -177,8 +336,20 @@ class DisplayServer:
             return
         self._server.close()
         await self._server.wait_closed()
+        cleanup_tasks = tuple(
+            task for task in self._connection_cleanup_tasks if not task.done()
+        )
+        if cleanup_tasks:
+            with contextlib.suppress(asyncio.TimeoutError):
+                await asyncio.wait_for(
+                    asyncio.gather(*cleanup_tasks, return_exceptions=True),
+                    CONNECTION_TASK_CLEANUP_TIMEOUT,
+                )
         self._state_connections.clear()
         self._connection_locks.clear()
+        self._connection_bindings.clear()
+        self._connection_tasks.clear()
+        self._reserved_browser_slots = 0
         self._server = None
         self._info = None
 
@@ -374,16 +545,75 @@ class DisplayServer:
         return parsed_origin in {listener_origin, self._public_origin}
 
     async def _handle_state_connection(self, websocket: ServerConnection) -> None:
+        closed = asyncio.create_task(websocket.wait_closed())
+        isolated = self._browser_context_factory is not None
+        slot_reserved = False
+        if isolated and not self._reserve_browser_slot():
+            closed.cancel()
+            await asyncio.gather(closed, return_exceptions=True)
+            with contextlib.suppress(ConnectionClosed, OSError):
+                await websocket.close(
+                    code=BROWSER_SESSION_CAPACITY_CODE,
+                    reason=BROWSER_SESSION_CAPACITY_REASON,
+                )
+            return
+        slot_reserved = isolated
+
         self._state_connections.add(websocket)
         self._connection_locks[websocket] = asyncio.Lock()
-        subscription = self._publisher.subscribe()
-        next_snapshot = asyncio.create_task(anext(subscription))
-        closed = asyncio.create_task(websocket.wait_closed())
-        incoming = asyncio.create_task(websocket.recv())
+        self._connection_tasks[websocket] = set()
+        binding: BrowserSessionBinding | None = None
+        subscription: AsyncIterator[Any] | None = None
+        next_snapshot: asyncio.Task[Any] | None = None
+        incoming: asyncio.Task[Any] | None = None
+        factory_task: asyncio.Task[Any] | None = None
         try:
-            while True:
+            if self._browser_context_factory is not None:
+                sender = _ConnectionAudioSender(self, websocket)
+                factory_task = asyncio.create_task(
+                    self._browser_context_factory(
+                        f"browser-{uuid.uuid4().hex}",
+                        sender,
+                    )
+                )
                 done, _pending = await asyncio.wait(
-                    {next_snapshot, closed, incoming}, return_when=asyncio.FIRST_COMPLETED
+                    {factory_task, closed},
+                    timeout=BROWSER_CONTEXT_SETUP_TIMEOUT,
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+                if not done:
+                    factory_task.cancel()
+                    await asyncio.gather(factory_task, return_exceptions=True)
+                    with contextlib.suppress(ConnectionClosed, OSError):
+                        await websocket.close(
+                            code=1011, reason="browser session unavailable"
+                        )
+                    return
+                if closed in done:
+                    if factory_task in done:
+                        with contextlib.suppress(asyncio.CancelledError, Exception):
+                            completed_binding = factory_task.result()
+                            if completed_binding is not None:
+                                await completed_binding.close()
+                    else:
+                        factory_task.cancel()
+                        await asyncio.gather(factory_task, return_exceptions=True)
+                    return
+                binding = factory_task.result()
+                if binding is None:
+                    raise RuntimeError("browser context factory returned no context")
+                self._connection_bindings[websocket] = binding
+                subscription = binding.publisher.subscribe()
+            else:
+                subscription = self._publisher.subscribe()
+
+            next_snapshot = asyncio.create_task(anext(subscription))
+            incoming = asyncio.create_task(websocket.recv())
+            while True:
+                pending_tasks = {next_snapshot, closed, incoming}
+                done, _pending = await asyncio.wait(
+                    pending_tasks,
+                    return_when=asyncio.FIRST_COMPLETED,
                 )
                 if closed in done:
                     return
@@ -395,12 +625,24 @@ class DisplayServer:
                         voice_text = self._parse_websocket_voice_turn(message)
                     except ConnectionClosed:
                         return
-                    if action is not None and self._on_action is not None:
-                        loop = asyncio.get_event_loop()
-                        loop.create_task(self._on_action(*action))
-                    if voice_text is not None and self._on_voice_turn is not None:
-                        loop = asyncio.get_event_loop()
-                        loop.create_task(self._on_voice_turn(voice_text))
+                    if binding is not None:
+                        if action is not None:
+                            self._track_connection_task(
+                                websocket, binding.handle_action(*action)
+                            )
+                        if voice_text is not None:
+                            self._track_connection_task(
+                                websocket, binding.handle_voice_turn(voice_text)
+                            )
+                    else:
+                        if action is not None and self._on_action is not None:
+                            self._track_connection_task(
+                                websocket, self._on_action(*action)
+                            )
+                        if voice_text is not None and self._on_voice_turn is not None:
+                            self._track_connection_task(
+                                websocket, self._on_voice_turn(voice_text)
+                            )
                     incoming = asyncio.create_task(websocket.recv())
 
                 if next_snapshot in done:
@@ -410,13 +652,102 @@ class DisplayServer:
                     next_snapshot = asyncio.create_task(anext(subscription))
         except ConnectionClosed:
             return
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            with contextlib.suppress(ConnectionClosed, OSError):
+                await websocket.close(code=1011, reason="browser session unavailable")
+            return
         finally:
-            for task in (next_snapshot, closed, incoming):
+            for task in (factory_task, next_snapshot, closed, incoming):
+                if task is not None and not task.done():
+                    task.cancel()
+            await asyncio.gather(
+                *(
+                    task
+                    for task in (factory_task, next_snapshot, closed, incoming)
+                    if task is not None
+                ),
+                return_exceptions=True,
+            )
+            connection_tasks = self._connection_tasks.pop(websocket, set())
+            for task in connection_tasks:
                 if not task.done():
                     task.cancel()
-                await asyncio.gather(task, return_exceptions=True)
-            await subscription.aclose()  # type: ignore[attr-defined]
+            await self._cancel_connection_tasks(connection_tasks)
+            if binding is not None:
+                with contextlib.suppress(Exception):
+                    await binding.close()
+            if subscription is not None:
+                with contextlib.suppress(Exception):
+                    await subscription.aclose()  # type: ignore[attr-defined]
             self._forget_connection(websocket)
+            if slot_reserved:
+                self._release_browser_slot()
+
+    def _reserve_browser_slot(self) -> bool:
+        if self._reserved_browser_slots >= self._browser_session_limit:
+            return False
+        self._reserved_browser_slots += 1
+        return True
+
+    def _release_browser_slot(self) -> None:
+        self._reserved_browser_slots = max(0, self._reserved_browser_slots - 1)
+
+    def _track_connection_task(
+        self, websocket: ServerConnection, awaitable: Awaitable[Any]
+    ) -> None:
+        tasks = self._connection_tasks.get(websocket)
+        if tasks is None or len(tasks) >= MAX_CONNECTION_TASKS:
+            close = getattr(awaitable, "close", None)
+            if callable(close):
+                close()
+            else:
+                cancel = getattr(awaitable, "cancel", None)
+                if callable(cancel):
+                    cancel()
+            return
+        task = asyncio.create_task(awaitable)
+        tasks.add(task)
+
+        def discard(done: asyncio.Task[Any]) -> None:
+            tasks.discard(done)
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                done.result()
+
+        task.add_done_callback(discard)
+
+    async def _cancel_connection_tasks(
+        self, tasks: set[asyncio.Task[Any]]
+    ) -> None:
+        if not tasks:
+            return
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+
+        async def wait_for_tasks() -> None:
+            await asyncio.gather(*tasks, return_exceptions=True)
+
+        cleanup_task = asyncio.create_task(wait_for_tasks())
+        try:
+            await asyncio.wait_for(
+                asyncio.shield(cleanup_task), CONNECTION_TASK_CLEANUP_TIMEOUT
+            )
+        except asyncio.TimeoutError:
+            self._retain_connection_cleanup(cleanup_task)
+        except asyncio.CancelledError:
+            self._retain_connection_cleanup(cleanup_task)
+
+    def _retain_connection_cleanup(self, task: asyncio.Task[Any]) -> None:
+        self._connection_cleanup_tasks.add(task)
+
+        def finished(done: asyncio.Task[Any]) -> None:
+            self._connection_cleanup_tasks.discard(done)
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                done.result()
+
+        task.add_done_callback(finished)
 
     async def _broadcast_json(self, payload: dict[str, object]) -> None:
         await self._broadcast(json.dumps(payload))
@@ -429,6 +760,16 @@ class DisplayServer:
             *(self._send_frame(connection, frame) for connection in connections),
             return_exceptions=True,
         )
+
+    async def _send_connection_json(
+        self, websocket: ServerConnection, payload: dict[str, object]
+    ) -> bool:
+        return await self._send_connection_frame(websocket, json.dumps(payload))
+
+    async def _send_connection_frame(
+        self, websocket: ServerConnection, frame: str | bytes
+    ) -> bool:
+        return await self._send_frame(websocket, frame)
 
     async def _send_frame(self, websocket: ServerConnection, frame: str | bytes) -> bool:
         lock = self._connection_locks.get(websocket)
@@ -445,6 +786,7 @@ class DisplayServer:
     def _forget_connection(self, websocket: ServerConnection) -> None:
         self._state_connections.discard(websocket)
         self._connection_locks.pop(websocket, None)
+        self._connection_bindings.pop(websocket, None)
 
     @staticmethod
     def _validate_turn_id(turn_id: str) -> None:

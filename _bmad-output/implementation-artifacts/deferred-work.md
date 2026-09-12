@@ -240,3 +240,7 @@
 - source_spec: `_bmad-output/implementation-artifacts/spec-ops-web-deployment-pipeline.md`
   summary: Decide whether an explicit rollback smoke failure should restore the release that was active before rollback.
   evidence: `rollback` leaves its selected release active when the subsequent public probe fails; the frozen intent requires reporting rollback and deploy failures but does not specify whether this health failure should trigger a second automatic rollback.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-wk-concurrent-browser-session-isolation.md`
+  summary: Run the overlapping-turn and owner-disconnect smoke against the newly deployed WK-2 service on Ops.
+  evidence: The public Ops check and two-tab readiness smoke passed, but the currently deployed service predates WK-2, so sending overlapping turns there would not validate this implementation. The local two-client WebSocket, audio, failure, disconnect, prompt, reconnect, capacity, and full-suite checks pass; the deployed-branch gate needs an explicit operator deployment and live Hermes test.

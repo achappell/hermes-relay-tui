@@ -61,6 +61,7 @@ development_status:
     review
   1-t-5-non-blocking-wake-listener-and-microphone-teardown-during-re: backlog
   1-t-6-detect-idle-relay-loss-and-present-honest-recovery-without-r: done
+  1-wk-2-concurrent-w-k-browser-session-isolation: review
   epic-1-retrospective: optional
 
   epic-2: in-progress

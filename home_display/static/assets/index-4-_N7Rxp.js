@@ -4634,9 +4634,9 @@ function StateSurface($$anchor, $$props) {
     }
   );
   legacy_pre_effect(
-    () => (deep_read_state(protocolError()), deep_read_state(audioPlaybackFailed()), get(displayState), deep_read_state(snapshot()), get(renderedState)),
+    () => (deep_read_state(protocolError()), deep_read_state(audioPlaybackFailed()), get(displayState), deep_read_state(connectionState()), deep_read_state(snapshot()), get(renderedState)),
     () => {
-      set(status, protocolError() ?? (audioPlaybackFailed() && get(displayState) === "speaking" ? "Audio unavailable — response text remains visible" : snapshot().status_text ?? fallbackStatus[get(renderedState)] ?? null));
+      set(status, protocolError() ?? (audioPlaybackFailed() && get(displayState) === "speaking" ? "Audio unavailable — response text remains visible" : connectionState() === "capacity" ? "All browser sessions are busy — retrying" : snapshot().status_text ?? fallbackStatus[get(renderedState)] ?? null));
     }
   );
   legacy_pre_effect(
@@ -5030,7 +5030,6 @@ class StateChannel {
       }
       this.socketOpen = true;
       this.lastSequence = -1;
-      this.reconnectAttempt = 0;
     };
     socket.onmessage = (event2) => {
       if (!this.isCurrent(socket)) {
@@ -5040,13 +5039,13 @@ class StateChannel {
     };
     socket.onerror = () => {
     };
-    socket.onclose = () => {
+    socket.onclose = (event2) => {
       if (!this.isCurrent(socket)) {
         return;
       }
       this.socket = null;
       this.socketOpen = false;
-      this.deliver(() => this.onConnectionState("disconnected"));
+      this.deliver(() => this.onConnectionState((event2 == null ? void 0 : event2.code) === 1013 ? "capacity" : "disconnected"));
       this.scheduleReconnect();
     };
   }
@@ -5060,6 +5059,17 @@ class StateChannel {
     }
     try {
       this.socket.send(JSON.stringify({ type: "voice_turn", schema: 1, text: normalized }));
+      return true;
+    } catch {
+      return false;
+    }
+  }
+  sendAction(action) {
+    if (!this.socketOpen || !this.hasHydratedSocket || !this.socket || typeof this.socket.send !== "function") {
+      return false;
+    }
+    try {
+      this.socket.send(JSON.stringify(action));
       return true;
     } catch {
       return false;
@@ -5109,6 +5119,7 @@ class StateChannel {
     this.deliver(() => this.onSnapshot(snapshot));
     if (!this.hasHydratedSocket) {
       this.hasHydratedSocket = true;
+      this.reconnectAttempt = 0;
       this.deliver(() => this.onConnectionState("connected"));
     }
   }
@@ -5213,26 +5224,6 @@ function createInitialDisplayView() {
     prompt: null
   });
 }
-const DISPLAY_ACTION_TIMEOUT_MS = 1e4;
-const postDisplayAction = async (action) => {
-  const query = new URLSearchParams({
-    action_id: action.action_id,
-    choice: action.choice
-  });
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), DISPLAY_ACTION_TIMEOUT_MS);
-  try {
-    const response = await fetch(`/action?${query.toString()}`, {
-      method: "POST",
-      signal: controller.signal
-    });
-    if (!response.ok) {
-      throw new Error(`display action failed with HTTP ${response.status}`);
-    }
-  } finally {
-    clearTimeout(timeoutId);
-  }
-};
 class DisplayBridge {
   /**
    * Keep browser transport and action encoding at the edge. The reducer is an
@@ -5248,7 +5239,6 @@ class DisplayBridge {
     __publicField(this, "onVoiceError");
     __publicField(this, "channel");
     this.reducer = options.reducer ?? createDisplayReducer();
-    this.actionTransport = options.actionTransport ?? postDisplayAction;
     this.onActionError = options.onActionError ?? (() => {
     });
     this.voiceTransport = options.voiceTransport ?? null;
@@ -5271,7 +5261,7 @@ class DisplayBridge {
         var _a2, _b2;
         if (state2 === "connecting") {
           this.reducer.reset();
-        } else if (state2 === "disconnected") {
+        } else if (state2 === "disconnected" || state2 === "capacity") {
           (_b2 = (_a2 = this.reducer).setConnectionState) == null ? void 0 : _b2.call(_a2, "disconnected");
         }
         this.deliver(() => options.onConnectionState(state2));
@@ -5282,6 +5272,11 @@ class DisplayBridge {
       options.onAudioEvent,
       options.onAudioChunk
     );
+    this.actionTransport = options.actionTransport ?? ((action) => {
+      if (!this.channel.sendAction(action)) {
+        throw new Error("display action unavailable");
+      }
+    });
   }
   start() {
     this.channel.start();
@@ -6320,11 +6315,12 @@ function App($$anchor, $$props) {
       },
       onConnectionState: (state2) => {
         set(connectionState, state2);
+        if (state2 === "capacity") set(protocolError, null);
         if (state2 !== "connected") clearConversationPresentation();
-        if (state2 === "disconnected") {
+        if (state2 === "disconnected" || state2 === "capacity") {
           resetPlayback();
           voiceController == null ? void 0 : voiceController.reset();
-          handsFreeController == null ? void 0 : handsFreeController.abort("Display disconnected — hands-free is off");
+          handsFreeController == null ? void 0 : handsFreeController.abort(state2 === "capacity" ? "Display is at capacity — hands-free is off" : "Display disconnected — hands-free is off");
         } else if (state2 === "connecting") {
           handsFreeController == null ? void 0 : handsFreeController.abort("Display disconnected — hands-free is off");
         }
