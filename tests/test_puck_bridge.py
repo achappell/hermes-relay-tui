@@ -847,6 +847,20 @@ def test_the_response_stream_is_finished_even_when_a_turn_fails(monkeypatch):
     assert stream.finished
 
 
+
+def _wav_bytes(pcm: bytes, rate: int = 24000, channels: int = 1, width: int = 2) -> bytes:
+    """A minimal valid WAV, for exercising the audio_file fallback path."""
+    import io as _io, wave as _wave
+
+    buf = _io.BytesIO()
+    with _wave.open(buf, "wb") as wf:
+        wf.setnchannels(channels)
+        wf.setsampwidth(width)
+        wf.setframerate(rate)
+        wf.writeframes(pcm)
+    return buf.getvalue()
+
+
 def _get_response(port: int, *, token: str | None, seq: int | None = None):
     """Fetch /response and return (status, body-bytes).
 
@@ -1267,3 +1281,65 @@ def test_a_stale_capture_fetch_is_refused_not_answered_with_the_wrong_audio(tmp_
     assert stale == 409, "a fetch for a different capture must be refused"
     assert matching == 200
     assert body[44:] == b"answer-for-seven"
+
+
+def test_the_file_fallback_goes_to_the_device_not_the_host():
+    """MEDIUM. The audio_file_end fallback always played on the host, so a
+    response delivered only as a file (no streamed chunks) came out of the
+    Mac in --play-on-device mode -- which server.py logs as impossible --
+    while the Puck waited out its format budget for a stream that never got
+    a format."""
+    from puck_bridge.response import ResponseStream
+
+    wav = _wav_bytes(b"\x11\x22" * 8)
+    session = FakeSession(events=[
+        {"type": "audio_file_start"},
+        {"type": "audio_file_chunk", "data": wav},
+        {"type": "audio_file_end", "data": b""},
+    ])
+    stream = ResponseStream()
+    player = FakePlayer()
+    runner = TurnRunner(session, player=player, response_stream=stream)
+    runner.start()
+    try:
+        assert runner._send("a question") is True
+    finally:
+        runner.stop()
+
+    assert player.written == [], "the host must stay silent in device mode"
+    assert list(stream.iter_chunks()) != [], "the device must receive the fallback"
+
+
+def test_a_stale_player_failure_is_not_blamed_on_a_later_turn():
+    """LOW. PCMPlayer.failure is only cleared in start(), so a turn that
+    never started the player -- every turn in device mode -- re-read and
+    re-reported the previous turn's failure as its own."""
+    from puck_bridge.response import ResponseStream
+
+    player = FakePlayer()
+    # Left over from an earlier turn. `active` stays False -- this turn
+    # never starts the player, which is the whole point.
+    player.failure = "an old device error"
+    stream = ResponseStream()
+    runner = TurnRunner(FakeSession(), player=player, response_stream=stream)
+    runner.start()
+    try:
+        import logging as _lg
+        records: list[str] = []
+
+        class _Cap(_lg.Handler):
+            def emit(self, record):
+                records.append(record.getMessage())
+
+        h = _Cap()
+        _lg.getLogger("hermes_relay_tui.puck_bridge.turn").addHandler(h)
+        try:
+            runner._send("a question")
+        finally:
+            _lg.getLogger("hermes_relay_tui.puck_bridge.turn").removeHandler(h)
+    finally:
+        runner.stop()
+
+    assert not any("an old device error" in r for r in records), (
+        "a previous turn's playback failure was reported as this turn's"
+    )

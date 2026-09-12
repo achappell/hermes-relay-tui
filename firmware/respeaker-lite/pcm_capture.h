@@ -347,6 +347,11 @@ inline void write(const uint8_t *data, size_t len) {
     capturing = false;
     capture_done = true;
     capture_pending_upload = true;
+    // Acknowledge this close too. Setting it only on the VAD-silence path
+    // meant a question long enough to fill the buffer -- the case where
+    // someone has been talking longest and most wants to hear "I have
+    // your question" -- got no chirp at all.
+    last_capture_captured = write_pos > 0;
     ESP_LOGW(TAG, "wake capture reached the %us buffer limit before VAD silence", (unsigned) WAKE_CAPTURE_SECONDS);
   }
 }

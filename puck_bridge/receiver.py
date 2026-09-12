@@ -428,6 +428,19 @@ def make_handler(
             # lost turn. Both codes are 2xx, so existing success checks
             # (firmware `chunk_ok`, puck_identity::note_upload_status) are
             # unaffected.
+            # Declare intent BEFORE the confirming 200. The firmware acts
+            # on that 200 in the same 1s interval tick that finished the
+            # upload, so answering first left a narrow window where the
+            # device's /response GET could land while `_expecting` was
+            # still false and fast-fail to 504 -- the same lost-turn shape
+            # the expect() comment describes.
+            if finished_capture is not None and response_stream is not None:
+                if not response_stream.expect(seq):
+                    logger.info(
+                        "puck bridge: a previous answer is still streaming; "
+                        "this capture will not claim the response stream"
+                    )
+
             self._respond(200 if finished_capture is not None else 202)
 
             if finished_capture is not None:
@@ -442,18 +455,13 @@ def make_handler(
             # that race on 2026-09-11: the turn ran and produced audio with
             # nobody left reading the stream. Every path out of this
             # function that will not produce audio calls abandon().
-            accepted_stream = True
-            if response_stream is not None:
-                accepted_stream = response_stream.expect(seq)
-                if not accepted_stream:
-                    # A previous answer is still being delivered. Process
-                    # this capture anyway -- the turn itself is worth
-                    # running -- but never touch the stream, so the answer
-                    # in flight is not truncated or spliced.
-                    logger.info(
-                        "puck bridge: a previous answer is still streaming; "
-                        "this capture will not claim the response stream"
-                    )
+            # expect() already ran in do_POST, before the confirming 200 --
+            # calling it again here would clear the queue a second time.
+            # `accepted_stream` records whether we own the stream, so every
+            # abandon() below is skipped when a previous answer still does.
+            accepted_stream = (
+                response_stream is None or response_stream.seq == seq
+            )
             raw = capture.assemble()
             os.makedirs(resolved_work_dir, exist_ok=True)
             wav_path = os.path.join(resolved_work_dir, f"puck_{seq}.wav")
