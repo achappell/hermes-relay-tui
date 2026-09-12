@@ -112,7 +112,11 @@ def main(argv: list[str] | None = None) -> int:
     session = HermesSession(session_args)
     # Device playback is the normal Puck path. Host playback remains an
     # explicit diagnostic fallback for a firmware or response-stream outage.
-    response_stream = ResponseStream() if args.play_on_device else None
+    response_stream = (
+        ResponseStream(device_build_identity="respeaker-lite-p5")
+        if args.play_on_device
+        else None
+    )
     runner = TurnRunner(session, response_stream=response_stream)
     if response_stream is not None:
         logger.info(

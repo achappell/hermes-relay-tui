@@ -26,6 +26,8 @@ from typing import Any
 from audio import PCMPlayer, read_wav
 from handsfree import HandsFreeCoordinator
 
+from .response import ResponseStreamError
+
 logger = logging.getLogger("hermes_relay_tui.puck_bridge.turn")
 
 # A hung Hermes turn must not block the receiving thread (and the
@@ -352,6 +354,10 @@ class TurnRunner:
         audio_format: tuple[int, int, int] | None = None
         first_audio_at: float | None = None
         started_at = time.monotonic()
+        # Only a normal event-stream end may become `complete`; all early
+        # returns and exceptions must remain visible as unavailable.
+        response_outcome = "unavailable"
+        response_delivery_failed = False
         # Iterate manually rather than with `async for`, so each individual
         # step can carry its own deadline. `async for` can only be bounded
         # as a whole, which is precisely the mistake this replaces.
@@ -406,12 +412,21 @@ class TurnRunner:
                     if event["data"]:
                         awaiting_first_audio = False
                     if self._response_stream is not None:
-                        self._response_stream.write(event["data"])
-                        spoke = True
-                        chunks_spoken += 1
-                        audio_bytes += len(event["data"])
-                        if first_audio_at is None:
-                            first_audio_at = time.monotonic()
+                        accepted = await asyncio.to_thread(
+                            self._response_stream.write,
+                            event["data"],
+                            seq=self._response_seq,
+                        )
+                        if not accepted and event["data"]:
+                            raise ResponseStreamError(
+                                "response stream rejected a PCM chunk"
+                            )
+                        if event["data"]:
+                            spoke = True
+                            chunks_spoken += 1
+                            audio_bytes += len(event["data"])
+                            if first_audio_at is None:
+                                first_audio_at = time.monotonic()
                     elif self._player.active:
                         await self._write_audio(event["data"])
                         spoke = True
@@ -446,9 +461,20 @@ class TurnRunner:
                         # its format budget for a stream that never got one.
                         if self._response_stream is not None:
                             self._response_stream.begin(self._response_seq, fmt)
-                            self._response_stream.write(decoded)
+                            accepted = await asyncio.to_thread(
+                                self._response_stream.write,
+                                decoded,
+                                seq=self._response_seq,
+                            )
+                            if not accepted:
+                                raise ResponseStreamError(
+                                    "response stream rejected fallback audio"
+                                )
                             spoke = True
                             chunks_spoken += 1
+                            audio_bytes += len(decoded)
+                            if first_audio_at is None:
+                                first_audio_at = time.monotonic()
                         else:
                             host_player_started = True
                             if not self._player.active:
@@ -457,18 +483,29 @@ class TurnRunner:
                                 await self._write_audio(decoded)
                                 spoke = True
                                 chunks_spoken += 1
+            if self._response_stream is not None and spoke:
+                response_outcome = "complete"
         finally:
-            # Always close the response stream, success or failure: the
-            # device is blocked reading it, and an unterminated body leaves
-            # it waiting until its own ~30s timeout instead of stopping
-            # cleanly. This is the producer's half of "terminate the body
-            # definitively".
+            # Publish the producer outcome before closing the generator. The
+            # consumer may already be waiting on the condition, and it must
+            # either drain a normal completion or stop immediately on a
+            # failure.
             if self._response_stream is not None:
                 try:
-                    self._response_stream.finish()
+                    if response_outcome == "complete":
+                        completed = self._response_stream.complete(
+                            self._response_seq
+                        )
+                        if not completed:
+                            response_delivery_failed = True
+                    else:
+                        self._response_stream.fail_delivery(
+                            self._response_seq, reason="turn_failure"
+                        )
                 except Exception:  # pragma: no cover - best-effort cleanup
+                    response_delivery_failed = True
                     logger.debug(
-                        "puck bridge: error finishing response stream",
+                        "puck bridge: error recording response outcome",
                         exc_info=True,
                     )
             # Close the generator before the player: it may still be
@@ -518,8 +555,18 @@ class TurnRunner:
             if player_failure:
                 logger.error("puck bridge playback failed: %s", player_failure)
                 return False
+        if response_delivery_failed or (
+            self._response_stream is not None
+            and self._response_stream.terminal_status == "unavailable"
+        ):
+            logger.warning(
+                "puck bridge response was not delivered; no automatic replay"
+            )
+            return False
         if not spoke:
             logger.warning("puck bridge turn completed with no audible response")
+            if self._response_stream is not None:
+                return False
         else:
             # Say so explicitly. A successful turn used to log nothing at
             # all, so "it worked" and "it is still running" looked

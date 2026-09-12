@@ -133,3 +133,27 @@
 - source_spec: `_bmad-output/implementation-artifacts/spec-1-p-2-status-and-response-audio-delivery.md`
   summary: DEFERRED as pre-existing firmware-surface work: authenticate the port-80 web controls.
   evidence: The firmware exposes web controls without authentication, but that surface predates P-2 and is unrelated to the `/response` token handoff. Keep it separate from the P-2 response-authentication decision.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-1-p-5-complete-streamed-response-playback-without-underrun.md`
+  summary: Define a reboot-safe response sequence epoch for the Puck capture counter.
+  evidence: `pcm_capture.h` resets its in-memory `sample_index` to zero on reboot, while the long-lived bridge now rejects non-increasing response sequences. A reboot after a prior response can therefore reuse an old sequence; resolving that needs a capture/boot-epoch contract outside P-5, and P-5 leaves `pcm_capture.h` unchanged.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-1-p-5-complete-streamed-response-playback-without-underrun.md`
+  summary: Propagate decoder, DMA, and speaker-output failure after bridge delivery completes.
+  evidence: The bridge's `complete` status proves source accounting and HTTP delivery only. Detecting an output failure after the response drains belongs to the P-11 speaker path explicitly excluded from P-5.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-1-p-5-complete-streamed-response-playback-without-underrun.md`
+  summary: Bound or stream the pre-existing Hermes `audio_file` fallback buffer.
+  evidence: `TurnRunner._run_turn()` has accumulated the fallback in a `bytearray` since the original runner implementation; making that path incremental requires a decoder/format boundary not owned by the P-5 live PCM queue.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-1-p-5-complete-streamed-response-playback-without-underrun.md`
+  summary: Restore the pre-existing ESPHome compile blocker for `last_capture_captured`.
+  evidence: The current unchanged `pcm_capture.h` references `last_capture_captured` without a declaration, and `venv-firmware/bin/esphome compile` fails there. P-5 preserves that file by contract; the hardware build gate remains blocked until the owning capture slice repairs it.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-1-p-5-complete-streamed-response-playback-without-underrun.md`
+  summary: Run the physical Puck long-response, acoustic-marker, latency, and second-wake gate.
+  evidence: Host tests and ESPHome configuration generation pass, but the required compiled-image/hardware observation is not available in this run; the spec's controlled observer capture and audible completion criteria therefore remain unverified.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-1-p-5-complete-streamed-response-playback-without-underrun.md`
+  summary: Exchange and authenticate the firmware build identity with the bridge.
+  evidence: The bridge records the configured `respeaker-lite-p5` deployment label and the helper logs the same identity, but no P-5 protocol handshake proves which image is connected. A multi-firmware identity contract would expand the device-administration boundary beyond this story.
