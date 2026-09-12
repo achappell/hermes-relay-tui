@@ -40,12 +40,8 @@ from textual.visual import RenderOptions, RichVisual, Visual, VisualType, visual
 from textual.widgets import Footer, Header, Input, Static, TextArea
 from websockets.exceptions import ConnectionClosed
 
-try:
-    from websockets.exceptions import ConcurrencyError as WebSocketConcurrencyError
-except ImportError:  # websockets 13.x has no dedicated concurrent-reader error
-    WebSocketConcurrencyError = type(None)
-
 import config
+from client import TransportError
 import earcons as earcons_module
 import handsfree
 from attachments import (
@@ -377,7 +373,15 @@ VOICE_ERROR = "error"
 def _is_transport_error(error: BaseException) -> bool:
     """Return whether a failed turn indicates that the relay stream is gone."""
     return isinstance(
-        error, (ConnectionError, ConnectionClosed, WebSocketConcurrencyError)
+        error,
+        (
+            TransportError,
+            ConnectionClosed,
+            ConnectionError,
+            EOFError,
+            asyncio.IncompleteReadError,
+            asyncio.TimeoutError,
+        ),
     )
 
 # A fact about the device, not about a feature. It appears whenever the input
@@ -638,6 +642,14 @@ class HermesStreamingApp(App):
         self._shutting_down = False
         self._cleanup_tasks: set[asyncio.Task[Any]] = set()
         self._session_cleanup_tasks: dict[int, asyncio.Task[Any]] = {}
+        self._session_generation = 0
+        self._connection_watch_task: Optional[asyncio.Task[Any]] = None
+        self._connection_watch_key: tuple[int, int] | None = None
+        self._expected_close_keys: set[tuple[int, int]] = set()
+        self._loss_handled_keys: set[tuple[int, int]] = set()
+        self._loss_in_flight_keys: set[tuple[int, int]] = set()
+        self._connection_loss_in_flight = False
+        self._recovery_session_ready = False
         # Wake mode remains off unless the user explicitly opts in through
         # configuration or --wake-enabled. A configured launch arms it only
         # after the initial connection; reconnects and reloads never reopen a
@@ -975,6 +987,153 @@ class HermesStreamingApp(App):
             return factory(args)
         return factory()
 
+    def _install_session(self, session: SessionProtocol) -> SessionProtocol:
+        """Install a session and give its callbacks a new identity generation."""
+        self.session = session
+        self._session_generation += 1
+        self._recovery_session_ready = False
+        return session
+
+    def _session_key(
+        self, session: SessionProtocol | None = None, generation: int | None = None
+    ) -> tuple[int, int] | None:
+        session = self.session if session is None else session
+        if session is None:
+            return None
+        return (id(session), self._session_generation if generation is None else generation)
+
+    def _session_is_current(
+        self, session: SessionProtocol | None, generation: int | None
+    ) -> bool:
+        return (
+            session is not None
+            and session is self.session
+            and generation == self._session_generation
+        )
+
+    def _expect_session_close(
+        self, session: SessionProtocol | None, generation: int | None = None
+    ) -> None:
+        key = self._session_key(session, generation)
+        if key is not None:
+            self._expected_close_keys.add(key)
+
+    async def _stop_connection_watcher(
+        self,
+        session: SessionProtocol | None = None,
+        generation: int | None = None,
+        *,
+        expected_close: bool = False,
+    ) -> None:
+        """Retire the old observer before an app-owned session replacement."""
+        watcher = self._connection_watch_task
+        watcher_key = self._connection_watch_key
+        if watcher is None:
+            if expected_close:
+                self._expect_session_close(session, generation)
+            return
+        if expected_close and watcher_key is not None:
+            self._expected_close_keys.add(watcher_key)
+        if watcher is asyncio.current_task():
+            return
+        if not watcher.done():
+            watcher.cancel()
+            try:
+                await asyncio.wait_for(
+                    asyncio.shield(watcher),
+                    SHUTDOWN_TASK_TIMEOUT,
+                )
+            except asyncio.TimeoutError:
+                diagnostic_logger.warning("app.connection_watch.cancel_timeout")
+            except asyncio.CancelledError:
+                pass
+            except Exception as exc:
+                diagnostic_logger.debug(
+                    "app.connection_watch.cancel_failed type=%s",
+                    type(exc).__name__,
+                )
+        if self._connection_watch_task is watcher:
+            self._connection_watch_task = None
+            self._connection_watch_key = None
+
+    def _start_connection_watcher(
+        self, session: SessionProtocol, generation: int
+    ) -> None:
+        """Observe close completion without becoming a second websocket reader."""
+        if self._shutting_down or not self._session_is_current(session, generation):
+            return
+        wait_for_disconnect = getattr(session, "wait_for_disconnect", None)
+        # Older test doubles and third-party session adapters can still drive
+        # the TUI; the concrete HermesSession enforces this capability before
+        # hello_ack, so a missing method here is never a live supported path.
+        if not callable(wait_for_disconnect):
+            diagnostic_logger.debug("app.connection_watch.unsupported_adapter")
+            return
+        existing = self._connection_watch_task
+        if existing is not None and not existing.done():
+            if self._connection_watch_key == (id(session), generation):
+                return
+            diagnostic_logger.error("app.connection_watch.duplicate_suppressed")
+            return
+        try:
+            watcher = asyncio.create_task(
+                self._watch_connection(session, generation),
+                name=f"watch relay connection {generation}",
+            )
+        except Exception as exc:
+            diagnostic_logger.debug(
+                "app.connection_watch.create_failed type=%s",
+                type(exc).__name__,
+            )
+            return
+        self._connection_watch_task = watcher
+        self._connection_watch_key = (id(session), generation)
+        self._track_cleanup_task(watcher)
+
+    async def _watch_connection(
+        self, session: SessionProtocol, generation: int
+    ) -> None:
+        """Turn a verified close into one idempotent app-owned loss signal."""
+        key = (id(session), generation)
+        try:
+            wait_for_disconnect = getattr(session, "wait_for_disconnect", None)
+            if not callable(wait_for_disconnect):
+                raise TypeError("session adapter lacks wait_for_disconnect()")
+            result = wait_for_disconnect()
+            if not inspect.isawaitable(result):
+                raise TypeError("wait_for_disconnect() must be awaitable")
+            await result
+        except asyncio.CancelledError:
+            return
+        except TransportError:
+            if self._session_is_current(session, generation) and key not in self._expected_close_keys:
+                await self._mark_connection_lost(
+                    session=session,
+                    generation=generation,
+                )
+        except Exception as exc:
+            if self._session_is_current(session, generation) and key not in self._expected_close_keys:
+                diagnostic_logger.error(
+                    "app.connection_watch.failed type=%s",
+                    type(exc).__name__,
+                )
+                self._append_block(
+                    "[error] connection liveness monitoring failed "
+                    f"({type(exc).__name__}); connection state unchanged.",
+                    role="error",
+                )
+        else:
+            if self._session_is_current(session, generation) and key not in self._expected_close_keys:
+                await self._mark_connection_lost(
+                    session=session,
+                    generation=generation,
+                )
+        finally:
+            self._expected_close_keys.discard(key)
+            if self._connection_watch_task is asyncio.current_task():
+                self._connection_watch_task = None
+                self._connection_watch_key = None
+
     def _refresh_connection_status(self) -> None:
         session_id = (
             getattr(self.session, "session_id", None)
@@ -1132,7 +1291,9 @@ class HermesStreamingApp(App):
     # --- lifecycle ------------------------------------------------------------
 
     async def on_mount(self) -> None:
-        self.session = self._new_session(self._doorway_session_args(self.args))
+        self._install_session(
+            self._new_session(self._doorway_session_args(self.args))
+        )
         self._refresh_queue_shelf()
         self._refresh_prompt_panel()
         self.query_one("#command-suggestions", Static).display = False
@@ -1154,122 +1315,212 @@ class HermesStreamingApp(App):
             # down; there is no transcript to refresh in either case.
             pass
 
+    async def _prepare_fresh_recovery_session(self) -> bool:
+        """Replace a lost session once, before its bounded verified handshake."""
+        if self._recovery_session_ready:
+            return True
+
+        old_session = self.session
+        old_generation = self._session_generation
+        if old_session is not None:
+            self._expect_session_close(old_session, old_generation)
+            await self._stop_connection_watcher(
+                old_session,
+                old_generation,
+                expected_close=True,
+            )
+            await self._close_player(abort=True)
+            await self._close_session_for_reconnect(old_session)
+
+        # Replacement preserves the visible partial answer, but the old
+        # stream and prompt ownership must not remain live in the new session.
+        self.transcript.finish_stream()
+        self._refresh_transcript()
+        if self._pending_prompt is not None:
+            self._pending_prompt = None
+            self._refresh_prompt_panel()
+
+        try:
+            recovery_args = self._doorway_session_args(self.args)
+            fresh_session = self._new_session(recovery_args)
+        except Exception as exc:
+            diagnostic_logger.debug(
+                "app.recovery.new_session_failed type=%s",
+                type(exc).__name__,
+            )
+            self._recovery_session_ready = False
+            self._append_block(f"[error] reconnect session setup failed: {exc}")
+            return False
+
+        self._install_session(fresh_session)
+        self._recovery_session_ready = True
+        if self._audio_input_touched:
+            setter = getattr(self.session, "set_input_device", None)
+            try:
+                if callable(setter):
+                    result = setter(self.audio_input_device)
+                    if inspect.isawaitable(result):
+                        await result
+                else:
+                    setattr(self.session, "input_device", self.audio_input_device)
+            except Exception as exc:
+                diagnostic_logger.debug(
+                    "app.recovery.audio_input_restore_failed type=%s",
+                    type(exc).__name__,
+                )
+                self._append_block(
+                    f"[warning] audio input selection was not restored: {exc}"
+                )
+        return True
+
     async def _connect(
         self, *, force: bool = False, hydrate_history: bool = True
     ) -> bool:
         """Establish a session with bounded exponential-backoff retries."""
-        async with self._connection_lock:
-            if self.wake_armed and not self.session.is_connected():
-                self._disarm_wake(
-                    "wake mode off — connection lost; microphone released. "
-                    "Run /wake on after reconnect."
-                )
-            if self._needs_reconnect and self.session.is_connected() and not force:
+        # A prompt-triggered recovery and the explicit command use the same
+        # guard. The first caller owns the fresh-session ladder; other prompts
+        # remain FIFO-queued until that verified session exists.
+        owns_recovery = (
+            self._needs_reconnect
+            and not force
+            and not self._reconnect_in_flight
+        )
+        if owns_recovery:
+            self._reconnect_in_flight = True
+        try:
+            async with self._connection_lock:
+                if self.wake_armed and (
+                    self._needs_reconnect or not self.session.is_connected()
+                ):
+                    self._disarm_wake(
+                        "wake mode off — connection lost; microphone released. "
+                        "Run /wake on after reconnect."
+                    )
+                reconnecting = self._needs_reconnect
+                if reconnecting and not self._recovery_session_ready:
+                    if not await self._prepare_fresh_recovery_session():
+                        self._set_connection_state(CONNECTION_DISCONNECTED)
+                        self._set_voice_state(VOICE_DISCONNECTED)
+                        return False
+                if self.session.is_connected() and not force and not reconnecting:
+                    self._set_connection_state(CONNECTION_CONNECTED)
+                    self._set_voice_state(VOICE_READY)
+                    self._start_connection_watcher(
+                        self.session,
+                        self._session_generation,
+                    )
+                    return True
+
+                retries = max(0, int(getattr(self.args, "connect_retries", 3)))
+                retry_delay = max(0.0, float(getattr(self.args, "connect_retry_delay", 1.0)))
+                attempts = retries + 1
+                last_error: Exception = RuntimeError("unknown connection failure")
+
+                for attempt in range(attempts):
+                    if attempt == 0:
+                        self._set_connection_state(CONNECTION_CONNECTING)
+                        self._set_voice_state(
+                            VOICE_RECONNECTING if reconnecting else VOICE_CONNECTING
+                        )
+                        if reconnecting:
+                            self._append_block("reconnecting…")
+                    else:
+                        self._set_connection_state(CONNECTION_RETRYING)
+                        self._set_voice_state(VOICE_RECONNECTING)
+                        delay = min(retry_delay * (2 ** (attempt - 1)), MAX_CONNECT_RETRY_DELAY)
+                        if delay:
+                            self._append_block(
+                                f"reconnecting… attempt {attempt + 1}/{attempts} in {delay:g}s"
+                            )
+                            await asyncio.sleep(delay)
+                        else:
+                            self._append_block(
+                                f"reconnecting… attempt {attempt + 1}/{attempts}"
+                            )
+
+                    try:
+                        session = self.session
+                        async with asyncio.timeout(HANDSHAKE_TIMEOUT):
+                            hello = await session.connect()
+                        if not session.is_connected():
+                            raise ConnectionError("session did not establish a connection")
+                    except asyncio.CancelledError:
+                        self._set_connection_state(CONNECTION_DISCONNECTED)
+                        self._set_voice_state(VOICE_DISCONNECTED)
+                        raise
+                    except Exception as exc:
+                        last_error = exc
+                        self._set_connection_state(CONNECTION_DISCONNECTED)
+                        self._set_voice_state(VOICE_DISCONNECTED)
+                        await self._close_session_with_timeout(
+                            session,
+                            event="app.connect.session_close",
+                            timeout_message=(
+                                "[warning] failed session cleanup timed out; continuing."
+                            ),
+                        )
+                        self._append_block(
+                            "[connection attempt "
+                            f"{attempt + 1}/{attempts} failed: "
+                            f"{self._connection_error_text(exc)}]"
+                        )
+                        continue
+
+                    session_generation = self._session_generation
+                    session_id = (
+                        getattr(session, "session_id", None)
+                        or getattr(self.args, "session_id", "session")
+                    )
+                    self._set_connection_state(CONNECTION_CONNECTED)
+                    self.domain.reset_session(str(session_id) if session_id else None)
+                    self._set_voice_state(VOICE_READY)
+                    self._needs_reconnect = False
+                    self._recovery_session_ready = False
+                    self._start_connection_watcher(session, session_generation)
+                    conn_details = []
+                    if self._profiles_configured:
+                        conn_details.append(f"profile {self._active_profile_name}")
+                    chat_id = getattr(session, "confirmed_chat_id", None) or hello.get("chat_id")
+                    if chat_id:
+                        conn_details.append(f"chat {chat_id}")
+                    if getattr(session, "confirmed_model", None):
+                        conn_details.append(f"model {session.confirmed_model}")
+                    elif getattr(self.args, "model", None):
+                        conn_details.append(f"model {self.args.model} (unconfirmed)")
+                    if getattr(session, "confirmed_server_version", None):
+                        conn_details.append(f"relay v{session.confirmed_server_version}")
+                    detail_suffix = f" ({', '.join(conn_details)})" if conn_details else ""
+                    self._append_block(f"Connected to {session_id}{detail_suffix}.")
+                    if (
+                        hydrate_history
+                        and not reconnecting
+                        and getattr(session, "initial_history", None)
+                    ):
+                        self._hydrate_transcript(session.initial_history)
+                    if (
+                        not reconnecting
+                        and not self._reconnect_in_flight
+                        and not self._needs_reconnect
+                        and not self._launch_wake_attempted
+                        and getattr(self.args, "wake_enabled", False)
+                    ):
+                        self._launch_wake_attempted = True
+                        await self._arm_wake()
+                    return True
+
+                self._recovery_session_ready = False
                 self._set_connection_state(CONNECTION_DISCONNECTED)
                 self._set_voice_state(VOICE_DISCONNECTED)
-                return False
-            if self.session.is_connected() and not force and not self._needs_reconnect:
-                self._set_connection_state(CONNECTION_CONNECTED)
-                self._set_voice_state(VOICE_READY)
-                return True
-
-            retries = max(0, int(getattr(self.args, "connect_retries", 3)))
-            retry_delay = max(0.0, float(getattr(self.args, "connect_retry_delay", 1.0)))
-            attempts = retries + 1
-            reconnecting = self._needs_reconnect
-            last_error: Exception = RuntimeError("unknown connection failure")
-
-            for attempt in range(attempts):
-                if attempt == 0:
-                    self._set_connection_state(CONNECTION_CONNECTING)
-                    self._set_voice_state(
-                        VOICE_RECONNECTING if reconnecting else VOICE_CONNECTING
-                    )
-                    if reconnecting:
-                        self._append_block("reconnecting…")
-                else:
-                    self._set_connection_state(CONNECTION_RETRYING)
-                    self._set_voice_state(VOICE_RECONNECTING)
-                    delay = min(retry_delay * (2 ** (attempt - 1)), MAX_CONNECT_RETRY_DELAY)
-                    if delay:
-                        self._append_block(
-                            f"reconnecting… attempt {attempt + 1}/{attempts} in {delay:g}s"
-                        )
-                        await asyncio.sleep(delay)
-                    else:
-                        self._append_block(f"reconnecting… attempt {attempt + 1}/{attempts}")
-
-                try:
-                    async with asyncio.timeout(HANDSHAKE_TIMEOUT):
-                        hello = await self.session.connect()
-                    if not self.session.is_connected():
-                        raise ConnectionError("session did not establish a connection")
-                except asyncio.CancelledError:
-                    self._set_connection_state(CONNECTION_DISCONNECTED)
-                    self._set_voice_state(VOICE_DISCONNECTED)
-                    raise
-                except Exception as exc:
-                    last_error = exc
-                    self._set_connection_state(CONNECTION_DISCONNECTED)
-                    self._set_voice_state(VOICE_DISCONNECTED)
-                    await self._close_session_with_timeout(
-                        self.session,
-                        event="app.connect.session_close",
-                        timeout_message=(
-                            "[warning] failed session cleanup timed out; continuing."
-                        ),
-                    )
-                    self._append_block(
-                        "[connection attempt "
-                        f"{attempt + 1}/{attempts} failed: "
-                        f"{self._connection_error_text(exc)}]"
-                    )
-                    continue
-
-                session_id = (
-                    getattr(self.session, "session_id", None)
-                    or getattr(self.args, "session_id", "session")
+                self._append_block(
+                    "[error] "
+                    f"{self._connection_error_text(last_error)}; unable to connect "
+                    f"after {attempts} attempt(s)"
                 )
-                self._set_connection_state(CONNECTION_CONNECTED)
-                self.domain.reset_session(str(session_id) if session_id else None)
-                self._set_voice_state(VOICE_READY)
-                self._needs_reconnect = False
-                conn_details = []
-                if self._profiles_configured:
-                    conn_details.append(f"profile {self._active_profile_name}")
-                chat_id = getattr(self.session, "confirmed_chat_id", None) or hello.get("chat_id")
-                if chat_id:
-                    conn_details.append(f"chat {chat_id}")
-                if getattr(self.session, "confirmed_model", None):
-                    conn_details.append(f"model {self.session.confirmed_model}")
-                elif getattr(self.args, "model", None):
-                    conn_details.append(f"model {self.args.model} (unconfirmed)")
-                if getattr(self.session, "confirmed_server_version", None):
-                    conn_details.append(f"relay v{self.session.confirmed_server_version}")
-                detail_suffix = f" ({', '.join(conn_details)})" if conn_details else ""
-                self._append_block(f"Connected to {session_id}{detail_suffix}.")
-                if hydrate_history and getattr(self.session, "initial_history", None):
-                    self._hydrate_transcript(self.session.initial_history)
-                if (
-                    not reconnecting
-                    and not self._reconnect_in_flight
-                    and not self._needs_reconnect
-                    and not self._launch_wake_attempted
-                    and getattr(self.args, "wake_enabled", False)
-                ):
-                    self._launch_wake_attempted = True
-                    await self._arm_wake()
-                return True
-
-            self._set_connection_state(CONNECTION_DISCONNECTED)
-            self._set_voice_state(VOICE_DISCONNECTED)
-            self._append_block(
-                "[error] "
-                f"{self._connection_error_text(last_error)}; unable to connect "
-                f"after {attempts} attempt(s)"
-            )
-            self._append_block(RETRY_HINT)
-            return False
+                self._append_block(RETRY_HINT)
+                return False
+        finally:
+            if owns_recovery:
+                self._reconnect_in_flight = False
 
     @staticmethod
     def _connection_error_text(error: BaseException) -> str:
@@ -1302,47 +1553,17 @@ class HermesStreamingApp(App):
                 )
 
             async with self._connection_lock:
-                old_session = self.session
                 self._needs_reconnect = True
                 self._set_connection_state(CONNECTION_DISCONNECTED)
                 self._set_voice_state(VOICE_DISCONNECTED)
                 self._append_block(
                     "reconnect requested — starting a fresh Hermes session."
                 )
-                if old_session is not None:
-                    await self._close_session_for_reconnect(old_session)
-
-                try:
-                    recovery_args = self._doorway_session_args(self.args)
-                    self.session = self._new_session(recovery_args)
-                except Exception as exc:
-                    diagnostic_logger.debug(
-                        "app.reconnect.new_session_failed type=%s",
-                        type(exc).__name__,
-                    )
-                    self._append_block(f"[error] reconnect session setup failed: {exc}")
+                if not await self._prepare_fresh_recovery_session():
                     self._append_block(
                         "reconnect failed; no prompt was sent and queued prompts remain pending."
                     )
                     return
-
-                if self._audio_input_touched:
-                    setter = getattr(self.session, "set_input_device", None)
-                    try:
-                        if callable(setter):
-                            result = setter(self.audio_input_device)
-                            if inspect.isawaitable(result):
-                                await result
-                        else:
-                            setattr(self.session, "input_device", self.audio_input_device)
-                    except Exception as exc:
-                        diagnostic_logger.debug(
-                            "app.reconnect.audio_input_restore_failed type=%s",
-                            type(exc).__name__,
-                        )
-                        self._append_block(
-                            f"[warning] audio input selection was not restored: {exc}"
-                        )
 
             # The handshake remains bounded and observable through the normal
             # connection ladder. A recovered session must not hydrate or drain
@@ -1410,6 +1631,12 @@ class HermesStreamingApp(App):
         if self._shutting_down:
             return
         self._shutting_down = True
+        self._expect_session_close(self.session, self._session_generation)
+        await self._stop_connection_watcher(
+            self.session,
+            self._session_generation,
+            expected_close=True,
+        )
         await self._cancel_shutdown_tasks()
         await self._abort_earcon()
         self._disarm_wake()
@@ -1478,19 +1705,10 @@ class HermesStreamingApp(App):
 
     async def _close_session_for_shutdown(self) -> None:
         """Give session cleanup a budget so quit cannot wait on a dead socket."""
-        close_task = asyncio.create_task(self.session.close())
-        self._track_cleanup_task(close_task)
-        try:
-            await asyncio.wait_for(
-                asyncio.shield(close_task),
-                SHUTDOWN_TASK_TIMEOUT,
-            )
-        except asyncio.TimeoutError:
-            diagnostic_logger.warning("app.shutdown.session_timeout")
-        except Exception:
-            diagnostic_logger.debug(
-                "app.shutdown.session_failed", exc_info=True
-            )
+        await self._close_session_with_timeout(
+            self.session,
+            event="app.shutdown.session_close",
+        )
 
     async def _cancel_shutdown_tasks(self) -> None:
         """Stop app-owned workers before their resources are torn down."""
@@ -2365,6 +2583,16 @@ class HermesStreamingApp(App):
             exit_on_error=False,
         )
 
+    def _prompt_is_current(self, prompt: PendingPrompt) -> bool:
+        """Bind legacy untagged doubles, then reject crossed generations."""
+        prompt_session = getattr(prompt, "session_identity", None)
+        prompt_generation = getattr(prompt, "session_generation", None)
+        if prompt_session is None:
+            prompt.session_identity = self.session
+            prompt.session_generation = self._session_generation
+            return True
+        return self._session_is_current(prompt_session, prompt_generation)
+
     async def _answer_prompt(self, *, option_id: Optional[str], value: Optional[str]) -> None:
         """Send exactly one response for the currently pending prompt.
 
@@ -2374,6 +2602,12 @@ class HermesStreamingApp(App):
         """
         prompt = self._pending_prompt
         if prompt is None or prompt.awaiting_response:
+            return
+        if not self._prompt_is_current(prompt):
+            diagnostic_logger.debug("app.prompt.stale_response_rejected")
+            if self._pending_prompt is prompt:
+                self._pending_prompt = None
+                self._refresh_prompt_panel()
             return
         prepared = self.domain.prepare_prompt_action(option_id=option_id, value=value)
         if not prepared.accepted or prepared.action is None:
@@ -2386,20 +2620,30 @@ class HermesStreamingApp(App):
         prompt.rejection_reason = None
         self._refresh_prompt_panel()
         try:
-            sent = await self.session.send_prompt_response(
+            sent = await prompt.session_identity.send_prompt_response(
                 prompt_id=action.prompt_id,
                 prompt_kind=action.prompt_kind,
                 option_id=action.option_id,
                 value=action.value,
             )
         except Exception as exc:
-            if self._pending_prompt is prompt:
+            if _is_transport_error(exc):
+                await self._mark_connection_lost(
+                    session=prompt.session_identity,
+                    generation=prompt.session_generation,
+                )
+            if (
+                self._pending_prompt is prompt
+                and self._prompt_is_current(prompt)
+            ):
                 self.domain.prompt_response_failed(str(exc))
                 prompt.awaiting_response = False
                 self._append_block(f"[error] prompt response: {exc}", role="error")
                 self._refresh_prompt_panel()
+                if _is_transport_error(exc):
+                    self._append_block(RETRY_HINT)
             return
-        if not sent and self._pending_prompt is prompt:
+        if not sent and self._pending_prompt is prompt and self._prompt_is_current(prompt):
             self.domain.prompt_response_failed("structured prompts unsupported")
             prompt.awaiting_response = False
             self._append_block(
@@ -2568,8 +2812,6 @@ class HermesStreamingApp(App):
         new_endpoint = str(getattr(new_args, "url", "")).split("?", 1)[0] or "-"
         dropped_queue = len(self._queued_prompts)
         dropped_attachments = len(self._staged_attachments)
-        close_error: Exception | None = None
-
         async with self._connection_lock:
             if self.wake_armed or self._wake_starting:
                 self._disarm_wake(
@@ -2578,14 +2820,27 @@ class HermesStreamingApp(App):
                 )
             old_session = self.session
             if old_session is not None:
-                try:
-                    await old_session.close()
-                except Exception as exc:
-                    close_error = exc
+                old_generation = self._session_generation
+                self._expect_session_close(old_session, old_generation)
+                await self._stop_connection_watcher(
+                    old_session,
+                    old_generation,
+                    expected_close=True,
+                )
+                await self._close_player(abort=True)
+                await self._close_session_with_timeout(
+                    old_session,
+                    event="app.profile.old_session_close",
+                    timeout_message=(
+                        "[warning] previous session cleanup timed out; continuing with a fresh session."
+                    ),
+                )
 
             self.args = new_args
             self._sync_profile_metadata(new_args)
-            self.session = self._new_session(self._doorway_session_args(new_args))
+            self._install_session(
+                self._new_session(self._doorway_session_args(new_args))
+            )
             self.domain.reset_session(
                 getattr(self.session, "session_id", None)
                 or getattr(new_args, "session_id", None)
@@ -2611,8 +2866,6 @@ class HermesStreamingApp(App):
                 detail += f" Discarded {dropped_queue} queued prompt(s); none were replayed."
             if dropped_attachments:
                 detail += f" Cleared {dropped_attachments} staged attachment(s)."
-            if close_error is not None:
-                detail += f" Old-session cleanup reported: {close_error}."
             self._append_block(detail)
 
         # Keep the lock free while the new hello handshake waits on the relay.
@@ -3416,8 +3669,16 @@ class HermesStreamingApp(App):
             self._append_block("[interrupted]")
             self._turn_in_flight = False
 
+        closing_session = self.session
+        closing_generation = self._session_generation
+        self._expect_session_close(closing_session, closing_generation)
+        await self._stop_connection_watcher(
+            closing_session,
+            closing_generation,
+            expected_close=True,
+        )
         try:
-            await self.session.close()
+            await closing_session.close()
         except Exception as exc:
             self._append_block(f"[error] interrupt cleanup: {exc}")
         self._set_connection_state(CONNECTION_DISCONNECTED)
@@ -3491,7 +3752,7 @@ class HermesStreamingApp(App):
             composer.load_text("")
         await asyncio.to_thread(history.append, history_text)
 
-        if self._reconnect_in_flight:
+        if self._reconnect_in_flight or self._connection_loss_in_flight:
             self._enqueue_prompt(text)
             return
 
@@ -3551,7 +3812,7 @@ class HermesStreamingApp(App):
     # --- the turn loop --------------------------------------------------------
 
     async def _run_turn(self, text: str, *, stt_source: str = "local") -> bool:
-        if self._reconnect_in_flight:
+        if self._reconnect_in_flight or self._connection_loss_in_flight:
             self._last_prompt = text
             self._last_prompt_status = PROMPT_NOT_SENT
             self._enqueue_prompt(text)
@@ -3606,6 +3867,8 @@ class HermesStreamingApp(App):
     async def _run_single_turn(
         self, text: str, *, stt_source: str
     ) -> tuple[bool, str]:
+        session = self.session
+        session_generation = self._session_generation
         self._last_prompt = text
         self._last_prompt_status = PROMPT_NOT_SENT
         turn_status = PROMPT_NOT_SENT
@@ -3613,7 +3876,7 @@ class HermesStreamingApp(App):
         self._last_tts_text = ""
         diagnostic_logger.debug(
             "app.turn.start index=%s stt_source=%s %s",
-            getattr(self.session, "turn_index", "?"),
+            getattr(session, "turn_index", "?"),
             stt_source,
             summarize_text(text),
         )
@@ -3622,67 +3885,106 @@ class HermesStreamingApp(App):
                 self._append_block(f"you> {text}")
                 self._append_block("[error] not connected; prompt kept in queue")
                 return False, turn_status
+            session = self.session
+            session_generation = self._session_generation
 
-        index = self.session.turn_index
+        index = session.turn_index
         self._clear_audio_unavailable()
         self._append_block(text, role="user")
-        # send_turn may have placed the request on the wire before its async
-        # stream reports an error, so every post-user-display failure is
-        # intentionally treated as ambiguous and is never auto-replayed.
-        self._last_prompt_status = PROMPT_AMBIGUOUS
-        turn_status = PROMPT_AMBIGUOUS
-        turn_was_sent = True
         timeout = getattr(self.args, "turn_timeout", 0) or 0
         try:
-            domain_turn = self.domain.begin_turn(
-                generation=index,
-            )
-            if not domain_turn.accepted:
-                rejection = (
-                    "domain rejected turn start: "
-                    + (domain_turn.reason or "unknown")
-                )
-                turn_was_sent = False
-                turn_status = PROMPT_NOT_SENT
-                self._last_prompt_status = turn_status
-                self.domain.apply_event(
-                    {"type": "error", "error": rejection},
+            # Admission and send creation are one event-loop-critical section:
+            # loss handling cannot begin between the readiness check and the
+            # one operation that creates the receive-owned stream.
+            async with self._connection_lock:
+                if (
+                    self._reconnect_in_flight
+                    or self._connection_loss_in_flight
+                    or not self._connection_is_ready()
+                    or not self._session_is_current(session, session_generation)
+                ):
+                    self._last_prompt_status = PROMPT_NOT_SENT
+                    return False, PROMPT_NOT_SENT
+
+                domain_turn = self.domain.begin_turn(
                     generation=index,
                 )
-                self._set_voice_state(VOICE_ERROR)
-                self._append_block(f"[error] {rejection}")
-                return turn_was_sent, turn_status
-            self._set_voice_state(VOICE_THINKING)
-            events = self.session.send_turn(text, stt_source=stt_source)
-            bound_turn = self.domain.bind_turn_id(
-                getattr(self.session, "active_turn_id", None)
-            )
-            if not bound_turn.accepted:
-                raise RuntimeError(
-                    "domain rejected turn identity: "
-                    + (bound_turn.reason or "unknown")
+                if not domain_turn.accepted:
+                    rejection = (
+                        "domain rejected turn start: "
+                        + (domain_turn.reason or "unknown")
+                    )
+                    turn_status = PROMPT_NOT_SENT
+                    self._last_prompt_status = turn_status
+                    self.domain.apply_event(
+                        {"type": "error", "error": rejection},
+                        generation=index,
+                    )
+                    self._set_voice_state(VOICE_ERROR)
+                    self._append_block(f"[error] {rejection}")
+                    return False, turn_status
+
+                # send_turn may have placed the request on the wire before its
+                # async stream reports an error, so every post-admission
+                # failure is intentionally ambiguous and never auto-replayed.
+                self._last_prompt_status = PROMPT_AMBIGUOUS
+                turn_status = PROMPT_AMBIGUOUS
+                turn_was_sent = True
+                self._set_voice_state(VOICE_THINKING)
+                events = session.send_turn(text, stt_source=stt_source)
+                bound_turn = self.domain.bind_turn_id(
+                    getattr(session, "active_turn_id", None)
                 )
+                if not bound_turn.accepted:
+                    raise RuntimeError(
+                        "domain rejected turn identity: "
+                        + (bound_turn.reason or "unknown")
+                    )
             if timeout > 0:
                 turn_completed = await asyncio.wait_for(
-                    self._consume_turn(events, index, generation=index), timeout
+                    self._consume_turn(
+                        events,
+                        index,
+                        generation=index,
+                        session=session,
+                        session_generation=session_generation,
+                    ),
+                    timeout,
                 )
             else:
                 turn_completed = await self._consume_turn(
-                    events, index, generation=index
+                    events,
+                    index,
+                    generation=index,
+                    session=session,
+                    session_generation=session_generation,
                 )
+            if not self._session_is_current(session, session_generation):
+                diagnostic_logger.debug(
+                    "app.turn.result_stale_session generation=%s",
+                    session_generation,
+                )
+                return turn_was_sent, PROMPT_AMBIGUOUS
             turn_status = (
                 PROMPT_COMPLETED if turn_completed else PROMPT_AMBIGUOUS
             )
             self._last_prompt_status = turn_status
             self._preserve_wake_terminal_state = turn_status == PROMPT_AMBIGUOUS
         except SessionNotReadyError:
+            if not self._session_is_current(session, session_generation):
+                return turn_was_sent, turn_status
             turn_was_sent = False
             turn_status = PROMPT_NOT_SENT
-            await self._mark_connection_lost()
+            await self._mark_connection_lost(
+                session=session,
+                generation=session_generation,
+            )
             self._last_prompt_status = turn_status
             self._append_block("[error] not connected; prompt kept in queue")
             return turn_was_sent, turn_status
         except asyncio.CancelledError:
+            if not self._session_is_current(session, session_generation):
+                raise
             self._preserve_wake_terminal_state = True
             self._set_voice_state(VOICE_INTERRUPTED)
             self._append_block("[interrupted]")
@@ -3690,21 +3992,31 @@ class HermesStreamingApp(App):
             self._needs_reconnect = True
             raise
         except (asyncio.TimeoutError, TimeoutError):
+            if not self._session_is_current(session, session_generation):
+                return turn_was_sent, turn_status
             turn_status = PROMPT_AMBIGUOUS
             self._last_prompt_status = turn_status
             self._preserve_wake_terminal_state = True
             self._set_voice_state(VOICE_ERROR)
-            await self._mark_connection_lost()
+            await self._mark_connection_lost(
+                session=session,
+                generation=session_generation,
+            )
             self._append_block(
                 f"[error] voice turn exceeded {timeout:g}s without completing; "
                 "the remote model may be stalled. Start a fresh session and retry."
             )
         except Exception as exc:
+            if not self._session_is_current(session, session_generation):
+                return turn_was_sent, turn_status
             turn_status = PROMPT_AMBIGUOUS
             self._last_prompt_status = turn_status
             self._preserve_wake_terminal_state = True
             if _is_transport_error(exc):
-                await self._mark_connection_lost()
+                await self._mark_connection_lost(
+                    session=session,
+                    generation=session_generation,
+                )
             else:
                 # A protocol, rendering, or programming failure is not proof
                 # that the socket died. Keep the verified connection state
@@ -3721,19 +4033,27 @@ class HermesStreamingApp(App):
             # Always tear the stream down; leaving it open leaked a
             # sounddevice stream per failed turn. Interrupted/error turns
             # discard immediately; a completed turn may drain its tail.
-            await self._close_player(
-                abort=self.voice_state
-                in {VOICE_INTERRUPTED, VOICE_ERROR, VOICE_DISCONNECTED}
-            )
-            await self._stop_caption_clock()
-            self.transcript.finish_stream()
-            if self._pending_prompt is not None:
-                # Timeout, disconnect, cancellation, or an exception from a
-                # dead socket all end the turn without a prompt_resolved ever
-                # arriving. Whatever the cause, the prompt it belonged to is
-                # gone with it.
-                self._pending_prompt = None
-                self._refresh_prompt_panel()
+            if self._session_is_current(session, session_generation):
+                await self._close_player(
+                    abort=self.voice_state
+                    in {VOICE_INTERRUPTED, VOICE_ERROR, VOICE_DISCONNECTED}
+                )
+                await self._stop_caption_clock()
+                self.transcript.finish_stream()
+                if self._pending_prompt is not None and self._prompt_is_current(
+                    self._pending_prompt
+                ):
+                    # Timeout, disconnect, cancellation, or an exception from
+                    # a dead socket all end the turn without a prompt_resolved
+                    # ever arriving. Whatever the cause, the prompt it
+                    # belonged to is gone with it.
+                    self._pending_prompt = None
+                    self._refresh_prompt_panel()
+            else:
+                diagnostic_logger.debug(
+                    "app.turn.cleanup_stale_session generation=%s",
+                    session_generation,
+                )
             diagnostic_logger.debug(
                 "app.turn.finish index=%s transcript_chars=%d connection=%s",
                 index,
@@ -3742,22 +4062,54 @@ class HermesStreamingApp(App):
             )
         return turn_was_sent, turn_status
 
-    async def _mark_connection_lost(self) -> None:
-        """Close a failed stream so the next turn cannot reuse a dead socket."""
-        self._disarm_wake(
-            "wake mode off — connection lost; microphone released. "
-            "Run /wake on after reconnect."
-        )
-        self._set_connection_state(CONNECTION_DISCONNECTED)
-        self._set_voice_state(VOICE_DISCONNECTED)
-        self._needs_reconnect = True
-        await self._close_session_with_timeout(
-            self.session,
-            event="app.turn.session_close",
-            timeout_message=(
-                "[warning] failed session cleanup timed out; continuing recovery."
-            ),
-        )
+    async def _mark_connection_lost(
+        self,
+        *,
+        session: SessionProtocol | None = None,
+        generation: int | None = None,
+    ) -> None:
+        """Close one failed stream so the next turn cannot reuse its socket."""
+        session = self.session if session is None else session
+        generation = self._session_generation if generation is None else generation
+        key = self._session_key(session, generation)
+        if key is None or not self._session_is_current(session, generation):
+            diagnostic_logger.debug("app.connection_loss.stale_signal")
+            return
+        if key in self._loss_handled_keys or key in self._loss_in_flight_keys:
+            return
+        self._loss_in_flight_keys.add(key)
+        self._connection_loss_in_flight = True
+        try:
+            async with self._connection_lock:
+                if not self._session_is_current(session, generation):
+                    diagnostic_logger.debug("app.connection_loss.stale_after_wait")
+                    return
+                if key in self._loss_handled_keys:
+                    return
+                self._loss_handled_keys.add(key)
+                watcher = self._connection_watch_task
+                if watcher is not asyncio.current_task():
+                    await self._stop_connection_watcher(session, generation)
+                self._disarm_wake(
+                    "wake mode off — connection lost; microphone released. "
+                    "Run /wake on after reconnect."
+                )
+                self._set_connection_state(CONNECTION_DISCONNECTED)
+                self._set_voice_state(VOICE_DISCONNECTED)
+                self._needs_reconnect = True
+                await self._close_player(abort=True)
+                if not self._turn_in_flight:
+                    self._append_block(RETRY_HINT)
+                await self._close_session_with_timeout(
+                    session,
+                    event="app.turn.session_close",
+                    timeout_message=(
+                        "[warning] failed session cleanup timed out; continuing recovery."
+                    ),
+                )
+        finally:
+            self._loss_in_flight_keys.discard(key)
+            self._connection_loss_in_flight = bool(self._loss_in_flight_keys)
 
     async def _close_player(self, *, abort: bool = False) -> None:
         """Stop playback without blocking Textual's event loop.
@@ -3804,7 +4156,15 @@ class HermesStreamingApp(App):
         index: int,
         *,
         generation: int | None = None,
+        session: SessionProtocol | None = None,
+        session_generation: int | None = None,
     ) -> bool:
+        session = self.session if session is None else session
+        session_generation = (
+            self._session_generation
+            if session_generation is None
+            else session_generation
+        )
         audio = bytearray()
         audio_format: Optional[tuple[int, int, int]] = None
         audio_file = bytearray()
@@ -3831,7 +4191,7 @@ class HermesStreamingApp(App):
         turn_completed = False
         turn_failed = False
         turn_id_for_audio = str(
-            getattr(self.session, "active_turn_id", None)
+            getattr(session, "active_turn_id", None)
             or getattr(self.domain.state, "turn_id", None)
             or ""
         )
@@ -4023,9 +4383,13 @@ class HermesStreamingApp(App):
             self._refresh_transcript()
 
         async def caption_clock() -> None:
-            while self.player.active:
+            while self.player.active and self._session_is_current(
+                session, session_generation
+            ):
                 await asyncio.sleep(0.05)
-                if self.player.active:
+                if self.player.active and self._session_is_current(
+                    session, session_generation
+                ):
                     log_playback_sample()
                     render_assistant()
 
@@ -4039,6 +4403,12 @@ class HermesStreamingApp(App):
             if failed_turn_finalized:
                 return
             failed_turn_finalized = True
+            if not self._session_is_current(session, session_generation):
+                diagnostic_logger.debug(
+                    "app.turn.finalize_stale_session generation=%s",
+                    session_generation,
+                )
+                return
             render_assistant(complete=True)
             self._save_turn_audio(
                 bytes(audio),
@@ -4059,6 +4429,13 @@ class HermesStreamingApp(App):
                 raise
 
         async for event in guarded_events():
+            if not self._session_is_current(session, session_generation):
+                diagnostic_logger.debug(
+                    "app.event.stale_session generation=%s",
+                    session_generation,
+                )
+                await self._close_player(abort=True)
+                return False
             event_turn_id = event.get("turn_id")
             if event_turn_id and not turn_id_for_audio:
                 turn_id_for_audio = str(event_turn_id)
@@ -4068,7 +4445,12 @@ class HermesStreamingApp(App):
                 kind,
                 summarize_payload(event),
             )
-            domain_result = self.domain.apply_event(event, generation=generation)
+            domain_event = event
+            session_id = getattr(session, "session_id", None)
+            if session_id and "session_id" not in event:
+                domain_event = dict(event)
+                domain_event["session_id"] = str(session_id)
+            domain_result = self.domain.apply_event(domain_event, generation=generation)
             if not domain_result.accepted:
                 diagnostic_logger.debug(
                     "app.domain.event_rejected kind=%s reason=%s",
@@ -4101,7 +4483,10 @@ class HermesStreamingApp(App):
             if kind in {"connection_lost", "disconnected"}:
                 turn_failed = True
                 finalize_failed_turn()
-                await self._mark_connection_lost()
+                await self._mark_connection_lost(
+                    session=session,
+                    generation=session_generation,
+                )
                 return False
             if kind not in {"audio_start", "turn_end"}:
                 self._sync_voice_state_from_domain(domain_result.state.phase)
@@ -4117,6 +4502,8 @@ class HermesStreamingApp(App):
                     self._last_tts_text = assistant_text
             elif kind == "prompt_request":
                 self._pending_prompt = PendingPrompt.from_event(event)
+                self._pending_prompt.session_identity = session
+                self._pending_prompt.session_generation = session_generation
                 self._refresh_prompt_panel()
             elif kind == "prompt_resolved":
                 if (
@@ -4254,8 +4641,15 @@ class HermesStreamingApp(App):
                 )
                 audio.extend(chunk)
                 if self.player.active:
+                    if not self._session_is_current(session, session_generation):
+                        await self._close_player(abort=True)
+                        return False
                     await asyncio.to_thread(self.player.write, chunk)
-                    render_assistant()
+                    if self._session_is_current(session, session_generation):
+                        render_assistant()
+                    else:
+                        await self._close_player(abort=True)
+                        return False
                 after = playback_snapshot()
                 diagnostic_logger.debug(
                     "audio.chunk.scheduled mono_ms=%d turn_index=%s segment_index=%d "
@@ -4350,11 +4744,20 @@ class HermesStreamingApp(App):
                 audio.extend(file_audio)
                 audio_format = file_format
                 audio_duration_final = True
+                if not self._session_is_current(session, session_generation):
+                    await self._close_player(abort=True)
+                    return False
                 self.player.start(file_format)
                 playback_failed = playback_failed or bool(self.player.failure)
                 played_live = played_live or self.player.active
                 if self.player.active:
+                    if not self._session_is_current(session, session_generation):
+                        await self._close_player(abort=True)
+                        return False
                     await asyncio.to_thread(self.player.write, file_audio)
+                    if not self._session_is_current(session, session_generation):
+                        await self._close_player(abort=True)
+                        return False
                     playback_failed = playback_failed or bool(self.player.failure)
                     if self.player.failure:
                         self._mark_audio_unavailable("playback failed")
@@ -4425,6 +4828,9 @@ class HermesStreamingApp(App):
                 # caption, otherwise the last duration-fallback clause jumps
                 # onto the screen at the remote turn boundary.
                 await self._close_player()
+                if not self._session_is_current(session, session_generation):
+                    await self._close_player(abort=True)
+                    return False
                 playback_failed = playback_failed or bool(self.player.failure)
                 if playback_failed and audio_started:
                     self._mark_audio_unavailable("playback failed")
@@ -4454,6 +4860,12 @@ class HermesStreamingApp(App):
                     self._set_voice_state(VOICE_READY)
 
         if not turn_completed and not turn_failed:
+            if (
+                not self._session_is_current(session, session_generation)
+                or self.connection_state == CONNECTION_DISCONNECTED
+            ):
+                await self._close_player(abort=True)
+                return False
             error_text = "turn ended without a completion event"
             self.domain.apply_event(
                 {"type": "error", "error": error_text},

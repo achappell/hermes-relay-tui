@@ -21,7 +21,7 @@ except ImportError:  # websockets 13.x has no dedicated concurrent-reader error
 
 import app as app_module
 from app import Composer, HermesSession, HermesStreamingApp, TranscriptStatic
-from client import ProtocolError
+from client import ProtocolError, TransportError
 from commands import parse_slash_command
 from help_screen import HelpModal
 from session_picker import SessionPickerModal
@@ -171,6 +171,24 @@ class FakeSession:
         self.closed = True
 
 
+class WatchedSession(FakeSession):
+    """Fake session with the close-only lifecycle observer contract."""
+
+    def __init__(self, *, watcher_error=None, **kwargs):
+        super().__init__(**kwargs)
+        self.disconnect_event = asyncio.Event()
+        self.wait_started = asyncio.Event()
+        self.wait_calls = 0
+        self.watcher_error = watcher_error
+
+    async def wait_for_disconnect(self):
+        self.wait_calls += 1
+        self.wait_started.set()
+        if self.watcher_error is not None:
+            raise self.watcher_error
+        await self.disconnect_event.wait()
+
+
 class FlakyConnectSession(FakeSession):
     """A session that becomes usable after a controlled number of failures."""
 
@@ -221,6 +239,252 @@ def make_args(**overrides):
 
 
 # --- mounting and wiring ----------------------------------------------------
+
+
+async def test_verified_idle_session_has_one_close_only_watcher():
+    session = WatchedSession()
+    app = HermesStreamingApp(args=make_args(), session_factory=lambda: session)
+
+    async with app.run_test() as pilot:
+        await asyncio.wait_for(session.wait_started.wait(), 1)
+        assert session.wait_calls == 1
+        watcher = app._connection_watch_task
+        assert watcher is not None and not watcher.done()
+
+        await app._connect()
+        await pilot.pause()
+
+        assert session.wait_calls == 1
+        assert app._connection_watch_task is watcher
+        assert app.connection_state == app_module.CONNECTION_CONNECTED
+
+
+async def test_idle_remote_close_marks_disconnected_without_user_input():
+    session = WatchedSession()
+    app = HermesStreamingApp(args=make_args(), session_factory=lambda: session)
+
+    async with app.run_test() as pilot:
+        await asyncio.wait_for(session.wait_started.wait(), 1)
+        session.disconnect_event.set()
+        for _ in range(10):
+            await pilot.pause()
+            if app.connection_state == app_module.CONNECTION_DISCONNECTED:
+                break
+
+        assert app.connection_state == app_module.CONNECTION_DISCONNECTED
+        assert voice_status_of(app) == "● disconnected"
+        assert app._needs_reconnect is True
+        assert session.sent_turns == []
+        assert app_module.RETRY_HINT in transcript_of(app)
+
+
+async def test_expected_close_cancels_watcher_without_loss_presentation():
+    old_session = WatchedSession(session_id="old-session")
+    fresh_session = FakeSession(session_id="fresh-session")
+    sessions = iter((old_session, fresh_session))
+    app = HermesStreamingApp(
+        args=make_args(),
+        session_factory=lambda: next(sessions),
+    )
+
+    async with app.run_test() as pilot:
+        await asyncio.wait_for(old_session.wait_started.wait(), 1)
+        await app._handle_reconnect_command("")
+        await pilot.pause()
+
+        assert old_session.closed is True
+        assert app.session is fresh_session
+        assert app.connection_state == app_module.CONNECTION_CONNECTED
+        assert "connection liveness monitoring failed" not in transcript_of(app)
+
+
+async def test_observer_transport_failure_is_idempotent_disconnect():
+    session = WatchedSession(
+        watcher_error=TransportError("connection close wait", ConnectionError("gone"))
+    )
+    app = HermesStreamingApp(args=make_args(), session_factory=lambda: session)
+
+    async with app.run_test() as pilot:
+        await asyncio.wait_for(session.wait_started.wait(), 1)
+        for _ in range(10):
+            await pilot.pause()
+            if app.connection_state == app_module.CONNECTION_DISCONNECTED:
+                break
+
+        assert app.connection_state == app_module.CONNECTION_DISCONNECTED
+        assert app._needs_reconnect is True
+        assert transcript_of(app).count(app_module.RETRY_HINT) == 1
+
+
+async def test_observer_programming_failure_reports_error_without_claiming_loss():
+    session = WatchedSession(watcher_error=RuntimeError("reader ownership bug"))
+    app = HermesStreamingApp(args=make_args(), session_factory=lambda: session)
+
+    async with app.run_test() as pilot:
+        await asyncio.wait_for(session.wait_started.wait(), 1)
+        for _ in range(10):
+            await pilot.pause()
+            if app._connection_watch_task is None:
+                break
+
+        assert app.connection_state == app_module.CONNECTION_CONNECTED
+        assert app._needs_reconnect is False
+        assert "connection liveness monitoring failed (RuntimeError)" in transcript_of(app)
+
+
+async def test_idle_loss_recovers_with_one_fresh_prompt_and_no_replay():
+    old_session = WatchedSession(session_id="old-session")
+    fresh_session = FakeSession(
+        session_id="fresh-session",
+        hello={
+            "chat_id": "fresh-chat",
+            "history": [{"role": "assistant", "content": "old server history"}],
+        },
+    )
+    sessions = iter((old_session, fresh_session))
+    app = HermesStreamingApp(
+        args=make_args(),
+        session_factory=lambda: next(sessions),
+    )
+
+    async with app.run_test() as pilot:
+        await asyncio.wait_for(old_session.wait_started.wait(), 1)
+        old_session.disconnect_event.set()
+        for _ in range(10):
+            await pilot.pause()
+            if app.connection_state == app_module.CONNECTION_DISCONNECTED:
+                break
+
+        await app._run_turn("fresh prompt")
+
+        assert old_session.sent_turns == []
+        assert fresh_session.sent_turns == [("fresh prompt", "local")]
+        assert app._queued_prompts == []
+        assert app.connection_state == app_module.CONNECTION_CONNECTED
+        assert "old server history" not in transcript_of(app)
+
+
+async def test_watcher_and_active_reader_loss_converge_without_queue_drain():
+    gate = asyncio.Event()
+    session = WatchedSession(gate=gate, session_id="old-session")
+    app = HermesStreamingApp(args=make_args(), session_factory=lambda: session)
+
+    async with app.run_test() as pilot:
+        await asyncio.wait_for(session.wait_started.wait(), 1)
+        turn = asyncio.create_task(app._run_turn("possibly sent"))
+        for _ in range(10):
+            await pilot.pause()
+            if "ok" in transcript_of(app):
+                break
+
+        session.disconnect_event.set()
+        for _ in range(10):
+            await pilot.pause()
+            if app._connection_loss_in_flight:
+                break
+        gate.set()
+        await turn
+
+        assert app.connection_state == app_module.CONNECTION_DISCONNECTED
+        assert app._last_prompt_status == app_module.PROMPT_AMBIGUOUS
+        assert "ok" in transcript_of(app)
+        assert app._queued_prompts == []
+        assert session.wait_calls == 1
+
+
+async def test_old_session_events_stop_before_mutating_a_replacement():
+    late_event = asyncio.Event()
+
+    class LateEventSession(WatchedSession):
+        def send_turn(self, text, *, stt_source="local"):
+            self.sent_turns.append((text, stt_source))
+            self.turn_index += 1
+
+            async def stream():
+                yield {"type": "text_delta", "text": "old partial"}
+                await late_event.wait()
+                yield {"type": "text_delta", "text": "stale replacement text"}
+
+            return stream()
+
+    old_session = LateEventSession(session_id="old-session")
+    fresh_session = FakeSession(session_id="fresh-session")
+    app = HermesStreamingApp(args=make_args(), session_factory=lambda: old_session)
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        turn = asyncio.create_task(app._run_turn("old prompt"))
+        for _ in range(10):
+            await pilot.pause()
+            if "old partial" in transcript_of(app):
+                break
+
+        app._install_session(fresh_session)
+        app.domain.reset_session("fresh-session")
+        late_event.set()
+        await turn
+
+        assert "old partial" in transcript_of(app)
+        assert "stale replacement text" not in transcript_of(app)
+        assert fresh_session.sent_turns == []
+
+
+async def test_turn_admission_rechecks_loss_before_creating_a_stream():
+    session = FakeSession(session_id="session")
+    app = HermesStreamingApp(args=make_args(), session_factory=lambda: session)
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await app._connection_lock.acquire()
+        turn = asyncio.create_task(app._run_turn("queued during loss"))
+        await pilot.pause()
+        assert not turn.done()
+
+        app._connection_loss_in_flight = True
+        app._connection_lock.release()
+        await turn
+        app._connection_loss_in_flight = False
+
+        assert session.sent_turns == []
+        assert app._queued_prompts == ["queued during loss"]
+        assert app._last_prompt_status == app_module.PROMPT_NOT_SENT
+
+
+async def test_stale_stream_failure_cannot_mutate_the_replacement():
+    late_failure = asyncio.Event()
+
+    class LateFailureSession(WatchedSession):
+        def send_turn(self, text, *, stt_source="local"):
+            self.sent_turns.append((text, stt_source))
+            self.turn_index += 1
+
+            async def stream():
+                yield {"type": "text_delta", "text": "old partial"}
+                await late_failure.wait()
+                raise RuntimeError("stale stream failure")
+
+            return stream()
+
+    old_session = LateFailureSession(session_id="old-session")
+    fresh_session = FakeSession(session_id="fresh-session")
+    app = HermesStreamingApp(args=make_args(), session_factory=lambda: old_session)
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        turn = asyncio.create_task(app._run_turn("old prompt"))
+        for _ in range(10):
+            await pilot.pause()
+            if "old partial" in transcript_of(app):
+                break
+
+        app._install_session(fresh_session)
+        app.domain.reset_session("fresh-session")
+        late_failure.set()
+        await turn
+
+        assert "stale stream failure" not in transcript_of(app)
+        assert fresh_session.sent_turns == []
+        assert app.connection_state == app_module.CONNECTION_CONNECTED
 
 
 async def test_app_mounts_with_transcript_and_input():
@@ -1131,14 +1395,10 @@ async def test_transport_failure_does_not_reuse_or_close_twice_a_stale_session(m
 
         await app._run_turn("fresh prompt")
         assert old_session.sent_turns == [("possibly sent", "local")]
-        assert app._queued_prompts == ["fresh prompt"]
-        assert app.connection_state == app_module.CONNECTION_DISCONNECTED
-
-        await app._handle_command(parse_slash_command("/reconnect"))
-        assert old_session.close_calls == 1
-        assert fresh_session.sent_turns == []
+        assert fresh_session.sent_turns == [("fresh prompt", "local")]
+        assert app._queued_prompts == []
         assert app.connection_state == app_module.CONNECTION_CONNECTED
-        assert app._queued_prompts == ["fresh prompt"]
+        assert old_session.close_calls == 1
 
         release_close.set()
         await asyncio.wait_for(app._wait_for_cleanup_tasks(), 1)
@@ -1168,10 +1428,6 @@ async def test_domain_rejected_turn_stays_unsent_and_queued(monkeypatch):
 
 
 _WEBSOCKET_TRANSPORT_FAILURES = [ConnectionClosed(None, None)]
-if ConcurrencyError is not None:
-    _WEBSOCKET_TRANSPORT_FAILURES.append(
-        ConcurrencyError("another reader owns the socket")
-    )
 
 
 @pytest.mark.parametrize("failure", _WEBSOCKET_TRANSPORT_FAILURES)
@@ -1196,6 +1452,31 @@ async def test_websocket_transport_failures_use_disconnected_presentation(failur
         assert connection_status_of(app).startswith("○ disconnected")
         assert voice_status_of(app) == "● disconnected"
         assert app_module.RETRY_HINT in transcript_of(app)
+
+
+@pytest.mark.skipif(ConcurrencyError is None, reason="websockets 13.x has no ConcurrencyError")
+async def test_websocket_concurrency_failure_remains_an_application_error():
+    session = FakeSession(session_id="old-session")
+
+    def fail_send_turn(text, *, stt_source="local"):
+        session.sent_turns.append((text, stt_source))
+
+        async def stream():
+            raise ConcurrencyError("another reader owns the socket")
+            yield  # pragma: no cover - makes this an async generator
+
+        return stream()
+
+    session.send_turn = fail_send_turn
+    app = HermesStreamingApp(args=make_args(), session_factory=lambda: session)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await app._run_turn("programming failure")
+
+        assert connection_status_of(app).startswith("● connected")
+        assert voice_status_of(app) == "● error"
+        assert app._needs_reconnect is False
+        assert "another reader owns the socket" in transcript_of(app)
 
 
 async def test_explicit_prompt_after_verified_recovery_is_the_only_new_turn():
@@ -4061,6 +4342,9 @@ async def test_session_connect_closes_a_half_open_context_after_handshake_failur
         async def recv(self):
             return '{"type": "unexpected"}'
 
+        async def wait_closed(self):
+            return None
+
     class BadHelloContextManager(FakeConnectContextManager):
         async def __aenter__(self):
             return BadHelloWebSocket()
@@ -5327,7 +5611,8 @@ async def test_prompt_write_exception_releases_the_domain_retry_gate():
         assert app._pending_prompt is not None
         assert app._pending_prompt.awaiting_response is False
         assert app.domain.state.prompt_awaiting is False
-        assert app.domain.state.prompt_rejection == "prompt socket closed"
+        assert app.domain.state.connection.value == "disconnected"
+        assert app._last_prompt_status == app_module.PROMPT_AMBIGUOUS
         assert "prompt response: prompt socket closed" in transcript_of(app)
 
         await session.push({"type": "turn_end", "turn_id": "t1"})

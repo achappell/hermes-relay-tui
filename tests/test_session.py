@@ -5,19 +5,25 @@ import types
 import pytest
 
 import config
-from session import HermesSession, SessionNotReadyError
+from session import HermesSession, SessionNotReadyError, UnsupportedTransportError
 
 
 class FakeWebSocket:
     def __init__(self, frames):
         self.frames = list(frames)
         self.sent = []
+        self.closed = asyncio.Event()
+        self.recv_calls = 0
 
     async def send(self, data):
         self.sent.append(data)
 
     async def recv(self):
+        self.recv_calls += 1
         return self.frames.pop(0)
+
+    async def wait_closed(self):
+        await self.closed.wait()
 
 
 class FakeContextManager:
@@ -28,6 +34,7 @@ class FakeContextManager:
         return self.websocket
 
     async def __aexit__(self, exc_type, exc, tb):
+        self.websocket.closed.set()
         return None
 
 
@@ -76,6 +83,71 @@ async def test_session_is_not_connected_until_hello_ack_is_verified(monkeypatch)
     await connecting
 
     assert session.is_connected() is True
+
+
+async def test_wait_for_disconnect_uses_wait_closed_without_reading_frames(monkeypatch):
+    websocket = FakeWebSocket(
+        [json.dumps({"type": "hello_ack", "chat_id": "chat"})]
+    )
+    monkeypatch.setattr(
+        config,
+        "connect_factory",
+        lambda: lambda *args, **kwargs: FakeContextManager(websocket),
+    )
+    session = HermesSession(make_args())
+    await session.connect()
+
+    waiting = asyncio.create_task(session.wait_for_disconnect())
+    await asyncio.sleep(0)
+    assert not waiting.done()
+    assert websocket.recv_calls == 1
+
+    websocket.closed.set()
+    await waiting
+    assert websocket.recv_calls == 1
+
+
+async def test_wait_for_disconnect_propagates_cancellation(monkeypatch):
+    websocket = FakeWebSocket(
+        [json.dumps({"type": "hello_ack", "chat_id": "chat"})]
+    )
+    monkeypatch.setattr(
+        config,
+        "connect_factory",
+        lambda: lambda *args, **kwargs: FakeContextManager(websocket),
+    )
+    session = HermesSession(make_args())
+    await session.connect()
+
+    waiting = asyncio.create_task(session.wait_for_disconnect())
+    await asyncio.sleep(0)
+    waiting.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await waiting
+    assert session.is_connected() is True
+
+
+async def test_session_rejects_a_transport_without_wait_closed_before_hello(monkeypatch):
+    class UnsupportedWebSocket:
+        async def send(self, data):
+            raise AssertionError("hello must not be sent")
+
+        async def recv(self):
+            raise AssertionError("hello must not be read")
+
+    websocket = UnsupportedWebSocket()
+    monkeypatch.setattr(
+        config,
+        "connect_factory",
+        lambda: lambda *args, **kwargs: FakeContextManager(websocket),
+    )
+    session = HermesSession(make_args())
+
+    with pytest.raises(UnsupportedTransportError, match="wait_closed"):
+        await session.connect()
+
+    assert session.ws is None
+    assert session.is_connected() is False
 
 
 async def test_session_becomes_unready_at_close_entry_before_cleanup_finishes(monkeypatch):
