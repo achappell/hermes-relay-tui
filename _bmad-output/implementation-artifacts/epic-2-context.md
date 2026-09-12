@@ -5,10 +5,11 @@
 ## Goal
 
 Epic 2 gives household Displays a calm, room-scoped view of ambient context
-and the active conversation, including live capture, response, prompts, and
-honest recovery. It makes the room legible without turning a passive Display
-into another assistant: the selected doorway owns capture, Hermes authority,
-and response audio, while other Displays only mirror the owning Room's state.
+and the active conversation, including live capture, response, prompts, typed
+choice objects, and honest recovery. It makes the room legible without turning
+a passive Display into another assistant: the selected doorway owns capture,
+Hermes authority, response audio, and supported structured actions, while other
+Displays only mirror the owning Room's state.
 
 ## Stories
 
@@ -21,8 +22,12 @@ and response audio, while other Displays only mirror the owning Room's state.
 - Surface story 2-A-2: Show honest Android disconnected/unavailable state without stale-turn replay
 - Surface story 2-WK-1: Render the shared Room-scoped Ambient Surface for web and iPad
 - Surface story 2-WK-2: Render active capture, transcription, response, and phase state in W/K
-- Surface story 2-WK-3: Mirror Hermes prompts without touch approval or a second Session
+- Surface story 2-WK-3: Mirror prompts read-only when the browser is acting as a passive renderer
 - Surface story 2-WK-4: Render honest disconnected state, cached context, and accessible recovery
+- Surface story 2-E-5: Render and submit native Choose/Explore actions on the active ESP32 Touch Display
+- Surface story 2-WK-5: Validate direct-use typed-choice actions at the server boundary
+- Surface story 2-WK-6: Render accessible native Choose/Explore actions in direct-use W/K
+- Surface story 2-T-3: Render typed choice objects with keyboard actions and transcript-visible structured input
 
 ## Requirements & Constraints
 
@@ -32,9 +37,9 @@ and response audio, while other Displays only mirror the owning Room's state.
 - W/K is one Web/iPad voice-plus-display surface. When its voice capability is
   active, it owns browser capture, response rendering, and response audio; it
   is not a passive mirror of itself.
-- Active-turn text is room-local. Other Rooms receive no conversation text,
-  prompts, or stale events. Passive Displays never capture, speak, create a
-  Hermes Session, or offer touch-based prompt approval.
+- Active-turn text and typed choice objects are room-local. Other Rooms receive
+  no conversation text, prompts, or stale events. Passive Displays never
+  capture, speak, create a Hermes Session, or offer prompt/choice actions.
 - Capture, response, and recovery must show the observed phase honestly:
   heard, listening, transcribing, thinking, buffering, speaking, complete, or
   Disconnected/Unavailable. No indefinite Thinking, false Speaking, or stale
@@ -43,6 +48,9 @@ and response audio, while other Displays only mirror the owning Room's state.
   or Media Server. Reconnect is explicit and never replays an uncertain turn.
 - Idle Displays may show Room-scoped ambient or clearly marked cached content;
   higher-priority Active Turn and Departure Card state takes precedence.
+- Active ESP32 Touch, direct-use W/K, and TUI surfaces render the approved
+  `choose` and `explore` semantics natively. `choose` commits; `explore` asks
+  for detail without committing. The Puck remains status/audio-only.
 
 ## Technical Decisions
 
@@ -50,6 +58,10 @@ and response audio, while other Displays only mirror the owning Room's state.
   normalized event feed are prerequisites. Surface presentation state belongs
   to the owning renderer; do not add a second database, broker, transcript
   store, or browser-side Hermes authority.
+- The first typed-choice slice extends the normalized action boundary with
+  operation, object/option identity, Session/turn context, advertised
+  capability, freshness, and idempotency. Exact schema changes belong to the
+  implementation slice; no surface may invent arbitrary Hermes-authored UI.
 - The DOM-first Svelte renderer is the supported accessible W/K path; WASM is
   optional. Web/iPad and native LVGL share semantics but may adapt layout.
 - The Python appliance owns authenticated Hermes sessions and sends normalized
@@ -68,7 +80,9 @@ clear, with accessible DOM/live-region behavior and no reliance on color alone.
 After a terminal turn, a completed response may remain visible where supported;
 the surface then returns to the Room's Ambient Surface without archiving the
 conversation. Ambient imagery stays quiet and never competes with load-bearing
-capture, response, prompt, or disconnected state.
+capture, response, prompt, choice, or disconnected state. A passive mirror may
+show the choice object but never presents it as actionable; active surfaces
+keep Profile and current Session context visible while an action is pending.
 
 ## Cross-Story Dependencies
 
@@ -77,5 +91,8 @@ capture, response, prompt, or disconnected state.
 - W/K `2-WK-2` consumes the Epic 1 W/K doorway's capture, response-text, audio,
   and terminal lifecycle. The merged browser audio repair is foundation; the
   follow-on `WK-1` recovery slice remains separately tracked.
-- W/K prompt and disconnected stories use the same presentation and cleanup
-  boundaries. No calendar or Device-administration prerequisite is required.
+- W/K `2-WK-5` is the server-authority prerequisite for `2-WK-6`; the browser
+  must not rely on reducer-only client validation for direct-use actions.
+- W/K prompt, choice, and disconnected stories use the same presentation and
+  cleanup boundaries. No calendar or Device-administration prerequisite is
+  required.
