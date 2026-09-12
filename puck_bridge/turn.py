@@ -77,6 +77,8 @@ STREAM_CLOSE_TIMEOUT_SECONDS = 5.0
 # uselessly around the fetch. Generous, because a legitimate write blocks
 # for roughly the duration of the audio it is pacing.
 PLAYBACK_WRITE_TIMEOUT_SECONDS = 60.0
+RECONNECT_TIMEOUT_SECONDS = 10.0
+SHUTDOWN_TIMEOUT_SECONDS = 10.0
 
 
 class TurnTimeout(Exception):
@@ -107,6 +109,10 @@ class TurnRunner:
         self._loop: asyncio.AbstractEventLoop | None = None
         self._loop_thread: threading.Thread | None = None
         self._pending_transcript: str | None = None
+        self._delivery_succeeded = False
+        self._needs_reconnect = False
+        self._reconnect_task: asyncio.Task | None = None
+        self._shutdown_future = None
         # RLock, not Lock: `on_wake()` below synchronously calls back into
         # `_take_pending_transcript` on the same thread (via the
         # coordinator's `capture` callback), so the set+on_wake pair and the
@@ -150,18 +156,38 @@ class TurnRunner:
         loop = self._loop
         if loop is None:
             return
-        try:
-            asyncio.run_coroutine_threadsafe(self._session.close(), loop).result(
-                timeout=10.0
+        if self._shutdown_future is None:
+            self._shutdown_future = asyncio.run_coroutine_threadsafe(
+                self._close_after_reconnect(), loop
             )
+            self._shutdown_future.add_done_callback(
+                lambda _: loop.call_soon_threadsafe(loop.stop)
+            )
+        try:
+            self._shutdown_future.result(timeout=SHUTDOWN_TIMEOUT_SECONDS)
+        except TimeoutError:
+            # Retain the loop and cleanup owner. Its completion callback
+            # stops the loop when it can safely release the session.
+            logger.warning("puck bridge shutdown cleanup pending")
+            return
         except Exception:
             logger.debug("puck bridge session close failed", exc_info=True)
-        loop.call_soon_threadsafe(loop.stop)
         thread = self._loop_thread
         if thread is not None:
             thread.join(timeout=5.0)
         self._loop_thread = None
         self._loop = None
+
+    async def _close_after_reconnect(self) -> None:
+        task = self._reconnect_task
+        if task is not None:
+            # A timeout already requested cancellation. Do not cancel a
+            # second time: that would interrupt the connection's cleanup.
+            try:
+                await task
+            except (asyncio.CancelledError, Exception):
+                pass
+        await self._session.close()
 
     def set_response_seq(self, seq: int | None) -> None:
         """Tell the next turn which capture it answers.
@@ -184,8 +210,55 @@ class TurnRunner:
         bookkeeping stays meaningful without inventing new API surface.
         """
         with self._pending_transcript_lock:
+            if self._shutdown_future is not None:
+                return False
+            if self._needs_reconnect or not self._session.is_connected():
+                if self._loop is None:
+                    return False
+                self._needs_reconnect = True
+                future = asyncio.run_coroutine_threadsafe(
+                    self._reconnect(), self._loop,
+                )
+                try:
+                    if not future.result(timeout=RECONNECT_TIMEOUT_SECONDS + 1):
+                        return False
+                except Exception as exc:
+                    future.cancel()
+                    logger.error(
+                        "puck bridge reconnect failed: %s; question not sent",
+                        type(exc).__name__,
+                    )
+                    return False
+                self._needs_reconnect = False
+                logger.info("puck bridge reconnected for a fresh question")
             self._pending_transcript = transcript
-            return self._coordinator.on_wake(True)
+            self._delivery_succeeded = False
+            accepted = self._coordinator.on_wake(True)
+            return accepted and self._delivery_succeeded
+
+    async def _reconnect(self) -> bool:
+        # A cancelled connect may still be closing its socket. Keep that
+        # task as the owner until cleanup ends, so it cannot close a newer
+        # connection behind the next question.
+        previous = self._reconnect_task
+        if previous is not None:
+            if not previous.done():
+                logger.warning("puck bridge reconnect cleanup pending; question not sent")
+                return False
+            if not previous.cancelled():
+                previous.exception()
+        task = asyncio.create_task(self._session.connect())
+        self._reconnect_task = task
+        try:
+            done, _ = await asyncio.wait({task}, timeout=RECONNECT_TIMEOUT_SECONDS)
+            if not done:
+                logger.error("puck bridge reconnect timed out; question not sent")
+                return False
+            task.result()
+            return True
+        finally:
+            if not task.done():
+                task.cancel()
 
     def _take_pending_transcript(self) -> str:
         with self._pending_transcript_lock:
@@ -207,13 +280,18 @@ class TurnRunner:
             raise RuntimeError("turn runner is not started")
         future = asyncio.run_coroutine_threadsafe(self._run_turn(text), loop)
         try:
-            return future.result(timeout=TURN_BACKSTOP_SECONDS)
+            self._delivery_succeeded = bool(
+                future.result(timeout=TURN_BACKSTOP_SECONDS)
+            )
+            return self._delivery_succeeded
         except TurnTimeout as exc:
+            self._needs_reconnect = True
             # Hermes stopped producing events. `_run_turn` has already
             # logged the specifics and closed the player.
             logger.error("puck bridge turn abandoned: %s", exc)
             return False
         except TimeoutError:
+            self._needs_reconnect = True
             # The backstop, not the normal path -- `_run_turn` bounds itself.
             #
             # Cancel rather than merely stop waiting (deferred-work #36):
@@ -228,6 +306,14 @@ class TurnRunner:
                 "this indicates a wedge inside the turn loop, not a slow answer",
                 TURN_BACKSTOP_SECONDS,
             )
+            return False
+
+        except Exception as exc:
+            self._needs_reconnect = True
+            # The coordinator catches callback exceptions at DEBUG. Report
+            # the failure here without exception text, which can contain
+            # credentials or conversation content.
+            logger.error("puck bridge turn failed: %s; not replaying", type(exc).__name__)
             return False
 
     async def _write_audio(self, data: bytes) -> None:
@@ -289,6 +375,9 @@ class TurnRunner:
                     ) from None
                 awaiting_first = False
                 kind = event.get("type")
+                if kind == "error":
+                    logger.error("puck bridge turn failed: remote error; not replaying")
+                    return False
                 if kind == "audio_start":
                     audio_format = (
                         event["sample_rate"],
