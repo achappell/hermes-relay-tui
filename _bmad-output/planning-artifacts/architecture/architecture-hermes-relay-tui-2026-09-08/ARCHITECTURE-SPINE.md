@@ -7,14 +7,14 @@ paradigm: ports-and-adapters with functional cores
 scope: "The hermes-relay-tui repository and its cross-repository doorway boundaries: Python Hermes session core and TUI, household appliance, shared display contract and reducer, native LVGL firmware/simulator, Web/WASM kiosk, and native mobile Client integration."
 status: final
 created: 2026-09-08
-updated: 2026-09-11
+updated: 2026-09-12
 binds:
   - FR-1 through FR-6
   - FR-7 through FR-9
   - FR-10 through FR-12
   - FR-16 through FR-20
   - FR-19
-  - FR-21 through FR-22
+  - FR-21 through FR-23
 sources:
   - AGENTS.md
   - pyproject.toml
@@ -83,27 +83,33 @@ flowchart TB
 
 ### AD-2 — Each state domain has one owner [ADOPTED]
 
-- **Binds:** FR-1 through FR-6, FR-10 through FR-12, FR-19, FR-21, and FR-22.
+- **Binds:** FR-1 through FR-6, FR-10 through FR-12, FR-19, and FR-21 through FR-23.
 - **Prevents:** Competing mutable state, stale copies, accidental transcript fan-out, and unclear recovery behavior.
 - **Rule:** HermesSession owns connection, capabilities, and active-turn protocol facts. A display-capable front-end coordinator owns its local device lifecycle and maps events to its published snapshot. shared/display owns reducer-accepted view, stale-sequence rejection, and action validation. DisplayStatePublisher owns only the latest immutable transport snapshot and sequence. Drafts, queues, presentation state, and optional local history remain surface-local; appliance/display paths do not archive transcripts.
 
 ### AD-3 — Hermes wire behavior has one adapter boundary [ADOPTED]
 
-- **Binds:** FR-1 through FR-6, FR-19, FR-21, and FR-22.
+- **Binds:** FR-1 through FR-6, FR-19, FR-21, FR-22, and FR-23.
 - **Prevents:** Front ends parsing incompatible wire frames, inventing assistant behavior, or replaying turns after uncertain delivery.
 - **Rule:** client.py owns hello, streamed turn-event normalization, interrupt/prompt-response frames, unknown-event diagnostics, and typed protocol errors. session.py orchestrates one connection and turn lifecycle. Front ends consume normalized events through SessionProtocol; they do not parse Hermes frames or invent wire payloads. A turn that may have reached Hermes is never automatically replayed after transport failure.
 
 ### AD-4 — Display semantics cross targets through the versioned contract [ADOPTED]
 
-- **Binds:** FR-3, FR-4, FR-10 through FR-12, FR-19, and FR-22.
+- **Binds:** FR-3, FR-4, FR-10 through FR-12, FR-19, FR-22, and FR-23.
 - **Prevents:** ESP, native simulator, Web/WASM, appliance, and future TUI adapters accepting different states or actions.
-- **Rule:** display_snapshot.schema.json, display_action.schema.json, and their fixtures define the cross-target shapes. The portable C reducer is the semantic authority for bounded display state and action validation; a language port may exist for platform boot or tests only if it conforms to the same fixtures and adds no policy. Unknown fields are ignored; malformed known fields are rejected. A display channel has an epoch: after attach or reconnect, the first valid snapshot establishes the reducer baseline; within that epoch sequence must increase strictly, and numeric sequence is never compared across epochs. An action must be capability-advertised, current-state-valid, and reducer-accepted before transport.
+- **Rule:** display_snapshot.schema.json, display_action.schema.json, and their fixtures define the cross-target shapes. The portable C reducer is the semantic authority for bounded display state and action validation; a language port may exist for platform boot or tests only if it conforms to the same fixtures and adds no policy. Unknown fields are ignored; malformed known fields are rejected. A display channel has an epoch: after attach or reconnect, the first valid snapshot establishes the reducer baseline; within that epoch sequence must increase strictly, and numeric sequence is never compared across epochs. An action must be capability-advertised, current-state-valid, object/turn-fresh, and reducer-accepted before transport. The exact extension for `choose` and `explore` remains a versioned schema/fixture change, not a renderer-local convention.
 
 ### AD-5 — Room-local conversation is not household-wide state [ADOPTED]
 
-- **Binds:** FR-4, FR-10 through FR-12, and FR-22.
+- **Binds:** FR-4, FR-10 through FR-12, FR-22, and FR-23.
 - **Prevents:** A response or prompt appearing on unrelated displays or becoming a second assistant conversation.
 - **Rule:** Active response text, turn phases, and interactive prompts are published only to the owning appliance/display channel. Household-wide propagation is reserved for an explicitly defined future shared state such as a Departure Card; it must not be inferred from a local turn snapshot.
+
+### AD-13 — Interactive agent objects use explicit operations [ADOPTED]
+
+- **Binds:** FR-22 and FR-23, UX-DR18, UX-DR21, and UX-DR23.
+- **Prevents:** Treating a Hermes response as arbitrary renderer instructions, allowing a passive mirror or Puck to commit a choice, and confusing exploration with mutation.
+- **Rule:** Hermes may emit a bounded typed choice object as data. Active ESP32 Touch, direct-use W/K, and TUI surfaces render native controls; passive Room Displays mirror read-only and the Puck exposes no choice UI. `choose` is the committing operation; `explore` requests detail without committing. Accepted actions return to the owning Session as one structured, transcript-visible event and are bound to Session, turn, object, option, advertised capability, and freshness context. Consequence-bearing policy and exact schema remain downstream decisions.
 
 ### AD-6 — Doorways are independently deployable processes [ADOPTED]
 
@@ -152,7 +158,7 @@ flowchart TB
 | Concern | Convention |
 | --- | --- |
 | Naming | Preserve Hermes wire event names in client.py; use normalized snake_case event keys and typed results at the core boundary; use DisplaySnapshot/DisplayAction names for the shared contract; keep UI wording and labels out of the cores. |
-| Data & formats | Display JSON uses type, schema, sequence, bounded state values, and explicit capability-gated actions. Prompt options are bounded for embedded targets. turn_id correlates streamed audio and interruption. Unknown future fields are ignored; known malformed fields fail closed. |
+| Data & formats | Display JSON uses type, schema, sequence, bounded state values, and explicit capability-gated actions. Prompt options are bounded for embedded targets. Typed choice actions carry operation plus object/option and Session/turn freshness context. Unknown future fields are ignored; known malformed fields fail closed. `turn_id` correlates streamed audio and interruption. |
 | State & mutation | Mutate state only at its owning boundary. Cross-boundary data is an immutable event, snapshot, or validated action. Reducer validation does not mutate on rejection. |
 | Errors & recovery | Core code returns normalized events or typed errors; adapters choose wording. Connection loss, stale state, rejected actions, interrupted audio, and failed playback remain distinguishable. Diagnostics are content-safe and never include credentials or message/audio contents. |
 | Dependencies | A front end may depend on core contracts and its own platform libraries; a core module may not depend on a front end. Optional extras and target builds isolate microphones, wake engines, firmware, and browser tooling. |
@@ -234,7 +240,8 @@ flowchart LR
 | 3-I-4: canonical household configuration and simultaneous-wake arbitration | `hermes-relay-home` contract, store, and arbitration engine; TUI compatibility adapter during migration | AD-2, AD-6, AD-8, AD-10 |
 | FR-19: recovery without a silent turn | session.py, home_display/appliance.py, display adapters | AD-2, AD-6, AD-7 |
 | FR-21: TUI as a direct Hermes doorway | app.py, transcript.py, prompts.py, session_picker.py | AD-1, AD-3, AD-7 |
-| FR-22: voice-only prompt mirroring and response | client.py, session.py, home_display/appliance.py, shared display contract | AD-3, AD-4, AD-5, AD-8 |
+| FR-7–FR-9, FR-13–FR-18, FR-20: device provisioning/arbitration, calendar, physical-device administration, and iOS doorway | Outside this repository or deferred | Revisit when the corresponding cross-repository or device-control boundary is implemented |
+| FR-22–FR-23: prompt mirroring and typed choice actions | client.py, session.py, home_display/appliance.py, shared display contract, prompts.py | AD-2, AD-3, AD-4, AD-5, AD-8, AD-13 |
 | FR-13–FR-15: calendar, Departure Card computation, and household-wide context | Outside this repository or deferred | Revisit when the corresponding provider and display boundary is implemented |
 
 ## Deferred
@@ -244,5 +251,7 @@ flowchart LR
 - Media-server/audio-bridge ownership, audio framing, backpressure, retention, and transcription boundaries for Puck and ESP32 Touch.
 - Calendar routing, Immich policy, Departure Card computation, and household-wide context providers.
 - Native mobile profile/device UX and the contracts between this repository, the separate iOS client, and the future Android client; Android repository bootstrap and exact toolchain remain open until that delivery boundary is initialized.
+- Exact typed-choice schema, capability names, freshness/idempotency token, server-side action authority, and consequence-bearing confirmation policy.
+- iOS profile/device UX and the contract between this repository and the separate iOS client.
 - Exact ESP-IDF framework pin and hardware release/CI matrix; PlatformIO currently provides the firmware build seed.
 - Further extraction of display/firmware repositories, a repository rename, or a hermes-relay-core package. Revisit only after independent build, hardware CI, release cadence, or dependency evidence requires it.

@@ -2,7 +2,7 @@
 title: Hermes Home Assistant Platform — Experience
 status: final
 created: '2026-09-07'
-updated: '2026-09-10'
+updated: '2026-09-12'
 sources:
   - "{planning_artifacts}/briefs/brief-hermes-relay-tui-2026-09-07/brief.md"
   - "{planning_artifacts}/briefs/brief-hermes-relay-tui-2026-09-07/addendum.md"
@@ -52,18 +52,21 @@ The following terms retain the PRD glossary meanings and spelling so downstream 
 | **Departure Card** | The visual calendar state showing event name, location, departure time, and countdown when a qualifying event is actionable. |
 | **Local History** | Conversation history retained intentionally by iOS or the TUI; Puck, Display, and Media Server do not create a transcript archive by default. |
 | **Disconnected State** | The honest local state shown when a Device cannot use the Hermes path; it is visual-only in v1. |
+| **Interactive Choice Object** | A bounded Hermes-authored representation of options and their explanation. It is data rendered by an active surface, not arbitrary UI supplied by Hermes. |
+| **Choice Action** | A structured operation on an Interactive Choice Object: `choose` commits an option; `explore` requests more detail without committing. |
+| **Active Doorway** | The surface that owns the current Hermes Session and may capture, speak, or submit a supported structured action. A passive Room Display may mirror the same state without becoming active. |
 
 ## Information Architecture
 
 | Surface | Reached from | Purpose and behavioral boundary |
 |---|---|---|
-| **Puck** | Wake Mapping detection or follow-up | Captures only after the selected Profile is fixed, sends Puck audio through the Media Server, and plays Hermes audio. This ESP32 audio/status doorway has no touch response surface; its TFT is status-only, not a transcript. |
-| **ESP32 Touch Display** | Supported local voice initiation | Captures only after the selected Profile is fixed, participates in one Hermes Session, renders its own Active Turn, and plays Hermes audio. It is a first-class Epic 1 doorway as well as a Display surface. |
-| **Passive Room Display** | Ambient Surface in a Room | Shows room-local Active Turn state, live Transcription, response text, and the active Profile identity without capturing, speaking, or creating a second Hermes Session. See the [room active-turn key screen](mockups/key-room-active-turn.html). |
-| **Web / iPad (W/K)** | Safari/Guided Access kiosk URL | One shared browser voice-plus-display surface consuming the same contract as the ESP32 renderer. It captures and plays audio when `browser_voice` is advertised, and renders Ambient Surface, Active Turn, Departure Card, and Disconnected State. iPad is not a separate product renderer. |
+| **Puck** | Wake Mapping detection or follow-up | Captures only after the selected Profile is fixed, sends Puck audio through the Media Server, and plays Hermes audio. This ESP32 audio/status doorway has no choice response surface; its TFT is status-only, not a transcript. |
+| **ESP32 Touch Display** | Supported local voice initiation or an active typed choice | Captures only after the selected Profile is fixed, participates in one Hermes Session, renders its own Active Turn, plays Hermes audio, and may submit `choose` or `explore` actions for a current choice object. It is a first-class Epic 1 doorway as well as a Display surface. |
+| **Passive Room Display** | Ambient Surface in a Room | Shows room-local Active Turn state, live Transcription, response text, the active Profile identity, and any typed choice object without capturing, speaking, submitting an action, or creating a second Hermes Session. See the [room active-turn key screen](mockups/key-room-active-turn.html). |
+| **Web / iPad (W/K)** | Safari/Guided Access kiosk URL | One shared browser voice-plus-display surface consuming the same contract as the ESP32 renderer. It captures and plays audio when `browser_voice` is advertised, renders Ambient Surface, Active Turn, Departure Card, and Disconnected State, and in direct-use mode exposes accessible `Choose`/`Explore` controls for current choice objects. iPad is not a separate product renderer. |
 | **iOS Client** | App launch; conversation or Settings | Provides tap-to-speak and typed conversation, visible listening/thinking/speaking state, active Profile in the header, Local History, and the sole physical-Device control plane. |
 | **iOS Settings** | iOS Client Settings | Discovers, approves, connects, assigns Rooms, configures Wake Mappings, revokes Device Credentials, and guides re-enrollment. A discovered Device is inert until explicit approval and setup. See the [iOS setup key screen](mockups/key-ios-setup.html). |
-| **TUI** | Terminal launch or existing Hermes Session | Provides a direct voice-chat doorway, shared phase semantics, active Profile in the header, conversation rendering, and engineering diagnostics. It is not the household configuration surface. |
+| **TUI** | Terminal launch or existing Hermes Session | Provides a direct voice-chat doorway, shared phase semantics, active Profile in the header, conversation rendering, native keyboard `Choose`/`Explore` controls for current choice objects, and engineering diagnostics. It is not the household configuration surface. |
 | **Media Server** | Puck or ESP32 Touch voice path | A supporting home-LAN service, not a user surface. It produces transient Transcription and does not become a transcript archive by default. |
 | **Ambient Surface** | Display idle state | Shows room-filtered Immich photos; a Room with no matching photos receives a neutral ambient background, not a widened filter or setup prompt. |
 | **Departure Card** | Qualifying shared-calendar event | Replaces the Ambient Surface on every Display, remains visual-only, and clears or recomputes from calendar changes. |
@@ -98,7 +101,8 @@ This crosswalk keeps the UX spine mechanically traceable to the confirmed PRD re
 | FR-19 Recover without a silent turn | Recovery and explicit actions; Surface state matrix |
 | FR-20 Use iOS as a full conversation doorway | iOS Client; UJ-5 |
 | FR-21 Use the TUI as a direct voice-chat gateway | TUI; UJ-6 |
-| FR-22 Mirror prompts without touch actions | Prompt Mirror; Surface state matrix; UJ-1 prompt boundary |
+| FR-22 Mirror prompts with explicit surface roles | Prompt Mirror; Surface state matrix; UJ-1 prompt boundary |
+| FR-23 Render typed choices as structured input | Interactive Choice Object; native actions; UJ-1B |
 
 ## Voice and Tone
 
@@ -139,7 +143,8 @@ These are behavioral contracts. Visual anatomy, token usage, density, color, and
 | **Device Setup** | Guides the ordered flow: approval/connection, Room assignment, one or more Wake Mappings, then ready confirmation. Both iOS and the Device show success; incomplete setup leaves the Device inactive. Duplicate Wake Mappings are blocked before save, and a pending or offline configuration is labeled pending rather than ready. |
 | **Device Details** | Shows the Device's current status and makes Disconnect consequential. Confirmation explains that the Device stops working until re-enrolled. Revocation removes access even if the powered Device remains reachable. Edits to Wake Mappings show validation and publish status; an unverified edit never masquerades as the applied mapping. |
 | **Local History** | Exists only where the user intentionally keeps it: iOS Client and TUI. It supports continuity on those surfaces; Puck, Display, and Media Server do not create a default transcript archive. |
-| **Prompt Mirror** | May show an active Hermes clarification or approval prompt on a passive Room Display. The answer comes through the active Puck, ESP32 Touch Display, W/K browser voice, or Client path; no Display touch prompt action exists in v1. |
+| **Prompt Mirror** | May show an active Hermes clarification or approval prompt on a passive Room Display. A free-text prompt is answered through the active doorway; a typed choice object is handled by the Interactive Choice Object pattern. The passive mirror remains read-only. |
+| **Interactive Choice Object** | Shows Hermes' explanation and every bounded option on an active ESP32 Touch, direct-use W/K, or TUI surface. Each option exposes a primary `Choose` action and visible secondary `Explore` action. `Choose` commits; `Explore` requests detail without committing. The active Profile and current session context remain visible, and rejected or stale actions leave the object unchanged. |
 | **TUI Header** | Shows the active Profile in the terminal conversation header and preserves the shared phase semantics. Diagnostics remain an engineering capability and do not become the validated household journey. |
 
 ## State Patterns
@@ -163,7 +168,8 @@ The named Turn Phases are `heard`, `listening`, `transcribing`, `thinking`, `buf
 | **Disconnected State** | Every Device/Client as applicable | Persistent visual state when Media Server, Hermes, or the doorway path is unavailable. Displays may retain useful cached context; Puck, ESP32 Touch, and W/K capture nothing and speak no fallback. | Verified recovery clears it but never silently reopens capture or resumes the old turn. A dropped active turn remains unresolved. |
 | **Revoked / unavailable identity** | Puck and administration surfaces | Fail closed with local sound and visible status. No capture, no submission, no alternate Profile. | Explicit re-enrollment is required after revocation; unavailable identity stays unavailable. |
 | **Departure Card** | Every Display | Replaces Ambient Surface when a qualifying shared-calendar event crosses the effective threshold. | Recompute on event time/location change, clear on cancellation or event start, and never generate unsolicited audio. |
-| **Prompt waiting** | Passive Room Display plus active Puck/ESP32 Touch/W/K/Client | Mirror Hermes clarification or approval text and show that a spoken answer is awaited. | Answer follows the active Session; no touch response action exists in v1. |
+| **Prompt waiting** | Passive Room Display plus active Puck/ESP32 Touch/W/K/Client | Mirror Hermes clarification or approval text and show that an answer is awaited. Free-text prompts remain voice-led; typed choices expose native actions only on active ESP32 Touch, direct-use W/K, or TUI surfaces. | Answer follows the active Session; passive mirrors and the Puck never expose a choice action. |
+| **Choice ready** | Active ESP32 Touch, direct-use W/K, TUI, and passive Room Display mirror | Show the typed choice object's explanation, every option, the active Profile, and the available native actions. Passive mirrors show the object without controls. | `Choose` commits one current option; `Explore` requests detail and leaves the object unresolved. Stale, unsupported, or duplicate actions are rejected without changing the object. |
 
 ### Priority and persistence notes
 
@@ -202,12 +208,12 @@ This matrix assigns the visible contract when a surface is cold, empty, active, 
 | Surface | Cold / empty | Active turn | Offline / permission / failure | Recovery and persistence |
 |---|---|---|---|---|
 | **Puck** | `Ready` when configured; `Not ready` when unconfigured; no transcript history | `Heard` → `Listening` → `Working` → `Speaking`; tiny TFT shows one short label and local cues | `Unavailable` or `Disconnected`; no capture, submission, fallback, or profile substitution | Reconnect never opens the microphone. After verified recovery, a fresh wake is required; no shared text persists |
-| **ESP32 Touch Display** | Ready when configured; Ambient Surface when idle; no retained transcript history | When active, captures voice after authorization, renders observed phases and response text in native LVGL, and plays response audio | `Unavailable` or `Disconnected`; no capture, fallback, or replay | Recovery requires a fresh initiation; the display may retain only honest current-room state and never invents Hermes content |
-| **Passive Room Display role** | Ambient Surface or neutral fallback | Mirrors the selected Room's Profile, live Transcription, phase, and response without capturing or speaking | Shows persistent Disconnected/Unavailable and may retain clearly stale-labeled ambient/context state; no other Room's turn text | Returns to the Room's Ambient Surface after terminal state; no Retry or touch prompt action |
-| **W/K browser surface (web/iPad)** | Ambient Surface or neutral fallback; no matching Immich photos do not become an error | When active, captures browser voice and renders/plays the selected Room's state, Profile, live Transcription, and response; when acting as a passive mirror, it does not capture or speak | Shows persistent Disconnected/Unavailable and may retain clearly stale-labeled ambient/calendar context; no room text from another Room | Reconnect never resubmits the prior turn. Room-local turn text clears at terminal state, new session, or restart; Departure Card remains household-wide when qualifying |
+| **ESP32 Touch Display** | Ready when configured; Ambient Surface when idle; no retained transcript history | When active, captures voice after authorization, renders observed phases, response text, and current typed choices in native LVGL, plays response audio, and may submit `Choose`/`Explore` | `Unavailable` or `Disconnected`; no capture, fallback, replay, or action dispatch | Recovery requires a fresh initiation; the display may retain only honest current-room state and never invents Hermes content |
+| **Passive Room Display role** | Ambient Surface or neutral fallback | Mirrors the selected Room's Profile, live Transcription, phase, response, and typed choice object without capturing, speaking, or exposing action controls | Shows persistent Disconnected/Unavailable and may retain clearly stale-labeled ambient/context state; no other Room's turn text | Returns to the Room's Ambient Surface after terminal state; no Retry or prompt action |
+| **W/K browser surface (web/iPad)** | Ambient Surface or neutral fallback; no matching Immich photos do not become an error | When active/direct-use, captures browser voice, renders/plays the selected Room's state, Profile, live Transcription, response, and accessible `Choose`/`Explore` controls; when acting as a passive mirror, it does not capture, speak, or act | Shows persistent Disconnected/Unavailable and may retain clearly stale-labeled ambient/calendar context; no room text from another Room | Reconnect never resubmits the prior turn or stale action. Room-local turn text clears at terminal state, new session, or restart; Departure Card remains household-wide when qualifying |
 | **iOS Client** | Empty conversation has a ready state; Settings separately shows discovered vs approved Devices | Header shows Profile before capture; state, response, audio status, and Local History are visible | Permission denial, revoked identity, or transport failure is explicit; no silent fallback; `Retry` is available after connection loss | Retry reconnects only. Local History is intentional and may persist completed turns; unresolved turns are not replayed |
 | **iOS Settings** | Empty discovery shows no approved Devices and a clear Add path | Connecting/setup steps show pending Room and Wake Mapping work | Discovery is not approval; permission, duplicate mapping, offline publish, and revocation failures remain visibly unresolved | Only verified configuration is shown as applied. Re-enrollment is explicit; pending edits are not treated as ready |
-| **TUI** | Ready header with active Profile when configured; empty transcript is not an error | Shared phase labels, inline streamed response text, active Profile, and explicit diagnostics where enabled | Disconnected or unavailable state is visible; no fake answer or replay | `Retry` reconnects only. Local History is deliberate; a fresh explicit prompt is required after recovery |
+| **TUI** | Ready header with active Profile when configured; empty transcript is not an error | Shared phase labels, inline streamed response text, active Profile, native keyboard `Choose`/`Explore` controls, and explicit diagnostics where enabled | Disconnected or unavailable state is visible; no fake answer, replay, or stale action | `Retry` reconnects only. Local History is deliberate; a fresh explicit prompt is required after recovery |
 | **Local History** | Empty state explains that history is local to iOS/TUI | Stores only intentional Client turns, not shared-device room text | No history is created for Puck, Display, or Media Server failures | History may survive a Client restart; shared Puck/Display text never rehydrates from it |
 
 ## Interaction Primitives
@@ -226,6 +232,15 @@ This matrix assigns the visible contract when a surface is cold, empty, active, 
 - After every response, the active Puck opens an eight-second follow-up window. When the window opens, play a sound cue and show `Listening` again; when it closes without new speech, play the closing cue.
 - When the user says exactly `stop` during capture or the follow-up window, close the local window silently. It creates no replacement turn. A Display may show `Stopped` as a local status while returning to its idle listening contract.
 - Active-playback barge-in is deferred until the v1 audio route proves echo-safe. Explicit controls supported by a Client remain distinct from automatic hands-free interruption.
+
+### Typed choices and structured actions
+
+- Hermes may emit an Interactive Choice Object alongside its explanation. The object is bounded data, not arbitrary Hermes-authored UI.
+- Every option exposes a primary `Choose` action and a visible secondary `Explore` action. `Choose` commits that option; `Explore` requests more detail without committing or triggering the option's consequence. Hermes may emphasize a recommendation but cannot hide exploration for another option.
+- The active ESP32 Touch Display and direct-use W/K browser/iPad surface use native touch controls. The TUI uses native keyboard controls: `Enter` chooses the focused option and `Right Arrow` explores it. The same semantic operation may have different platform gestures.
+- A passive Room Display may mirror the object and its current state but never exposes an action control. The Puck remains status/audio-only.
+- An accepted action is tied to the current Hermes Session, turn, object, option, advertised capability, and freshness boundary. It appears once in the session trail; stale, unsupported, expired, replaced, or duplicate actions leave the current object unchanged.
+- The first proving slice uses harmless choices. Consequence-bearing commits require a later household-policy and confirmation/passcode decision; `Explore` never bypasses that policy.
 
 ### Presentation and privacy
 
@@ -260,8 +275,8 @@ The minimum behavior is household-readable and multimodal without making any sin
 - Shared Devices retain no conversation history. Room-local response text must not appear on other Displays; the household-wide exception is the visual-only Departure Card.
 - iOS typed turns and the TUI provide non-Puck conversation paths. Device setup and administration remain iOS-only so a child can use the ordinary voice path without receiving credential-management controls.
 - On iPad, the canvas has an accessible DOM status mirror. A live region announces each state transition once, not every Transcription or response delta; response text is announced when complete. Profile identity, unavailable status, and recovery instructions are exposed as text.
-- On iOS, VoiceOver order is Profile → current state → response/Transcription → available action. After Retry completes, focus returns to the state and Profile; after setup, focus lands on the next incomplete step. Room Display prompt mirrors are not focusable or actionable.
-- On the TUI, every recovery action has a keyboard-equivalent command and the header retains Profile identity. Touch actions use at least 44pt on iOS and 44px on touch-capable room surfaces. Icons, color, motion, and sound are always paired with text or structure.
+- On iOS, VoiceOver order is Profile → current state → response/Transcription → available action. After Retry completes, focus returns to the state and Profile; after setup, focus lands on the next incomplete step. Passive Room Display prompt mirrors are not focusable or actionable; active W/K choice controls remain keyboard and assistive-technology reachable.
+- On the TUI, every recovery action and choice operation has a keyboard-equivalent command, with `Enter` for `Choose` and `Right Arrow` for `Explore`; the header retains Profile identity. Touch actions use at least 44pt on iOS and 44px on touch-capable room surfaces. Icons, color, motion, and sound are always paired with text or structure.
 - Puck-only visuals have no screen-reader channel; iOS/TUI provide the accessible configuration and conversation alternative. Sound-off does not remove state comprehension, and no Departure Card or Disconnected State produces unsolicited Puck audio.
 - Validate the child-readable labels with the household's children at room distance. Technical labels remain secondary to `Ready`, `Heard`, `Listening`, `Working`, `Speaking`, `Unavailable`, and `Stopped`. The pilot assumes English labels; localization requires a follow-up review of width, comprehension, and cue timing.
 
@@ -270,8 +285,8 @@ The minimum behavior is household-readable and multimodal without making any sin
 | Platform/surface | Required adaptation |
 |---|---|
 | ReSpeaker Lite prototype Puck with small TFT | Status-only presentation. Use short readable phase labels and local cues; never place full response text or a transcript archive on the TFT. Exact electrical, acoustic, thermal, controller, and firmware behavior remains hardware validation. |
-| ESP32-S3/LVGL Touch Display | Dense Night Console active state and quiet Ambient Surface at the physical 1024×600 form factor. It consumes the shared `/ws`-style display state contract; voice capture and response audio use a separate bounded adapter, while touch prompt choices remain non-actionable in v1. |
-| W/K browser surface (web/iPad) | Safari/Guided Access deployment of the shared browser voice-plus-display surface. When `browser_voice` is advertised, it captures browser voice and plays streamed response audio; keep an accessible DOM status mirror alongside the canvas. Kiosk authentication, offline behavior, and exact responsive reflow remain open. |
+| ESP32-S3/LVGL Touch Display | Dense Night Console active state and quiet Ambient Surface at the physical 1024×600 form factor. It consumes the shared `/ws`-style display state contract; voice capture and response audio use a separate bounded adapter, and the active doorway renders native choice controls while a passive role remains read-only. |
+| W/K browser surface (web/iPad) | Safari/Guided Access deployment of the shared browser voice-plus-display surface. When `browser_voice` is advertised, it captures browser voice, plays streamed response audio, and direct-use mode exposes accessible DOM `Choose`/`Explore` controls; keep the status/action mirror alongside the canvas. Kiosk authentication, offline behavior, and exact responsive reflow remain open. |
 | iOS Client | Native conversation doorway with tap-to-speak and typed turns, listening/thinking/speaking status, active Profile header, Local History, and Settings-based Device administration. iOS may use its existing local push-to-talk Transcription path; the Puck Media Server requirement does not automatically apply to iOS microphone bytes. |
 | macOS Client | A companion doorway may share the iOS conversation/admin contract; exact macOS behavior is not defined by the confirmed UX sources. |
 | TUI | Direct voice-chat doorway with terminal transcript and state rendering. Preserve inline streamed text and Profile identity in the header; diagnostics are engineering-only. |
@@ -293,7 +308,7 @@ Hard anti-patterns for this experience:
 - A retry that resends a turn that may already have reached Hermes.
 - A shared Device retaining an ambient transcript archive or full response text on the tiny Puck TFT.
 - A Departure Card speaking, sounding, or requiring manual dismissal.
-- A touchable prompt response on the Display in v1.
+- A passive Display or the Puck exposing a choice action, or an active surface dispatching a stale/duplicate choice.
 - Chain-of-thought, a local fallback assistant, or doorway-authored answer content.
 - Active-playback barge-in before an echo-safe audio route is proven.
 
@@ -305,7 +320,7 @@ Hard anti-patterns for this experience:
 2. The authorized Wake Mapping is resolved before capture. If more than one Device hears it, the closest wins and effective priority resolves a tie; losers stay silent.
 3. The winning Puck shows `heard` and then `listening`. The Room Display shows the same phase and the active Profile identity. Amanda speaks one utterance.
 4. The Puck's transient audio travels over the home LAN to the Media Server for Transcription. The Room Display shows live Transcription as it arrives; it does not capture or create a second Session.
-5. The doorway shows `thinking`, then `buffering` if response audio is preparing. If Hermes asks for clarification or approval, the Room Display mirrors the prompt, the active Puck/Client waits for a spoken answer, and no touch response action appears. Hermes owns the answer; the UX does not author or correct it.
+5. The doorway shows `thinking`, then `buffering` if response audio is preparing. If Hermes asks for free-text clarification or approval, the Room Display mirrors the prompt and the active Puck/Client waits for a spoken answer. If Hermes emits a typed choice object, the Room Display mirrors it without controls because the Puck remains an audio/status doorway. Hermes owns the answer; the UX does not author or correct it.
 6. The Puck speaks the Hermes response while the Room Display streams the same response text. The Display's active visualizer may move with the voice, and the active Profile remains visible in the response.
 7. On completion, the doorway shows `complete`, leaves the response visible where text is supported, and opens the eight-second follow-up. A sound cue and Listening state make the resumed turn-taking obvious.
 8. When Amanda says exactly `stop` during the follow-up window, the local window closes silently. If she says nothing, the closing cue plays and the Display returns to its Ambient Surface.
@@ -313,6 +328,18 @@ Hard anti-patterns for this experience:
 **Climax:** The conversational back-and-forth feels like one continuous Hermes relationship: Amanda can follow up naturally because the doorway reopens Listening without another wake, while the Display and Puck make each phase honest.
 
 **Failure path:** If the Profile is unavailable or revoked, the Puck gives a local sound and visible unavailable status, captures nothing, submits nothing, and does not choose another Profile. If the connection drops during the turn, the doorway enters Disconnected State and exposes Retry where appropriate; Retry reconnects only, the turn stays unresolved, and a fresh wake or explicit prompt is required. Other Displays never receive the conversation text.
+
+### UJ-1B — Amanda evaluates a Hermes recommendation through an active surface
+
+1. Amanda has asked Hermes a question that produces a small set of bounded options. The active ESP32 Touch Display, direct-use W/K browser/iPad surface, or TUI receives the Interactive Choice Object with the active Profile and current session context.
+2. The surface shows Hermes' explanation, every option, a primary `Choose` action, and a visible secondary `Explore` action for each option. A passive Room Display may mirror the object but shows no controls.
+3. Amanda explores an option. The active surface sends one structured, non-committing `explore` action; Hermes can provide more detail while the choice remains unresolved.
+4. Amanda chooses an option. The active surface sends one structured `choose` action to the owning Hermes Session and shows that action in the session trail.
+5. The surface replaces or updates the object only when the current Hermes state changes. A stale, unsupported, expired, replaced, or duplicate action leaves the current object unchanged.
+
+**Climax:** Amanda can inspect a recommendation and commit deliberately through the surface native to where she is, without translating every decision into free-form speech.
+
+**Failure path:** The Puck and passive Room Displays remain read-only. Consequence-bearing choices are outside the first proving slice; later policy may require confirmation or a household passcode, and `Explore` never triggers the consequence.
 
 ### UJ-1A — Amanda asks Missy through the ESP32 touch Display
 

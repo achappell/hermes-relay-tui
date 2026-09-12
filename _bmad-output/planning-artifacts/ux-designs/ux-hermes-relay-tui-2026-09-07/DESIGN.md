@@ -3,7 +3,7 @@ name: Hermes Night Console
 description: Shared dark, high-contrast visual identity for the Hermes Home Assistant Platform's truthful multi-doorway interaction states.
 status: final
 created: '2026-09-07'
-updated: '2026-09-10'
+updated: '2026-09-12'
 sources:
   - "{planning_artifacts}/briefs/brief-hermes-relay-tui-2026-09-07/brief.md"
   - "{planning_artifacts}/briefs/brief-hermes-relay-tui-2026-09-07/addendum.md"
@@ -204,6 +204,13 @@ components:
     prompt: '{typography.body}'
     waiting: '{colors.accent-attention}'
     border: '{colors.border-emphasis}'
+  interactive-choice:
+    surface: '{colors.surface-panel-raised}'
+    option: '{colors.ink-primary}'
+    primary: '{colors.accent-identity}'
+    secondary: '{colors.accent-attention}'
+    focus: '{colors.focus-ring}'
+    action: '{typography.button}'
   tui-header:
     surface: '{colors.surface-console}'
     profile: '{typography.heading}'
@@ -270,7 +277,7 @@ Visual rules live here; interaction and state behavior live in `EXPERIENCE.md`. 
 | Component | Visual specification |
 |---|---|
 | **Passive Room Display** | Use `{components.room-display.surface}` as the dark canvas with `{components.room-display.padding}` framing the composition, `{components.room-display.border}` for the outer boundary, and `{components.room-display.radius}` only at the device/frame edge. The active layout reads as a dense console: profile header, Turn Path, central state label and visualizer, then supporting status. It mirrors the selected doorway and does not own capture or audio. See the [room active-turn key screen](mockups/key-room-active-turn.html). |
-| **ESP32 Touch Console** | Use the same Night Console semantic structure in native LVGL: profile header, Turn Path, dominant state label, response/transcription region, voice visualizer, and audio-delivery/recovery status. The touch unit is allowed to capture and play because it is a first-class voice doorway; its rendering must remain truthful to the shared state contract. |
+| **ESP32 Touch Console** | Use the same Night Console semantic structure in native LVGL: profile header, Turn Path, dominant state label, response/transcription region, voice visualizer, interactive choice region when the doorway is active, and audio-delivery/recovery status. The touch unit is allowed to capture, play, choose, and explore because it is a first-class voice doorway; its rendering must remain truthful to the shared state contract. |
 | **Puck Status** | Use `{components.puck-status.surface}` with `{components.puck-status.state}` for one short, readable phase label. Keep the surface status-only: no full response text, transcript archive, or miniature console that cannot be read. `{components.puck-status.padding}` is generous relative to the tiny form factor. |
 | **Profile Header** | Show the active Hermes Profile name in `{components.profile-header.name}` with a small label in `{components.profile-header.label}` and an identity signal in `{components.profile-header.identity}`. Use `{components.profile-header.divider}` to separate identity from the turn body. |
 | **Turn Path** | Render the supported Turn Phases as a visible progression using `{components.turn-path.label}`. Completed steps use `{components.turn-path.complete}`, the current step uses `{components.turn-path.current}`, and the gap uses `{components.turn-path.gap}`. The path is supplementary to the large state label, not a replacement for it. |
@@ -286,7 +293,8 @@ Visual rules live here; interaction and state behavior live in `EXPERIENCE.md`. 
 | **Device Setup** | Show the ordered setup steps with `{components.device-setup.step}`, `{components.device-setup.current}`, `{components.device-setup.complete}`, and `{components.device-setup.gap}`. The visual sequence is Room, Wake Mappings, then ready confirmation. See the [iOS setup key screen](mockups/key-ios-setup.html). |
 | **Device Details** | Use `{components.device-details.surface}` and `{components.device-details.padding}` for a device's management surface. `{components.device-details.destructive}` identifies Disconnect/revocation; `{components.device-details.divider}` keeps credential and status information distinct. |
 | **Local History** | Use `{components.local-history.row}` and `{components.local-history.text}` for intentional iOS/TUI history, with `{components.local-history.date}` for supporting metadata and `{components.local-history.divider}` for separation. Puck and passive Display surfaces do not expose this component; the ESP32 touch unit also does not create a default archive. |
-| **Prompt Mirror** | Use `{components.prompt-mirror.surface}`, `{components.prompt-mirror.border}`, and `{components.prompt-mirror.prompt}` to display an active Hermes clarification or approval prompt. `{components.prompt-mirror.waiting}` means the doorway is waiting for a spoken answer; no touch control is styled as available in v1. |
+| **Prompt Mirror** | Use `{components.prompt-mirror.surface}`, `{components.prompt-mirror.border}`, and `{components.prompt-mirror.prompt}` to display an active Hermes clarification or approval prompt. `{components.prompt-mirror.waiting}` means the active doorway is waiting for an answer; a passive mirror never styles a prompt as actionable. |
+| **Interactive Choice Object** | Use `{components.interactive-choice.surface}` to separate Hermes' explanation from its bounded options. Render each option with a clear primary `Choose` action and visible secondary `Explore` action using `{components.interactive-choice.primary}` and `{components.interactive-choice.secondary}`; `{components.interactive-choice.focus}` is the keyboard/touch focus treatment. Active ESP32 Touch, direct-use W/K, and TUI surfaces may act; passive Displays and the Puck do not. |
 | **TUI Header** | Use `{components.tui-header.surface}` and `{components.tui-header.divider}` for the terminal header, with `{components.tui-header.profile}` showing the active Hermes Profile. It may be denser than iOS, but it must preserve profile identity and the shared phase vocabulary. |
 
 ## Do's and Don'ts
