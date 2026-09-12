@@ -1,5 +1,32 @@
 # Changelog
 
+## 0.11.0 (2026-09-12)
+
+<!-- Release notes generated using configuration in .github/release.yml at main -->
+
+## What's Changed
+### Other Changes
+* docs: formalize Android as an iOS-parity surface by @achappell in https://github.com/achappell/hermes-relay-tui/pull/152
+* feat(tui): polish conversation surface by @achappell in https://github.com/achappell/hermes-relay-tui/pull/151
+* fix(puck): bound turn responsiveness, not turn duration (1-p-2 task 6) by @achappell in https://github.com/achappell/hermes-relay-tui/pull/150
+* docs(bmad): reconcile post-merge sprint status by @achappell in https://github.com/achappell/hermes-relay-tui/pull/154
+* fix(puck): bound playback writes and surface dropped turns by @achappell in https://github.com/achappell/hermes-relay-tui/pull/155
+* fix(tui): keep disconnect recovery presentation honest by @achappell in https://github.com/achappell/hermes-relay-tui/pull/157
+* feat(puck): the Puck speaks Hermes' answers (1-p-2 tasks 3-5) by @achappell in https://github.com/achappell/hermes-relay-tui/pull/156
+* fix(tui): close disconnect recovery review findings by @achappell in https://github.com/achappell/hermes-relay-tui/pull/159
+* fix(puck): close the remaining code-review findings by @achappell in https://github.com/achappell/hermes-relay-tui/pull/158
+* feat: make TUI an independent voice gateway by @achappell in https://github.com/achappell/hermes-relay-tui/pull/160
+* fix(puck): prevent phantom playback stops and recover failed turns by @achappell in https://github.com/achappell/hermes-relay-tui/pull/161
+* fix(tui): shut down voice resources off the event loop by @achappell in https://github.com/achappell/hermes-relay-tui/pull/162
+* docs(home): add shared wake arbitration contract by @achappell in https://github.com/achappell/hermes-relay-tui/pull/164
+* feat(puck): harden wake-to-response audio delivery by @achappell in https://github.com/achappell/hermes-relay-tui/pull/163
+* docs: move home service ownership out of tui by @achappell in https://github.com/achappell/hermes-relay-tui/pull/165
+* docs: amend FR5 to describe continuously reopening follow-up windows by @achappell in https://github.com/achappell/hermes-relay-tui/pull/167
+* feat(tui): detect idle relay loss without replay by @achappell in https://github.com/achappell/hermes-relay-tui/pull/166
+
+
+**Full Changelog**: https://github.com/achappell/hermes-relay-tui/compare/v0.10.0...v0.11.0
+
 ## 0.10.0 (2026-09-11)
 
 <!-- Release notes generated using configuration in .github/release.yml at main -->
