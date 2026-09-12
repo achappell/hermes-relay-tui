@@ -847,14 +847,21 @@ def test_the_response_stream_is_finished_even_when_a_turn_fails(monkeypatch):
     assert stream.finished
 
 
-def _get_response(port: int, *, token: str | None):
-    """Fetch /response and return (status, body-bytes)."""
+def _get_response(port: int, *, token: str | None, seq: int | None = None):
+    """Fetch /response and return (status, body-bytes).
+
+    `seq` defaults to omitting the parameter entirely: the bridge only
+    validates it when the device actually asks for a specific capture, and
+    most tests here care about other behaviour. Tests that exercise the
+    stale-capture guard pass it explicitly.
+    """
     conn = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
     try:
         headers = {}
         if token is not None:
             headers[TOKEN_HEADER] = token
-        conn.request("GET", "/response?seq=1", headers=headers)
+        path = "/response" if seq is None else f"/response?seq={seq}"
+        conn.request("GET", path, headers=headers)
         resp = conn.getresponse()
         body = resp.read()
         return resp.status, body
@@ -1227,3 +1234,36 @@ def test_a_second_capture_cannot_truncate_an_answer_still_streaming():
         "the in-flight answer was truncated by a follow-up capture"
     )
     stream.release_reader()
+
+
+def test_a_stale_capture_fetch_is_refused_not_answered_with_the_wrong_audio(tmp_path):
+    """MEDIUM. The firmware asks for a specific capture and pcm_capture.h
+    documents that as preventing wrong-answer playback -- but nothing read
+    the parameter, so a retried or late fetch after a newer turn began would
+    silently play a different question's answer."""
+    from puck_bridge.response import ResponseStream
+
+    stream = ResponseStream()
+    stream.expect(seq=7)
+    stream.begin(7, (24000, 1, 2))
+    stream.write(b"answer-for-seven")
+    stream.finish()
+
+    handler_cls = make_handler(
+        expected_token="s3cret",
+        on_transcript=_RecordingSink(),
+        transcribe_fn=_fake_transcribe(transcript="x"),
+        work_dir=tmp_path,
+        response_stream=stream,
+    )
+    server = _start_server(handler_cls)
+    port = server.server_address[1]
+    try:
+        stale, _ = _get_response(port, token="s3cret", seq=3)
+        matching, body = _get_response(port, token="s3cret", seq=7)
+    finally:
+        server.shutdown()
+
+    assert stale == 409, "a fetch for a different capture must be refused"
+    assert matching == 200
+    assert body[44:] == b"answer-for-seven"

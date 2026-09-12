@@ -78,7 +78,7 @@ class ResponseStream:
 
     # -- producer side (the turn) -----------------------------------------
 
-    def expect(self) -> bool:
+    def expect(self, seq: int | None = None) -> bool:
         """Declare that a capture is being processed and audio may follow.
 
         Refuses while a reader is still streaming a previous answer, and
@@ -99,6 +99,7 @@ class ResponseStream:
             self._audio_format = None
             self._finished = False
             self._chunks.clear()
+            self._seq = seq
             self._cv.notify_all()
             return True
 
@@ -121,6 +122,11 @@ class ResponseStream:
         with self._cv:
             return self._expecting
 
+
+    @property
+    def seq(self) -> int | None:
+        with self._cv:
+            return self._seq
 
     def begin(self, seq: int | None, audio_format: tuple[int, int, int]) -> None:
         """Declare the format and open the stream for writing."""

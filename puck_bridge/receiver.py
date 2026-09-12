@@ -270,6 +270,28 @@ def make_handler(
             # never produced audio. The first is routine -- an empty
             # transcript, a false wake -- and the second is a real fault.
             was_expecting = response_stream.expecting
+            # Validate the requested capture. The firmware builds
+            # /response?seq=<the capture the bridge confirmed>, and
+            # pcm_capture.h documents it as "so the response fetch asks for
+            # the right one rather than assuming the latest" -- but nothing
+            # checked it, so a retried or late fetch after a newer turn had
+            # begun would silently play the WRONG capture's answer, with
+            # neither side able to notice. Mismatch is a conflict, not a
+            # not-found: the resource exists, it is simply a different
+            # answer than the one being asked for.
+            requested = query.get("seq", [""])[0]
+            current = response_stream.seq
+            if requested and current is not None and requested != str(current):
+                logger.warning(
+                    "puck bridge response: device asked for capture %s but "
+                    "the current answer is for %s; refusing rather than "
+                    "playing the wrong one",
+                    requested,
+                    current,
+                )
+                self._respond(409, b"stale capture")
+                return
+
             audio_format = response_stream.wait_for_format()
             if audio_format is None:
                 if was_expecting:
@@ -422,7 +444,7 @@ def make_handler(
             # function that will not produce audio calls abandon().
             accepted_stream = True
             if response_stream is not None:
-                accepted_stream = response_stream.expect()
+                accepted_stream = response_stream.expect(seq)
                 if not accepted_stream:
                     # A previous answer is still being delivered. Process
                     # this capture anyway -- the turn itself is worth
