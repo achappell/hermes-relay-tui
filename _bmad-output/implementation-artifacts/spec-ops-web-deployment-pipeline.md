@@ -177,6 +177,7 @@ bootstrap from ordinary local deploys so the repeatable path stays short.
 | --- | --- |
 | 2026-09-12 | Initial draft for the ops Linux deployment pipeline and Caddy hostname. |
 | 2026-09-12 | Approved implementation completed; local and fake-remote gates passed. Live Ops/browser gate remains for the target machine. |
+| 2026-09-12 | Real Ops bootstrap exposed a protected-environment readability edge case; the root-shell check and fake-remote regression are now included. |
 
 ## Review Log
 

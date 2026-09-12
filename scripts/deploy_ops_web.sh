@@ -323,8 +323,10 @@ cleanup() {
 trap cleanup EXIT
 
 id -u "$service_user" >/dev/null 2>&1 || fail "service user does not exist: $service_user"
-sudo test -r "$service_env_file" || fail "service environment is not readable: $service_env_file"
-sudo test -r "$caddyfile" || fail "Caddyfile is not readable: $caddyfile"
+sudo sh -c 'test -r "$1"' -- "$service_env_file" || \
+	fail "service environment is not readable: $service_env_file"
+sudo sh -c 'test -r "$1"' -- "$caddyfile" || \
+	fail "Caddyfile is not readable: $caddyfile"
 
 if ! sudo awk -v prefix="$caddy_site_dir/" '
     /^[[:space:]]*import[[:space:]]+/ {

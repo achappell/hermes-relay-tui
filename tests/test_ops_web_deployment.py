@@ -180,6 +180,17 @@ shift
 if [ "$command" = chown ]; then
     exit 0
 fi
+if [ "$command" = sh ] && [ "${1:-}" = -c ]; then
+    script="$2"
+    shift 2
+    shell_name="$1"
+    shift
+    mapped_args=()
+    for argument in "$@"; do
+        mapped_args+=("$(map_path "$argument")")
+    done
+    exec /bin/sh -c "$script" "$shell_name" "${mapped_args[@]}"
+fi
 case "$command" in
     test|grep|cp|install|rm)
         mapped=()
