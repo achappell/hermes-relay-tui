@@ -90,9 +90,12 @@ bridge was restarted expecting a different token, then two wakes were spoken.
 | No fallback profile is ever selected | PASS -- covered by test in `tests/test_puck_bridge.py` |
 | Puck and TUI `session_id` differ | PASS -- `amanda-kiosk-puck-bridge`, verified live |
 
-Not covered: `DEGRADED` (bridge unreachable) was reasoned about and implemented
-but not exercised on hardware. Worth a reviewer's attention, since it is the
-state the contract deliberately narrowed.
+`DEGRADED` VERIFIED 2026-09-11, incidentally: while the bridge was restarting,
+the device logged `state: DEGRADED (may_capture=true)` and went on to capture,
+upload and complete a turn once the bridge returned. That is exactly the
+contract's deliberate narrowing working as intended -- an unreachable bridge
+says nothing about identity, and refusing wakes during it would make the
+appliance look broken. No longer an untested state.
 
 Task 5 note: the session-id collision was already fixed on main in #138 before
 this branch began; a duplicate written here was discarded in favour of main's

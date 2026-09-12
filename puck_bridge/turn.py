@@ -86,9 +86,21 @@ class TurnTimeout(Exception):
 class TurnRunner:
     """Owns the background event loop that drives one Hermes session."""
 
-    def __init__(self, session: Any, *, player: PCMPlayer | None = None) -> None:
+    def __init__(
+        self,
+        session: Any,
+        *,
+        player: PCMPlayer | None = None,
+        response_stream: Any | None = None,
+    ) -> None:
         self._session = session
         self._player = player if player is not None else PCMPlayer(True)
+        # When set, the spoken answer is published here for the Puck to
+        # fetch instead of being played on this host. Optional so the
+        # host-playback path keeps working unchanged -- the device-playback
+        # path is additive, not a replacement, until it is proven on
+        # hardware.
+        self._response_stream = response_stream
         self._loop: asyncio.AbstractEventLoop | None = None
         self._loop_thread: threading.Thread | None = None
         self._pending_transcript: str | None = None
@@ -267,10 +279,21 @@ class TurnRunner:
                         event["channels"],
                         event["sample_width"],
                     )
-                    if not self._player.active:
+                    if self._response_stream is not None:
+                        # Publish for the Puck to fetch. Declared as early
+                        # as possible: the device cannot be sent a WAV
+                        # header until the format is known, and its audio
+                        # reader fails a stream that goes ~30s without a
+                        # successful read.
+                        self._response_stream.begin(None, audio_format)
+                    elif not self._player.active:
                         self._player.start(audio_format)
                 elif kind == "audio_chunk":
-                    if self._player.active:
+                    if self._response_stream is not None:
+                        self._response_stream.write(event["data"])
+                        spoke = True
+                        chunks_spoken += 1
+                    elif self._player.active:
                         await self._write_audio(event["data"])
                         spoke = True
                         chunks_spoken += 1
@@ -298,6 +321,19 @@ class TurnRunner:
                             await self._write_audio(decoded)
                             spoke = True
         finally:
+            # Always close the response stream, success or failure: the
+            # device is blocked reading it, and an unterminated body leaves
+            # it waiting until its own ~30s timeout instead of stopping
+            # cleanly. This is the producer's half of "terminate the body
+            # definitively".
+            if self._response_stream is not None:
+                try:
+                    self._response_stream.finish()
+                except Exception:  # pragma: no cover - best-effort cleanup
+                    logger.debug(
+                        "puck bridge: error finishing response stream",
+                        exc_info=True,
+                    )
             # Close the generator before the player: it may still be
             # producing, and an abandoned async generator left open holds
             # the underlying websocket read alive.

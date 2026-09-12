@@ -750,3 +750,520 @@ def test_playback_that_never_drains_aborts_the_turn(monkeypatch):
         assert runner._send("a question") is False
     finally:
         runner.stop()
+
+
+# --- 1-p-2 tasks 3-4: response streaming to the Puck ----------------------
+
+
+def test_streaming_wav_header_declares_a_sentinel_length():
+    """A live WAV has no known length at header time. micro_wav's decoder
+    validates only num_channels and sample_rate -- data_chunk_size_ is
+    copied into a uint32_t counter with no validation and decoding stops
+    when the input runs out -- so a sentinel streams correctly."""
+    from puck_bridge.response import streaming_wav_header
+
+    header = streaming_wav_header((24000, 1, 2))
+    assert len(header) == 44
+    assert header[:4] == b"RIFF" and header[8:12] == b"WAVE"
+    assert struct.unpack("<I", header[24:28])[0] == 24000          # sample rate
+    assert struct.unpack("<I", header[40:44])[0] == 0xFFFFFFFF     # data size
+    # A zero data chunk would make the decoder stop immediately.
+    assert struct.unpack("<I", header[40:44])[0] != 0
+
+
+def test_response_stream_delivers_chunks_in_order_then_ends():
+    from puck_bridge.response import ResponseStream
+
+    stream = ResponseStream()
+    stream.begin(1, (24000, 1, 2))
+    stream.write(b"aa")
+    stream.write(b"bb")
+    stream.finish()
+    assert list(stream.iter_chunks()) == [b"aa", b"bb"]
+
+
+def test_response_stream_ends_the_body_when_the_producer_stalls():
+    """Rather than hanging: the device treats a zero-length read as a
+    timeout, not EOF, so an unterminated body leaves it waiting for its own
+    ~30s failure instead of stopping cleanly."""
+    from puck_bridge.response import ResponseStream
+
+    stream = ResponseStream()
+    stream.begin(1, (24000, 1, 2))
+    stream.write(b"aa")
+    # never finished
+    chunks = list(stream.iter_chunks(stall_timeout=0.6))
+    assert chunks == [b"aa"]
+
+
+def test_response_stream_wait_for_format_gives_up_rather_than_blocking():
+    from puck_bridge.response import ResponseStream
+
+    assert ResponseStream().wait_for_format(timeout=0.2) is None
+
+
+def test_a_turn_publishes_audio_to_the_response_stream_not_the_host():
+    """Task 4: with a response stream attached the answer goes to the Puck,
+    and must NOT also be played on this host."""
+    from puck_bridge.response import ResponseStream
+
+    stream = ResponseStream()
+    player = FakePlayer()
+    runner = TurnRunner(FakeSession(), player=player, response_stream=stream)
+    runner.start()
+    try:
+        assert runner._send("a question") is True
+    finally:
+        runner.stop()
+
+    assert list(stream.iter_chunks()) == [b"\x01\x02", b"\x03\x04"]
+    assert player.written == [], "the host must stay silent when the Puck plays"
+    assert stream.finished, "the body must be terminated for the device"
+
+
+def test_the_response_stream_is_finished_even_when_a_turn_fails(monkeypatch):
+    """The device is blocked reading; an abandoned turn must still end the
+    body rather than leaving it to time out."""
+    import puck_bridge.turn as turn_mod
+    from puck_bridge.response import ResponseStream
+
+    monkeypatch.setattr(turn_mod, "FIRST_EVENT_TIMEOUT_SECONDS", 0.2)
+
+    class _SilentSession(FakeSession):
+        def send_turn(self, text, *, stt_source="local"):
+            async def _events():
+                await asyncio.sleep(30)
+                yield {}
+
+            return _events()
+
+    stream = ResponseStream()
+    runner = TurnRunner(_SilentSession(), player=FakePlayer(), response_stream=stream)
+    runner.start()
+    try:
+        assert runner._send("a question") is False
+    finally:
+        runner.stop()
+    assert stream.finished
+
+
+def _get_response(port: int, *, token: str | None, seq: int | None = None):
+    """Fetch /response and return (status, body-bytes).
+
+    `seq` defaults to omitting the parameter entirely: the bridge only
+    validates it when the device actually asks for a specific capture, and
+    most tests here care about other behaviour. Tests that exercise the
+    stale-capture guard pass it explicitly.
+    """
+    conn = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
+    try:
+        headers = {}
+        if token is not None:
+            headers[TOKEN_HEADER] = token
+        path = "/response" if seq is None else f"/response?seq={seq}"
+        conn.request("GET", path, headers=headers)
+        resp = conn.getresponse()
+        body = resp.read()
+        return resp.status, body
+    finally:
+        conn.close()
+
+
+def test_response_endpoint_streams_a_wav_the_device_can_decode(tmp_path):
+    from puck_bridge.response import ResponseStream
+
+    stream = ResponseStream()
+    handler_cls = make_handler(
+        expected_token="s3cret",
+        on_transcript=_RecordingSink(),
+        transcribe_fn=_fake_transcribe(transcript="x"),
+        work_dir=tmp_path,
+        response_stream=stream,
+    )
+    server = _start_server(handler_cls)
+    port = server.server_address[1]
+
+    def _produce():
+        stream.begin(1, (24000, 1, 2))
+        stream.write(b"\x01\x02" * 8)
+        stream.write(b"\x03\x04" * 8)
+        stream.finish()
+
+    threading.Thread(target=_produce, daemon=True).start()
+    try:
+        status, body = _get_response(port, token="s3cret")
+    finally:
+        server.shutdown()
+
+    assert status == 200
+    # http.client de-chunks for us, so this is the reassembled body.
+    assert body[:4] == b"RIFF"
+    assert struct.unpack("<I", body[24:28])[0] == 24000
+    assert struct.unpack("<I", body[40:44])[0] == 0xFFFFFFFF
+    assert body[44:] == b"\x01\x02" * 8 + b"\x03\x04" * 8
+
+
+def test_response_endpoint_rejects_a_bad_token(tmp_path):
+    """Response audio is as private as the question that produced it."""
+    from puck_bridge.response import ResponseStream
+
+    stream = ResponseStream()
+    stream.begin(1, (24000, 1, 2))
+    stream.finish()
+    handler_cls = make_handler(
+        expected_token="s3cret",
+        on_transcript=_RecordingSink(),
+        transcribe_fn=_fake_transcribe(transcript="x"),
+        work_dir=tmp_path,
+        response_stream=stream,
+    )
+    server = _start_server(handler_cls)
+    try:
+        status, _ = _get_response(server.server_address[1], token="wrong")
+    finally:
+        server.shutdown()
+    assert status == 401
+
+
+def test_response_fails_fast_when_no_turn_was_accepted():
+    """The device fetches /response as soon as its upload is confirmed --
+    before the bridge knows whether the capture held a question at all. An
+    empty transcript runs no turn, so making the device wait out the full
+    format budget for audio that never existed is pure latency. Observed
+    2026-09-11 as four 15s waits; this asserts the fast path."""
+    import time
+    from puck_bridge.response import ResponseStream
+
+    stream = ResponseStream()
+    started = time.monotonic()
+    assert stream.wait_for_format(timeout=10.0) is None
+    assert time.monotonic() - started < 1.0, (
+        "must not wait the budget when nothing is expected"
+    )
+
+
+def test_response_waits_when_a_turn_is_actually_coming():
+    """The counterpart: once a turn is accepted, the format wait is real --
+    audio_start arrives slightly after the turn begins."""
+    import threading as _th
+    import time
+    from puck_bridge.response import ResponseStream
+
+    stream = ResponseStream()
+    stream.expect()
+
+    def _late_format():
+        time.sleep(0.3)
+        stream.begin(1, (24000, 1, 2))
+
+    _th.Thread(target=_late_format, daemon=True).start()
+    assert stream.wait_for_format(timeout=5.0) == (24000, 1, 2)
+
+
+def test_abandon_releases_a_waiting_reader():
+    """A turn that fails after being accepted must release the device
+    immediately rather than leaving it on the full budget."""
+    import threading as _th
+    import time
+    from puck_bridge.response import ResponseStream
+
+    stream = ResponseStream()
+    stream.expect()
+
+    def _fail():
+        time.sleep(0.2)
+        stream.abandon()
+
+    _th.Thread(target=_fail, daemon=True).start()
+    started = time.monotonic()
+    assert stream.wait_for_format(timeout=10.0) is None
+    assert time.monotonic() - started < 2.0
+
+
+def test_a_fetch_arriving_during_transcription_waits_for_the_answer(tmp_path):
+    """The race that cost a delivered answer on 2026-09-11.
+
+    The device fetches /response the instant its upload is confirmed, but
+    transcription takes seconds. If `expect()` is set only after the
+    transcript is accepted, that fetch fast-fails with 504 and the turn then
+    produces audio with nobody reading it -- a lost answer that looks like a
+    successful turn in the log. The declaration must happen when capture
+    processing STARTS.
+    """
+    import threading as _th
+    from puck_bridge.response import ResponseStream
+
+    stream = ResponseStream()
+    slow_started = _th.Event()
+
+    def _slow_transcribe(path):
+        slow_started.set()
+        import time as _t
+        _t.sleep(0.8)  # stand in for faster-whisper
+        return {"success": True, "transcript": "a question"}
+
+    def _sink(_text):
+        # The turn produces audio shortly after the transcript lands.
+        def _produce():
+            stream.begin(1, (24000, 1, 2))
+            stream.write(b"\x07\x08" * 4)
+            stream.finish()
+        _th.Thread(target=_produce, daemon=True).start()
+        return True
+
+    handler_cls = make_handler(
+        expected_token="s3cret",
+        on_transcript=_sink,
+        transcribe_fn=_slow_transcribe,
+        work_dir=tmp_path,
+        response_stream=stream,
+    )
+    server = _start_server(handler_cls)
+    port = server.server_address[1]
+    try:
+        frame = struct.pack("<i", 0) + struct.pack("<i", 1 << 6)
+        _th.Thread(
+            target=_post_chunk,
+            kwargs=dict(port=port, seq=21, chunk=0, total=1, body=frame, token="s3cret"),
+            daemon=True,
+        ).start()
+        assert slow_started.wait(5.0), "transcription should have begun"
+        # Fetch mid-transcription, exactly as the device does.
+        status, body = _get_response(port, token="s3cret")
+    finally:
+        server.shutdown()
+
+    assert status == 200, "a fetch during transcription must wait, not 504"
+    assert body[:4] == b"RIFF"
+    assert body[44:] == b"\x07\x08" * 4
+
+
+def test_a_second_concurrent_response_fetch_is_refused(tmp_path):
+    """Two readers would each pop from the same queue and split the answer
+    between them, so both would play garbage. The device was observed
+    opening two connections for a single response on 2026-09-11."""
+    import threading as _th
+    from puck_bridge.response import ResponseStream
+
+    stream = ResponseStream()
+    stream.expect()
+    stream.begin(1, (24000, 1, 2))
+
+    handler_cls = make_handler(
+        expected_token="s3cret",
+        on_transcript=_RecordingSink(),
+        transcribe_fn=_fake_transcribe(transcript="x"),
+        work_dir=tmp_path,
+        response_stream=stream,
+    )
+    server = _start_server(handler_cls)
+    port = server.server_address[1]
+    first_status: list[int] = []
+
+    def _first():
+        # Holds the reader slot while the producer dribbles chunks.
+        first_status.append(_get_response(port, token="s3cret")[0])
+
+    t = _th.Thread(target=_first, daemon=True)
+    t.start()
+    import time as _t
+    _t.sleep(0.4)  # let the first claim the slot
+    try:
+        second_status, _ = _get_response(port, token="s3cret")
+    finally:
+        stream.finish()
+        t.join(timeout=5)
+        server.shutdown()
+
+    assert second_status == 409, "a concurrent fetch must be refused, not served"
+    assert first_status == [200], "the first fetch must be unaffected"
+
+
+def test_the_reader_slot_is_released_after_a_stream_ends(tmp_path):
+    """Otherwise one response would poison every later one."""
+    from puck_bridge.response import ResponseStream
+
+    stream = ResponseStream()
+    stream.expect()
+    stream.begin(1, (24000, 1, 2))
+    stream.write(b"ab")
+    stream.finish()
+
+    handler_cls = make_handler(
+        expected_token="s3cret",
+        on_transcript=_RecordingSink(),
+        transcribe_fn=_fake_transcribe(transcript="x"),
+        work_dir=tmp_path,
+        response_stream=stream,
+    )
+    server = _start_server(handler_cls)
+    port = server.server_address[1]
+    try:
+        first, _ = _get_response(port, token="s3cret")
+        # A later, non-concurrent fetch must not be refused.
+        stream.expect()
+        stream.begin(2, (24000, 1, 2))
+        stream.write(b"cd")
+        stream.finish()
+        second, body = _get_response(port, token="s3cret")
+    finally:
+        server.shutdown()
+
+    assert first == 200 and second == 200
+    assert body[44:] == b"cd"
+
+
+# --- code-review findings: four high-severity regressions ------------------
+
+
+def test_the_producer_is_not_blocked_while_a_consumer_is_mid_yield():
+    """HIGH 1. iter_chunks used to yield while holding the condition lock,
+    so the consumer held it across its blocking socket write. The producer
+    writes from the asyncio event-loop thread, so that blocked the entire
+    loop -- including the wait_for timeouts meant to catch a stalled turn.
+    And since the device plays in real time, backpressure is the NORMAL
+    case."""
+    import threading as _th
+    import time as _t
+    from puck_bridge.response import ResponseStream
+
+    stream = ResponseStream()
+    stream.expect()
+    stream.begin(1, (24000, 1, 2))
+    stream.write(b"first")
+
+    gen = stream.iter_chunks()
+    assert next(gen) == b"first"  # consumer is now suspended at the yield
+
+    produced = _th.Event()
+
+    def _produce():
+        stream.write(b"second")  # must not block on the consumer
+        produced.set()
+
+    _th.Thread(target=_produce, daemon=True).start()
+    assert produced.wait(2.0), (
+        "producer blocked while the consumer sat at a yield -- this is the "
+        "event-loop deadlock"
+    )
+    stream.finish()
+
+
+def test_a_turn_that_finishes_without_audio_releases_the_waiter():
+    """HIGH 2. finish() left _expecting set, so a turn that never emitted
+    audio_start (text-only reply, TTS failure) left the device waiting the
+    full format budget for a 504 -- the exact behaviour this class claims
+    to have removed."""
+    import threading as _th
+    import time as _t
+    from puck_bridge.response import ResponseStream
+
+    stream = ResponseStream()
+    stream.expect()
+
+    def _finish_without_audio():
+        _t.sleep(0.2)
+        stream.finish()
+
+    _th.Thread(target=_finish_without_audio, daemon=True).start()
+    started = _t.monotonic()
+    assert stream.wait_for_format(timeout=10.0) is None
+    assert _t.monotonic() - started < 2.0, "must not wait out the budget"
+
+
+def test_the_reader_slot_survives_a_dead_connection(tmp_path):
+    """HIGH 3. acquire_reader() ran outside the try/finally, so a header
+    write to an already-closed socket leaked the slot and every later fetch
+    got 409 -- the Puck went permanently mute until a bridge restart."""
+    from puck_bridge.response import ResponseStream
+
+    stream = ResponseStream()
+    handler_cls = make_handler(
+        expected_token="s3cret",
+        on_transcript=_RecordingSink(),
+        transcribe_fn=_fake_transcribe(transcript="x"),
+        work_dir=tmp_path,
+        response_stream=stream,
+    )
+    server = _start_server(handler_cls)
+    port = server.server_address[1]
+    try:
+        # Fetch and hang up immediately, mid-headers.
+        for _ in range(3):
+            conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+            stream.expect()
+            stream.begin(1, (24000, 1, 2))
+            conn.request("GET", "/response?seq=1", headers={TOKEN_HEADER: "s3cret"})
+            conn.close()  # drop without reading
+            import time as _t
+            _t.sleep(0.2)
+            stream.finish()
+        # The slot must still be free for a normal fetch.
+        stream.expect()
+        stream.begin(2, (24000, 1, 2))
+        stream.write(b"ok")
+        stream.finish()
+        status, _ = _get_response(port, token="s3cret")
+    finally:
+        server.shutdown()
+
+    assert status != 409, "the reader slot leaked -- device would be mute"
+    assert status == 200
+
+
+def test_a_second_capture_cannot_truncate_an_answer_still_streaming():
+    """HIGH 4. expect() unconditionally cleared the shared stream, so an
+    ordinary follow-up question dropped the tail of the answer already
+    playing, un-finished the stream, and could splice the new answer's PCM
+    into the old body under the old WAV header."""
+    from puck_bridge.response import ResponseStream
+
+    stream = ResponseStream()
+    stream.expect()
+    stream.begin(1, (24000, 1, 2))
+    stream.write(b"answer-one-tail")
+    assert stream.acquire_reader(), "reader should claim the slot"
+
+    # A second wake arrives while answer one is still being delivered.
+    assert stream.expect() is False, "must refuse while a reader is active"
+    stream.abandon()  # must be a no-op too
+
+    stream.finish()
+    remaining = list(stream.iter_chunks(stall_timeout=1.0))
+    assert remaining == [b"answer-one-tail"], (
+        "the in-flight answer was truncated by a follow-up capture"
+    )
+    stream.release_reader()
+
+
+def test_a_stale_capture_fetch_is_refused_not_answered_with_the_wrong_audio(tmp_path):
+    """MEDIUM. The firmware asks for a specific capture and pcm_capture.h
+    documents that as preventing wrong-answer playback -- but nothing read
+    the parameter, so a retried or late fetch after a newer turn began would
+    silently play a different question's answer."""
+    from puck_bridge.response import ResponseStream
+
+    stream = ResponseStream()
+    stream.expect(seq=7)
+    stream.begin(7, (24000, 1, 2))
+    stream.write(b"answer-for-seven")
+    stream.finish()
+
+    handler_cls = make_handler(
+        expected_token="s3cret",
+        on_transcript=_RecordingSink(),
+        transcribe_fn=_fake_transcribe(transcript="x"),
+        work_dir=tmp_path,
+        response_stream=stream,
+    )
+    server = _start_server(handler_cls)
+    port = server.server_address[1]
+    try:
+        stale, _ = _get_response(port, token="s3cret", seq=3)
+        matching, body = _get_response(port, token="s3cret", seq=7)
+    finally:
+        server.shutdown()
+
+    assert stale == 409, "a fetch for a different capture must be refused"
+    assert matching == 200
+    assert body[44:] == b"answer-for-seven"
