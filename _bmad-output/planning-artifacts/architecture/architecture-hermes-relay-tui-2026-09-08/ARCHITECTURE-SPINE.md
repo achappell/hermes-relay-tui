@@ -27,6 +27,7 @@ sources:
   - docs/superpowers/specs/2026-09-01-home-02-wake-word-design.md
   - ../hermes-relay-ios/_bmad-output/implementation-artifacts/epic-1-context.md
   - ../hermes-relay-ios/_bmad-output/implementation-artifacts/spec-5-1-ios-independent-conversation-doorway.md
+  - ../hermes-relay-home/docs/architecture.md
   - https://pypi.org/project/textual/
   - https://websockets.readthedocs.io/en/stable/
   - https://svelte.dev/docs/svelte/overview
@@ -108,7 +109,7 @@ flowchart TB
 
 - **Binds:** All repository front ends and runtime environments.
 - **Prevents:** Premature centralization, shared-process failure coupling, and a hidden cross-front-end state store.
-- **Rule:** hermes-relay, hermes-relay-home, the browser kiosk, ESP/native display targets, and native iOS/Android Clients remain separate deployment units. Hermes is the external session/model/speech authority. This repository does not introduce a shared database, broker, or transcript store. The appliance serves the local display channel; Web/WASM and ESP/native clients connect to it; mobile Clients own their own Hermes sessions and local state.
+- **Rule:** hermes-relay, hermes-relay-home, the browser kiosk, ESP/native display targets, and native iOS/Android Clients remain separate deployment units. Hermes is the external session/model/speech authority. `hermes-relay-home` owns the local household database, canonical configuration, and wake arbitration; this repository does not own a shared database, broker, or transcript store. The legacy appliance adapter remains a migration path while Web/WASM, ESP/native, and mobile Clients adopt the Home service contract.
 
 ### AD-7 — Recovery and shutdown are explicit state transitions [ADOPTED]
 
@@ -200,22 +201,24 @@ hermes-relay-tui/
 flowchart LR
     hermes["Hermes endpoint<br/>remote authority"]
     tui["hermes-relay<br/>TUI process"]
-    home["hermes-relay-home<br/>appliance process"]
+    home["hermes-relay-home<br/>canonical Home service"]
+    legacy["home_display appliance<br/>migration adapter"]
     web["Web/WASM kiosk<br/>same-origin browser client"]
     esp["ESP32 or native simulator<br/>LVGL client"]
     mobile["Native mobile Clients<br/>iOS + Android"]
 
     hermes <-->|voice-session WebSocket| tui
-    hermes <-->|voice-session WebSocket| home
     hermes <-->|native session/audio/profile adapters| mobile
-    home -->|/state snapshots and /action| web
-    home -->|LAN state channel and actions| esp
+    mobile <-->|versioned JSON/HTTP<br/>configuration + claims| home
+    tui <-->|versioned JSON/HTTP<br/>configuration + claims| home
+    legacy -->|/state snapshots and /action| web
+    legacy -->|LAN state channel and actions| esp
 ~~~
 
 ## Operational Envelope
 
 - Developer and CI validation uses fake Hermes sessions/WebSockets and local contract fixtures; a live endpoint is required only for the explicit text/voice smoke path.
-- Desktop TUI and household appliance are installed through separate console entry points. The appliance may hold local microphone and playback resources; the TUI may borrow or own them through the core ports.
+- Desktop TUI and household appliance remain separate console entry points during migration. The extracted Home service owns household configuration/arbitration; the legacy appliance may continue to hold local microphone and playback resources until its doorway adapter is moved behind the Home contract.
 - The household display server is loopback-only by default. ESP or remote-browser use requires explicit LAN binding and remains within the trusted private-pilot assumption.
 - Hermes URL, client/device identity, profile token, audio devices, reconnect limits, and turn timeouts are runtime configuration. No machine credential or token is part of the repository artifact.
 - Native iOS and Android Clients store their own profile-bound credentials and Local History locally, use platform permission and audio services, and validate their adapters with deterministic fakes plus platform simulator/device checks. Mobile parity is validated by capability and failure-path evidence, not pixel identity or shared source files.
@@ -228,6 +231,7 @@ flowchart LR
 | FR-1–FR-6: voice doorway, turn phases, response, follow-up, clean reconnect | client.py, session.py, voice.py, mic.py, wake.py, handsfree.py, app.py, home_display/appliance.py, ESP32 Touch audio adapter | AD-1, AD-2, AD-3, AD-7, AD-11 |
 | FR-1–FR-9, FR-16–FR-20: native mobile conversation, recovery, Profiles, Local History, Device administration, and mobile control-plane behavior | `hermes-relay-ios` and future `hermes-relay-android` adapters | AD-2, AD-3, AD-6, AD-7, AD-8, AD-9, AD-12 |
 | FR-10–FR-12: ambient/display state, room-local mirroring, disconnected state | home_display/state.py, home_display/server.py, shared/display/, home_display/web/, firmware/ | AD-2, AD-4, AD-5, AD-6, AD-8 |
+| 3-I-4: canonical household configuration and simultaneous-wake arbitration | `hermes-relay-home` contract, store, and arbitration engine; TUI compatibility adapter during migration | AD-2, AD-6, AD-8, AD-10 |
 | FR-19: recovery without a silent turn | session.py, home_display/appliance.py, display adapters | AD-2, AD-6, AD-7 |
 | FR-21: TUI as a direct Hermes doorway | app.py, transcript.py, prompts.py, session_picker.py | AD-1, AD-3, AD-7 |
 | FR-22: voice-only prompt mirroring and response | client.py, session.py, home_display/appliance.py, shared display contract | AD-3, AD-4, AD-5, AD-8 |
@@ -236,9 +240,9 @@ flowchart LR
 ## Deferred
 
 - Per-device credentials, provisioning, revocation, authentication, and encrypted display transport. The pilot uses explicit LAN trust; revisit before wider deployment.
-- Wake arbitration and proximity signals when multiple physical devices hear the same phrase.
+- Home-service wake arbitration implementation, acoustic evidence calibration, and proximity signals when multiple physical devices hear the same phrase.
 - Media-server/audio-bridge ownership, audio framing, backpressure, retention, and transcription boundaries for Puck and ESP32 Touch.
 - Calendar routing, Immich policy, Departure Card computation, and household-wide context providers.
 - Native mobile profile/device UX and the contracts between this repository, the separate iOS client, and the future Android client; Android repository bootstrap and exact toolchain remain open until that delivery boundary is initialized.
 - Exact ESP-IDF framework pin and hardware release/CI matrix; PlatformIO currently provides the firmware build seed.
-- A central household service, shared database, cross-front-end transcript store, repository rename, or hermes-relay-core extraction. Revisit only after a demonstrated coordination or dependency conflict requires it.
+- Further extraction of display/firmware repositories, a repository rename, or a hermes-relay-core package. Revisit only after independent build, hardware CI, release cadence, or dependency evidence requires it.
