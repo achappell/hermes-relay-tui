@@ -296,3 +296,26 @@ def test_pausing_the_listener_clears_the_engine_buffer():
     listener.resume()
 
     assert engine.resets == 2, "both directions have to clear it"
+
+
+def test_quiescing_the_listener_rejects_queued_frames():
+    """A detached listener cannot fire a wake from pre-disarm audio."""
+
+    class LoudEngine:
+        def score(self, frame):  # noqa: ARG002
+            return 1.0
+
+    fired = []
+    detector = wake.WakeDetector(
+        LoudEngine(), confirmation_frames=1, cooldown_seconds=0.0
+    )
+    listener = wake.WakeListener(
+        detector,
+        on_wake=lambda: fired.append(True),
+    )
+
+    listener.submit([1])
+    listener.quiesce()
+    listener.run_pending()
+
+    assert fired == []
