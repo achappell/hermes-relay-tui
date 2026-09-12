@@ -29,7 +29,7 @@
 # - Dev moves story to 'review', then runs code-review (fresh context, different LLM recommended)
 # - Retrospective appends its action items to action_items; the status view surfaces open ones
 generated: 09-08-2026 00:00
-last_updated: 09-12-2026 15:49
+last_updated: 09-12-2026 17:45
 project: hermes-relay-tui
 project_key: NOKEY
 tracking_system: file-system
@@ -44,9 +44,15 @@ development_status:
   1-i-1-authorized-initiation: done
   1-i-2-honest-phases-with-response-audio-delivery: done
   1-i-3-fresh-recovery-without-replay: done
-  1-a-1-authorized-typed-or-tap-to-speak-initiation-bound-to-the-sel: backlog
-  1-a-2-honest-phases-with-response-text-audio-delivery-and-explicit: backlog
-  1-a-3-fresh-recovery-without-replaying-an-uncertain-turn: backlog
+  1-a-1-authorized-typed-or-tap-to-speak-initiation-bound-to-the-sel: done
+  1-a-2-honest-phases-with-response-text-audio-delivery-and-explicit: done
+  1-a-3-fresh-recovery-without-replaying-an-uncertain-turn: done
+  1-a-4-relay-configuration-keystore-credentials-and-live-transport: done
+  1-a-5-interrupt-an-active-android-turn: done
+  1-a-6-hands-free-continuation-and-echo-safe-capture: done
+  1-a-7-typed-turns-and-normalized-event-delivery: done
+  1-a-8-response-audio-playback: done
+  1-a-9-microphone-capture-and-on-device-transcription: done
   1-p-1-authorized-wake-and-capture: done
   1-p-2-status-and-response-audio-delivery: done
   1-p-3-bounded-follow-up-and-exact-stop: backlog
@@ -72,8 +78,8 @@ development_status:
   epic-2: in-progress
   2-i-1-show-the-ios-doorway-s-capture-acknowledgement-and-live-tran: backlog
   2-i-2-show-honest-ios-disconnected-unavailable-state-without-stale: backlog
-  2-a-1-show-the-android-doorway-s-capture-acknowledgement-and-live: backlog
-  2-a-2-show-honest-android-disconnected-unavailable-state-without-s: backlog
+  2-a-1-show-the-android-doorway-s-capture-acknowledgement-and-live: done
+  2-a-2-show-honest-android-disconnected-unavailable-state-without-s: done
   2-p-1-expose-the-puck-s-local-capture-response-and-status-phases-w: backlog
   2-p-2-fail-closed-and-show-unavailable-disconnected-status-when-th: backlog
   2-e-1-render-the-room-scoped-ambient-surface-in-native-lvgl: backlog
@@ -123,6 +129,7 @@ development_status:
 
   epic-5: in-progress
   5-i-1-use-ios-as-an-independent-typed-and-tap-to-speak-conversatio: backlog
-  5-a-1-use-android-as-an-independent-typed-and-tap-to-speak-convers: backlog
+  5-a-1-use-android-as-an-independent-typed-and-tap-to-speak-convers: done
+  5-a-2-android-accessibility-order-and-focus-restoration: done
   5-t-1-use-the-tui-as-an-independent-direct-voice-chat-gateway-with: review
   epic-5-retrospective: optional
