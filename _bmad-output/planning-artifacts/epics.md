@@ -331,6 +331,7 @@ the named surface; another surface's implementation is evidence, not closure.
 | `T-3` | TUI | Bounded follow-up and exact `stop`. The historical numeric artifact 1.3 remains its stable local alias. |
 | `T-4` | TUI | Recovery without replay. The historical numeric artifact 1.4 remains its stable local alias. |
 | `T-5` | TUI | Non-blocking wake-listener and microphone teardown during recovery, reload, disarm, and quit. |
+| `T-6` | TUI | Detect idle relay loss and present honest recovery without replaying an uncertain turn. |
 
 The ESP32 Touch stories cannot be closed by the existing `DisplaySnapshot`
 transport alone. The surface must capture voice and deliver response audio as
@@ -509,6 +510,46 @@ So that reconnect, reload, disarm, and quit remain responsive and do not leak or
 **Given** the lifecycle changes are implemented
 **When** the focused test suite runs
 **Then** it covers prompt UI return, cancellation, late-open cleanup, stale-frame rejection, idempotence, and the existing successful wake path.
+
+### Story T-6: Detect idle relay loss and present honest recovery without replaying an uncertain turn
+
+As a TUI user whose relay may disappear while the screen is idle,
+I want the client to detect and present that loss within a bounded interval,
+So that it does not claim to be connected and never replays a turn whose delivery is uncertain.
+
+**Covers:** FR6, FR19; NFR2, NFR4; idle liveness, transport classification, single-reader ownership, and no-replay recovery.
+
+**Acceptance Criteria:**
+
+**Given** a Hermes Session is connected and idle
+**When** the relay closes the socket or fails the configured liveness/heartbeat deadline
+**Then** the TUI transitions to its existing disconnected or unavailable presentation within that bounded policy
+**And** it does not wait for the next user operation to discover the loss.
+
+**Given** the Session is actively receiving a turn
+**When** liveness checks or transport events run
+**Then** the existing receive owner remains the only reader
+**And** no duplicate receive task, competing `recv()`, or second Hermes turn is created.
+
+**Given** a supported transport version, including the repository's legacy websockets 13.x compatibility path
+**When** the owned receive path reports a close, timeout, or reader failure
+**Then** the client classifies that condition through an explicit transport boundary
+**And** it does not convert an unrelated programming `RuntimeError` into a network-loss claim.
+
+**Given** an idle relay loss is detected after a prior turn may have reached Hermes
+**When** the TUI enters recovery
+**Then** it preserves the existing uncertain-turn/no-replay behavior
+**And** it does not fabricate completion, playback, or a fresh submission of the old prompt.
+
+**Given** a later prompt is submitted after the idle loss
+**When** bounded recovery and a new handshake succeed
+**Then** the new prompt is sent once through the new Session
+**And** stale events, audio, and queued state from the disconnected Session cannot mutate it.
+
+**Given** idle liveness and compatibility handling are implemented
+**When** focused fake-WebSocket tests run against healthy idle, remote close, missed heartbeat, legacy 13.x error, active-turn, and post-loss recovery cases
+**Then** the state transition, classification, reader ownership, and no-replay guarantees are verified
+**And** normal active-turn streaming and explicit user reconnect behavior remain unchanged.
 
 ## Epic 2: See and trust what the room is doing
 

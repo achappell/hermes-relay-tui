@@ -6,6 +6,20 @@
 
 Give every configured Hermes doorway one honest conversation path: authorization and Profile identity are settled before capture or submission, the request crosses one normalized SessionProtocol boundary, observed response phases remain consistent, and transport failure cannot duplicate or silently resume a turn. This includes the audio-only Puck, the voice-plus-display ESP32 Touch doorway, the W/K browser voice-plus-display surface, iOS, Android, and TUI. Passive room Displays consume the same visual semantics without becoming alternate Hermes doorways.
 
+## Stories
+
+- T-1: Authorized TUI initiation
+- T-2: Honest TUI phases and response delivery
+- T-3: Bounded TUI follow-up and exact `stop`
+- T-4: TUI recovery without replay
+- T-5: Non-blocking TUI voice-resource teardown
+- T-6: Idle relay-loss detection and honest no-replay recovery
+- P-1–P-4: ReSpeaker Puck conversation path
+- E-1–E-5: ESP32 Touch Display conversation path
+- WK-1: Shared Web/iPad voice-plus-display surface
+- I-1–I-3: iOS conversation path
+- A-1–A-3: Android conversation path
+
 ## Surface-specific story ownership — 2026-09-10; Android parity addendum 2026-09-11
 
 Epic 1 is decomposed by delivery surface. The shared SessionProtocol, display
@@ -20,7 +34,7 @@ acceptance criteria; evidence from another surface does not close it.
 | ReSpeaker Puck | `P-1` through `P-4` | Authorized wake/capture, status and response audio, bounded follow-up/`stop`, and recovery. |
 | ESP32 Touch Display | `E-1` through `E-5` | Authorized voice capture, native phase/response rendering, response audio delivery, bounded follow-up/`stop`, and recovery. |
 | Web/iPad (`W/K`) | `WK-1` | One shared browser voice-plus-display surface for authorized capture, honest phases, streamed/completed response text, response audio, and delivery/error state. iPad is not a separate surface story. |
-| TUI | Existing local Stories 1.1–1.4 | The current TUI-specific authorization, phase/delivery, follow-up, and recovery slices. Their numeric IDs remain stable for implementation history. |
+| TUI | T-1–T-6 | The current TUI-specific authorization, phase/delivery, follow-up, lifecycle, idle-liveness, and recovery slices. Numeric aliases remain stable for implementation history. |
 
 The ESP32 Touch story set is not satisfied by the current display snapshot
 plumbing alone. Its implementation must add or integrate a bounded microphone
@@ -31,10 +45,12 @@ dependency.
 
 ## Existing local TUI stories
 
-- Story 1.1: Start an authorized Hermes turn
-- Story 1.2: Render honest turn phases and response delivery
-- Story 1.3: Continue with bounded follow-up and exact `stop`
-- Story 1.4: Recover without replaying an uncertain turn
+- T-1: Start an authorized Hermes turn
+- T-2: Render honest turn phases and response delivery
+- T-3: Continue with bounded follow-up and exact `stop`
+- T-4: Recover without replaying an uncertain turn
+- T-5: Shut down local voice resources without blocking the TUI
+- T-6: Detect idle relay loss and present honest recovery without replaying an uncertain turn
 
 ## Requirements & Constraints
 
@@ -58,6 +74,8 @@ dependency.
 
 - Use ports-and-adapters with a UI-independent Python functional core. `client.py` owns Hermes hello, streamed-event normalization, typed protocol errors, and diagnostics; `session.py` owns one connection and turn lifecycle.
 - `HermesSession` is the owner of connection, capabilities, session identity, and active-turn protocol facts. Drafts, queues, presentation, and optional history remain surface-local.
+- Keep one receive owner for each WebSocket. Liveness and recovery observe or signal that owner rather than creating competing `recv()` tasks.
+- Classify close, timeout, and reader failure through an explicit transport boundary, including the supported legacy websockets compatibility path; unrelated programming exceptions are not network-loss claims.
 - Transport loss is an explicit disconnected/error transition. Reconnects are bounded and observable; verified recovery creates a fresh Hermes Session and requires fresh user initiation.
 - Runtime URL, identity, Profile token, audio devices, retry limits, and timeouts remain configuration. Do not introduce a shared database, broker, transcript store, or front-end dependency into the core.
 
@@ -72,31 +90,6 @@ dependency.
 
 - The shared authorization, SessionProtocol, display-state, and bounded-audio contracts establish the boundary consumed by each surface-specific story family.
 - The existing local TUI Stories 1.1–1.4 preserve their implementation history; new iOS, Android, Puck, ESP32 Touch, and W/K work is tracked as surface-specific Epic 1 stories rather than inferred from TUI closure.
+- T-5 owns local voice-resource lifecycle; T-6 owns relay liveness and transport classification while preserving T-4’s fresh-session/no-replay contract.
 - Later room-context epics consume Epic 1’s normalized events and recovery semantics; they must not create alternate protocol paths. A passive Display may mirror an active touch doorway, but must not create a second Session.
 - Physical-device credentials, provisioning, revocation, and wake arbitration belong to the separate device-administration work. This epic consumes an authorized configuration and does not invent that system.
-
-## Next local slice selection — superseded 2026-09-10 22:40
-
-> **STALE — do not act on the paragraph below.** It named the T-2 review gate
-> as the next action and warned against opening a second slice. That gate
-> resolved the same day in #134 ("fix: resolve Story 1.2 review findings"),
-> which landed *after* this note was written and moved
-> `1-2-render-honest-turn-phases-and-response-delivery` to `done` with zero
-> unresolved findings. Reading this note later cost real confusion about
-> whether two slices were open in parallel; `sprint-status.yaml` is the
-> authority, not this paragraph.
->
-> **Current single active slice:** `1-p-2-status-and-response-audio-delivery`
-> (Puck status and response audio), `in-progress`. Tasks 1-2 are implemented
-> and hardware-verified; tasks 3-7 remain. The epic prefix matters — a `2-p-2`
-> and `3-p-2` also exist, so a bare "P-2" is ambiguous.
-
-~~The next local TUI action is the review gate for T-2, represented by the
-numeric local alias `1-2-render-honest-turn-phases-and-response-delivery`.
-It is the first existing in-review slice, has focused and full-suite evidence
-recorded, and closes the phase/response-delivery contract consumed by T-3 and
-T-4. Keep its tracker status at `review` until the fresh code-review gate
-resolves; do not open a second local implementation slice in parallel.~~
-
-The one-story-per-slice rule itself still stands and is deliberate: keep
-exactly one implementation slice active at a time.

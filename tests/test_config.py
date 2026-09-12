@@ -155,11 +155,19 @@ def test_resolve_token_falls_back_to_the_legacy_profile_file(tmp_path, monkeypat
 
 
 def test_connection_kwargs_uses_additional_headers_when_supported():
-    def fake_connect(url, additional_headers=None, max_size=None):
+    def fake_connect(
+        url,
+        additional_headers=None,
+        max_size=None,
+        ping_interval=None,
+        ping_timeout=None,
+    ):
         pass
 
     kwargs = _connection_kwargs(fake_connect, "tok")
     assert kwargs["additional_headers"] == {"Authorization": "Bearer tok"}
+    assert kwargs["ping_interval"] == 20.0
+    assert kwargs["ping_timeout"] == 20.0
 
 
 def test_connection_kwargs_falls_back_to_extra_headers():
@@ -168,6 +176,25 @@ def test_connection_kwargs_falls_back_to_extra_headers():
 
     kwargs = _connection_kwargs(fake_connect, "tok")
     assert kwargs["extra_headers"] == {"Authorization": "Bearer tok"}
+    assert "ping_interval" not in kwargs
+    assert "ping_timeout" not in kwargs
+
+
+def test_connection_kwargs_passes_keepalive_to_legacy_signature():
+    def fake_connect(
+        url,
+        extra_headers=None,
+        max_size=None,
+        ping_interval=None,
+        ping_timeout=None,
+    ):
+        pass
+
+    kwargs = _connection_kwargs(fake_connect, "tok")
+
+    assert kwargs["extra_headers"] == {"Authorization": "Bearer tok"}
+    assert kwargs["ping_interval"] == 20.0
+    assert kwargs["ping_timeout"] == 20.0
 
 
 # --- YAML config file --------------------------------------------------------

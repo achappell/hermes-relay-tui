@@ -27,6 +27,10 @@ LEGACY_PROFILE_ENV = Path.home() / ".hermes" / "profiles" / "amanda" / ".env"
 DEFAULT_CONFIG_PATH = Path.home() / ".hermes-relay-tui" / "config.yaml"
 BUSY_MODES = ("queue", "steer", "interrupt")
 WAKE_ENGINES = ("openwakeword", "sherpa")
+# Keepalive is deliberately a code-level transport policy.  It bounds silent
+# idle loss without adding another user-facing setting to the profile surface.
+WEBSOCKET_PING_INTERVAL = 20.0
+WEBSOCKET_PING_TIMEOUT = 20.0
 
 
 def default_device_id() -> str:
@@ -952,7 +956,18 @@ def _connection_kwargs(connect: Any, token: str) -> dict[str, Any]:
     except (TypeError, ValueError):
         params = {}
     header_name = "additional_headers" if "additional_headers" in params else "extra_headers"
-    return {header_name: headers, "max_size": 256 * 1024}
+    kwargs: dict[str, Any] = {header_name: headers, "max_size": 256 * 1024}
+    accepts_kwargs = any(
+        parameter.kind is inspect.Parameter.VAR_KEYWORD
+        for parameter in params.values()
+    )
+    for name, value in (
+        ("ping_interval", WEBSOCKET_PING_INTERVAL),
+        ("ping_timeout", WEBSOCKET_PING_TIMEOUT),
+    ):
+        if name in params or accepts_kwargs:
+            kwargs[name] = value
+    return kwargs
 
 
 def _option_value(argv: list[str], option: str) -> str | None:
