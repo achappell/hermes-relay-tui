@@ -427,7 +427,8 @@ media_source:
     buffer_size: 300000
   # 1-p-1 task 3: local sounds, embedded in flash. A refusal must NOT
   # depend on the network -- the whole point is to be audible when
-  # something about the bridge relationship is wrong. Addressed as
+  # something about the bridge relationship is wrong. Regenerate the
+  # committed assets with `tools/generate_sounds.sh`. Addressed as
   # `audio-file://<audio_file id>`.
   - platform: audio_file
     id: puck_local_source
@@ -442,9 +443,9 @@ audio_file:
     file: sounds/refused.wav
   # 1-p-2 task 7: wake acknowledgement. ASCENDING (440 -> 660Hz), the exact
   # inverse of the refusal above, so the two are distinguishable without
-  # having to think about it. Short and quiet on purpose: it plays while
-  # the microphone is ALREADY capturing, so it must not dominate the start
-  # of the recording.
+  # having to think about it. Deliberately 80ms: it plays before capture
+  # opens, and the short hand-off keeps the wake-time status prompt without
+  # leaving the user speaking into a long AEC-suppressed interval.
   - id: heard_sound
     file: sounds/heard.wav
 
@@ -489,8 +490,8 @@ media_player:
             ESP_LOGI("puck_audio", "resuming wake detection after speaking");
             id(mww).start();
           }
-    volume_initial: 0.60
-    volume_max: 0.90
+    volume_initial: 0.25
+    volume_max: 0.80
     volume_increment: 0.05
     announcement_pipeline:
       speaker: puck_resampler
@@ -572,12 +573,12 @@ micro_wake_word:
   # capture window still has to close (see the fast interval below) before
   # there is anything to upload.
   on_wake_word_detected:
-    # 1-p-1: the gate lives inside wake_capture::start() -- deliberately,
+    # 1-p-1: the gate lives inside wake_capture::prepare() -- deliberately,
     # so no caller can route around it -- and reports whether it refused.
     # A refusal must be AUDIBLE: an appliance that silently ignores a wake
     # is indistinguishable from a broken one, which is a worse outcome
     # than the refusal itself.
-    - lambda: pcm_capture::wake_capture::start(wake_word);
+    - lambda: pcm_capture::wake_capture::prepare(wake_word);
     - if:
         condition:
           lambda: return pcm_capture::wake_capture::last_wake_refused;
@@ -586,21 +587,22 @@ micro_wake_word:
               id: puck_media_player
               media_url: "audio-file://refused_sound"
               announcement: true
-        # NOTE: the acknowledgement deliberately does NOT play here, on the
-        # wake itself. Measured 2026-09-11: doing so destroys the capture.
-        # Same spoken question, before and after adding it --
-        #
-        #   before:  8.000s captured, 2.4s speech kept, transcript good (0.90)
-        #   after:   4.2s captured,   0s speech kept,   transcript EMPTY (0.57)
-        #
-        # The XMOS AEC suppresses the microphone while the speaker is
-        # active, so VAD sees silence, the window closes early, and the
-        # question lands inside the suppressed period. Playing anything
-        # while recording costs the recording. The acknowledgement moved to
-        # the end of the capture window instead (see the 100ms VAD tick
-        # interval below), which still answers "did it hear me?" well
-        # before the answer arrives -- and arguably says something more
-        # useful: not "I heard a wake word" but "I have your question".
+        else:
+          # The acknowledgement starts immediately, but capture is opened
+          # only after this short local tone has drained. Playing it while
+          # capture is open makes XMOS AEC suppress the question; the
+          # explicit hand-off keeps the frozen wake-time acknowledgement
+          # contract without sacrificing the transcript.
+          - if:
+              condition:
+                lambda: return pcm_capture::wake_capture::wake_pending;
+              then:
+                - media_player.play_media:
+                    id: puck_media_player
+                    media_url: "audio-file://heard_sound"
+                    announcement: true
+                - delay: 150ms
+                - lambda: pcm_capture::wake_capture::start_pending();
 
 # TEMPORARY diagnostic: mww's on_boot state-transition log (STOPPED ->
 # STARTING -> DETECTING_WAKE_WORD) only fires once, right at boot, and is
@@ -659,19 +661,9 @@ interval:
     then:
       - lambda: |-
           pcm_capture::wake_capture::tick(id(mww).get_vad_state());
-      # 1-p-2 task 7: acknowledge once the capture window has CLOSED, never
-      # while it is open -- see the on_wake_word_detected comment for the
-      # measurement that forced this. By here the microphone is no longer
-      # recording, so the speaker cannot eat the question.
-      - if:
-          condition:
-            lambda: return pcm_capture::wake_capture::last_capture_captured;
-          then:
-            - lambda: pcm_capture::wake_capture::last_capture_captured = false;
-            - media_player.play_media:
-                id: puck_media_player
-                media_url: "audio-file://heard_sound"
-                announcement: true
+      # 1-p-2 task 7 acknowledgement is issued by on_wake_word_detected
+      # before capture begins. It must not be moved into this close path:
+      # doing so violates the wake-time status contract.
   # Story 5: the actual outbound upload, from a slow tick (never the
   # real-time audio path or the fast VAD-tick above) -- matches
   # `upload_and_restart`'s existing convention of only ever blocking on a

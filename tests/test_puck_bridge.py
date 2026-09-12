@@ -273,6 +273,35 @@ def test_complete_capture_with_valid_token_transcribes_and_delivers(tmp_path):
     assert sink.transcripts == ["what's for dinner"]
 
 
+def test_completed_capture_passes_its_sequence_to_the_response_producer(tmp_path):
+    from puck_bridge.response import ResponseStream
+
+    sink = _RecordingSink()
+    seen_sequences: list[int] = []
+    stream = ResponseStream()
+    handler_cls = make_handler(
+        expected_token="s3cret",
+        on_transcript=sink,
+        set_response_seq=seen_sequences.append,
+        transcribe_fn=_fake_transcribe(transcript="question"),
+        work_dir=tmp_path,
+        response_stream=stream,
+    )
+    server = _start_server(handler_cls)
+    try:
+        frame = struct.pack("<i", 0) + struct.pack("<i", 1 << 6)
+        status = _post_chunk(
+            server.server_address[1], seq=42, chunk=0, total=1, body=frame, token="s3cret"
+        )
+        assert sink.event.wait(5.0)
+    finally:
+        server.shutdown()
+
+    assert status == 200
+    assert seen_sequences == [42]
+    assert stream.seq == 42
+
+
 def test_out_of_order_chunks_still_reassemble_correctly(tmp_path):
     sink = _RecordingSink()
     transcribe = _fake_transcribe(transcript="hello")
@@ -416,6 +445,59 @@ def test_turn_runner_submits_exactly_one_turn_and_plays_the_response():
     assert player.started_with == (16000, 1, 2)
     assert player.written == [b"\x01\x02", b"\x03\x04"]
     assert player.closed is True
+
+
+def test_turn_runner_keeps_audio_from_multiple_hermes_segments_in_one_response():
+    from puck_bridge.response import ResponseStream
+
+    fmt = {"sample_rate": 16000, "channels": 1, "sample_width": 2}
+    session = FakeSession(
+        events=[
+            {"type": "audio_start", **fmt},
+            {"type": "audio_chunk", "data": b"one"},
+            {"type": "audio_end"},
+            {"type": "audio_start", **fmt},
+            {"type": "audio_chunk", "data": b"two"},
+            {"type": "audio_end"},
+        ]
+    )
+    response = ResponseStream()
+    response.expect(seq=7)
+    runner = TurnRunner(session, response_stream=response)
+    runner.set_response_seq(7)
+    runner.start()
+    try:
+        assert runner._send("a segmented answer") is True
+    finally:
+        runner.stop()
+
+    assert list(response.iter_chunks()) == [b"one", b"two"]
+
+
+@pytest.mark.parametrize("terminal_type", ["audio_abort", "turn_interrupted"])
+def test_turn_runner_does_not_report_an_aborted_response_as_delivered(terminal_type):
+    from puck_bridge.response import ResponseStream
+
+    response = ResponseStream()
+    response.expect(seq=3)
+    runner = TurnRunner(
+        FakeSession(
+            events=[
+                {"type": "audio_start", "sample_rate": 16000, "channels": 1, "sample_width": 2},
+                {"type": "audio_chunk", "data": b"partial"},
+                {"type": terminal_type},
+            ]
+        ),
+        response_stream=response,
+    )
+    runner.set_response_seq(3)
+    runner.start()
+    try:
+        assert runner._send("an interrupted answer") is False
+    finally:
+        runner.stop()
+
+    assert response.finished
 
 
 def test_turn_runner_reports_failed_send_without_exposing_content(caplog):
@@ -673,6 +755,55 @@ def test_build_session_args_never_substitutes_another_profile(monkeypatch):
     assert "amanda" not in args.session_id
 
 
+def test_bridge_refuses_missing_selected_identity_before_starting_a_session(monkeypatch, tmp_path, capsys):
+    """A missing selected Puck identity must stop the bridge, not use another profile."""
+    from types import SimpleNamespace
+
+    from puck_bridge import server
+
+    selected_profile_env = tmp_path / "guest.env"
+    resolved_paths = []
+
+    class _BridgeParser:
+        def parse_known_args(self, argv):
+            return SimpleNamespace(host="127.0.0.1", port=8766, play_on_device=False), []
+
+    monkeypatch.setattr(server, "build_arg_parser", lambda: _BridgeParser())
+    monkeypatch.setattr(
+        server,
+        "build_session_args",
+        lambda argv: SimpleNamespace(
+            profile_name="guest",
+            profile_env=selected_profile_env,
+            session_id="guest-puck-bridge",
+        ),
+    )
+
+    def _missing_token(profile_env):
+        resolved_paths.append(profile_env)
+        return ""
+
+    monkeypatch.setattr(server.config, "resolve_puck_device_token", _missing_token)
+    monkeypatch.setattr(
+        server,
+        "HermesSession",
+        lambda *_args, **_kwargs: pytest.fail("missing Puck identity must not start Hermes"),
+    )
+
+    assert server.main([]) == 1
+    assert resolved_paths == [selected_profile_env]
+    assert "no PUCK_DEVICE_TOKEN configured" in capsys.readouterr().err
+
+
+def test_bridge_defaults_to_device_playback_and_keeps_host_as_explicit_fallback():
+    from puck_bridge.server import build_arg_parser
+
+    parser = build_arg_parser()
+    assert parser.parse_args([]).play_on_device is True
+    assert parser.parse_args(["--play-on-device"]).play_on_device is True
+    assert parser.parse_args(["--host-playback"]).play_on_device is False
+
+
 # --- upload completion signalling ------------------------------------------
 
 
@@ -730,6 +861,38 @@ def test_a_single_chunk_capture_completes_immediately_with_200(tmp_path):
     assert status == 200
 
 
+def test_a_completed_capture_is_dropped_before_transcription_when_response_is_busy(tmp_path):
+    from puck_bridge.response import ResponseStream
+
+    sink = _RecordingSink()
+    transcribe = _fake_transcribe(transcript="must not run")
+    stream = ResponseStream()
+    stream.expect(seq=1)
+    stream.begin(1, (24000, 1, 2))
+    assert stream.acquire_reader()
+    handler_cls = make_handler(
+        expected_token="s3cret",
+        on_transcript=sink,
+        transcribe_fn=transcribe,
+        work_dir=tmp_path,
+        response_stream=stream,
+    )
+    server = _start_server(handler_cls)
+    try:
+        frame = struct.pack("<i", 0) + struct.pack("<i", 1 << 6)
+        status = _post_chunk(
+            server.server_address[1], seq=2, chunk=0, total=1, body=frame, token="s3cret"
+        )
+    finally:
+        stream.finish()
+        stream.release_reader()
+        server.shutdown()
+
+    assert status == 503
+    assert transcribe.calls == []
+    assert sink.transcripts == []
+
+
 # --- 1-p-2 task 6: turn timeout bounds responsiveness, not duration -------
 
 
@@ -737,20 +900,21 @@ class _SlowSession(FakeSession):
     """Emits events with a controllable delay before the first one and
     between subsequent ones."""
 
-    def __init__(self, *, first_delay=0.0, gap=0.0, events=None):
+    def __init__(self, *, first_delay=0.0, gap=0.0, gaps=None, events=None):
         super().__init__(events=events)
         self._first_delay = first_delay
         self._gap = gap
+        self._gaps = gaps
 
     def send_turn(self, text: str, *, stt_source: str = "local"):
         self.turns.append((text, stt_source))
-        first_delay, gap, events = self._first_delay, self._gap, self._events
+        first_delay, gap, gaps, events = self._first_delay, self._gap, self._gaps, self._events
 
         async def _events():
             await asyncio.sleep(first_delay)
             for i, event in enumerate(events):
                 if i:
-                    await asyncio.sleep(gap)
+                    await asyncio.sleep(gaps[i - 1] if gaps is not None else gap)
                 yield event
 
         return _events()
@@ -765,8 +929,8 @@ def test_a_long_answer_is_not_timed_out():
 
     many_chunks = [
         {"type": "audio_start", "sample_rate": 16000, "channels": 1, "sample_width": 2}
-    ] + [{"type": "audio_chunk", "data": b"\x01\x02"} for _ in range(40)]
-    session = _SlowSession(gap=0.02, events=many_chunks)
+    ] + [{"type": "audio_chunk", "data": b"\x01\x02"} for _ in range(45)]
+    session = _SlowSession(gap=0.25, events=many_chunks)
     player = FakePlayer()
     runner = TurnRunner(session, player=player)
     runner.start()
@@ -775,7 +939,33 @@ def test_a_long_answer_is_not_timed_out():
         assert runner._send("a long question") is True
     finally:
         runner.stop()
-    assert len(player.written) == 40
+    assert len(player.written) == 45
+
+
+def test_activity_does_not_start_the_mid_response_stall_budget(monkeypatch):
+    """Thinking/tool activity may precede audio without becoming a stall."""
+    import puck_bridge.turn as turn_mod
+
+    monkeypatch.setattr(turn_mod, "FIRST_EVENT_TIMEOUT_SECONDS", 0.3)
+    monkeypatch.setattr(turn_mod, "STALL_TIMEOUT_SECONDS", 0.05)
+    session = _SlowSession(
+        first_delay=0.01,
+        gaps=[0.1, 0.0],
+        events=[
+            {"type": "activity", "label": "thinking"},
+            {"type": "audio_start", "sample_rate": 16000, "channels": 1, "sample_width": 2},
+            {"type": "audio_chunk", "data": b"\x01\x02"},
+        ],
+    )
+    player = FakePlayer()
+    runner = TurnRunner(session, player=player)
+    runner.start()
+    try:
+        assert runner._send("a question with a tool call") is True
+    finally:
+        runner.stop()
+
+    assert player.written == [b"\x01\x02"]
 
 
 def test_an_unresponsive_hermes_still_fails_fast(monkeypatch):
@@ -920,6 +1110,23 @@ def test_playback_that_never_drains_aborts_the_turn(monkeypatch):
         runner.stop()
 
 
+def test_host_playback_failure_is_reported_after_cleanup(caplog):
+    class _FailingPlayer(FakePlayer):
+        def start(self, fmt):
+            self.started_with = fmt
+            self.failure = "speaker unavailable"
+            self._active = False
+
+    runner = TurnRunner(FakeSession(), player=_FailingPlayer())
+    runner.start()
+    try:
+        assert runner._send("a question") is False
+    finally:
+        runner.stop()
+
+    assert "speaker unavailable" in caplog.text
+
+
 # --- 1-p-2 tasks 3-4: response streaming to the Puck ----------------------
 
 
@@ -937,6 +1144,13 @@ def test_streaming_wav_header_declares_a_sentinel_length():
     assert struct.unpack("<I", header[40:44])[0] == 0xFFFFFFFF     # data size
     # A zero data chunk would make the decoder stop immediately.
     assert struct.unpack("<I", header[40:44])[0] != 0
+
+
+def test_response_format_budget_matches_turn_first_audio_budget():
+    import puck_bridge.response as response_mod
+    import puck_bridge.turn as turn_mod
+
+    assert response_mod.FORMAT_WAIT_SECONDS == turn_mod.FIRST_EVENT_TIMEOUT_SECONDS
 
 
 def test_response_stream_delivers_chunks_in_order_then_ends():
@@ -1029,7 +1243,13 @@ def _wav_bytes(pcm: bytes, rate: int = 24000, channels: int = 1, width: int = 2)
     return buf.getvalue()
 
 
-def _get_response(port: int, *, token: str | None, seq: int | None = None):
+def _get_response(
+    port: int,
+    *,
+    token: str | None,
+    seq: int | None = None,
+    query_token: str | None = None,
+):
     """Fetch /response and return (status, body-bytes).
 
     `seq` defaults to omitting the parameter entirely: the bridge only
@@ -1042,7 +1262,14 @@ def _get_response(port: int, *, token: str | None, seq: int | None = None):
         headers = {}
         if token is not None:
             headers[TOKEN_HEADER] = token
-        path = "/response" if seq is None else f"/response?seq={seq}"
+        query = []
+        if seq is not None:
+            query.append(f"seq={seq}")
+        if query_token is not None:
+            query.append(f"token={query_token}")
+        path = "/response"
+        if query:
+            path += "?" + "&".join(query)
         conn.request("GET", path, headers=headers)
         resp = conn.getresponse()
         body = resp.read()
@@ -1105,6 +1332,34 @@ def test_response_endpoint_rejects_a_bad_token(tmp_path):
     finally:
         server.shutdown()
     assert status == 401
+
+
+def test_response_endpoint_accepts_query_token_and_rejects_a_wrong_query_token(tmp_path):
+    """audio_http cannot attach X-Puck-Token, so its URL credential is covered."""
+    from puck_bridge.response import ResponseStream
+
+    stream = ResponseStream()
+    stream.begin(1, (24000, 1, 2))
+    stream.write(b"query-auth")
+    stream.finish()
+    handler_cls = make_handler(
+        expected_token="s3cret",
+        on_transcript=_RecordingSink(),
+        transcribe_fn=_fake_transcribe(transcript="x"),
+        work_dir=tmp_path,
+        response_stream=stream,
+    )
+    server = _start_server(handler_cls)
+    port = server.server_address[1]
+    try:
+        accepted, body = _get_response(port, token=None, query_token="s3cret")
+        rejected, _ = _get_response(port, token=None, query_token="wrong")
+    finally:
+        server.shutdown()
+
+    assert accepted == 200
+    assert body[44:] == b"query-auth"
+    assert rejected == 401
 
 
 def test_response_fails_fast_when_no_turn_was_accepted():
@@ -1381,7 +1636,12 @@ def test_the_reader_slot_survives_a_dead_connection(tmp_path):
             _t.sleep(0.2)
             stream.finish()
         # The slot must still be free for a normal fetch.
-        stream.expect()
+        import time as _t
+        deadline = _t.monotonic() + 2.0
+        while not stream.expect():
+            if _t.monotonic() >= deadline:
+                pytest.fail("dead response connection did not release the reader slot")
+            _t.sleep(0.01)
         stream.begin(2, (24000, 1, 2))
         stream.write(b"ok")
         stream.finish()
@@ -1391,6 +1651,50 @@ def test_the_reader_slot_survives_a_dead_connection(tmp_path):
 
     assert status != 409, "the reader slot leaked -- device would be mute"
     assert status == 200
+
+
+def test_a_client_that_stops_reading_releases_the_response_slot(tmp_path, monkeypatch):
+    """TCP backpressure must not pin the single-consumer slot forever."""
+    import socket as _socket
+    import time as _time
+
+    import puck_bridge.receiver as receiver_mod
+    from puck_bridge.response import ResponseStream
+
+    monkeypatch.setattr(receiver_mod, "RESPONSE_WRITE_TIMEOUT_SECONDS", 0.05)
+    stream = ResponseStream()
+    stream.expect(seq=1)
+    stream.begin(1, (24000, 1, 2))
+    for _ in range(128):
+        stream.write(b"x" * 65536)
+    stream.finish()
+    handler_cls = make_handler(
+        expected_token="s3cret",
+        on_transcript=_RecordingSink(),
+        transcribe_fn=_fake_transcribe(transcript="x"),
+        work_dir=tmp_path,
+        response_stream=stream,
+    )
+    server = _start_server(handler_cls)
+    client = _socket.create_connection(server.server_address, timeout=2)
+    try:
+        client.sendall(
+            b"GET /response?seq=1 HTTP/1.1\r\n"
+            b"Host: localhost\r\n"
+            b"X-Puck-Token: s3cret\r\n"
+            b"Connection: close\r\n\r\n"
+        )
+        deadline = _time.monotonic() + 2.0
+        while not stream._reader_active and _time.monotonic() < deadline:
+            _time.sleep(0.01)
+        assert stream._reader_active, "the test client never claimed the reader"
+        while stream._reader_active and _time.monotonic() < deadline:
+            _time.sleep(0.01)
+        assert not stream._reader_active, "a stalled socket retained the reader slot"
+        assert stream.expect(seq=2)
+    finally:
+        client.close()
+        server.shutdown()
 
 
 def test_a_second_capture_cannot_truncate_an_answer_still_streaming():

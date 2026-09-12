@@ -29,7 +29,7 @@
 # - Dev moves story to 'review', then runs code-review (fresh context, different LLM recommended)
 # - Retrospective appends its action items to action_items; the status view surfaces open ones
 generated: 09-08-2026 00:00
-last_updated: 09-11-2026 22:45
+last_updated: 09-12-2026 00:00
 project: hermes-relay-tui
 project_key: NOKEY
 tracking_system: file-system
@@ -47,10 +47,17 @@ development_status:
   1-a-1-authorized-typed-or-tap-to-speak-initiation-bound-to-the-sel: backlog
   1-a-2-honest-phases-with-response-text-audio-delivery-and-explicit: backlog
   1-a-3-fresh-recovery-without-replaying-an-uncertain-turn: backlog
-  1-p-1-authorized-wake-and-capture: review
-  1-p-2-status-and-response-audio-delivery: review
+  1-p-1-authorized-wake-and-capture: done
+  1-p-2-status-and-response-audio-delivery: done
   1-p-3-bounded-follow-up-and-exact-stop: backlog
   1-p-4-recovery-without-replay: backlog
+  1-p-5-complete-streamed-response-playback-without-underrun: backlog
+  1-p-6-graceful-bridge-service-shutdown-and-entry-point-coverage: backlog
+  1-p-7-make-raw-pcm-diagnostics-explicitly-opt-in-and-bounded: backlog
+  1-p-8-make-the-vendored-respeaker-audio-format-boundary-determinis: backlog
+  1-p-9-make-respeaker-i2s-channel-startup-and-teardown-fail-safe: backlog
+  1-p-10-keep-internal-wake-models-out-of-ordinary-capture-routing: backlog
+  1-p-11-surface-runtime-audio-output-failures-honestly-and-recoverab: backlog
   1-e-1-authorized-voice-capture: backlog
   1-e-2-native-phases-and-streamed-response-rendering: backlog
   1-e-3-response-audio-delivery: backlog
@@ -58,6 +65,8 @@ development_status:
   1-e-5-recovery-without-replay: backlog
   1-wk-1-one-shared-w-k-browser-voice-plus-display-surface-for-author:
     ready-for-dev
+  1-t-5-non-blocking-wake-listener-and-microphone-teardown-during-re: backlog
+  1-t-6-detect-idle-relay-loss-and-present-honest-recovery-without-r: backlog
   epic-1-retrospective: optional
 
   epic-2: in-progress
@@ -69,14 +78,18 @@ development_status:
   2-p-2-fail-closed-and-show-unavailable-disconnected-status-when-th: backlog
   2-e-1-render-the-room-scoped-ambient-surface-in-native-lvgl: backlog
   2-e-2-render-room-local-active-turn-state-live-transcription-and-t: backlog
-  2-e-3-mirror-hermes-prompts-without-creating-touch-response-action: backlog
+  2-e-3-mirror-prompts-read-only-when-the-renderer-is-acting-as-a-pa: backlog
   2-e-4-render-honest-disconnected-state-and-safe-cached-context-on: backlog
+  2-e-5-render-and-submit-native-choose-explore-actions-for-current: backlog
   2-wk-1-render-the-shared-room-scoped-ambient-surface-for-web-and-ip: backlog
   2-wk-2-render-active-capture-room-local-transcription-response-and: done
-  2-wk-3-mirror-hermes-prompts-without-touch-approval-or-a-second-ses: backlog
+  2-wk-3-mirror-prompts-read-only-when-the-browser-is-acting-as-a-pas: backlog
   2-wk-4-render-honest-disconnected-state-cached-context-and-accessib: backlog
+  2-wk-5-validate-direct-use-typed-choice-actions-at-the-server-bound: backlog
+  2-wk-6-render-accessible-native-choose-explore-actions-for-current: backlog
   2-t-1-keep-the-direct-tui-doorway-s-capture-and-phase-state-visibl: done
   2-t-2-keep-tui-disconnect-recovery-presentation-honest-without-rep: done
+  2-t-3-render-typed-choice-objects-with-keyboard-choose-explore-act: backlog
   epic-2-retrospective: optional
 
   epic-3: backlog

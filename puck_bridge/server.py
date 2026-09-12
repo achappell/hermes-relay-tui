@@ -12,6 +12,7 @@ Deliberately a separate process, not imported by `app.py` or
 
 Usage:
     python -m puck_bridge [--host 0.0.0.0] [--port 8766] [--profile NAME]
+    python -m puck_bridge --host-playback  # explicit local-speaker fallback
 """
 
 from __future__ import annotations
@@ -39,7 +40,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
         description=(
             "Standalone bridge: receives one bounded, VAD-gated audio "
             "upload per Puck wake, transcribes it, and drives one real "
-            "Hermes turn with the response played on this host's speakers."
+            "Hermes turn with the response streamed back to the Puck."
         )
     )
     parser.add_argument(
@@ -48,16 +49,20 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--port", type=int, default=DEFAULT_PORT, help=f"listen port (default: {DEFAULT_PORT})"
     )
-    parser.add_argument(
+    playback = parser.add_mutually_exclusive_group()
+    playback.add_argument(
         "--play-on-device",
+        dest="play_on_device",
         action="store_true",
-        help=(
-            "stream the spoken answer to the Puck over HTTP instead of "
-            "playing it on this host. Requires firmware that fetches "
-            "/response after its upload (1-p-2 task 5); until that lands, "
-            "enabling this means no audio plays anywhere."
-        ),
+        help="stream the spoken answer to the Puck (the default)",
     )
+    playback.add_argument(
+        "--host-playback",
+        dest="play_on_device",
+        action="store_false",
+        help="use the host speaker as an explicit fallback instead of the Puck",
+    )
+    parser.set_defaults(play_on_device=True)
     return parser
 
 
@@ -105,9 +110,8 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     session = HermesSession(session_args)
-    # Off by default: host playback is proven and device playback is not
-    # reachable until the firmware fetches /response. Defaulting this on
-    # would silently make the appliance mute.
+    # Device playback is the normal Puck path. Host playback remains an
+    # explicit diagnostic fallback for a firmware or response-stream outage.
     response_stream = ResponseStream() if args.play_on_device else None
     runner = TurnRunner(session, response_stream=response_stream)
     if response_stream is not None:
@@ -126,6 +130,7 @@ def main(argv: list[str] | None = None) -> int:
     handler_cls = make_handler(
         expected_token=token,
         on_transcript=runner.submit_transcript,
+        set_response_seq=runner.set_response_seq,
         response_stream=response_stream,
     )
     try:

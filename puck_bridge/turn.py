@@ -43,9 +43,9 @@ logger = logging.getLogger("hermes_relay_tui.puck_bridge.turn")
 # Replaced by two bounds on the gaps between events, applied inside
 # `_run_turn` where the stream actually is:
 
-# How long Hermes may take to produce its FIRST event. This is the real
-# "is the relay answering at all" question, and the only one a caller
-# genuinely needs to fail fast on.
+# How long Hermes may leave a gap before the FIRST AUDIO event. Activity,
+# thinking, and tool events do not mean that the spoken response has begun;
+# keep this budget until audio_start (or an audio-file fallback) arrives.
 FIRST_EVENT_TIMEOUT_SECONDS = 20.0
 
 # Maximum gap BETWEEN events once the stream has started. A healthy
@@ -346,6 +346,7 @@ class TurnRunner:
         """Drive one `send_turn` to completion, speaking the response here."""
         file_audio = bytearray()
         spoke = False
+        host_player_started = False
         chunks_spoken = 0
         audio_bytes = 0
         audio_format: tuple[int, int, int] | None = None
@@ -355,12 +356,12 @@ class TurnRunner:
         # step can carry its own deadline. `async for` can only be bounded
         # as a whole, which is precisely the mistake this replaces.
         stream = self._session.send_turn(text, stt_source="local").__aiter__()
-        awaiting_first = True
+        awaiting_first_audio = True
         try:
             while True:
                 budget = (
                     FIRST_EVENT_TIMEOUT_SECONDS
-                    if awaiting_first
+                    if awaiting_first_audio
                     else STALL_TIMEOUT_SECONDS
                 )
                 try:
@@ -369,16 +370,22 @@ class TurnRunner:
                     break
                 except TimeoutError:
                     raise TurnTimeout(
-                        "no first event within %.0fs" % budget
-                        if awaiting_first
+                        "no first audio within %.0fs" % budget
+                        if awaiting_first_audio
                         else "stream stalled for %.0fs mid-response" % budget
                     ) from None
-                awaiting_first = False
                 kind = event.get("type")
                 if kind == "error":
                     logger.error("puck bridge turn failed: remote error; not replaying")
                     return False
+                if kind in {"audio_abort", "turn_interrupted"}:
+                    logger.warning(
+                        "puck bridge turn ended before delivery (%s); not replaying",
+                        kind,
+                    )
+                    return False
                 if kind == "audio_start":
+                    awaiting_first_audio = False
                     audio_format = (
                         event["sample_rate"],
                         event["channels"],
@@ -391,9 +398,13 @@ class TurnRunner:
                         # reader fails a stream that goes ~30s without a
                         # successful read.
                         self._response_stream.begin(self._response_seq, audio_format)
-                    elif not self._player.active:
-                        self._player.start(audio_format)
+                    else:
+                        host_player_started = True
+                        if not self._player.active:
+                            self._player.start(audio_format)
                 elif kind == "audio_chunk":
+                    if event["data"]:
+                        awaiting_first_audio = False
                     if self._response_stream is not None:
                         self._response_stream.write(event["data"])
                         spoke = True
@@ -409,9 +420,12 @@ class TurnRunner:
                     file_audio.clear()
                 elif kind == "audio_file_chunk":
                     file_audio.extend(event["data"])
+                    if event["data"]:
+                        awaiting_first_audio = False
                 elif kind == "audio_file_end":
                     if event.get("data"):
                         file_audio.extend(event["data"])
+                        awaiting_first_audio = False
                     # Hermes streams PCM *and* sends a file copy of the same
                     # response. Only fall back to the file copy when
                     # nothing was actually played from the streamed path.
@@ -436,6 +450,7 @@ class TurnRunner:
                             spoke = True
                             chunks_spoken += 1
                         else:
+                            host_player_started = True
                             if not self._player.active:
                                 self._player.start(fmt)
                             if self._player.active:
@@ -494,13 +509,15 @@ class TurnRunner:
         # fail to make a sound while reporting nothing at all.
         # Only meaningful when THIS turn actually used the player.
         # PCMPlayer.failure is cleared in start(), so a turn that never
-        # started it -- every turn in --play-on-device mode, and any turn
-        # whose response had no audio -- would otherwise re-read and
-        # re-report the PREVIOUS turn's failure as its own.
-        if self._response_stream is None and self._player.active:
+        # started it -- every turn in device-playback mode, and any turn
+        # whose response had no audio -- must not re-report the PREVIOUS
+        # turn's failure as its own. Inspect after close: normal cleanup
+        # clears `active`, but leaves the failure available here.
+        if host_player_started:
             player_failure = getattr(self._player, "failure", None)
             if player_failure:
                 logger.error("puck bridge playback failed: %s", player_failure)
+                return False
         if not spoke:
             logger.warning("puck bridge turn completed with no audible response")
         else:
