@@ -59,7 +59,12 @@ inline void setup() {
 }
 
 inline void start() {
-  if (buffer == nullptr) {
+  if (buffer == nullptr || !puck_identity::may_capture()) {
+    // The diagnostic buffer is still a capture path. Do not let it bypass
+    // the same identity precondition as the wake-triggered buffer.
+    capturing = false;
+    capture_done = false;
+    write_pos = 0;
     return;
   }
   write_pos = 0;
@@ -71,6 +76,14 @@ inline void start() {
 // allocation-free: a single memcpy per call, clamped to the pre-sized
 // buffer. Never grows or reallocates anything.
 inline void write(const uint8_t *data, size_t len) {
+  // Check authorization before the cheap early return so a 4xx received by
+  // another upload path also clears any already-buffered diagnostic audio.
+  if (!puck_identity::may_capture()) {
+    capturing = false;
+    capture_done = false;
+    write_pos = 0;
+    return;
+  }
   if (!capturing || buffer == nullptr) {
     return;
   }
@@ -282,14 +295,12 @@ static bool last_wake_refused = false;
 // two drifting apart.
 static bool last_upload_delivered = false;
 
-// 1-p-2 task 7: set when a capture window closes with audio in it, so the
-// automation can acknowledge it. Deliberately NOT signalled at the wake:
-// the acknowledgement is audible, and the XMOS AEC suppresses the mic
-// while the speaker is active, so acknowledging during capture destroys
-// the very question being captured (measured: transcript went from good
-// to empty). Signalled at the close instead -- which also says something
-// more useful than "I heard a wake word": "I have your question".
-static bool last_capture_captured = false;
+// 1-p-2 task 7: the wake automation sets this before playing the short
+// acknowledgement, then starts capture only after the acknowledgement has
+// drained. The XMOS AEC suppresses the mic while the speaker is active, so
+// the acknowledgement must not overlap the capture window.
+static bool wake_pending = false;
+static std::string pending_wake_word;
 // The sequence the bridge reassembled, so the response fetch asks for the
 // right one rather than assuming the latest.
 static uint32_t last_delivered_seq = 0;
@@ -303,16 +314,17 @@ inline void setup() {
   }
 }
 
-// Called from `on_wake_word_detected:`. Single-shot: a wake heard while a
-// capture or its upload is still in flight is dropped rather than
-// restarting the buffer mid-write, matching the "one wake, one upload"
-// rule -- the next wake after this one finishes gets a clean window.
-inline void start(const std::string &wake_word) {
+// Called from `on_wake_word_detected:` before the acknowledgement is played.
+// This is deliberately separate from start_pending(): media_player stops the
+// wake engine while it announces, and the capture must begin only after that
+// AEC-suppressing interval has ended.
+inline void prepare(const std::string &wake_word) {
   // 1-p-1: authorization is a PRECONDITION of capture, checked before the
   // buffer is touched -- not afterwards at upload time, which is where the
   // only check used to live. A refused device must record nothing at all,
   // so this is deliberately the very first statement in the function.
   last_wake_refused = false;
+  wake_pending = false;
   if (!puck_identity::may_capture()) {
     last_wake_refused = true;
     ESP_LOGW(TAG, "wake refused (wake_word=%s): identity %s -- no capture, no upload, no fallback",
@@ -323,11 +335,45 @@ inline void start(const std::string &wake_word) {
     ESP_LOGD(TAG, "wake capture ignored (wake_word=%s, already busy)", wake_word.c_str());
     return;
   }
+  pending_wake_word = wake_word;
+  wake_pending = true;
+  ESP_LOGI(TAG, "wake accepted; acknowledgement will precede capture (wake_word=%s)", wake_word.c_str());
+}
+
+// Called after the short acknowledgement has finished. Re-check the
+// identity gate here as well: a refusal arriving during the acknowledgement
+// must fail closed rather than opening the microphone after the delay.
+inline void start_pending() {
+  if (!wake_pending) {
+    return;
+  }
+  wake_pending = false;
+  if (!puck_identity::may_capture()) {
+    last_wake_refused = true;
+    ESP_LOGW(TAG, "pending wake cancelled: identity %s",
+             puck_identity::state_name(puck_identity::state));
+    pending_wake_word.clear();
+    return;
+  }
+  if (buffer == nullptr || capturing || capture_pending_upload) {
+    ESP_LOGD(TAG, "pending wake capture ignored (already busy)");
+    pending_wake_word.clear();
+    return;
+  }
   write_pos = 0;
   capture_done = false;
   silence_start_ms = 0;
   capturing = true;
-  ESP_LOGI(TAG, "wake capture started (wake_word=%s)", wake_word.c_str());
+  ESP_LOGI(TAG, "wake capture started (wake_word=%s)", pending_wake_word.c_str());
+  pending_wake_word.clear();
+}
+
+// Preserve the immediate-start helper for non-automation callers and tests.
+// The firmware automation uses prepare() -> acknowledgement -> start_pending()
+// so the audible acknowledgement cannot suppress the question it confirms.
+inline void start(const std::string &wake_word) {
+  prepare(wake_word);
+  start_pending();
 }
 
 // Called from the microphone's real-time on_data callback, alongside the
@@ -347,11 +393,6 @@ inline void write(const uint8_t *data, size_t len) {
     capturing = false;
     capture_done = true;
     capture_pending_upload = true;
-    // Acknowledge this close too. Setting it only on the VAD-silence path
-    // meant a question long enough to fill the buffer -- the case where
-    // someone has been talking longest and most wants to hear "I have
-    // your question" -- got no chirp at all.
-    last_capture_captured = write_pos > 0;
     ESP_LOGW(TAG, "wake capture reached the %us buffer limit before VAD silence", (unsigned) WAKE_CAPTURE_SECONDS);
   }
 }
@@ -376,7 +417,6 @@ inline void tick(bool vad_active) {
     capturing = false;
     capture_done = true;
     capture_pending_upload = true;
-    last_capture_captured = write_pos > 0;
     ESP_LOGI(TAG, "wake capture ended on VAD silence (%u bytes)", (unsigned) write_pos);
   }
 }
@@ -421,7 +461,9 @@ inline void upload(esphome::http_request::HttpRequestComponent *client, const st
     uint32_t heap_before = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
     auto response = client->post(full_url, body, headers);
     uint32_t heap_after = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
-    bool chunk_ok = response != nullptr && response->status_code >= 200 && response->status_code < 300;
+    const int status = response != nullptr ? response->status_code : -1;
+    bool chunk_ok = response != nullptr && status >= 200 && status < 300;
+    const bool client_rejected = status >= 400 && status < 500;
     // The bridge answers 202 for a chunk accepted into an incomplete
     // reassembly and 200 only when the capture is whole. Without this
     // distinction the loop below reported success purely because no POST
@@ -434,7 +476,7 @@ inline void upload(esphome::http_request::HttpRequestComponent *client, const st
     // actively refused this credential -- fail closed for every subsequent
     // wake. No response at all (status <= 0) is unreachability, which is
     // DEGRADED and deliberately keeps capturing; see puck_identity.h.
-    puck_identity::note_upload_status(response != nullptr ? response->status_code : -1);
+    puck_identity::note_upload_status(status);
     if (!chunk_ok) {
       ESP_LOGW(TAG, "Wake upload %u chunk %u failed (status %d) -- internal heap before=%u after=%u min_ever=%u",
                (unsigned) sample_index, (unsigned) chunk, response ? response->status_code : -1,
@@ -449,6 +491,14 @@ inline void upload(esphome::http_request::HttpRequestComponent *client, const st
     }
     if (response != nullptr) {
       response->end();
+    }
+
+    // A reachable 4xx is an explicit refusal, not a transport wobble. Stop
+    // before the next chunk so a denied capture cannot dribble more room audio
+    // across the boundary while the generic failure breaker counts to two.
+    if (client_rejected) {
+      ESP_LOGW(TAG, "Wake upload %u stopped after HTTP %d refusal", (unsigned) sample_index, status);
+      break;
     }
 
     // Same heap-watermark reboot circuit breaker as `upload_and_restart` --

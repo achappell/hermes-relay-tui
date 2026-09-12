@@ -68,6 +68,10 @@ def _redact_token(text: str) -> str:
 TOKEN_HEADER = "X-Puck-Token"
 UPLOAD_PATH = "/upload"
 RESPONSE_PATH = "/response"
+# A connected client that stops reading must not retain the single response
+# reader forever. Keep this aligned with the response stream's stall budget;
+# tests may shorten it to exercise the failure path without waiting 20s.
+RESPONSE_WRITE_TIMEOUT_SECONDS = 20.0
 
 
 def process_frame_sample(raw4: bytes) -> int:
@@ -174,6 +178,7 @@ def make_handler(
     *,
     expected_token: str,
     on_transcript: Callable[[str], None],
+    set_response_seq: Callable[[int], None] | None = None,
     transcribe_fn: Callable[[str], dict] | None = None,
     work_dir: str | os.PathLike[str] | None = None,
     response_stream: "ResponseStream | None" = None,
@@ -184,6 +189,11 @@ def make_handler(
     token, a fake `transcribe_fn`, and a fake `on_transcript` sink without
     reaching into global state, and a real deployment can run several
     bridges (one per Puck, or one per test) without them sharing captures.
+
+    `set_response_seq` is called immediately before a transcript is handed
+    to the turn runner. The upload sequence is the only reliable identity
+    available at this boundary, so the response producer must receive it
+    before it can publish audio.
     """
     from voice import transcribe as _default_transcribe
 
@@ -335,6 +345,8 @@ def make_handler(
             # later fetch 409. That left the Puck permanently mute until
             # the bridge process restarted.
             total = 0
+            previous_socket_timeout = self.connection.gettimeout()
+            self.connection.settimeout(RESPONSE_WRITE_TIMEOUT_SECONDS)
             try:
                 self.send_response(200)
                 self.send_header("Content-Type", "audio/wav")
@@ -355,13 +367,18 @@ def make_handler(
                 # esp_http_client_is_complete_data_received() true.
                 self.wfile.write(b"0\r\n\r\n")
                 self.wfile.flush()
-            except (BrokenPipeError, ConnectionResetError):
+            except OSError:
                 logger.warning(
                     "puck bridge response: device closed the connection after "
-                    "%d bytes -- the answer was cut short", total
+                    "%d bytes -- the answer was cut short or stopped reading",
+                    total,
                 )
                 return
             finally:
+                try:
+                    self.connection.settimeout(previous_socket_timeout)
+                except OSError:
+                    pass
                 response_stream.release_reader()
             logger.info("puck bridge response streamed %d bytes of PCM", total)
 
@@ -442,8 +459,14 @@ def make_handler(
                 if not response_stream.expect(seq):
                     logger.info(
                         "puck bridge: a previous answer is still streaming; "
-                        "this capture will not claim the response stream"
+                        "dropping this capture before transcription"
                     )
+                    # This is temporary capacity pressure, not a bad device
+                    # credential. The firmware treats 4xx as authoritative
+                    # identity rejection, so a busy response must be 503
+                    # rather than 409 or the valid Puck would lock itself out.
+                    self._respond(503, b"response stream busy")
+                    return
 
             self._respond(200 if finished_capture is not None else 202)
 
@@ -509,6 +532,8 @@ def make_handler(
                 # wedged turn swallowed a following capture with nothing in
                 # the log to say a question had been thrown away. A dropped
                 # turn is a lost turn and should say so.
+                if set_response_seq is not None:
+                    set_response_seq(seq)
                 delivered = on_transcript(transcript)
             except Exception:
                 logger.exception("puck bridge turn callback failed")

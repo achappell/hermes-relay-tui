@@ -2,7 +2,7 @@
 title: 'Status and response audio delivery'
 type: 'feature'
 created: '2026-09-10'
-status: 'ready-for-dev'
+status: 'done'
 route: 'dispatch'
 review_loop_iteration: 0
 baseline_commit: 'be3958fec3554abaae019fc22412eb0fbb8e4437'
@@ -207,3 +207,74 @@ Hardware test, bridge and serial logs attached: wake the Puck, ask a question th
 ## Flashing hazard (applies to every hardware task here)
 
 `esphome compile` can emit a transient `Failed to create factory.bin`; `esphome upload --device` will then silently flash the **stale** `firmware.factory.bin` from an earlier build while still reporting `Successfully uploaded program`. Observed 2026-09-10 — an entire test round measured hour-old firmware. Check `.esphome/build/respeaker-lite/build/firmware.factory.bin`'s mtime before trusting a serial flash.
+
+## Review Findings
+
+Review scope: the committed P-2 slice from baseline
+`be3958fec3554abaae019fc22412eb0fbb8e4437` through `HEAD`, excluding the
+uncommitted P-1 worktree changes. The focused bridge and firmware tests passed
+(`78 passed`) in the current worktree, and the scoped diff has no whitespace
+errors. That test result is not yet a clean-checkout result: the current
+worktree supplies the P-1 status WAVs and related test changes that are absent
+from the reviewed commit. The Edge-Case Hunter timed out without a report;
+Blind Hunter, Verification Gap, and Acceptance Auditor returned findings.
+
+#### Decision needed
+
+- [x] [Review][Decision] Choose the operational playback mode [puck_bridge/server.py:37-61,107-129; `spec-1-p-2`: Tasks 4-5] — selected (a): make device playback the default and expose host playback as an explicit fallback. Applied in `server.py` with `--host-playback` as the explicit escape hatch; the Puck launch instructions now exercise the default device path.
+- [x] [Review][Decision] Decide whether the query-string response credential is acceptable for this pilot [puck_bridge/receiver.py:245-258; firmware/respeaker-lite/respeaker-lite.yaml:692-707] — selected (a): accept the documented hardcoded home-LAN pilot trade-off. Applied with headerless query-token coverage, wrong-token rejection coverage, redacted request logging, and an explicit LAN/proxy exposure warning; a future credential system remains outside P-2.
+- [x] [Review][Decision] Reconcile the Task 7 acknowledgement contract [spec-1-p-2-status-and-response-audio-delivery.md:79,162-182] — selected (b): retain acknowledgement at wake time and redesign the audio/AEC timing so it no longer truncates capture. The current capture-close acknowledgement is not an acceptable implementation of the frozen acceptance; the patch must make the immediate acknowledgement and usable question capture coexist, with hardware verification required.
+
+#### Patch findings
+
+- [x] [Review][Patch] Bind each response stream to the capture that produced it [puck_bridge/turn.py:192-200,387-394; puck_bridge/server.py:126-129] — `make_handler()` now sets the runner sequence before submitting the transcript, so `ResponseStream.begin()` and the stale-fetch guard retain the upload identity. The receiver integration and stale-fetch tests cover the boundary.
+- [x] [Review][Patch] Do not start a second Hermes turn when the response stream is busy [puck_bridge/receiver.py:448-467] — a failed `expect(seq)` now drops the completed capture before transcription and returns 503, preserving the active response. The status deliberately avoids 4xx so the firmware identity gate does not misclassify temporary capacity pressure as credential rejection.
+- [x] [Review][Patch] Preserve PCM across Hermes audio segments [puck_bridge/turn.py:381-400; puck_bridge/response.py:159-183] — `ResponseStream.begin()` is now idempotent for the same sequence and format, while `expect()` remains the new-response reset. The runner test covers two Hermes segments in one Puck response.
+- [x] [Review][Patch] Treat `audio_abort` and `turn_interrupted` as unsuccessful delivery [puck_bridge/turn.py:376-386] — both terminal event types now return failure after the normal stream cleanup; parametrized tests cover each one.
+- [x] [Review][Patch] Make the first-audio deadline mean first audio, not first arbitrary event [puck_bridge/turn.py:358-428] — activity/tool events no longer switch to the mid-response stall budget; the switch occurs at audio start or non-empty file data. The long-answer fixture now runs for more than ten seconds, and a focused activity-before-audio test protects the distinction.
+- [x] [Review][Patch] Align the response endpoint's format wait with the turn deadline [puck_bridge/response.py:34-42; tests/test_puck_bridge.py] — the response format budget now shares the runner's 20-second value, with a test preventing drift.
+- [x] [Review][Patch] Bound a stalled response socket [puck_bridge/receiver.py:69-74,346-386] — response connections now have a bounded write timeout, catch socket timeout/reset failures, restore the prior timeout, and always release the reader; the loopback test proves a non-reading client cannot retain the slot.
+- [x] [Review][Patch] Surface host playback failure after the player closes [puck_bridge/turn.py:346-351,509-520] — the runner tracks whether this turn started host playback and inspects `.failure` after normal close, returning failure when the output device rejected it. A failing-player test covers the path.
+- [x] [Review][Patch] Ship the firmware assets referenced by the reviewed configuration [firmware/respeaker-lite/respeaker-lite.yaml:441-450; tests/test_puck_firmware.py:20-29] — the reproducible generator now creates the refusal and short acknowledgement WAVs in the current worktree, and the asset test validates both; these files still need to be included in the eventual P-1/P-2 delivery commit because they were absent from the review baseline.
+- [x] [Review][Patch] Make the documented speaker-safety values and live configuration agree [firmware/respeaker-lite/respeaker-lite.yaml:466-470,493-494] — the active values now match the documented `0.25` initial volume and `0.80` ceiling, with a YAML invariant test.
+- [x] [Review][Patch] Add missing boundary coverage [tests/test_puck_bridge.py; tests/test_puck_firmware.py] — added the device-default/host-fallback parser test, query-token acceptance/rejection, sequence handoff, multi-segment and abort tests, a real >10-second turn fixture, the firmware response URL invariant, and the short acknowledgement-duration invariant.
+- [x] [Review][Patch] Keep the wake acknowledgement at wake time without overlapping capture [firmware/respeaker-lite/pcm_capture.h; firmware/respeaker-lite/respeaker-lite.yaml; firmware/respeaker-lite/tools/generate_sounds.sh] — the automation now prepares the authorized wake, plays an 80ms acknowledgement, waits for the local tone hand-off, and then opens the capture; the close-time acknowledgement path is removed. Source-level tests protect the ordering. Physical verification remains required to prove that the question is no longer lost to XMOS AEC suppression.
+
+Host verification is complete: the focused bridge/firmware set passed 78 tests
+and the full suite passed 1025 tests (one existing websockets deprecation
+warning). The post-patch hardware gate passed on 2026-09-12:
+
+- `venv-firmware/bin/esphome compile firmware/respeaker-lite/respeaker-lite.yaml`
+  succeeded with ESPHome 2026.8.2; the image was 1,932,163 bytes (49.1% of
+  flash and 33.8% of RAM) and carried build timestamp `2026-09-12 13:59:18
+  -0500`.
+- OTA upload to `respeaker-lite.local` succeeded in 17.96 seconds. Boot logs
+  reported the same build timestamp, `AUTHORIZED`, a connected Wi-Fi/API
+  session, and no crash loop or reboot marker.
+- A wake detected as `Hey Missy` produced the acknowledgement before
+  `wake capture started`; the following capture delivered 847,960 bytes in 53
+  chunks. The bridge transcribed a 6.625-second capture and completed a real
+  Hermes turn with 33 audio chunks / 208,640 PCM bytes. The Puck received HTTP
+  200, finished the response reader and decoder, resumed wake detection, and
+  returned the media player to `IDLE`.
+- A subsequent post-playback wake was detected, acknowledged, captured, and
+  uploaded successfully, proving that the response path returned the device
+  to a reusable wake state.
+
+The run emitted the known ring-buffer reset and long-upload interval warnings
+while capture/upload was active, but no heap-watermark reboot, upload
+abandonment, or crash occurred. P-2 is closed.
+
+#### Deferred
+
+- [x] [Review][Defer] Bound the response queue and define backpressure/underrun policy [puck_bridge/response.py:168-173,255-290] — the producer can append without a memory limit while the consumer is paced by the device. This belongs with the already-promoted P-5 streamed-response underrun/pacing slice, not as an isolated queue tweak in P-2.
+- [x] [Review][Defer] Add direct `server.main()` lifecycle coverage — consolidated into the existing P-6 bridge shutdown and entry-point coverage item in `planning-artifacts/epics.md` and `deferred-work.md`.
+- [x] [Review][Defer] Authenticate the pre-existing firmware web controls — the unauthenticated port-80 controls predate this P-2 slice and are outside its response-audio boundary; keep them separate from the response-token decision above.
+- [x] [Review][Defer] Add the ESPHome schema/compile gate — consolidated into the existing P-1 firmware validation gap; the configured firmware toolchain is not installed on this host.
+
+#### Rejected
+
+- `false` — Destructive response-queue pops are not a P-2 defect by themselves: the bridge must not replay a response after an uncertain device connection, and automatic replay would violate the no-replay safety rule. The bounded-memory/backpressure concern is deferred to P-5.
+- `false` — The boot-order concern that wake capture can run before identity setup is not demonstrated: `puck_identity::state` starts `UNAUTHORIZED`, and the capture start path is gated by `may_capture()`. An immediate wake could be missed, but it cannot capture while the identity gate is closed.
+- `false` — The alleged mid-capture identity revocation race is unreachable in the reviewed wiring: identity state changes on upload responses after capture has closed, and no concurrent revocation path was found.
+- `false` — `speaker_tone.h` is an unused helper scaffold, but no behavior or build failure follows from it; removing or wiring it is cleanup, not a P-2 review correction.

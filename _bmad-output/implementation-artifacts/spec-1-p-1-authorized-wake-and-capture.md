@@ -2,7 +2,7 @@
 title: 'Authorized wake and capture'
 type: 'feature'
 created: '2026-09-10'
-status: 'review'
+status: 'done'
 route: 'dispatch'
 review_loop_iteration: 0
 baseline_commit: '64ee9b7'
@@ -104,3 +104,38 @@ during the merge. Only the no-fallback test survived.
 ## Verification
 
 Hardware, with bridge and logs attached: (a) normal wake with valid identity captures and transcribes as today; (b) wake with the token cleared produces an audible refusal, zero captured bytes, zero POSTs; (c) wake after a bridge 401 fails closed on the following wake; (d) no fallback profile is ever selected; (e) Puck and TUI `session_id`s differ during a concurrent session.
+
+### Review Findings
+
+Review scope: the P-1 slice from `64ee9b7` through `eecd393`, with the current branch inspected for follow-on behavior. Focused host and firmware tests passed (59 tests). The edge-case-hunter layer timed out before producing a final report; its incomplete commentary was not promoted to a finding.
+
+#### Decision needed
+
+- [x] [Review][Patch] Reconcile the P-1 unavailable-identity contract [prd.md:51, prd.md:174, prd.md:230-238, prd.md:432, prd.md:463] — applied the selected P-1 amendment: authoritative rejection/revocation fails closed, while temporary bridge unreachability is explicitly degraded, transient, and never a fallback path.
+- [x] [Review][Patch] Define non-2xx HTTP status handling [firmware/respeaker-lite/puck_identity.h:84-108] — applied the selected policy: `4xx` enters `UNAUTHORIZED`, while `5xx`, `3xx`, and transport failures remain `DEGRADED`; the native identity harness covers 403, 503, transport loss, and recovery.
+
+#### Patch findings
+
+- [x] [Review][Patch] Stop an in-flight upload immediately after a 401 [firmware/respeaker-lite/pcm_capture.h:433-467] — applied an immediate break for every reachable `4xx` after the response is closed; the firmware source test protects the refusal break before the generic failure breaker.
+- [x] [Review][Patch] Apply the identity gate to the boot-time PCM capture path [firmware/respeaker-lite/respeaker-lite.yaml:70-72; firmware/respeaker-lite/pcm_capture.h:61-84] — applied the precondition to both rolling-buffer start and write paths, clearing buffered diagnostic state when identity is rejected.
+- [x] [Review][Patch] Ship the offline refusal sound [firmware/respeaker-lite/respeaker-lite.yaml:440-442] — added reproducible 16 kHz mono PCM status assets and `tools/generate_sounds.sh`; the asset test validates both refusal and acknowledgement WAVs.
+- [x] [Review][Patch] Add firmware-level identity-gate coverage [tests/test_puck_firmware.py:15-112] — added a native C++ identity harness plus capture/upload source invariants covering empty/rejected capture behavior and degraded transport handling.
+- [x] [Review][Patch] Make the no-fallback test exercise an actual failure [tests/test_puck_bridge.py:653-713] — added a bridge-start test proving a missing selected Puck identity returns before any Hermes session starts and resolves only that selected profile's environment.
+
+#### Deferred
+
+- [x] [Review][Defer] Add ESPHome schema/compile validation [tests/test_puck_firmware.py:6-12] — deferred: this is a pre-existing repository/toolchain validation gap rather than a P-1 behavior fix; the configured `venv-firmware` toolchain is not installed on this host. The missing refusal asset remains an immediate patch finding.
+
+#### Rejected
+
+- `false` — The alleged token-source mismatch is disproved by the explicit `substitutions` entries mapping `puck_device_token` to the same secret used by the upload path.
+- `false` — Treating any non-empty configured token as initially authorized is the deliberate P-1 stand-in; provisioning and revocation are explicitly out of scope.
+- `false` — RAM-only rejection is intentional: the frozen contract says only reboot/reflash or restored configuration clears the rejected state.
+- `false` — The proposed state-race defect was not demonstrated; the reviewed identity transitions and wake automation use the ESPHome application path, and adding synchronization would be speculative.
+- `false` — The GPIO stop/announcement concern belongs to the later P-2 playback surface, not this P-1 review slice.
+- `false` — The current branch already fetches `/response?seq=...&token=...`; the alleged missing response playback described an earlier P-2 state.
+- `false` — The alleged recurring `/test.wav` boot playback is absent; the current YAML explicitly records that proof as removed.
+- `false` — Unauthenticated `web_server` controls are outside the P-1 story and were not caused by this slice.
+- `false` — The session-identity documentation is historically untidy, but the current code, story note, and deferred-work resolution all record the collision as fixed.
+- `false` — Refusal and normal acknowledgement are distinct in the current branch: descending refusal audio and ascending acknowledgement audio are configured separately in the P-2 follow-on.
+- `false` — The verification layer's stale boot-playback claim is disproved by the same current YAML removal and absence of a `/test.wav` reference.

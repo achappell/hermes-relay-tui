@@ -1,7 +1,6 @@
 """One in-flight spoken response, produced by a turn and consumed by the Puck.
 
-The bridge plays Hermes' answer on the host today. To move it onto the
-Puck, that audio has to become something the device can fetch over HTTP
+The bridge publishes Hermes' answer as something the device can fetch over HTTP
 while it is still being produced -- Hermes streams the answer, and waiting
 for the whole thing before playing any of it would add the full length of
 the answer to the latency.
@@ -32,11 +31,13 @@ from collections import deque
 
 logger = logging.getLogger("hermes_relay_tui.puck_bridge.response")
 
-# How long a reader waits for the turn to declare an audio format before
-# giving up. Hermes emits `audio_start` almost immediately (measured at
-# 0.1s against the live relay), so this is generous -- but it stays well
-# inside the device's ~30s no-read failure budget.
-FORMAT_WAIT_SECONDS = 15.0
+# How long a reader waits for the turn to declare its first audio format before
+# giving up. This is the same 20-second responsiveness budget used by the turn
+# runner. Keeping the endpoint and producer on one budget matters: a valid
+# first audio event arriving after one side has already given the Puck a 504
+# is a silent delivery failure.
+FIRST_AUDIO_TIMEOUT_SECONDS = 20.0
+FORMAT_WAIT_SECONDS = FIRST_AUDIO_TIMEOUT_SECONDS
 
 # How long a reader blocks for the next chunk before checking whether the
 # producer has finished. Short, so `finish()` is noticed promptly; this is
@@ -156,9 +157,27 @@ class ResponseStream:
             return self._seq
 
     def begin(self, seq: int | None, audio_format: tuple[int, int, int]) -> None:
-        """Declare the format and open the stream for writing."""
+        """Declare the format and open the stream for writing.
+
+        Hermes can split one answer into several audio segments. Every segment
+        has an `audio_start`, but it is still one response for the Puck. Keep
+        the existing queue and format when a later segment arrives; `expect()`
+        is the operation that starts a genuinely new response and clears the
+        old body.
+        """
         with self._cv:
-            self._chunks.clear()
+            if self._audio_format is not None:
+                if self._seq != seq:
+                    raise ValueError(
+                        "response sequence changed while audio was streaming"
+                    )
+                if self._audio_format != audio_format:
+                    raise ValueError(
+                        "audio format changed between response segments"
+                    )
+                self._finished = False
+                self._cv.notify_all()
+                return
             self._audio_format = audio_format
             self._finished = False
             self._seq = seq
