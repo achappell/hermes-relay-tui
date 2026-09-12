@@ -78,6 +78,7 @@ from domain import TuiDomain, TurnPhase, decide_busy
 from history import (
     PromptHistory,
     artifact_path_for_profile,
+    legacy_history_path_for_profile,
     history_path_for_profile,
 )
 from help_screen import HelpModal
@@ -677,7 +678,7 @@ class HermesStreamingApp(App):
         if self.busy_mode not in config.BUSY_MODES:
             self.busy_mode = "queue"
         self._busy_transition_owner: Optional[asyncio.Task[None]] = None
-        self._history = PromptHistory(self._history_path_for_args(args))
+        self._history = self._prompt_history_for_args(args)
         self._history_index: Optional[int] = None
         self._history_draft = ""
         # Set when the user changes these interactively this session, so a later
@@ -905,6 +906,31 @@ class HermesStreamingApp(App):
             legacy=not bool(getattr(args, "profiles_configured", False)),
         )
 
+    def _prompt_history_for_args(self, args: Any) -> PromptHistory:
+        """Open profile-local prompt history and migrate its old local file."""
+        path = self._history_path_for_args(args)
+        legacy_paths: tuple[Path, ...] = ()
+        if bool(getattr(args, "profiles_configured", False)):
+            legacy_path = legacy_history_path_for_profile(
+                getattr(args, "url", None),
+                getattr(args, "profile_name", None)
+                or getattr(args, "profile", None)
+                or "default",
+                configured_path=getattr(args, "history_path", None),
+            )
+            if legacy_path != path:
+                legacy_paths = (legacy_path,)
+        return PromptHistory(path, legacy_paths=legacy_paths)
+
+    @staticmethod
+    def _doorway_session_args(args: Any) -> Any:
+        """Mint one remote Session identity for this launch/profile doorway."""
+        if args is None:
+            return args
+        session_args = copy.copy(args)
+        session_args.session_id = uuid.uuid4().hex
+        return session_args
+
     @staticmethod
     def _profile_display_name_for_args(args: Any) -> str:
         """Return the configured Hermes Profile identity for presentation."""
@@ -949,8 +975,8 @@ class HermesStreamingApp(App):
 
     def _refresh_connection_status(self) -> None:
         session_id = (
-            getattr(self.args, "session_id", None)
-            or getattr(self.session, "session_id", None)
+            getattr(self.session, "session_id", None)
+            or getattr(self.args, "session_id", None)
             or "session"
         )
         symbol = {
@@ -1104,7 +1130,7 @@ class HermesStreamingApp(App):
     # --- lifecycle ------------------------------------------------------------
 
     async def on_mount(self) -> None:
-        self.session = self._new_session(self.args)
+        self.session = self._new_session(self._doorway_session_args(self.args))
         self._refresh_queue_shelf()
         self._refresh_prompt_panel()
         self.query_one("#command-suggestions", Static).display = False
@@ -1285,8 +1311,7 @@ class HermesStreamingApp(App):
                     await self._close_session_for_reconnect(old_session)
 
                 try:
-                    recovery_args = copy.copy(self.args)
-                    recovery_args.session_id = uuid.uuid4().hex
+                    recovery_args = self._doorway_session_args(self.args)
                     self.session = self._new_session(recovery_args)
                 except Exception as exc:
                     diagnostic_logger.debug(
@@ -1878,6 +1903,7 @@ class HermesStreamingApp(App):
         )
 
     async def _complete_barge_in(self, transcript: str) -> None:
+        history = self._history
         try:
             interrupt_task = self._barge_interrupt_task
             if interrupt_task is None and self._turn_in_flight:
@@ -1908,6 +1934,7 @@ class HermesStreamingApp(App):
                     self._set_voice_state(VOICE_READY)
                 return
             self._set_voice_state(VOICE_TRANSCRIBING)
+            await asyncio.to_thread(history.append, text)
             await self._run_turn(text, stt_source="local-faster-whisper")
         finally:
             if self._barge_result_task is asyncio.current_task():
@@ -2068,10 +2095,19 @@ class HermesStreamingApp(App):
         loop = self._wake_loop
         if loop is None:
             return False
+        if not (text or "").strip():
+            return False
+        history = self._history
         future = asyncio.run_coroutine_threadsafe(
             self._run_turn(text, stt_source="local"), loop
         )
-        return bool(future.result())
+        try:
+            return bool(future.result())
+        finally:
+            # This callback runs on the wake worker, not Textual's event loop.
+            # Persist after the turn is underway so a local fsync cannot delay
+            # the first playback frame or the wake coordinator's timing.
+            history.append(text)
 
     # --- input paths ----------------------------------------------------------
 
@@ -2098,8 +2134,9 @@ class HermesStreamingApp(App):
             event.composer.load_text("")
             self._enqueue_prompt(text)
             return
+        history = self._history
         self.run_worker(
-            self._submit_text(text, composer=event.composer),
+            self._submit_text(text, composer=event.composer, history=history),
             name="chat turn",
             group="interaction",
             exit_on_error=False,
@@ -2480,13 +2517,13 @@ class HermesStreamingApp(App):
 
             self.args = new_args
             self._sync_profile_metadata(new_args)
-            self.session = self._new_session(new_args)
+            self.session = self._new_session(self._doorway_session_args(new_args))
             self.domain.reset_session(
                 getattr(self.session, "session_id", None)
                 or getattr(new_args, "session_id", None)
             )
             self._needs_reconnect = False
-            self._history = PromptHistory(self._history_path_for_args(new_args))
+            self._history = self._prompt_history_for_args(new_args)
             self._queued_prompts.clear()
             self._staged_attachments.clear()
             self._pending_prompt = None
@@ -3115,14 +3152,16 @@ class HermesStreamingApp(App):
 
     def action_voice_turn(self) -> None:
         """Start voice capture off the Textual message-pump path."""
+        history = self._history
         self.run_worker(
-            self._capture_voice_turn(),
+            self._capture_voice_turn(history=history),
             name="voice turn",
             group="interaction",
             exit_on_error=False,
         )
 
-    async def _capture_voice_turn(self) -> None:
+    async def _capture_voice_turn(self, *, history: Optional[PromptHistory] = None) -> None:
+        history = self._history if history is None else history
         if self._turn_in_flight:
             self._append_block("[a turn is already in flight]")
             return
@@ -3179,12 +3218,13 @@ class HermesStreamingApp(App):
                 self._refresh_voice_status()
             if self.voice_state == VOICE_INTERRUPTED:
                 return
-            if not transcript_text:
+            if not transcript_text or not transcript_text.strip():
                 self.domain.apply_event({"type": "capture_empty"})
                 self._set_voice_state(VOICE_READY)
                 self._append_block("no speech detected.")
                 return
             self._set_voice_state(VOICE_TRANSCRIBING)
+            await asyncio.to_thread(history.append, transcript_text)
             # Keep the detector paused through transcription and the whole
             # turn. `_run_turn` owns the matching resume after the reply.
             await self._run_turn(transcript_text, stt_source="local-faster-whisper")
@@ -3319,8 +3359,15 @@ class HermesStreamingApp(App):
     def _shell_policy(self) -> ShellPolicy:
         return ShellPolicy(enabled=bool(getattr(self.args, "allow_shell", False)))
 
-    async def _submit_text(self, text: str, *, composer: Optional[Composer] = None) -> None:
+    async def _submit_text(
+        self,
+        text: str,
+        *,
+        composer: Optional[Composer] = None,
+        history: Optional[PromptHistory] = None,
+    ) -> None:
         """Prepare local references, then apply the busy-turn policy."""
+        history = self._history if history is None else history
         history_text = text
         local_command = standalone_command(text)
         try:
@@ -3374,7 +3421,7 @@ class HermesStreamingApp(App):
         text = prepared_text
         if composer is not None:
             composer.load_text("")
-        self._history.append(history_text)
+        await asyncio.to_thread(history.append, history_text)
 
         if self._reconnect_in_flight:
             self._enqueue_prompt(text)

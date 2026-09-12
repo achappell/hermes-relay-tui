@@ -42,9 +42,113 @@ def test_multiline_prompt_round_trips(tmp_path):
 
 def test_load_skips_corrupt_lines(tmp_path):
     path = tmp_path / ".hermes_history"
-    path.write_text('"valid"\nnot json\n"also valid"\n', encoding="utf-8")
+    path.write_text(
+        '"valid"\nnot json\n123\n{"prompt": "not a string"}\n"also valid"\n',
+        encoding="utf-8",
+    )
     history = PromptHistory(path)
     assert history.entries == ["valid", "also valid"]
+
+
+def test_load_deduplicates_non_adjacent_prompts_preserving_order(tmp_path):
+    path = tmp_path / ".hermes_history"
+    path.write_text('"first"\n"second"\n"first"\n"third"\n', encoding="utf-8")
+
+    history = PromptHistory(path)
+
+    assert history.entries == ["first", "second", "third"]
+
+
+def test_load_tightens_existing_history_to_owner_only_mode(tmp_path):
+    path = tmp_path / ".hermes_history"
+    path.write_text('"private prompt"\n', encoding="utf-8")
+    path.chmod(0o644)
+
+    history = PromptHistory(path)
+
+    assert history.entries == ["private prompt"]
+    assert path.stat().st_mode & 0o777 == 0o600
+
+
+def test_load_keeps_readable_history_when_permission_tightening_fails(tmp_path, monkeypatch):
+    path = tmp_path / ".hermes_history"
+    path.write_text('"private prompt"\n', encoding="utf-8")
+
+    def fail_chmod(*_args, **_kwargs):
+        raise OSError("read-only filesystem")
+
+    monkeypatch.setattr(history_module.os, "chmod", fail_chmod)
+
+    assert PromptHistory(path).entries == ["private prompt"]
+
+
+def test_failed_history_save_closes_temp_descriptor(tmp_path, monkeypatch):
+    path = tmp_path / ".hermes_history"
+    history = PromptHistory(path)
+    closed: list[int] = []
+    real_close = history_module.os.close
+
+    def fail_fchmod(*_args, **_kwargs):
+        raise OSError("permission denied")
+
+    def record_close(fd):
+        closed.append(fd)
+        real_close(fd)
+
+    monkeypatch.setattr(history_module.os, "fchmod", fail_fchmod)
+    monkeypatch.setattr(history_module.os, "close", record_close)
+
+    history._save()
+
+    assert closed
+
+
+def test_profile_history_migrates_old_prompts_oldest_first_without_touching_source(tmp_path):
+    legacy = tmp_path / "history.jsonl"
+    original = '"first"\n"duplicate"\n123\n"duplicate"\n"last"\n'
+    legacy.write_text(original, encoding="utf-8")
+    destination = history_path_for_profile(
+        "wss://relay.example:8792/voice-session",
+        "amanda",
+        configured_path=legacy,
+    )
+
+    history = PromptHistory(destination, legacy_paths=(legacy,))
+
+    assert history.entries == ["first", "duplicate", "last"]
+    assert legacy.read_text(encoding="utf-8") == original
+    assert destination.read_text(encoding="utf-8").splitlines() == [
+        '"first"',
+        '"duplicate"',
+        '"last"',
+    ]
+
+
+def test_history_persistence_is_owner_only(tmp_path):
+    path = tmp_path / "history.jsonl"
+    history = PromptHistory(path)
+    history.append("private prompt")
+
+    assert path.stat().st_mode & 0o777 == 0o600
+
+
+def test_failed_history_migration_keeps_entries_in_memory_and_source_usable(
+    tmp_path, monkeypatch
+):
+    legacy = tmp_path / "history.jsonl"
+    original = '"legacy prompt"\n'
+    legacy.write_text(original, encoding="utf-8")
+    destination = tmp_path / "profiles" / "amanda" / "history.jsonl"
+
+    def fail_replace(*_args, **_kwargs):
+        raise OSError("history destination unavailable")
+
+    monkeypatch.setattr(history_module.os, "replace", fail_replace)
+    history = PromptHistory(destination, legacy_paths=(legacy,))
+
+    assert history.entries == ["legacy prompt"]
+    assert not destination.exists()
+    assert legacy.read_text(encoding="utf-8") == original
 
 
 def test_history_path_for_url_scopes_by_host_and_port():

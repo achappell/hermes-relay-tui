@@ -124,6 +124,54 @@ async def test_profile_switch_closes_old_session_preserves_draft_and_scopes_stat
 
 
 @pytest.mark.asyncio
+async def test_profile_switch_migrates_legacy_prompt_history_without_deleting_source(
+    tmp_path, monkeypatch
+):
+    import history as history_module
+    from history import history_path_for_url
+
+    monkeypatch.setattr(history_module, "DEFAULT_HISTORY_DIR", tmp_path / "history")
+    legacy = history_path_for_url("wss://jensen.example/voice-session")
+    legacy.parent.mkdir(parents=True)
+    original = '"Jensen legacy prompt"\n"Jensen legacy prompt"\n'
+    legacy.write_text(original, encoding="utf-8")
+    args, argv, _ = _profile_args(tmp_path)
+    app = HermesStreamingApp(args=args, session_factory=SessionFactory(), argv=argv)
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await app._handle_command(parse_slash_command("/profile select jensen"))
+        await pilot.pause()
+
+        assert app._history.entries == ["Jensen legacy prompt"]
+
+    assert legacy.read_text(encoding="utf-8") == original
+
+
+@pytest.mark.asyncio
+async def test_profile_selection_mints_a_distinct_session_identity(tmp_path):
+    args, argv, _ = _profile_args(tmp_path)
+    captured = []
+
+    def factory(session_args):
+        captured.append((session_args.profile_name, session_args.session_id))
+        return FakeSession(session_id=session_args.session_id)
+
+    app = HermesStreamingApp(args=args, session_factory=factory, argv=argv)
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await app._handle_command(parse_slash_command("/profile select jensen"))
+        await pilot.pause()
+
+    assert captured[0][0] == "amanda"
+    assert captured[1][0] == "jensen"
+    assert captured[0][1] != "amanda-session"
+    assert captured[1][1] != "jensen-session"
+    assert captured[0][1] != captured[1][1]
+
+
+@pytest.mark.asyncio
 async def test_profile_switch_is_refused_during_an_active_turn(tmp_path):
     args, argv, _ = _profile_args(tmp_path)
     factory = SessionFactory()
