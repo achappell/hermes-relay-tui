@@ -68,6 +68,9 @@ class FakeSession:
         self.gate = gate
         self.supports_structured_prompts = True
         self.prompt_responses = []
+        self.disconnect_event = asyncio.Event()
+        self.wait_started = asyncio.Event()
+        self.wait_calls = 0
 
     @property
     def session_id(self):
@@ -147,6 +150,11 @@ class FakeSession:
 
     def is_connected(self):
         return self.connected
+
+    async def wait_for_disconnect(self):
+        self.wait_calls += 1
+        self.wait_started.set()
+        await self.disconnect_event.wait()
 
     def send_turn(self, text, *, stt_source="local"):
         self.sent_turns.append((text, stt_source))
@@ -298,10 +306,45 @@ async def test_expected_close_cancels_watcher_without_loss_presentation():
         assert "connection liveness monitoring failed" not in transcript_of(app)
 
 
+async def test_expected_close_completion_is_silent():
+    session = WatchedSession(session_id="session")
+    app = HermesStreamingApp(args=make_args(), session_factory=lambda: session)
+
+    async with app.run_test() as pilot:
+        await asyncio.wait_for(session.wait_started.wait(), 1)
+        watcher = app._connection_watch_task
+        assert watcher is not None
+        app._expect_session_close(session, app._session_generation)
+        session.disconnect_event.set()
+        await watcher
+        await pilot.pause()
+
+        assert app.connection_state == app_module.CONNECTION_CONNECTED
+        assert app._needs_reconnect is False
+        assert "connection liveness monitoring failed" not in transcript_of(app)
+        assert app_module.RETRY_HINT not in transcript_of(app)
+
+
 async def test_observer_transport_failure_is_idempotent_disconnect():
     session = WatchedSession(
         watcher_error=TransportError("connection close wait", ConnectionError("gone"))
     )
+    app = HermesStreamingApp(args=make_args(), session_factory=lambda: session)
+
+    async with app.run_test() as pilot:
+        await asyncio.wait_for(session.wait_started.wait(), 1)
+        for _ in range(10):
+            await pilot.pause()
+            if app.connection_state == app_module.CONNECTION_DISCONNECTED:
+                break
+
+        assert app.connection_state == app_module.CONNECTION_DISCONNECTED
+        assert app._needs_reconnect is True
+        assert transcript_of(app).count(app_module.RETRY_HINT) == 1
+
+
+async def test_observer_raw_transport_failure_is_typed_as_disconnect():
+    session = WatchedSession(watcher_error=OSError("socket closed"))
     app = HermesStreamingApp(args=make_args(), session_factory=lambda: session)
 
     async with app.run_test() as pilot:
@@ -334,7 +377,7 @@ async def test_observer_programming_failure_reports_error_without_claiming_loss(
 
 async def test_idle_loss_recovers_with_one_fresh_prompt_and_no_replay():
     old_session = WatchedSession(session_id="old-session")
-    fresh_session = FakeSession(
+    fresh_session = WatchedSession(
         session_id="fresh-session",
         hello={
             "chat_id": "fresh-chat",
@@ -362,6 +405,8 @@ async def test_idle_loss_recovers_with_one_fresh_prompt_and_no_replay():
         assert app._queued_prompts == []
         assert app.connection_state == app_module.CONNECTION_CONNECTED
         assert "old server history" not in transcript_of(app)
+        await asyncio.wait_for(fresh_session.wait_started.wait(), 1)
+        assert fresh_session.wait_calls == 1
 
 
 async def test_watcher_and_active_reader_loss_converge_without_queue_drain():
@@ -450,6 +495,177 @@ async def test_turn_admission_rechecks_loss_before_creating_a_stream():
         assert app._last_prompt_status == app_module.PROMPT_NOT_SENT
 
 
+async def test_timeout_turn_starts_lazy_send_before_recovery_can_replace_session():
+    first_send_started = asyncio.Event()
+    loss_checked = asyncio.Event()
+    release_send = asyncio.Event()
+    loss_before_send = []
+    fresh_session = FakeSession(session_id="fresh-session")
+    app = None
+
+    class AdmissionSession(FakeSession):
+        def send_turn(self, text, *, stt_source="local"):
+            self.sent_turns.append((text, stt_source))
+            self.turn_index += 1
+
+            async def probe_recovery_boundary():
+                await asyncio.sleep(0)
+                loss_before_send.append(not first_send_started.is_set())
+                loss_checked.set()
+                if loss_before_send[-1]:
+                    app._install_session(fresh_session)
+                    app.domain.reset_session("fresh-session")
+
+            asyncio.create_task(probe_recovery_boundary())
+
+            async def stream():
+                first_send_started.set()
+                await release_send.wait()
+                yield {"type": "text_delta", "text": "answer"}
+                yield {"type": "turn_end", "turn_id": "admission"}
+
+            return stream()
+
+    session = AdmissionSession(session_id="old-session")
+    app = HermesStreamingApp(
+        args=make_args(turn_timeout=1), session_factory=lambda: session
+    )
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        turn = asyncio.create_task(app._run_turn("admission prompt"))
+        await asyncio.wait_for(first_send_started.wait(), 1)
+        await asyncio.wait_for(loss_checked.wait(), 1)
+        release_send.set()
+        await turn
+
+        assert loss_before_send == [False]
+        assert app.session is session
+        assert session.sent_turns == [("admission prompt", "local")]
+        assert app._last_prompt_status == app_module.PROMPT_COMPLETED
+
+
+async def test_turn_end_cannot_complete_after_connection_loss_starts():
+    turn_end_ready = asyncio.Event()
+    release_turn_end = asyncio.Event()
+
+    class LossRaceSession(FakeSession):
+        def send_turn(self, text, *, stt_source="local"):
+            self.sent_turns.append((text, stt_source))
+            self.turn_index += 1
+
+            async def stream():
+                yield {"type": "text_delta", "text": "partial"}
+                turn_end_ready.set()
+                await release_turn_end.wait()
+                yield {"type": "turn_end", "turn_id": "loss-race"}
+
+            return stream()
+
+    session = LossRaceSession(session_id="session")
+    app = HermesStreamingApp(args=make_args(), session_factory=lambda: session)
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        turn = asyncio.create_task(app._run_turn("possibly complete"))
+        await asyncio.wait_for(turn_end_ready.wait(), 1)
+        app._connection_loss_in_flight = True
+        release_turn_end.set()
+        await turn
+        app._connection_loss_in_flight = False
+
+        assert app._last_prompt_status == app_module.PROMPT_AMBIGUOUS
+        assert app.voice_state != app_module.VOICE_READY
+
+
+async def test_late_audio_write_cannot_abort_or_feed_replacement_player():
+    write_started = threading.Event()
+    release_write = threading.Event()
+
+    class BlockingPlayer:
+        def __init__(self):
+            self.enabled = True
+            self.output_device = None
+            self.prebuffer_seconds = 0.0
+            self.active = False
+            self.playing = False
+            self.failure = None
+            self.writes = []
+            self.abort_calls = 0
+            self.close_calls = 0
+
+        def start(self, audio_format):
+            self.active = True
+            self.playing = True
+
+        def write(self, chunk):
+            self.writes.append(chunk)
+            write_started.set()
+            release_write.wait(1)
+
+        def abort(self):
+            self.abort_calls += 1
+            self.active = False
+            self.playing = False
+
+        def close(self):
+            self.close_calls += 1
+            self.active = False
+            self.playing = False
+
+        @property
+        def playback_position(self):
+            return 0.0
+
+        def playback_snapshot(self):
+            return {
+                "active": self.active,
+                "playing": self.playing,
+                "playback_position": 0.0,
+                "scheduled_audio": 0.0,
+                "pending_audio": 0.0,
+                "queued_audio": 0.0,
+            }
+
+    class BlockingAudioSession(FakeSession):
+        def send_turn(self, text, *, stt_source="local"):
+            self.sent_turns.append((text, stt_source))
+            self.turn_index += 1
+
+            async def stream():
+                yield {
+                    "type": "audio_start",
+                    "sample_rate": 16000,
+                    "channels": 1,
+                    "sample_width": 2,
+                }
+                yield {"type": "audio_chunk", "data": b"\x00\x01"}
+
+            return stream()
+
+    old_session = BlockingAudioSession(session_id="old-session")
+    fresh_session = FakeSession(session_id="fresh-session")
+    old_player = BlockingPlayer()
+    replacement_player = BlockingPlayer()
+    app = HermesStreamingApp(args=make_args(), session_factory=lambda: old_session)
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.player = old_player
+        turn = asyncio.create_task(app._run_turn("old audio"))
+        await asyncio.to_thread(write_started.wait, 1)
+
+        app._install_session(fresh_session)
+        app.domain.reset_session("fresh-session")
+        app.player = replacement_player
+        release_write.set()
+        await turn
+
+        assert old_player.abort_calls == 1
+        assert replacement_player.abort_calls == 0
+        assert replacement_player.writes == []
+
+
 async def test_stale_stream_failure_cannot_mutate_the_replacement():
     late_failure = asyncio.Event()
 
@@ -494,6 +710,25 @@ async def test_app_mounts_with_transcript_and_input():
         assert app.query_one("#transcript", Static) is not None
         assert app.query_one("#composer", Composer) is not None
         assert voice_status_of(app) == "● ready"
+
+
+async def test_connect_fails_closed_when_session_lacks_a_liveness_observer():
+    class UnsupportedSession(FakeSession):
+        wait_for_disconnect = None
+
+    session = UnsupportedSession()
+    app = HermesStreamingApp(args=make_args(), session_factory=lambda: session)
+
+    async with app.run_test() as pilot:
+        for _ in range(10):
+            await pilot.pause()
+            if app.connection_state == app_module.CONNECTION_DISCONNECTED:
+                break
+
+        assert app.connection_state == app_module.CONNECTION_DISCONNECTED
+        assert app._needs_reconnect is True
+        assert "Connected to" not in transcript_of(app)
+        assert "liveness observer" in transcript_of(app)
 
 
 async def test_profile_display_name_is_used_for_header_and_responses():
