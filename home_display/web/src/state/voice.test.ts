@@ -190,13 +190,13 @@ describe("BrowserHandsFreeController", () => {
     recognitions[1].result({ isFinal: true, transcript: "and tomorrow?" });
     expect(sendText).toHaveBeenCalledTimes(2);
     controller.turnFinished();
-    await Promise.resolve();
+    await flushMicrotasks();
     expect(states.at(-1)).toBe("follow_up");
     expect(recognitions).toHaveLength(3);
     recognitions[2].result({ isFinal: true, transcript: "what about Friday?" });
     expect(sendText).toHaveBeenCalledTimes(3);
     controller.turnFinished();
-    await Promise.resolve();
+    await flushMicrotasks();
     expect(states.at(-1)).toBe("follow_up");
     expect(recognitions).toHaveLength(4);
     recognitions[3].result({ isFinal: true, transcript: "STOP." });
