@@ -121,6 +121,39 @@ async def test_owned_write_failures_are_typed_without_swallowing_programming_err
         )
 
 
+@pytest.mark.parametrize(
+    "operation",
+    ["interrupt", "prompt_response", "session_list", "session_new", "session_switch"],
+)
+async def test_non_turn_write_failures_are_typed_transport_errors(operation):
+    class FailingSendWebSocket(FakeWebSocket):
+        async def send(self, data):
+            raise OSError("socket closed")
+
+    websocket = FailingSendWebSocket([])
+    if operation == "interrupt":
+        request = send_interrupt(websocket, session_id="s1", turn_id="turn-1")
+    elif operation == "prompt_response":
+        request = send_prompt_response(
+            websocket,
+            session_id="s1",
+            prompt_id="prompt-1",
+            prompt_kind="approval",
+            option_id="once",
+        )
+    elif operation == "session_list":
+        request = send_session_list(websocket)
+    elif operation == "session_new":
+        request = send_session_new(websocket)
+    else:
+        request = send_session_switch(websocket, session_id="s2")
+
+    with pytest.raises(TransportError) as caught:
+        await request
+
+    assert caught.value.cause_type == "OSError"
+
+
 async def test_turn_receive_transport_failure_is_typed():
     class FailingTurnWebSocket(FakeWebSocket):
         async def recv(self):
