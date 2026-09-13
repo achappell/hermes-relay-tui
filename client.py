@@ -206,6 +206,9 @@ async def send_prompt_response(
     option_id: Optional[str] = None,
     value: Optional[str] = None,
     reason: Optional[str] = None,
+    operation: Optional[str] = None,
+    object_id: Optional[str] = None,
+    freshness: Optional[str] = None,
 ) -> None:
     """Answer one structured prompt without opening a second reader.
 
@@ -226,14 +229,25 @@ async def send_prompt_response(
         payload["value"] = value
     if reason is not None:
         payload["reason"] = reason
+    if str(prompt_kind).strip().lower() == "choice":
+        if operation is not None:
+            payload["operation"] = operation
+        if object_id is not None:
+            payload["object_id"] = object_id
+        if freshness is not None:
+            payload["freshness"] = freshness
     logger.debug(
         "prompt_response.send prompt_id=%s prompt_kind=%s option_id=%s "
-        "value=%s reason=%s session_id=%s",
+        "value=%s reason=%s operation=%s object_id=%s freshness_present=%s "
+        "session_id=%s",
         prompt_id,
         prompt_kind,
         summarize_text(option_id),
         summarize_text(value),
         summarize_text(reason),
+        summarize_text(operation),
+        summarize_text(object_id),
+        bool(freshness),
         session_id,
     )
     await _send_frame(
@@ -448,9 +462,32 @@ async def send_turn(
             options = event_payload.get("options")
             if not isinstance(options, list):
                 options = []
-            normalized_options = [
-                dict(option) for option in options if isinstance(option, dict)
-            ]
+            prompt_kind = str(event_payload.get("prompt_kind") or "")
+            if prompt_kind.strip().lower() == "choice":
+                normalized_options = [
+                    {
+                        "id": option.get("id") or option.get("option_id"),
+                        "label": option.get("label"),
+                    }
+                    for option in options
+                    if isinstance(option, dict)
+                ]
+                raw_choice = event_payload.get("choice")
+                if isinstance(raw_choice, dict):
+                    normalized_choice: Any = {
+                        "object_id": raw_choice.get("object_id"),
+                        "operations": raw_choice.get("operations"),
+                        "freshness": raw_choice.get("freshness"),
+                    }
+                else:
+                    # Preserve a malformed known choice marker so the domain
+                    # can reject it without replacing safe state.
+                    normalized_choice = raw_choice
+            else:
+                normalized_options = [
+                    dict(option) for option in options if isinstance(option, dict)
+                ]
+                normalized_choice = None
             prompt_turn_id = event_payload.get("turn_id")
             if prompt_turn_id is None:
                 prompt_turn_id = turn_id
@@ -461,7 +498,7 @@ async def send_turn(
             yield {
                 "type": "prompt_request",
                 "prompt_id": str(event_payload.get("prompt_id") or ""),
-                "prompt_kind": str(event_payload.get("prompt_kind") or ""),
+                "prompt_kind": prompt_kind,
                 "turn_id": str(prompt_turn_id),
                 "session_id": str(
                     event_payload.get("session_id")
@@ -472,6 +509,11 @@ async def send_turn(
                 "options": normalized_options,
                 "sensitive": bool(event_payload.get("sensitive", False)),
                 "timeout_s": timeout_s,
+                **(
+                    {"choice": normalized_choice}
+                    if prompt_kind.strip().lower() == "choice"
+                    else {}
+                ),
             }
         elif kind == "prompt_resolved":
             yield {

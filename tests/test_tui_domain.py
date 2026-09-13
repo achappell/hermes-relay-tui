@@ -118,6 +118,108 @@ def test_prompt_action_is_validated_once_and_rejection_is_retryable() -> None:
     assert domain.prepare_prompt_action(option_id="no").accepted
 
 
+def test_interactive_choice_requires_current_operation_and_freshness_context() -> None:
+    domain = connected_domain()
+    start_turn(domain)
+    choice_event = {
+        "type": "prompt_request",
+        "turn_id": "turn-1",
+        "session_id": "session-1",
+        "prompt_id": "prompt-choice-1",
+        "prompt_kind": "choice",
+        "text": "What should Hermes do?",
+        "options": [
+            {"id": "inspect", "label": "Inspect it"},
+            {"id": "commit", "label": "Commit it"},
+        ],
+        "choice": {
+            "object_id": "choice-1",
+            "operations": ["choose", "explore"],
+            "freshness": "version-1",
+        },
+    }
+
+    assert domain.apply_event(choice_event).accepted
+    prompt = domain.state.prompt
+    assert prompt is not None
+    assert prompt.is_choice
+    assert prompt.choice_object_id == "choice-1"
+    assert prompt.choice_operations == ("choose", "explore")
+    assert prompt.choice_freshness == "version-1"
+    assert "prompt.explore" in TUI_CAPABILITIES
+
+    explore = domain.prepare_prompt_action(
+        option_id="inspect",
+        operation="explore",
+        object_id="choice-1",
+        freshness="version-1",
+    )
+    assert explore.accepted
+    assert explore.action is not None
+    assert explore.action.is_interactive_choice
+    assert explore.action.operation == "explore"
+    assert explore.action.object_id == "choice-1"
+    assert explore.action.freshness == "version-1"
+
+    assert domain.apply_event(
+        {
+            "type": "prompt_response_rejected",
+            "turn_id": "turn-1",
+            "prompt_id": "prompt-choice-1",
+            "reason": "try again",
+        }
+    ).accepted
+    stale_object = domain.prepare_prompt_action(
+        option_id="inspect",
+        operation="choose",
+        object_id="old-choice",
+        freshness="version-1",
+    )
+    assert stale_object.accepted is False
+    assert stale_object.reason == "stale_choice_object"
+    stale_freshness = domain.prepare_prompt_action(
+        option_id="inspect",
+        operation="choose",
+        object_id="choice-1",
+        freshness="old-version",
+    )
+    assert stale_freshness.accepted is False
+    assert stale_freshness.reason == "stale_choice_freshness"
+
+    unsupported = domain.prepare_prompt_action(
+        option_id="inspect",
+        operation="archive",
+        object_id="choice-1",
+        freshness="version-1",
+    )
+    assert unsupported.accepted is False
+    assert unsupported.reason == "unsupported_prompt_operation"
+    assert domain.state.prompt_awaiting is False
+
+
+def test_malformed_interactive_choice_leaves_last_safe_domain_state_unchanged() -> None:
+    domain = connected_domain()
+    start_turn(domain)
+    before = domain.state
+    result = domain.apply_event(
+        {
+            "type": "prompt_request",
+            "turn_id": "turn-1",
+            "prompt_id": "prompt-choice-1",
+            "prompt_kind": "choice",
+            "text": "Incomplete choice",
+            "options": [{"id": "inspect", "label": "Inspect it"}],
+            "choice": {
+                "object_id": "choice-1",
+                "operations": ["choose"],
+            },
+        }
+    )
+    assert result.accepted is False
+    assert result.reason == "invalid_prompt:prompt choice is missing freshness"
+    assert domain.state == before
+
+
 def test_stale_prompt_resolution_cannot_change_a_later_turn() -> None:
     domain = connected_domain()
     start_turn(domain)

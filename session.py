@@ -78,6 +78,9 @@ class SessionProtocol(Protocol):
         option_id: str | None = None,
         value: str | None = None,
         reason: str | None = None,
+        operation: str | None = None,
+        object_id: str | None = None,
+        freshness: str | None = None,
     ) -> bool: ...
 
     async def interrupt_active_turn(self) -> bool: ...
@@ -373,6 +376,9 @@ class HermesSession:
         option_id: str | None = None,
         value: str | None = None,
         reason: str | None = None,
+        operation: str | None = None,
+        object_id: str | None = None,
+        freshness: str | None = None,
     ) -> bool:
         """Answer a server prompt through the active turn's reader.
 
@@ -389,6 +395,9 @@ class HermesSession:
             option_id=option_id,
             value=value,
             reason=reason,
+            operation=operation,
+            object_id=object_id,
+            freshness=freshness,
         )
         return True
 
