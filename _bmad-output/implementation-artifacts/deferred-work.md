@@ -134,6 +134,30 @@
   summary: DEFERRED as pre-existing firmware-surface work: authenticate the port-80 web controls.
   evidence: The firmware exposes web controls without authentication, but that surface predates P-2 and is unrelated to the `/response` token handoff. Keep it separate from the P-2 response-authentication decision.
 
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-1-p-5-complete-streamed-response-playback-without-underrun.md`
+  summary: Define a reboot-safe response sequence epoch for the Puck capture counter.
+  evidence: `pcm_capture.h` resets its in-memory `sample_index` to zero on reboot, while the long-lived bridge now rejects non-increasing response sequences. A reboot after a prior response can therefore reuse an old sequence; resolving that needs a capture/boot-epoch contract outside P-5, and P-5 leaves `pcm_capture.h` unchanged.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-1-p-5-complete-streamed-response-playback-without-underrun.md`
+  summary: Propagate decoder, DMA, and speaker-output failure after bridge delivery completes.
+  evidence: The bridge's `complete` status proves source accounting and HTTP delivery only. Detecting an output failure after the response drains belongs to the P-11 speaker path explicitly excluded from P-5.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-1-p-5-complete-streamed-response-playback-without-underrun.md`
+  summary: Bound or stream the pre-existing Hermes `audio_file` fallback buffer.
+  evidence: `TurnRunner._run_turn()` has accumulated the fallback in a `bytearray` since the original runner implementation; making that path incremental requires a decoder/format boundary not owned by the P-5 live PCM queue.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-1-p-5-complete-streamed-response-playback-without-underrun.md`
+  summary: RESOLVED 2026-09-12 -- restore the pre-existing ESPHome compile blocker for `last_capture_captured`.
+  evidence: Restored the declaration and both capture-close latches in `firmware/respeaker-lite/pcm_capture.h`, with a focused static contract test. `venv/bin/pytest -q tests/test_puck_firmware.py` passes with 12 tests and `venv/bin/pytest` passes with 1,090 tests plus the existing `websockets.legacy` deprecation warning. `venv-firmware/bin/esphome compile firmware/respeaker-lite/respeaker-lite.yaml` succeeds, and the resulting image was uploaded over OTA; the device booted and reported the `respeaker-lite-p5` build label.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-1-p-5-complete-streamed-response-playback-without-underrun.md`
+  summary: VERIFIED 2026-09-12 -- the controlled physical P-5 gate passed.
+  evidence: With Mac playback disabled, five controlled 24-second responses delivered 1,152,000 source and delivered PCM bytes with matching SHA-256 values, consumer gaps no larger than 0.001 seconds, and terminal `complete`; the device logged HTTP 200, HTTP read complete, decoder finish, media idle, terminal confirmation, and wake resumption. A temporary MacBook Air microphone observer detected the defined 240 ms 880/1320/1760 Hz marker exactly once at normalized correlation 0.842, with timing error -0.249 seconds against the expected marker position after logged output start (inside the +/-500 ms bound). Capture-end-to-first-response-audio measured 2.652 seconds median across five runs (under the 4-second bound), and the post-playback second wake completed successfully. Temporary observer audio and diagnostic logs were removed after metric extraction. The separate reboot sequence epoch, post-delivery decoder/DMA failure propagation, and fallback-buffer items remain deferred to their owning boundaries.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-1-p-5-complete-streamed-response-playback-without-underrun.md`
+  summary: Exchange and authenticate the firmware build identity with the bridge.
+  evidence: The bridge records the configured `respeaker-lite-p5` deployment label and the helper logs the same identity, but no P-5 protocol handshake proves which image is connected. A multi-firmware identity contract would expand the device-administration boundary beyond this story.
 ## Deferred from: code review of spec-1-t-6-detect-idle-relay-loss-and-present-honest-recovery-without-replaying-an-uncertain-turn (2026-09-12)
 
 - source_spec: `_bmad-output/implementation-artifacts/spec-1-t-6-detect-idle-relay-loss-and-present-honest-recovery-without-replaying-an-uncertain-turn.md`
