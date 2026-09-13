@@ -140,6 +140,44 @@ def test_duplicate_story_ids_fail_validation(tmp_path: Path):
         render_report([first, second])
 
 
+def test_markdown_catalog_prefers_epic_specific_story_title(tmp_path: Path):
+    repo = tmp_path / "tui"
+    repo.mkdir()
+    (repo / "bmad-surface.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "schema_version": 1,
+                "repository": "hermes-relay-tui",
+                "planning": "bmad",
+                "surfaces": [{"id": "P", "name": "ReSpeaker Puck"}],
+                "status_tracker": "sprint-status.yaml",
+                "story_index": "epics.md",
+            }
+        ),
+        encoding="utf-8",
+    )
+    (repo / "sprint-status.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "development_status": {
+                    "2-p-1-expose-room-state": "backlog",
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    (repo / "epics.md").write_text(
+        "| `P-1` | ReSpeaker Puck | Generic Puck title. |\n"
+        "| `2-P-1` | ReSpeaker Puck | Epic-specific Puck title. |\n",
+        encoding="utf-8",
+    )
+
+    report = render_report([repo])
+
+    assert "Epic-specific Puck title." in report
+    assert "Generic Puck title." not in report
+
+
 def test_renderer_does_not_modify_input_repositories(tmp_path: Path):
     repo = write_repository(
         tmp_path / "ios",

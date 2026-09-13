@@ -154,6 +154,7 @@ def _catalog_lookup(
         candidates.append(shortened)
     parts = story_id.casefold().split("-")
     if len(parts) >= 3 and parts[1] in {"t", "p", "e", "wk"}:
+        candidates.insert(1, f"{parts[0]}-{parts[1]}-{parts[2]}")
         candidates.append(f"{parts[1]}-{parts[2]}")
     for candidate in candidates:
         if candidate in catalog:
