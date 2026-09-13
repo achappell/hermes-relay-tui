@@ -303,7 +303,12 @@
         ) {
           beginCapturePresentation();
         }
-        if (state !== "error") handsFreeError = null;
+        // A rejected profile route reports its safe error immediately before
+        // returning to wake_ready. Preserve that message until the next real
+        // wake attempt instead of replacing it with an optimistic prompt.
+        if (state !== "error" && !(state === "wake_ready" && previousState === "routing")) {
+          handsFreeError = null;
+        }
       },
       onError: (message) => {
         clearConversationPresentation();

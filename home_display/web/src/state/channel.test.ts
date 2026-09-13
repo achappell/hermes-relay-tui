@@ -179,7 +179,7 @@ describe("StateChannel", () => {
     socket.open();
     socket.message(rawSnapshot(1));
     const route = channel.sendProfileRoute("hey spark");
-    vi.advanceTimersByTime(10_000);
+    vi.advanceTimersByTime(20_000);
 
     await expect(route).resolves.toBe(false);
     channel.stop();

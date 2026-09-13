@@ -4,7 +4,7 @@ type: 'feature'
 created: '2026-09-12'
 status: 'done'
 route: 'dispatch'
-review_loop_iteration: 3
+review_loop_iteration: 4
 baseline_commit: 'acc531bbee2a468d5a1e403e572c47af65cb628c'
 context:
   - '{project-root}/AGENTS.md'
@@ -85,7 +85,7 @@ context:
 - [x] Extend focused Python and browser tests for every matrix case, including malformed frames, duplicate phrases, legacy frames, failed target sessions, and concurrent tabs.
 - [x] Add the versioned profile-config deployment input, allowlisted private-env handoff, service flags, preflight validation, rollback pairing, and deployment-script tests.
 - [x] Update the README with the browser catalog and repeatable Ops command without including endpoints or bearer values.
-- [x] Run focused tests, web checks/build, and the complete Python suite. The public Ops smoke check and physical three-phrase/two-tab verification remain deferred until the approved deployment step.
+- [x] Run focused tests, web checks/build, and the complete Python suite. The deployed Ops page, state channel, action route, and three-phrase capability gate now pass; physical three-phrase/two-tab verification remains deferred.
 
 **Acceptance Criteria:**
 - Given three valid named profiles with unique wake phrases, when a browser recognizes any configured phrase, then exactly one profile is selected for that browser context before its turn is submitted and the selected account is visible.
@@ -108,7 +108,7 @@ context:
 - `npm --prefix home_display/web ci && npm --prefix home_display/web test -- --run && npm --prefix home_display/web run check && npm --prefix home_display/web run build` -- expected: browser tests pass, Svelte check is clean, and the production bundle builds.
 - `bash -n scripts/deploy_ops_web.sh && scripts/deploy_ops_web.sh help` -- expected: the repeatable profile-config and profile-env-source options are documented and shell syntax is valid.
 - `venv/bin/pytest` -- expected: complete repository suite passes.
-- `scripts/deploy_ops_web.sh deploy --ops-host ops --origin https://hermes-home.chappell-home.dev --caddyfile /srv/ops/caddy/Caddyfile --caddy-site-dir /srv/ops/caddy/sites-enabled --profile-config /secure/path/ops-home-profile-config.yaml --profile-env-source ~/.hermes-relay-tui/.env` plus `scripts/check_ops_web.py --origin https://hermes-home.chappell-home.dev` -- expected: the active release serves the catalog and no credential value appears in deployment output.
+- `scripts/deploy_ops_web.sh deploy --ops-host ops --origin https://hermes-home.chappell-home.dev --caddyfile /srv/ops/caddy/Caddyfile --caddy-site-dir /srv/ops/caddy/sites-enabled --profile-config /secure/path/ops-home-profile-config.yaml --profile-env-source ~/.hermes-relay-tui/.env` plus `scripts/check_ops_web.py --origin https://hermes-home.chappell-home.dev --require-wake-phrase "hey missy" --require-wake-phrase "hey skippy" --require-wake-phrase "hey spark"` -- expected: the active release serves the catalog and no credential value appears in deployment output.
 - A redacted remote catalog check -- expected: `amanda`, `jensen`, and `spark` are present with their three wake phrases, all three token variable names are present, and no token values are printed.
 
 This shared worktree has no local `venv/`; the equivalent verified commands used
@@ -120,7 +120,7 @@ This shared worktree has no local `venv/`; the equivalent verified commands used
 
 ## Review Triage Log
 
-Review layers were run against the unified diff from `acc531bbee2a468d5a1e403e572c47af65cb628c`, including untracked files. The final collection pass launched blind, edge-case, and verification-gap reviewers against the hardened tree; no additional report was returned during the collection window. The local full-suite and browser gates below are the independent evidence for the final tree.
+Review layers were run against the unified diff from `acc531bbee2a468d5a1e403e572c47af65cb628c`, including untracked files. The final blind, edge-case, and verification-gap reports arrived after the initial collection pass and were triaged below. The local full-suite, browser gates, corrected Ops deployment, and redacted public catalog check are the independent evidence for the current tree.
 
 | Source finding | Verdict / route | Evidence and disposition |
 |---|---|---|
@@ -129,7 +129,7 @@ Review layers were run against the unified diff from `acc531bbee2a468d5a1e403e57
 | Concurrent tabs using different profiles lacked executable coverage. | medium / patch | A two-socket appliance/server test verifies isolated sessions, publishers, accounts, and responses. |
 | Three-profile catalog wiring lacked executable coverage. | medium / patch | Browser/App tests cover `hey missy`, `hey skippy`, and `hey spark`; catalog and routing tests pass. |
 | Wake-only rejection, acknowledgement timeout, and socket-close behavior lacked coverage. | medium / patch | Same-socket acknowledgement, timeout, rejection, and close settlement are implemented and tested. |
-| The Ops health gate was not catalog-aware. | medium / defer | This requires the live Ops deployment and is not executable from the local Step 03 implementation gate; the deferred-work record preserves the required remote check. |
+| The Ops health gate was not catalog-aware. | medium / patch | The public check now validates `browser_hands_free` and the exact three wake phrases; the corrected deployment passed that gate. |
 | Profile preflight malformed-catalog and missing-token cases lacked coverage. | medium / patch | Validator and deployment tests cover malformed YAML, strict schema/version checks, duplicate phrases, and all required token bindings. |
 | Rollback could activate a release without its required catalog. | high / patch | First catalog deployment backfills the prior release and rollback validates catalog presence before activation; pairing tests pass. |
 | Staged private environment permissions were not explicitly enforced after upload. | high / patch | Remote deploy applies mode `0600` to the staged and installed environment; deployment tests assert the protection step. |
@@ -146,8 +146,19 @@ Review layers were run against the unified diff from `acc531bbee2a468d5a1e403e57
 | Invalid-catalog rollback/preflight behavior was not executable-tested. | high / patch | Deployment tests exercise invalid catalog rejection, prior-release preservation, and catalog pairing. |
 | Activation failure could leave code and environment pairing unverified. | high / patch | Deployment tests exercise restart failure recovery and restoration of both release pointers and the previous environment. |
 | Malformed route acknowledgements lacked parser coverage. | medium / patch | Protocol tests reject malformed, overlong, non-boolean, and wrong-schema acknowledgements. |
-| Live Ops smoke and physical two-tab/three-phrase verification were not run. | medium / defer | Remote SSH/service/browser operations are outside this local implementation turn; deployment runbook and the manual gate remain explicit next actions. |
+| Physical two-tab/three-phrase speech verification was not run. | medium / defer | The corrected Ops release and redacted public capability check passed; real browser speech, wake-only capture, and live Hermes turns still require the supported browser/device gate. |
 | Rollback recovery of the filtered environment could lose unrelated runtime settings. | high / patch | The staged rollback artifact now retains the complete merged environment rather than only the allowlisted token subset; rollback tests pass. |
 | The previous profile session could hang an otherwise successful switch. | medium / patch | Old-session close is bounded and tracked for deferred cleanup; hanging-close tests pass. |
 | Legacy callback handling could accept a wake-bearing frame as an ordinary turn. | high / patch | The legacy callback path accepts only wake-free `voice_turn` frames; compatibility tests pass. |
 | YAML boolean/float versions could compare equal to integer version `1`. | medium / patch | Catalog validation requires `type(version) is int`; strict-version tests pass. |
+| A prompt overlay could drop the active account and browser catalog. | high / patch | `_publish_prompt` now carries the same account and capabilities as ordinary snapshots; prompt tests cover the catalog-bearing browser state. |
+| A failed first admission candidate could close the shared browser socket. | high / patch | Candidate children defer browser-socket ownership until after `hello_ack`; fallback admission coverage verifies the socket remains open. |
+| A profile target close could hold a route acknowledgement indefinitely. | medium / patch | Target-session cleanup is bounded, tracked, and cancellation-safe; the existing timeout coverage remains green. |
+| Three bounded candidate attempts could outlive the browser admission deadline. | high / patch | The admission deadline now covers the three-profile connect/cleanup sequence; later healthy candidates remain reachable. |
+| A synchronous route adapter could restart recognition before the previous browser recognizer released. | high / patch | Release state is tracked and both synchronous and asynchronous route paths wait when needed; regression coverage passes. |
+| A malformed route with a safe request id could leave the browser waiting for ten seconds. | medium / patch | The server returns a bounded `malformed_request` acknowledgement, and route transport coverage verifies it. |
+| A saturated connection task set could drop a route without an acknowledgement. | medium / patch | Route admission now returns a bounded `busy` acknowledgement when the connection task budget is exhausted. |
+| Manual rollback could pair an old release with the newest private environment. | high / patch | Each catalog release records a mode-0600 environment snapshot on Ops; manual and automatic rollback restore the matching release snapshot. |
+| The public smoke gate did not verify the advertised catalog. | medium / patch | `check_ops_web.py` can require the exact three wake phrases and `browser_hands_free`; the deployment invokes that gate. |
+| The catalog source could change between validation and upload. | medium / patch | Deployment snapshots the catalog before validation and uploads that immutable build input. |
+| Physical three-phrase/two-tab speech and in-flight route cancellation remain unverified. | medium / defer | The corrected public gate proves serving and capability advertisement; physical browser speech, live Hermes routing, and cancellation on disarm require a supported device/session and remain outside this handoff. |

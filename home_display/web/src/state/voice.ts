@@ -353,6 +353,7 @@ export class BrowserHandsFreeController {
   private followUpEligible = false;
   private turnInFlight = false;
   private recognitionRelease: Promise<void> = Promise.resolve();
+  private recognitionReleasePending = false;
 
   constructor(options: BrowserHandsFreeControllerOptions) {
     this.sendText = options.sendText;
@@ -649,24 +650,23 @@ export class BrowserHandsFreeController {
     try {
       routeResult = this.routeWake(phrase);
     } catch {
-      this.finishProfileRoute(false, generation, false);
+      this.finishProfileRoute(false, generation);
       return;
     }
     if (typeof routeResult === "boolean") {
-      this.finishProfileRoute(routeResult, generation, false);
+      this.finishProfileRoute(routeResult, generation);
       return;
     }
     void Promise.resolve(routeResult).then((accepted) => {
-      this.finishProfileRoute(Boolean(accepted), generation, true);
+      this.finishProfileRoute(Boolean(accepted), generation);
     }).catch(() => {
-      this.finishProfileRoute(false, generation, true);
+      this.finishProfileRoute(false, generation);
     });
   }
 
   private finishProfileRoute(
     accepted: boolean,
     generation: number,
-    waitForRelease: boolean,
   ): void {
     if (!this.isCurrent(generation) || this.phase !== "routing") return;
     if (!accepted) {
@@ -674,11 +674,11 @@ export class BrowserHandsFreeController {
       this.enterWakeReady(generation, true);
       return;
     }
-    if (!waitForRelease) {
+    if (this.recognitionReleasePending) {
+      void this.resumeInitialCapture(generation);
+    } else {
       this.beginInitialCapture(generation);
-      return;
     }
-    void this.resumeInitialCapture(generation);
   }
 
   private async resumeInitialCapture(generation: number): Promise<void> {
@@ -784,9 +784,21 @@ export class BrowserHandsFreeController {
     this.phase = "wake_ready";
     this.clearHeardTimer();
     this.emit("wake_ready");
-    if (deferRecognition || !this.startRecognition(generation)) {
+    if (deferRecognition) {
+      if (this.recognitionReleasePending) {
+        void this.resumeWakeRecognition(generation);
+      } else {
+        this.scheduleRecognitionRestart(generation);
+      }
+    } else if (!this.startRecognition(generation)) {
       this.scheduleRecognitionRestart(generation);
     }
+  }
+
+  private async resumeWakeRecognition(generation: number): Promise<void> {
+    await this.waitForRecognitionRelease();
+    if (!this.isCurrent(generation) || this.phase !== "wake_ready") return;
+    if (!this.startRecognition(generation)) this.scheduleRecognitionRestart(generation);
   }
 
   private finishCapture(generation: number): void {
@@ -910,6 +922,7 @@ export class BrowserHandsFreeController {
     recognition.onstart = null;
     recognition.onresult = null;
     recognition.onerror = null;
+    this.recognitionReleasePending = true;
     let settled = false;
     let resolveRelease = () => {};
     let releaseTimer: ReturnType<typeof setTimeout> | null = null;
@@ -917,6 +930,7 @@ export class BrowserHandsFreeController {
       resolveRelease = () => {
         if (settled) return;
         settled = true;
+        this.recognitionReleasePending = false;
         if (releaseTimer !== null) clearTimeout(releaseTimer);
         resolve();
       };

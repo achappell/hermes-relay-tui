@@ -98,8 +98,8 @@ the browser tests, type check, production build, generated-asset drift check,
 and Python wheel build. It then uploads the wheel over SSH, installs that
 commit into an isolated remote runtime, atomically advances `current`,
 restarts systemd, validates/reloads Caddy, and probes the public page, state
-WebSocket, and action route. A failed post-activation probe attempts to restore
-the prior release automatically.
+WebSocket, action route, and the expected three-profile wake-word catalog. A
+failed post-activation probe attempts to restore the prior release automatically.
 
 Useful overrides:
 
@@ -125,14 +125,18 @@ OPS_HOST=ops.example ./scripts/deploy_ops_web.sh rollback
 ```
 
 The command restarts the service, reloads Caddy, and runs the same public smoke
-probe. If the service cannot start, it attempts to restore the release that
-was active before the rollback.
+probe. Private environment snapshots are retained beside each catalog release,
+so a rollback restores the matching code, catalog, and token bindings. If the
+service cannot start, it attempts to restore the release that was active before
+the rollback.
 
 For a deliberate internal-certificate check:
 
 ```bash
 OPS_HOST=ops.example OPS_CHECK_CA_FILE=/path/to/ops-ca.pem \
-  ./scripts/deploy_ops_web.sh deploy
+  ./scripts/deploy_ops_web.sh deploy \
+  --profile-config /secure/ops/hermes-home-profile-config.yaml \
+  --profile-env-source /secure/ops/home.env
 ```
 
 Use `--insecure-health-check` only for a controlled diagnostic. It changes

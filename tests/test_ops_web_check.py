@@ -106,7 +106,16 @@ def test_run_check_exercises_page_action_and_state_with_the_same_tls_context(mon
             return False
 
         async def recv(self):
-            return json.dumps({"type": "snapshot", "schema": 1, "sequence": 0, "state": "idle"})
+            return json.dumps({
+                "type": "snapshot",
+                "schema": 1,
+                "sequence": 0,
+                "state": "idle",
+                "capabilities": {
+                    "features": ["browser_hands_free"],
+                    "wake_phrases": ["hey missy", "hey skippy", "hey spark"],
+                },
+            })
 
     def fake_connect(url, **kwargs):
         websocket_calls["url"] = url
@@ -125,6 +134,39 @@ def test_run_check_exercises_page_action_and_state_with_the_same_tls_context(mon
     assert requests[0][1] is requests[1][1]
     assert websocket_calls["url"] == "wss://display.example/state"
     assert websocket_calls["origin"] == "https://display.example"
+
+
+@pytest.mark.asyncio
+async def test_state_check_can_require_the_advertised_wake_catalog(monkeypatch):
+    class WebSocket:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return False
+
+        async def recv(self):
+            return json.dumps({
+                "type": "snapshot",
+                "schema": 1,
+                "sequence": 0,
+                "state": "idle",
+                "capabilities": {
+                    "features": ["browser_hands_free"],
+                    "wake_phrases": ["hey missy", "hey skippy"],
+                },
+            })
+
+    monkeypatch.setattr(check, "connect", lambda *_args, **_kwargs: WebSocket())
+
+    with pytest.raises(check.CheckError, match="expected wake-word catalog"):
+        await check.check_state_channel(
+            "wss://display.example/state",
+            origin="https://display.example",
+            timeout=1.0,
+            tls_context=None,
+            expected_wake_phrases=("hey missy", "hey skippy", "hey spark"),
+        )
 
 
 def test_page_check_rejects_a_generic_success_page(monkeypatch):

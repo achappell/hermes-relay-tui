@@ -325,7 +325,13 @@ class _BrowserSessionContext:
                 )
             ):
                 return BrowserProfileRouteResult(False, reason="active_turn")
-            return await self._child.route_profile(wake_phrase, publish_status=False)
+            result = await self._child.route_profile(wake_phrase, publish_status=False)
+            if result.accepted:
+                # Wake-only routing has no subsequent turn to publish the new
+                # account. Emit the selected catalog and capabilities now so
+                # the browser does not keep displaying the previous profile.
+                self._child._publish("idle")
+            return result
 
     async def handle_action(self, action_id: str, choice: str) -> None:
         if self._closed or self._owner._stopping.is_set():
@@ -596,10 +602,26 @@ class Appliance:
         through if the overlay appears mid-turn (unlikely but possible).
         """
         self._response_text = ""
-        self._published = ("prompt", "", None)
+        account = self._active_profile.display_name if self._active_profile else None
+        capabilities = (
+            self._browser_capabilities()
+            if getattr(self.args, "browser_voice", False) and self._connected
+            else None
+        )
+        self._published = ("prompt", "", None, account, capabilities)
 
         def _apply() -> None:
-            self.publisher.publish(state="prompt", prompt=prompt)
+            try:
+                self.publisher.publish(
+                    state="prompt",
+                    response_text="",
+                    status_text=None,
+                    account=account,
+                    prompt=prompt,
+                    capabilities=capabilities,
+                )
+            except TypeError:
+                self.publisher.publish(state="prompt", prompt=prompt)
 
         loop = self._loop
         if loop is None:
@@ -1557,16 +1579,23 @@ class Appliance:
 
         last_error: Exception | None = None
         for profile in candidates:
-            session, profile_args = self._create_browser_session(profile, connection_id)
+            session: Any | None = None
             child: Appliance | None = None
             try:
+                session, profile_args = self._create_browser_session(
+                    profile, connection_id
+                )
                 child = Appliance(
                     profile_args,
                     publisher=DisplayStatePublisher(),
                     session=session,
                     session_factory=self._session_factory,
                     profiles=self._profiles,
-                    server=audio_sender,
+                    # Do not give the child ownership of the browser socket
+                    # until its candidate session has connected. A failed
+                    # first catalog entry must not close the shared socket
+                    # while admission tries the next entry.
+                    server=None,
                 )
                 # `session` is already the connected profile's session. The
                 # child constructor starts from the catalog's first entry, so
@@ -1581,6 +1610,7 @@ class Appliance:
                 if self._stopping.is_set():
                     raise asyncio.CancelledError
                 child._connected = True
+                child._server = audio_sender
                 context = _BrowserSessionContext(self, connection_id, child)
                 self._browser_contexts[connection_id] = context
                 child._publish("idle")
@@ -1589,7 +1619,7 @@ class Appliance:
                 if child is not None:
                     with contextlib.suppress(BaseException):
                         await child.aclose()
-                else:
+                elif session is not None:
                     with contextlib.suppress(BaseException):
                         await session.close()
                 raise
@@ -1603,7 +1633,7 @@ class Appliance:
                 if child is not None:
                     with contextlib.suppress(BaseException):
                         await child.aclose()
-                else:
+                elif session is not None:
                     with contextlib.suppress(BaseException):
                         await session.close()
 
@@ -1635,14 +1665,12 @@ class Appliance:
                 raise asyncio.CancelledError
         except asyncio.CancelledError:
             if target_session is not old_session:
-                with contextlib.suppress(Exception):
-                    await target_session.close()
+                await self._close_session_bounded(target_session)
             raise
         except Exception:
             logger.debug("switching profile failed for %s", profile.name, exc_info=True)
             if target_session is not old_session:
-                with contextlib.suppress(Exception):
-                    await target_session.close()
+                await self._close_session_bounded(target_session)
             if publish_status:
                 self._publish(
                     "idle",
@@ -1664,6 +1692,9 @@ class Appliance:
                 )
             except asyncio.TimeoutError:
                 self._track_cleanup_task(close_task)
+            except asyncio.CancelledError:
+                self._track_cleanup_task(close_task)
+                raise
             except Exception:
                 logger.debug("closing the previous profile session failed", exc_info=True)
         return True
@@ -1935,6 +1966,28 @@ class Appliance:
                 logger.debug("appliance cleanup failed", exc_info=True)
 
         task.add_done_callback(finished)
+
+    async def _close_session_bounded(self, session: Any) -> None:
+        """Close a session without holding a profile route indefinitely."""
+        close = getattr(session, "close", None)
+        if not callable(close):
+            return
+        try:
+            close_task = asyncio.create_task(close())
+        except Exception:
+            logger.debug("starting profile session cleanup failed", exc_info=True)
+            return
+        try:
+            await asyncio.wait_for(
+                asyncio.shield(close_task), SHUTDOWN_TASK_TIMEOUT
+            )
+        except asyncio.TimeoutError:
+            self._track_cleanup_task(close_task)
+        except asyncio.CancelledError:
+            self._track_cleanup_task(close_task)
+            raise
+        except Exception:
+            logger.debug("profile session cleanup failed", exc_info=True)
 
     async def _wait_for_cleanup_tasks(self) -> None:
         tasks = [task for task in self._cleanup_tasks if not task.done()]

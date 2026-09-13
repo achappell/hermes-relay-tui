@@ -4984,7 +4984,7 @@ function parseAudioEvent(raw) {
 }
 const defaultSocketFactory = (url) => new WebSocket(url);
 const RECONNECT_DELAYS_MS = [250, 500, 1e3, 2e3, 4e3];
-const PROFILE_ROUTE_ACK_TIMEOUT_MS = 1e4;
+const PROFILE_ROUTE_ACK_TIMEOUT_MS = 2e4;
 function normaliseWakePhrase(value) {
   return value.trim().replace(/\s+/g, " ");
 }
@@ -5658,6 +5658,7 @@ class BrowserHandsFreeController {
 >>>>>>>> d1da0fd (fix(web): recover hands-free after playback):home_display/static/assets/index-BtRfo_B_.js
     __publicField(this, "turnInFlight", false);
     __publicField(this, "recognitionRelease", Promise.resolve());
+    __publicField(this, "recognitionReleasePending", false);
     this.sendText = options.sendText;
     this.routeWake = options.routeWake ?? null;
     this.profileRoutingEnabled = options.routeWake !== void 0;
@@ -5929,31 +5930,31 @@ class BrowserHandsFreeController {
     try {
       routeResult = this.routeWake(phrase);
     } catch {
-      this.finishProfileRoute(false, generation, false);
+      this.finishProfileRoute(false, generation);
       return;
     }
     if (typeof routeResult === "boolean") {
-      this.finishProfileRoute(routeResult, generation, false);
+      this.finishProfileRoute(routeResult, generation);
       return;
     }
     void Promise.resolve(routeResult).then((accepted) => {
-      this.finishProfileRoute(Boolean(accepted), generation, true);
+      this.finishProfileRoute(Boolean(accepted), generation);
     }).catch(() => {
-      this.finishProfileRoute(false, generation, true);
+      this.finishProfileRoute(false, generation);
     });
   }
-  finishProfileRoute(accepted, generation, waitForRelease) {
+  finishProfileRoute(accepted, generation) {
     if (!this.isCurrent(generation) || this.phase !== "routing") return;
     if (!accepted) {
       this.onError("Profile could not be selected");
       this.enterWakeReady(generation, true);
       return;
     }
-    if (!waitForRelease) {
+    if (this.recognitionReleasePending) {
+      void this.resumeInitialCapture(generation);
+    } else {
       this.beginInitialCapture(generation);
-      return;
     }
-    void this.resumeInitialCapture(generation);
   }
   async resumeInitialCapture(generation) {
     await this.waitForRecognitionRelease();
@@ -6033,9 +6034,20 @@ class BrowserHandsFreeController {
     this.phase = "wake_ready";
     this.clearHeardTimer();
     this.emit("wake_ready");
-    if (deferRecognition || !this.startRecognition(generation)) {
+    if (deferRecognition) {
+      if (this.recognitionReleasePending) {
+        void this.resumeWakeRecognition(generation);
+      } else {
+        this.scheduleRecognitionRestart(generation);
+      }
+    } else if (!this.startRecognition(generation)) {
       this.scheduleRecognitionRestart(generation);
     }
+  }
+  async resumeWakeRecognition(generation) {
+    await this.waitForRecognitionRelease();
+    if (!this.isCurrent(generation) || this.phase !== "wake_ready") return;
+    if (!this.startRecognition(generation)) this.scheduleRecognitionRestart(generation);
   }
   finishCapture(generation) {
     if (!this.isCurrent(generation)) return;
@@ -6147,6 +6159,7 @@ class BrowserHandsFreeController {
     recognition.onstart = null;
     recognition.onresult = null;
     recognition.onerror = null;
+    this.recognitionReleasePending = true;
     let settled = false;
     let resolveRelease = () => {
     };
@@ -6155,6 +6168,7 @@ class BrowserHandsFreeController {
       resolveRelease = () => {
         if (settled) return;
         settled = true;
+        this.recognitionReleasePending = false;
         if (releaseTimer !== null) clearTimeout(releaseTimer);
         resolve();
       };
@@ -6583,7 +6597,9 @@ function App($$anchor, $$props) {
         if (state2 === "heard" || state2 === "follow_up" || state2 === "listening" && previousState !== "heard") {
           beginCapturePresentation();
         }
-        if (state2 !== "error") set(handsFreeError, null);
+        if (state2 !== "error" && !(state2 === "wake_ready" && previousState === "routing")) {
+          set(handsFreeError, null);
+        }
       },
       onError: (message) => {
         clearConversationPresentation();
