@@ -147,12 +147,12 @@
   evidence: `TurnRunner._run_turn()` has accumulated the fallback in a `bytearray` since the original runner implementation; making that path incremental requires a decoder/format boundary not owned by the P-5 live PCM queue.
 
 - source_spec: `_bmad-output/implementation-artifacts/spec-1-p-5-complete-streamed-response-playback-without-underrun.md`
-  summary: Restore the pre-existing ESPHome compile blocker for `last_capture_captured`.
-  evidence: The current unchanged `pcm_capture.h` references `last_capture_captured` without a declaration, and `venv-firmware/bin/esphome compile` fails there. P-5 preserves that file by contract; the hardware build gate remains blocked until the owning capture slice repairs it.
+  summary: RESOLVED 2026-09-12 -- restore the pre-existing ESPHome compile blocker for `last_capture_captured`.
+  evidence: Restored the declaration and both capture-close latches in `firmware/respeaker-lite/pcm_capture.h`, with a focused static contract test. `venv/bin/pytest -q tests/test_puck_firmware.py` passes with 12 tests and `venv/bin/pytest` passes with 1,090 tests plus the existing `websockets.legacy` deprecation warning. `venv-firmware/bin/esphome compile firmware/respeaker-lite/respeaker-lite.yaml` succeeds, and the resulting image was uploaded over OTA; the device booted and reported the `respeaker-lite-p5` build label.
 
 - source_spec: `_bmad-output/implementation-artifacts/spec-1-p-5-complete-streamed-response-playback-without-underrun.md`
-  summary: Run the physical Puck long-response, acoustic-marker, latency, and second-wake gate.
-  evidence: Host tests and ESPHome configuration generation pass, but the required compiled-image/hardware observation is not available in this run; the spec's controlled observer capture and audible completion criteria therefore remain unverified.
+  summary: PARTIALLY VERIFIED 2026-09-12 -- physical Puck response delivery, long playback, and second-wake portions pass; acoustic-marker and measured-latency portions remain open.
+  evidence: With the Mac playback path disabled, a natural long response produced 2,315,520 PCM bytes (48.240 seconds); source and delivered SHA-256 values matched, the consumer gap was 0.001 seconds, and the device logged HTTP read complete, decode finished, media idle, and confirmed completion. A fresh wake then produced sequence 6, which also read to EOF, confirmed complete, and resumed wake detection. No independent observer microphone or defined acoustic marker was available, so speaker audibility, marker correlation, and the +/-500 ms latency requirement remain unverified.
 
 - source_spec: `_bmad-output/implementation-artifacts/spec-1-p-5-complete-streamed-response-playback-without-underrun.md`
   summary: Exchange and authenticate the firmware build identity with the bridge.

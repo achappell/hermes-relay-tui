@@ -228,6 +228,16 @@ def test_wake_acknowledgement_finishes_before_capture_opens():
     assert prepare < acknowledgement < delay < start
 
 
+def test_wake_capture_acknowledgement_signal_covers_both_close_paths():
+    source = (Path(__file__).resolve().parents[1] / "firmware/respeaker-lite/pcm_capture.h").read_text()
+    assert "static bool last_capture_captured = false;" in source
+
+    buffer_limit = source.index("wake capture reached the")
+    vad_close = source.index("wake capture ended on VAD silence")
+    assert "last_capture_captured = write_pos > 0;" in source[:buffer_limit]
+    assert "last_capture_captured = write_pos > 0;" in source[vad_close - 300:vad_close]
+
+
 def test_speaker_volume_matches_the_documented_room_safety_policy():
     path = Path(__file__).resolve().parents[1] / "firmware/respeaker-lite/respeaker-lite.yaml"
     config = yaml.load(path.read_text(), Loader=yaml.BaseLoader)
