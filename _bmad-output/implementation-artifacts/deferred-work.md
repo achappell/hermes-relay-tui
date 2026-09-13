@@ -151,9 +151,57 @@
   evidence: Restored the declaration and both capture-close latches in `firmware/respeaker-lite/pcm_capture.h`, with a focused static contract test. `venv/bin/pytest -q tests/test_puck_firmware.py` passes with 12 tests and `venv/bin/pytest` passes with 1,090 tests plus the existing `websockets.legacy` deprecation warning. `venv-firmware/bin/esphome compile firmware/respeaker-lite/respeaker-lite.yaml` succeeds, and the resulting image was uploaded over OTA; the device booted and reported the `respeaker-lite-p5` build label.
 
 - source_spec: `_bmad-output/implementation-artifacts/spec-1-p-5-complete-streamed-response-playback-without-underrun.md`
-  summary: PARTIALLY VERIFIED 2026-09-12 -- physical Puck response delivery, long playback, and second-wake portions pass; acoustic-marker and measured-latency portions remain open.
-  evidence: With the Mac playback path disabled, a natural long response produced 2,315,520 PCM bytes (48.240 seconds); source and delivered SHA-256 values matched, the consumer gap was 0.001 seconds, and the device logged HTTP read complete, decode finished, media idle, and confirmed completion. A fresh wake then produced sequence 6, which also read to EOF, confirmed complete, and resumed wake detection. No independent observer microphone or defined acoustic marker was available, so speaker audibility, marker correlation, and the +/-500 ms latency requirement remain unverified.
+  summary: VERIFIED 2026-09-12 -- the controlled physical P-5 gate passed.
+  evidence: With Mac playback disabled, five controlled 24-second responses delivered 1,152,000 source and delivered PCM bytes with matching SHA-256 values, consumer gaps no larger than 0.001 seconds, and terminal `complete`; the device logged HTTP 200, HTTP read complete, decoder finish, media idle, terminal confirmation, and wake resumption. A temporary MacBook Air microphone observer detected the defined 240 ms 880/1320/1760 Hz marker exactly once at normalized correlation 0.842, with timing error -0.249 seconds against the expected marker position after logged output start (inside the +/-500 ms bound). Capture-end-to-first-response-audio measured 2.652 seconds median across five runs (under the 4-second bound), and the post-playback second wake completed successfully. Temporary observer audio and diagnostic logs were removed after metric extraction. The separate reboot sequence epoch, post-delivery decoder/DMA failure propagation, and fallback-buffer items remain deferred to their owning boundaries.
 
 - source_spec: `_bmad-output/implementation-artifacts/spec-1-p-5-complete-streamed-response-playback-without-underrun.md`
   summary: Exchange and authenticate the firmware build identity with the bridge.
   evidence: The bridge records the configured `respeaker-lite-p5` deployment label and the helper logs the same identity, but no P-5 protocol handshake proves which image is connected. A multi-firmware identity contract would expand the device-administration boundary beyond this story.
+
+## Deferred from: first Android device session against the live relay (2026-09-12)
+
+- source_spec: `hermes-relay-android/_bmad-output/implementation-artifacts/spec-a-4-relay-configuration.md`
+  summary: OPEN 2026-09-12 -- `A-4`'s honest off-tailnet unavailable state is unreachable for the endpoint actually in use. Candidate for an upstream story identity rather than a local ticket, because it is `A-4` acceptance scope.
+  evidence: Detection depends on `UnknownHostException`. `voice-amanda.chappell-home.dev` resolves publicly to the Tailscale address `100.106.8.34`, confirmed against `8.8.8.8`, so DNS succeeds off the tailnet. The socket then waits out the 10 s connect timeout, which classifies as `Retryable`; the bounded ladder exhausts and the user sees a bare `Disconnected`. The criterion was met against the original `media-server.<magicdns>` endpoint, which resolved only through MagicDNS; the Caddy arrangement changed the hostname and silently invalidated the strategy. A connect timeout to `100.64.0.0/10` is a stronger signal than DNS failure.
+
+- source_spec: `hermes-relay-android/_bmad-output/implementation-artifacts/spec-a-3-fresh-recovery.md`
+  summary: OPEN 2026-09-12 -- the bounded reconnect ladder discards its retained reason, so the state users actually reach is the least informative one.
+  evidence: `AndroidRecovery.recover()` tracks `lastReason` across every retry and drops it when the ladder exhausts. Surfacing it would have identified the off-tailnet defect above immediately rather than requiring a source read.
+
+- source_spec: `hermes-relay-android/_bmad-output/implementation-artifacts/spec-a-8-response-audio-playback.md`
+  summary: OPEN 2026-09-12 -- Android response audio arrives slower than real time and underruns during playback. Same territory as `P-5`.
+  evidence: `AudioFlinger` logged `BUFFER TIMEOUT ... due to underrun` four times in a single response on a Pixel 6a, each followed by a track restart. Playback was audibly correct, so this is not a perceived-quality defect today. The underruns were nonetheless what made the drain guard's `playbackHeadPosition == framesWritten` condition unsatisfiable; that symptom is fixed by a stalled-playhead exit, but the streaming rate itself is untouched.
+
+- source_spec: `hermes-relay-android/_bmad-output/implementation-artifacts/spec-a-2-honest-phases.md`
+  summary: WATCH 2026-09-12 -- the phase can now be `Listening` with a null `binding`, because hands-free reopen starts a turn at the microphone rather than at the first relay event.
+  evidence: Introduced deliberately to stop the UI reporting `Complete` over a live microphone. Nothing reads `binding` in that window today and `A-3`'s ladder keys off connection state, but recovery and interruption while hands-free is armed should be checked here first.
+
+- source_spec: `hermes-relay-android/_bmad-output/implementation-artifacts/spec-a-6-hands-free.md`
+  summary: OPEN 2026-09-12 -- echo and barge-in remain unverified on hardware; the last piece of `A-6`'s environment limitation.
+  evidence: The Pixel 6a session confirmed continuation works and that reopen latency reads as a natural beat rather than a stall. Playback was audible through the device speaker, but no deliberate barge-in was attempted, so whether the speaker leaks into the next capture window is still unknown.
+
+- source_spec: `hermes-relay-android/_bmad-output/implementation-artifacts/spec-5-a-2-accessibility.md`
+  summary: OPEN 2026-09-12 -- `5-A-2` was validated without a screen reader or a contrast measurement, both named by `UX-DR21`.
+  evidence: The semantics tree is correct and lint's accessibility checks pass, but TalkBack has never been enabled and no navigation pass has been performed; announcement wording, verbosity, and gesture navigation are unproven. No contrast ratio has been measured against the WCAG 2.2 AA target.
+
+- source_spec: `hermes-relay-android/_bmad-output/implementation-artifacts/spec-a-1-authorized-initiation.md`
+  summary: OPEN 2026-09-12 -- the Android client contains no application logging, which made every defect in this session slower to diagnose.
+  evidence: There are zero `android.util.Log` call sites in `app/src/main`. Diagnosis rested entirely on platform `AudioFlinger` output. Keeping a privacy-sensitive client quiet by default is defensible, but a debug-only, opt-in record of phase transitions and transport outcomes would have found each of these faster. Worth a deliberate decision rather than remaining an accident.
+
+- source_spec: `hermes-relay-android/_bmad-output/implementation-artifacts/spec-a-4-relay-configuration.md`
+  summary: OPEN 2026-09-12 -- Android release engineering: the `versionCode` formula caps minor and patch at 99, and `v0.2.0` still publishes an uninstallable unsigned APK.
+  evidence: `versionCode` is derived as `major * 10000 + minor * 100 + patch` and fails the build beyond 99 deliberately, because a silent rollover would produce a lower code than the previous release and break in-place upgrades; widen it before any `0.100.x`. The `v0.2.0` release predates signing, so its asset cannot be rebuilt from its own tree; the tag would have to move to produce a signed one.
+
+## Deferred from: 5-A-3 Night Console visual design pass, first device pass (2026-09-12)
+
+- source_spec: `hermes-relay-android/_bmad-output/implementation-artifacts/android-visual-design-pass.md`
+  summary: OPEN 2026-09-12 -- `5-A-3` steps 4-7 are not started: the `Scaffold` structure and action hierarchy, the state hierarchy, the composer/history/voice controls, and the hardware TalkBack re-verification.
+  evidence: Steps 1-3 are delivered on `feat/5-a-3-design-pass` -- the doorway is decomposed into zones, and the Night Console palette and its four state roles are in place with contrast coverage widened from 16 pairs to 56. The structural problems the design pass diagnosed are untouched: the Pixel 6a capture shows the relay configuration form consuming the entire first screen, the conversation doorway below the fold, Profile and authorization as two unstyled lines, and `Save relay profile` as the most prominent control on screen. Step 4 addresses all three.
+
+- source_spec: `hermes-relay-android/_bmad-output/implementation-artifacts/spec-a-1-authorized-initiation.md`
+  summary: OPEN 2026-09-12 -- `ANDROID-BUG-F4`: the Android doorway header claims the transport is not connected while the same screen shows a verified, configured Profile against a live relay.
+  evidence: The header reads `Android Client bootstrap` and "The native Android surface is alive, but Hermes session transport is not connected yet", three rows above `Authorization: Verified`. Seen on a Pixel 6a during the `5-A-3` device pass. The snapshot's `titleRes` and `descriptionRes` appear to predate working transport. A content defect rather than a visual one, so `5-A-3` did not fix it.
+
+- source_spec: `hermes-relay-android/_bmad-output/implementation-artifacts/spec-5-a-2-accessibility.md`
+  summary: NOTE 2026-09-12 -- the contrast half of `5-A-2`'s environment limitation is closed, but measurement proved insufficient on its own and the two obligations should not be treated as substitutes.
+  evidence: Contrast is now asserted across 56 pairs in both appearances, with each guard verified by deliberate regression rather than trusted because the suite was green. The `5-A-3` device pass nonetheless found a defect measurement could not catch: `surfaceVariant` and `errorContainer` held the same value, so Material's `contentColorFor` returned `onErrorContainer` for every ordinary `Card` and drew plain informational text in the unavailable colour. Every contrast pair involved was individually fine -- pink on panel measures 7.66:1. The defect was the mapping, not a ratio. TalkBack and font scaling remain entirely unproven.
