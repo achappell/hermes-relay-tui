@@ -33,7 +33,7 @@ It is not a backlog, a story specification, or a formal status tracker.
 | Story IDs and acceptance scope | The owning repository's local `story-index.yaml` and story specification; `epics.md` is an imported compatibility snapshot. |
 | Delivery status and formal closure | The owning repository's local story artifact, validation record, and `sprint-status.yaml`. |
 | Cross-repository applicability, evidence, and dependencies | This index. |
-| Derived portfolio status | `scripts/render_surface_status.py`; its output is disposable and read-only. |
+| Derived portfolio status | The public [`hermes-relay-coordinator`](https://github.com/achappell/hermes-relay-coordinator) renderer; its output is disposable and read-only. |
 | Durable product intent and reconciliation | Private product hub. |
 
 ## Surfaces
@@ -70,8 +70,8 @@ Hermes session authority
 - Update this file only when applicability, ownership, implementation
   evidence, or a shared dependency changes. Do not copy acceptance criteria
   or maintain a second task list here.
-- Do not copy local delivery statuses into this file. Run
-  `scripts/render_surface_status.py` for a current read-only roll-up.
+- Do not copy local delivery statuses into this file. Use the public
+  `hermes-relay-coordinator` repository for a current read-only roll-up.
 - `Implemented`, `In review`, `Foundation`, `Open`, and `N/A` below describe
   evidence or applicability only. They are not formal story statuses.
 - W/K is one implementation boundary for web and iPad. Passive Room Display

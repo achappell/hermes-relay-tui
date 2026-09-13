@@ -12,22 +12,12 @@ Display, and W/K web/iPad surface. iOS, Android, and Home own their own story
 indexes and local `sprint-status.yaml` files. The epic snapshot and coverage
 matrix here are read-only cross-repository context.
 
-Generate a local roll-up when you need the portfolio view:
-
-```bash
-uv run python scripts/render_surface_status.py \
-  --config surface-repositories.yaml \
-  --output _bmad-output/implementation-artifacts/surface-status-report.md
-```
-
-The roster is only a list of repositories to read; it contains no story
-statuses. It assumes the five Hermes repositories are adjacent checkouts. For
-worktrees or another layout, pass all five `--repo name=path` arguments
-explicitly; the command rejects an incomplete roster unless
-`--allow-partial` is deliberate.
-
-The report is derived output. It never changes a sibling repository and never
-replaces a local tracker.
+Portfolio coordination lives in the public
+[`hermes-relay-coordinator`](https://github.com/achappell/hermes-relay-coordinator)
+repository. It owns the read-only repository roster, status renderer, and any
+mechanical board-mirror procedure. This repository owns only TUI, Puck, ESP32,
+and W/K delivery records; do not add sibling status or coordinator tooling
+here.
 
 ## Features
 
