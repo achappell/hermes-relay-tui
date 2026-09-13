@@ -29,7 +29,7 @@
 # - Dev moves story to 'review', then runs code-review (fresh context, different LLM recommended)
 # - Retrospective appends its action items to action_items; the status view surfaces open ones
 generated: 09-08-2026 00:00
-last_updated: 09-12-2026 17:45
+last_updated: 09-12-2026 18:36
 project: hermes-relay-tui
 project_key: NOKEY
 tracking_system: file-system
@@ -72,7 +72,7 @@ development_status:
   1-wk-1-one-shared-w-k-browser-voice-plus-display-surface-for-author:
     ready-for-dev
   1-t-5-non-blocking-wake-listener-and-microphone-teardown-during-re: backlog
-  1-t-6-detect-idle-relay-loss-and-present-honest-recovery-without-r: review
+  1-t-6-detect-idle-relay-loss-and-present-honest-recovery-without-r: done
   epic-1-retrospective: optional
 
   epic-2: in-progress

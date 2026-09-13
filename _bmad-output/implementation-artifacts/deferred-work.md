@@ -133,3 +133,21 @@
 - source_spec: `_bmad-output/implementation-artifacts/spec-1-p-2-status-and-response-audio-delivery.md`
   summary: DEFERRED as pre-existing firmware-surface work: authenticate the port-80 web controls.
   evidence: The firmware exposes web controls without authentication, but that surface predates P-2 and is unrelated to the `/response` token handoff. Keep it separate from the P-2 response-authentication decision.
+
+## Deferred from: code review of spec-1-t-6-detect-idle-relay-loss-and-present-honest-recovery-without-replaying-an-uncertain-turn (2026-09-12)
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-1-t-6-detect-idle-relay-loss-and-present-honest-recovery-without-replaying-an-uncertain-turn.md`
+  summary: Carry wake and barge-in callback identity through session replacement.
+  evidence: The T-6 review found that wake and barge callbacks still resolve app state dynamically. T-6 already disarms wake resources before recovery, but complete callback ownership requires the separate T-5 lifecycle slice and must not alter the frozen idle-loss contract.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-1-t-6-detect-idle-relay-loss-and-present-honest-recovery-without-replaying-an-uncertain-turn.md`
+  summary: Bound interrupt-fallback session cleanup through the retained close helper.
+  evidence: The fallback at `app.py:3681` directly awaits the retired session's close. That path predates T-6 and belongs with interrupt/shutdown cleanup rather than idle-loss detection.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-1-t-6-detect-idle-relay-loss-and-present-honest-recovery-without-replaying-an-uncertain-turn.md`
+  summary: Do not reuse a session while a timed-out handshake close is still settling.
+  evidence: The retry loop reuses the same session after bounded cleanup times out. This is pre-existing retry/transport-lifecycle behavior and needs a dedicated regression slice before changing session replacement policy.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-1-t-6-detect-idle-relay-loss-and-present-honest-recovery-without-replaying-an-uncertain-turn.md`
+  summary: Separate the unrelated Puck reader-release test change from the T-6 delivery.
+  evidence: `tests/test_puck_bridge.py` changed in the merged T-6 commit, but the hunk belongs to the Puck response-stream workstream and should be reviewed or split there rather than altered during TUI recovery closure.
