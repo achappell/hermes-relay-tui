@@ -80,6 +80,7 @@ context:
 **Commands:**
 - `../../venv/bin/pytest -q -k 'typed_and_voice_prompts_share_prompt_only_history or voice_capture_silence_is_not_retained or wake_voice_prompt_is_recorded_in_prompt_history or named_profile_migrates_legacy_prompt_history or named_profile_migrates_endpoint_history_when_history_path_is_absent or each_tui_launch_gets_a_distinct_session_identity or profile_selection_mints_a_distinct_session_identity or session_hello_uses_the_doorway_session_identity or profile_history_migrates_old_prompts_oldest_first_without_touching_source or history_persistence_is_owner_only or failed_history_migration_keeps_entries_in_memory_and_source_usable or reconnect_mints_a_fresh_session_identity or load_deduplicates_non_adjacent_prompts_preserving_order or load_tightens_existing_history_to_owner_only_mode or load_keeps_readable_history_when_permission_tightening_fails or failed_history_save_closes_temp_descriptor or profile_switch_migrates_legacy_prompt_history_without_deleting_source or spoken_follow_up_interrupts_then_starts_exactly_one_new_turn or reload_command_picks_up_untouched_config_changes'` -- 19 passed.
 - `../../venv/bin/pytest -q` -- 1012 passed, one pre-existing `websockets.legacy` deprecation warning.
+- Closure rerun on 2026-09-12: the focused boundary suite passed (`357 passed`), followed by the complete repository suite (`1,090 passed`, one existing `websockets.legacy` deprecation warning).
 - `git diff --check` -- passed.
 
 **Manual checks (if no CLI):**

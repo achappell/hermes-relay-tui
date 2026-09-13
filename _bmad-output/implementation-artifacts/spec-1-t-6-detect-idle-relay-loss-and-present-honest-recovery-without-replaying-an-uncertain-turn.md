@@ -67,10 +67,10 @@ At network read and close boundaries, only `ConnectionClosed`, `ConnectionError`
 ## Tasks & Acceptance
 
 **Execution:**
-- [ ] `config.py`, `client.py`, and `session.py` — implement fixed keepalive settings, the explicit transport boundary, and the wait-for-close session contract — keep the core UI-independent and legacy-compatible.
-- [ ] `app.py` — add one generation-guarded watcher, idempotent loss handling, bounded fresh-session recovery, serialized FIFO admission, expected-close suppression, and stale output/prompt rejection — preserve T-4 no-replay behavior.
-- [ ] `domain.py` and `audio.py` — enforce stale event/PCM/callback isolation and abort old playback — keep replacement presentation uncontaminated.
-- [ ] `tests/test_config.py`, `tests/test_client.py`, `tests/test_session.py`, `tests/test_tui_domain.py`, and `tests/test_app.py` — add fake transport tests for every matrix path while preserving explicit reconnect/streaming coverage.
+- [x] `config.py`, `client.py`, and `session.py` — implement fixed keepalive settings, the explicit transport boundary, and the wait-for-close session contract — keep the core UI-independent and legacy-compatible.
+- [x] `app.py` — add one generation-guarded watcher, idempotent loss handling, bounded fresh-session recovery, serialized FIFO admission, expected-close suppression, and stale output/prompt rejection — preserve T-4 no-replay behavior.
+- [x] `domain.py` and `audio.py` — enforce stale event/PCM/callback isolation and abort old playback — keep replacement presentation uncontaminated.
+- [x] `tests/test_config.py`, `tests/test_client.py`, `tests/test_session.py`, `tests/test_tui_domain.py`, and `tests/test_app.py` — add fake transport tests for every matrix path while preserving explicit reconnect/streaming coverage.
 
 **Acceptance Criteria:**
 - Given a verified idle session, when the relay closes or misses the 20-second ping/pong policy, then the TUI reaches disconnected/unavailable without waiting for user input.
@@ -102,6 +102,7 @@ At network read and close boundaries, only `ConnectionClosed`, `ConnectionError`
 **Commands:**
 - `venv/bin/pytest -q tests/test_config.py tests/test_client.py tests/test_session.py tests/test_tui_domain.py tests/test_app.py` — `357 passed` in 42.36s after rebasing the PR comparison onto current `main`.
 - `venv/bin/pytest` — `1,064 passed, 1 skipped, 1 warning` in 97.83s; the warning is the existing `websockets.legacy` deprecation.
+- Closure rerun on 2026-09-12: the focused boundary suite passed (`357 passed`), followed by the complete repository suite (`1,090 passed`, one existing `websockets.legacy` deprecation warning).
 - `venv/bin/python -m compileall -q app.py client.py config.py prompts.py session.py` — passed.
 - `git diff --check` — passed.
 
