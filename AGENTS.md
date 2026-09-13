@@ -32,7 +32,8 @@ ends that consume it.
 **Core — must not import a user-interface framework:**
 `session.py`, `client.py`, `config.py`, `diagnostics.py`, `audio.py`,
 `earcons.py`, `mic.py`, `shell.py`, `attachments.py`, `clipboard.py`,
-`history.py`, `timing.py`, `wake.py`, `handsfree.py`, `domain.py`.
+`history.py`, `timing.py`, `wake.py`, `handsfree.py`, `domain.py`,
+`gateway_client.py`, `gateway_session.py`.
 
 **Front-end-specific:** `app.py` (Textual), `transcript.py` (Rich rendering for
 a terminal transcript), `prompts.py` (structured-prompt state and rendering
@@ -369,6 +370,8 @@ Do not put a real token in this file or in the README.
 The complete source of truth is `config.build_arg_parser()`. The main runtime options are:
 
 - `--url` — voice-session WebSocket URL.
+- `--transport` — `voice-session` (default) or opt-in standard `gateway`.
+- `--hermes-profile` — dedicated Hermes server profile used by gateway mode.
 - `--session-id` — session to create or resume.
 - `--profile-env` — optional `.env` file containing the bearer token.
 - `--no-play` — buffer audio without opening the local speaker.
@@ -401,7 +404,7 @@ The complete source of truth is `config.build_arg_parser()`. The main runtime op
 - `--mic-input-device`, `--audio-output-device` — optional local input/output device name or index; `default` restores the system default.
 - `--stt-model` — optional local Faster-Whisper model selection.
 
-Relevant environment variables include `HERMES_VOICE_SESSION_URL`, `VOICE_SESSION_TOKEN`, `VOICE_SESSION_CLIENT_ID`, `VOICE_SESSION_DEVICE_ID`, `VOICE_SESSION_ID`, `VOICE_SESSION_MIC_MAX_SECONDS`, `VOICE_SESSION_MIC_SILENCE_DURATION`, `VOICE_SESSION_MIC_SILENCE_THRESHOLD`, `VOICE_SESSION_MIC_INPUT_DEVICE`, `VOICE_SESSION_AUDIO_OUTPUT_DEVICE`, `VOICE_SESSION_STT_MODEL`, `VOICE_SESSION_WAKE_FOLLOWUP_SECONDS`, `VOICE_SESSION_WAKE_BARGE_IN_MIN_SPEECH_DURATION`, `VOICE_SESSION_TURN_TIMEOUT`, `VOICE_SESSION_CONNECT_RETRIES`, `VOICE_SESSION_CONNECT_RETRY_DELAY`, `VOICE_SESSION_BUSY_MODE`, and `HERMES_RELAY_TUI_ALLOW_SHELL`.
+Relevant environment variables include `HERMES_VOICE_SESSION_URL`, `HERMES_RELAY_TUI_TRANSPORT`, `HERMES_PROFILE`, `VOICE_SESSION_TOKEN`, `VOICE_SESSION_CLIENT_ID`, `VOICE_SESSION_DEVICE_ID`, `VOICE_SESSION_ID`, `VOICE_SESSION_MIC_MAX_SECONDS`, `VOICE_SESSION_MIC_SILENCE_DURATION`, `VOICE_SESSION_MIC_SILENCE_THRESHOLD`, `VOICE_SESSION_MIC_INPUT_DEVICE`, `VOICE_SESSION_AUDIO_OUTPUT_DEVICE`, `VOICE_SESSION_STT_MODEL`, `VOICE_SESSION_WAKE_FOLLOWUP_SECONDS`, `VOICE_SESSION_WAKE_BARGE_IN_MIN_SPEECH_DURATION`, `VOICE_SESSION_TURN_TIMEOUT`, `VOICE_SESSION_CONNECT_RETRIES`, `VOICE_SESSION_CONNECT_RETRY_DELAY`, `VOICE_SESSION_BUSY_MODE`, and `HERMES_RELAY_TUI_ALLOW_SHELL`.
 
 `HERMES_RELAY_TUI_DEBUG` and `HERMES_RELAY_TUI_LOG_FILE` configure the
 optional debug trace without command-line flags. The trace records event

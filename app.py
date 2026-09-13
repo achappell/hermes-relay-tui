@@ -78,6 +78,7 @@ from diagnostics import (
     trace_monotonic_ms,
 )
 from domain import TuiDomain, TurnPhase, decide_busy
+from gateway_session import GatewaySession
 from history import (
     PromptHistory,
     artifact_path_for_profile,
@@ -956,6 +957,14 @@ class HermesStreamingApp(App):
         if args is None:
             return args
         session_args = copy.copy(args)
+        if (
+            getattr(args, "transport", "voice-session") == "gateway"
+            and getattr(args, "session_id_explicit", False)
+        ):
+            # A standard gateway session_id is a durable resume key. Preserve
+            # an explicitly requested one; ordinary gateway launches still
+            # create a fresh doorway below.
+            return session_args
         session_args.session_id = uuid.uuid4().hex
         return session_args
 
@@ -983,6 +992,8 @@ class HermesStreamingApp(App):
     def _new_session(self, args: Any) -> SessionProtocol:
         """Build a session while retaining the repository's zero-arg test seam."""
         if self._session_factory is None:
+            if getattr(args, "transport", "voice-session") == "gateway":
+                return GatewaySession(args)
             return HermesSession(args)
         factory = self._session_factory
         try:

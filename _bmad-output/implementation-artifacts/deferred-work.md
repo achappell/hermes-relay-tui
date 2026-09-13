@@ -185,3 +185,13 @@
 - source_spec: `hermes-relay-android/_bmad-output/implementation-artifacts/spec-a-4-relay-configuration.md`
   summary: OPEN 2026-09-12 -- Android release engineering: the `versionCode` formula caps minor and patch at 99, and `v0.2.0` still publishes an uninstallable unsigned APK.
   evidence: `versionCode` is derived as `major * 10000 + minor * 100 + patch` and fails the build beyond 99 deliberately, because a silent rollover would produce a lower code than the previous release and break in-place upgrades; widen it before any `0.100.x`. The `v0.2.0` release predates signing, so its asset cannot be rebuilt from its own tree; the tag would have to move to produce a signed one.
+
+## Deferred from: spec-vanilla-hermes-connection-foundation (2026-09-12)
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-vanilla-hermes-connection-foundation.md`
+  summary: Defer standard structured-prompt parity for approval, clarify, secret, and sudo requests.
+  evidence: The connection proof can establish ordinary JSON-RPC turns without expanding the prompt model. Full parity needs deliberate mapping for masked values, response rejection/expiry, and batch clarify instead of hiding those choices inside the first transport slice.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-vanilla-hermes-connection-foundation.md`
+  summary: Defer session-picker search parity over the standard `session.list` method.
+  evidence: The standard method has no free-text search parameter, so matching the current picker requires bounded over-fetching and local title/preview filtering. That is useful product work, but it is not required to prove the gateway connection or plain text turn path.

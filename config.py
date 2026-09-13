@@ -26,6 +26,7 @@ DEFAULT_PROFILE_ENV = Path.home() / ".hermes-relay-tui" / ".env"
 LEGACY_PROFILE_ENV = Path.home() / ".hermes" / "profiles" / "amanda" / ".env"
 DEFAULT_CONFIG_PATH = Path.home() / ".hermes-relay-tui" / "config.yaml"
 BUSY_MODES = ("queue", "steer", "interrupt")
+TRANSPORTS = ("voice-session", "gateway")
 WAKE_ENGINES = ("openwakeword", "sherpa")
 # Keepalive is deliberately a code-level transport policy.  It bounds silent
 # idle loss without adding another user-facing setting to the profile surface.
@@ -67,6 +68,14 @@ def _env_bool(name: str, default: bool = False) -> bool:
     if value is None:
         return default
     return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+class _SessionIdAction(argparse.Action):
+    """Remember when --session-id was explicitly supplied for gateway resume."""
+
+    def __call__(self, parser, namespace, values, option_string=None):
+        setattr(namespace, self.dest, values)
+        setattr(namespace, "session_id_explicit", True)
 
 
 def _device_selector(value: Optional[str | int]) -> int | str | None:
@@ -1065,6 +1074,7 @@ def build_arg_parser(argv: Optional[list[str]] = None) -> argparse.ArgumentParse
         profile_legacy=selected_profile.legacy,
         profiles_configured=profiles_configured,
         profile_names=configured_profile_names,
+        session_id_explicit=_option_value(raw_argv, "--session-id") is not None,
     )
     selected_url = selected_profile.url
     selected_client_id = selected_profile.client_id
@@ -1078,11 +1088,26 @@ def build_arg_parser(argv: Optional[list[str]] = None) -> argparse.ArgumentParse
         "--url", default=os.getenv("HERMES_VOICE_SESSION_URL", selected_url)
     )
     parser.add_argument(
+        "--transport",
+        choices=TRANSPORTS,
+        default=_env_choice(
+            "HERMES_RELAY_TUI_TRANSPORT",
+            TRANSPORTS,
+            _cfg_choice(cfg, "transport", TRANSPORTS, "voice-session"),
+        ),
+        help="transport to use (gateway is opt-in; default: voice-session)",
+    )
+    parser.add_argument(
         "--token",
         default=_cfg_str(cfg, "token") if selected_profile.legacy else selected_token,
         help="Bearer token; prefer VOICE_SESSION_TOKEN or the profile .env",
     )
     parser.add_argument("--profile-env", type=Path, default=_cfg_path(cfg, "profile_env", DEFAULT_PROFILE_ENV))
+    parser.add_argument(
+        "--hermes-profile",
+        default=os.getenv("HERMES_PROFILE") or _cfg_str(cfg, "hermes_profile"),
+        help="Hermes server profile for --transport gateway (not the local relay profile)",
+    )
     parser.add_argument(
         "--client-id",
         default=os.getenv("VOICE_SESSION_CLIENT_ID", selected_client_id),
@@ -1092,7 +1117,9 @@ def build_arg_parser(argv: Optional[list[str]] = None) -> argparse.ArgumentParse
         default=os.getenv("VOICE_SESSION_DEVICE_ID", selected_device_id),
     )
     parser.add_argument(
-        "--session-id", default=os.getenv("VOICE_SESSION_ID", selected_session_id)
+        "--session-id",
+        action=_SessionIdAction,
+        default=os.getenv("VOICE_SESSION_ID", selected_session_id),
     )
     parser.add_argument("--display-name", default=selected_display_name)
     parser.add_argument(
@@ -1325,6 +1352,7 @@ def build_arg_parser(argv: Optional[list[str]] = None) -> argparse.ArgumentParse
 
 __all__ = [
     "BUSY_MODES",
+    "TRANSPORTS",
     "DEFAULT_CONFIG_PATH",
     "DEFAULT_PROFILE_ENV",
     "LEGACY_PROFILE_ENV",

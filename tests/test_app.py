@@ -246,6 +246,30 @@ def make_args(**overrides):
     return args
 
 
+def test_gateway_transport_selects_the_gateway_session_without_changing_default():
+    app = HermesStreamingApp(args=make_args(transport="gateway"))
+
+    session_args = app._doorway_session_args(app.args)
+    session = app._new_session(session_args)
+
+    assert isinstance(session, app_module.GatewaySession)
+    assert session_args.session_id != "s1"
+
+
+def test_gateway_transport_preserves_an_explicit_resume_key():
+    app = HermesStreamingApp(
+        args=make_args(
+            transport="gateway",
+            session_id="stored-session",
+            session_id_explicit=True,
+        )
+    )
+
+    session_args = app._doorway_session_args(app.args)
+
+    assert session_args.session_id == "stored-session"
+
+
 # --- mounting and wiring ----------------------------------------------------
 
 

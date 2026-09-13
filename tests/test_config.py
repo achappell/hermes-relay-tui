@@ -50,8 +50,29 @@ def test_parser_defaults_to_queue_busy_mode(monkeypatch):
 
 def test_parser_defaults_to_local_voice_session_endpoint(monkeypatch):
     monkeypatch.delenv("HERMES_VOICE_SESSION_URL", raising=False)
-    assert build_arg_parser().parse_args([]).url == DEFAULT_URL
+    args = build_arg_parser().parse_args([])
+    assert args.url == DEFAULT_URL
+    assert args.transport == "voice-session"
     assert DEFAULT_URL == "ws://localhost:8792/voice-session"
+
+
+def test_parser_accepts_opt_in_gateway_transport_and_dedicated_server_profile(monkeypatch):
+    monkeypatch.setenv("HERMES_PROFILE", "server-amanda")
+    args = build_arg_parser().parse_args(["--transport", "gateway"])
+
+    assert args.transport == "gateway"
+    assert args.hermes_profile == "server-amanda"
+
+
+def test_parser_reads_gateway_transport_from_environment(monkeypatch):
+    monkeypatch.setenv("HERMES_RELAY_TUI_TRANSPORT", "gateway")
+    assert build_arg_parser().parse_args([]).transport == "gateway"
+
+
+def test_parser_marks_an_explicit_session_id_for_gateway_resume():
+    args = build_arg_parser().parse_args(["--transport", "gateway", "--session-id", "stored-1"])
+    assert args.session_id == "stored-1"
+    assert args.session_id_explicit is True
 
 
 def test_default_token_file_belongs_to_the_relay_app():

@@ -2,7 +2,10 @@
 
 A small Textual terminal UI for authenticated Hermes voice sessions. Type text, capture a local microphone turn, watch the reply stream into the transcript, and play streamed PCM audio locally.
 
-This is a client for the existing Hermes voice-session channel. It does not run the Hermes server or provide a session browser.
+This is a client for the existing Hermes voice-session channel. The default
+still uses that channel. An opt-in `gateway` transport can also talk to the
+standard Hermes `/api/ws` WebSocket, which lets us test how much of the TUI can
+work without a forked agent. It does not run the Hermes server.
 
 ## Features
 
@@ -20,6 +23,7 @@ This is a client for the existing Hermes voice-session channel. It does not run 
 - Connection, timeout, and turn errors shown in the UI instead of crashing the app.
 - Local image staging and `@path` attachment previews with an explicit text-only relay boundary.
 - Opt-in bounded local `!command` execution and `{!command}` prompt interpolation.
+- Opt-in text-first connection to the standard Hermes gateway WebSocket.
 
 ## Requirements
 
@@ -282,6 +286,42 @@ venv/bin/python app.py \
 ```
 
 The endpoint must be reachable from the machine running the TUI, and the server must accept the supplied bearer token. Use `/new` or `/resume` inside the TUI when you deliberately want to create or resume a server-side conversation.
+
+### Standard gateway transport (opt-in proof)
+
+The normal transport remains the fork's `voice-session` channel. To try the
+standard Hermes gateway, point `--url` at `/api/ws` and select it explicitly:
+
+```bash
+VOICE_SESSION_TOKEN='redacted-token' venv/bin/python app.py \
+  --transport gateway \
+  --url wss://example.internal/api/ws \
+  --hermes-profile amanda
+```
+
+Gateway mode waits for `gateway.ready`, then creates a Hermes session before
+the TUI says it is connected. Hermes assigns the live runtime ID; the durable
+ID is kept for `/resume` and the session picker. `/session new Kitchen` sends
+`Kitchen` as a title, not as a client-owned session ID. `--session-id` is a
+durable resume key when supplied explicitly in gateway mode; an ordinary
+gateway launch creates a fresh doorway session.
+
+Gateway authentication uses the existing bearer token as a legacy `?token=`
+query parameter because that is what this standard endpoint currently accepts.
+Use `wss://` for a remote endpoint. The token-bearing URL is never written to
+the diagnostic log, but URLs can still be visible to local process or proxy
+inspection, so treat this as a compatibility path rather than a new auth
+design. `--hermes-profile` / `HERMES_PROFILE` selects the Hermes server profile;
+it is separate from the local relay `--profile` setting.
+
+This first gateway slice is text-first. It supports session create/resume/list,
+inline streamed text, activity updates, and confirmed interruption. It does
+not yet provide response audio, file or attachment upload, command dispatch,
+event replay, or structured approval/clarify/secret/sudo prompts. If one of
+those prompt requests arrives, the client interrupts the turn and reports the
+unsupported capability; it does not ask for or log a value. Those boundaries
+are deliberate mining targets, not claims that the standard channel is a
+drop-in replacement for every feature.
 
 ## Named relay profiles
 
@@ -549,7 +589,9 @@ never replayed automatically.
 | Option | Purpose |
 | --- | --- |
 | `--url URL` | Override the voice-session WebSocket URL |
+| `--transport {voice-session,gateway}` | Select the channel; `voice-session` remains the default |
 | `--profile NAME` | Select a named relay profile for this launch |
+| `--hermes-profile NAME` | Select the Hermes server profile in gateway mode; also `HERMES_PROFILE` |
 | `--token TOKEN` | Supply the bearer token explicitly |
 | `--session-id ID` | Configure the legacy/session label used as launch input; the TUI still mints a unique Session per launch |
 | `--profile-env PATH` | `.env` file used for token lookup |
