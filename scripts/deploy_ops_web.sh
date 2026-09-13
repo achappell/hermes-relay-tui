@@ -247,6 +247,7 @@ ensure_clean_tree() {
 BUILD_ROOT=""
 DEPLOY_COMMIT=""
 PROFILE_ENV_UPLOAD=""
+PROFILE_CONFIG_UPLOAD=""
 PROFILE_CONFIG_ENABLED=0
 PROFILE_CONFIG_INCOMING_REMOTE=""
 PROFILE_ENV_INCOMING_REMOTE=""
@@ -266,9 +267,14 @@ build_release() {
 	BUILD_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/hermes-ops-build.XXXXXX")"
 	if [[ -n "$profile_config_source" ]]; then
 		PROFILE_CONFIG_ENABLED=1
+		PROFILE_CONFIG_UPLOAD="$BUILD_ROOT/profile-config.yaml"
 		PROFILE_ENV_UPLOAD="$BUILD_ROOT/profile.env"
+		# Freeze the validated catalog before any build or upload work so a
+		# changing source file cannot be validated once and deployed later.
+		cp -- "$profile_config_source" "$PROFILE_CONFIG_UPLOAD" || \
+			die "could not snapshot the profile catalog"
 		"$python_bin" "$REPO_ROOT/scripts/validate_ops_profile_config.py" \
-			--catalog "$profile_config_source" \
+			--catalog "$PROFILE_CONFIG_UPLOAD" \
 			--env-file "$profile_env_source" \
 			--write-env "$PROFILE_ENV_UPLOAD"
 	fi
@@ -466,7 +472,7 @@ deploy_remote() {
 	ssh "${SSH_OPTIONS[@]}" "$ops_host" "mkdir -p -- $base_dir/.incoming $base_dir/releases"
 	scp "${SSH_OPTIONS[@]}" "$WHEEL_PATH" "$ops_host:$incoming"
 	if (( PROFILE_CONFIG_ENABLED )); then
-		scp "${SSH_OPTIONS[@]}" "$profile_config_source" "$ops_host:$profile_config_incoming"
+		scp "${SSH_OPTIONS[@]}" "$PROFILE_CONFIG_UPLOAD" "$ops_host:$profile_config_incoming"
 		scp "${SSH_OPTIONS[@]}" "$PROFILE_ENV_UPLOAD" "$ops_host:$profile_env_incoming"
 	fi
 	ssh "${SSH_OPTIONS[@]}" "$ops_host" bash -s -- \
@@ -492,11 +498,16 @@ incoming="$base_dir/.incoming/$wheel_name"
 release_dir="$base_dir/releases/$commit"
 profile_env_path="/etc/hermes-relay/home.env"
 profile_env_backup="/tmp/hermes-relay-home-env-backup-$commit"
+profile_env_release_dir="/etc/hermes-relay/profile-env-releases"
+profile_env_snapshot="$profile_env_release_dir/$commit.env"
+profile_env_snapshot_backup="/tmp/hermes-relay-home-env-snapshot-backup-$commit"
 profile_env_merged="${profile_env_path}.next.$$"
 release_installing=0
 profile_env_changed=0
 profile_env_had_previous=0
 profile_env_retained=0
+profile_env_snapshot_created=0
+profile_env_snapshot_had_previous=0
 
 fail() {
 	printf 'remote deploy failed: %s\n' "$*" >&2
@@ -528,6 +539,15 @@ cleanup() {
 	if (( ! profile_env_retained )); then
 		sudo rm -f -- "$profile_env_backup" || true
 	fi
+	if (( profile_env_snapshot_created && ! profile_env_retained )); then
+		if (( profile_env_snapshot_had_previous )); then
+			sudo install -m 0600 -- "$profile_env_snapshot_backup" "$profile_env_snapshot" || true
+			sudo chown "$service_user:$service_user" "$profile_env_snapshot" || true
+		else
+			sudo rm -f -- "$profile_env_snapshot" || true
+		fi
+	fi
+	sudo rm -f -- "$profile_env_snapshot_backup" || true
 }
 trap cleanup EXIT
 
@@ -598,6 +618,15 @@ prepare_profile_env() {
 	profile_env_changed=1
 	sudo rm -f -- "$profile_env_merged" || fail "could not remove the temporary service environment"
 	sudo chown "$service_user:$service_user" "$profile_env_path" || fail "could not assign service environment ownership"
+	sudo install -d -m 0750 -- "$profile_env_release_dir" || fail "could not prepare profile environment history"
+	sudo chown "$service_user:$service_user" "$profile_env_release_dir" || fail "could not assign profile environment history ownership"
+	if sudo test -f "$profile_env_snapshot"; then
+		profile_env_snapshot_had_previous=1
+		sudo cp -- "$profile_env_snapshot" "$profile_env_snapshot_backup" || fail "could not back up the release environment"
+	fi
+	sudo install -m 0600 -- "$profile_env_path" "$profile_env_snapshot" || fail "could not record the release environment"
+	sudo chown "$service_user:$service_user" "$profile_env_snapshot" || fail "could not assign release environment ownership"
+	profile_env_snapshot_created=1
 }
 
 restore_profile_env() {
@@ -688,9 +717,30 @@ if [[ "$profile_config_enabled" == 1 && -n "$current_target" \
 		fail "could not pair the profile catalog with the prior release"
 fi
 
+record_missing_profile_env_snapshot() {
+	local target="$1"
+	[[ -n "$target" ]] || return 0
+	local target_commit="${target##*/}"
+	local snapshot="$profile_env_release_dir/$target_commit.env"
+	if sudo test -f "$snapshot"; then
+		return 0
+	fi
+	# Older catalog releases did not retain their private environment beside
+	# the release. The environment currently serving that release is the only
+	# recoverable pairing, so preserve it before making rollback durable.
+	sudo install -m 0600 -- "$profile_env_path" "$snapshot" || \
+		fail "could not record the prior release environment"
+	sudo chown "$service_user:$service_user" "$snapshot" || \
+		fail "could not assign prior release environment ownership"
+}
+
 sudo caddy validate --config "$caddyfile" || fail "Caddy configuration is invalid"
 
 prepare_profile_env
+if [[ "$profile_config_enabled" == 1 ]]; then
+	record_missing_profile_env_snapshot "$current_target"
+	record_missing_profile_env_snapshot "$previous_target"
+fi
 
 atomic_link "$release_dir" "$base_dir/current"
 if [[ -n "$current_target" && "$current_target" != "$release_dir" ]]; then
@@ -775,6 +825,7 @@ profile_env_backup="$6"
 profile_env_new="$7"
 profile_config_incoming="$8"
 profile_env_path="/etc/hermes-relay/home.env"
+profile_env_release_dir="/etc/hermes-relay/profile-env-releases"
 
 fail() {
 	printf 'remote rollback failed: %s\n' "$*" >&2
@@ -811,18 +862,27 @@ install_profile_env() {
 }
 
 restore_previous_profile_env() {
-	if [[ -z "$profile_env_backup" ]]; then
+	if [[ -n "$profile_env_backup" ]]; then
+		if sudo test -f "$profile_env_backup"; then
+			install_profile_env "$profile_env_backup"
+		else
+			sudo rm -f -- "$profile_env_path"
+		fi
 		return 0
 	fi
-	if sudo test -f "$profile_env_backup"; then
-		install_profile_env "$profile_env_backup"
-	else
-		sudo rm -f -- "$profile_env_path"
+	if (( profile_mode )); then
+		local target_snapshot="$profile_env_release_dir/${previous_target##*/}.env"
+		install_profile_env "$target_snapshot" || return 1
 	fi
 }
 
 restore_new_profile_env() {
-	[[ -z "$profile_env_new" ]] || install_profile_env "$profile_env_new"
+	if [[ -n "$profile_env_new" ]]; then
+		install_profile_env "$profile_env_new"
+	elif (( profile_mode )); then
+		local target_snapshot="$profile_env_release_dir/${current_target##*/}.env"
+		install_profile_env "$target_snapshot"
+	fi
 }
 
 remove_profile_artifacts() {
@@ -962,6 +1022,13 @@ REMOTE_ROLLBACK
 
 run_public_check() {
 	local check_args=("--origin" "$public_origin")
+	if (( PROFILE_CONFIG_ENABLED )); then
+		check_args+=(
+			"--require-wake-phrase" "hey missy"
+			"--require-wake-phrase" "hey skippy"
+			"--require-wake-phrase" "hey spark"
+		)
+	fi
 	if [[ -n "$health_ca_file" ]]; then
 		check_args+=("--ca-file" "$health_ca_file")
 	fi

@@ -287,6 +287,21 @@ async def test_server_dispatches_profile_route_ack_and_wake_phrase(tmp_path):
             }
 
             await socket.send(json.dumps({
+                "type": "profile_route",
+                "schema": 1,
+                "request_id": "route-2",
+                "wake_phrase": " ",
+            }))
+            malformed_ack = json.loads(await socket.recv())
+            assert malformed_ack == {
+                "type": "profile_route_ack",
+                "schema": 1,
+                "request_id": "route-2",
+                "accepted": False,
+                "reason": "malformed_request",
+            }
+
+            await socket.send(json.dumps({
                 "type": "voice_turn",
                 "schema": 1,
                 "text": "what is the weather?",

@@ -814,6 +814,29 @@ async def test_browser_admission_skips_a_profile_without_a_token(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_browser_admission_fallback_does_not_close_the_shared_socket():
+    first = FakeSession(connect_errors=1)
+    second = FakeSession()
+    sessions = [first, second]
+    sender = FakeServer()
+
+    appliance = Appliance(
+        _args(browser_voice=True),
+        publisher=RecordingPublisher(),
+        profiles=_catalog_profiles(),
+        session_factory=lambda _profile: sessions.pop(0),
+    )
+
+    context = await appliance._create_browser_context("browser-one", sender)
+    try:
+        assert context._child.active_profile.name == "jensen"
+        assert sender.closed is False
+        assert first.closes == 1
+    finally:
+        await context.close()
+
+
+@pytest.mark.asyncio
 async def test_browser_context_routes_wake_phrase_through_its_full_profile_catalog():
     profiles = [
         config.HouseholdProfile(
@@ -1751,6 +1774,7 @@ async def test_browser_gateway_notice_becomes_a_prompt_overlay():
             ]
         ),
         publisher=publisher,
+        profiles=_catalog_profiles(),
         server=FakeServer(),
     )
     appliance._connected = True
@@ -1758,6 +1782,8 @@ async def test_browser_gateway_notice_becomes_a_prompt_overlay():
     assert await appliance._run_browser_turn("hello") is True
     assert publisher.history[-1][0] == "prompt"
     assert appliance._pending_prompt_action_id == "sethome"
+    assert publisher.accounts[-1] == appliance.active_profile.display_name
+    assert publisher.capabilities[-1].features == ("browser_voice", "browser_hands_free")
 
 
 @pytest.mark.asyncio

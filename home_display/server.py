@@ -44,7 +44,9 @@ class DisplayServerInfo:
 DEFAULT_BROWSER_SESSION_LIMIT = 8
 BROWSER_SESSION_CAPACITY_CODE = 1013
 BROWSER_SESSION_CAPACITY_REASON = "browser session capacity reached"
-BROWSER_CONTEXT_SETUP_TIMEOUT = 30.0
+# Three catalog candidates may each spend up to the bounded connect and close
+# windows in the appliance before a healthy later entry is admitted.
+BROWSER_CONTEXT_SETUP_TIMEOUT = 45.0
 MAX_CONNECTION_TASKS = 8
 CONNECTION_TASK_CLEANUP_TIMEOUT = 3.0
 MAX_BROWSER_ROUTE_REQUEST_ID_LENGTH = 64
@@ -657,14 +659,29 @@ class DisplayServer:
                                 websocket, binding.handle_action(*action)
                             )
                         if profile_route is not None:
-                            self._track_connection_task(
+                            route_task = self._dispatch_profile_route(
                                 websocket,
-                                self._dispatch_profile_route(
-                                    websocket,
-                                    binding,
-                                    *profile_route,
-                                ),
+                                binding,
+                                *profile_route,
                             )
+                            if not self._track_connection_task(websocket, route_task):
+                                await self._send_profile_route_ack(
+                                    websocket,
+                                    profile_route[0],
+                                    accepted=False,
+                                    reason="busy",
+                                )
+                        else:
+                            malformed_request_id = (
+                                self._parse_websocket_profile_route_request_id(message)
+                            )
+                            if malformed_request_id is not None:
+                                await self._send_profile_route_ack(
+                                    websocket,
+                                    malformed_request_id,
+                                    accepted=False,
+                                    reason="malformed_request",
+                                )
                         if voice_turn is not None:
                             if voice_turn.wake_phrase is None:
                                 callback = binding.handle_voice_turn(voice_turn.text)
@@ -740,7 +757,7 @@ class DisplayServer:
 
     def _track_connection_task(
         self, websocket: ServerConnection, awaitable: Awaitable[Any]
-    ) -> None:
+    ) -> bool:
         tasks = self._connection_tasks.get(websocket)
         if tasks is None or len(tasks) >= MAX_CONNECTION_TASKS:
             close = getattr(awaitable, "close", None)
@@ -750,7 +767,7 @@ class DisplayServer:
                 cancel = getattr(awaitable, "cancel", None)
                 if callable(cancel):
                     cancel()
-            return
+            return False
         task = asyncio.create_task(awaitable)
         tasks.add(task)
 
@@ -760,6 +777,7 @@ class DisplayServer:
                 done.result()
 
         task.add_done_callback(discard)
+        return True
 
     async def _cancel_connection_tasks(
         self, tasks: set[asyncio.Task[Any]]
@@ -855,16 +873,33 @@ class DisplayServer:
                     reason=None if result else "unavailable",
                 )
 
+        await self._send_profile_route_ack(
+            websocket,
+            request_id,
+            accepted=result.accepted,
+            account=result.account if result.accepted else None,
+            reason=result.reason if not result.accepted else None,
+        )
+
+    async def _send_profile_route_ack(
+        self,
+        websocket: ServerConnection,
+        request_id: str,
+        *,
+        accepted: bool,
+        account: str | None = None,
+        reason: str | None = None,
+    ) -> None:
         payload: dict[str, object] = {
             "type": "profile_route_ack",
             "schema": 1,
             "request_id": request_id,
-            "accepted": result.accepted,
+            "accepted": accepted,
         }
-        if result.accepted and result.account:
-            payload["account"] = result.account[:128]
-        elif not result.accepted and result.reason:
-            payload["reason"] = result.reason[:64]
+        if accepted and account:
+            payload["account"] = account[:128]
+        elif not accepted and reason:
+            payload["reason"] = reason[:64]
         await self._send_connection_json(websocket, payload)
 
     def _forget_connection(self, websocket: ServerConnection) -> None:
@@ -993,6 +1028,35 @@ class DisplayServer:
         if not wake_phrase:
             return None
         return request_id, wake_phrase
+
+    @staticmethod
+    def _parse_websocket_profile_route_request_id(
+        message: str | bytes,
+    ) -> str | None:
+        """Recover a safe request id so malformed routes still receive an ACK."""
+        if not isinstance(message, (str, bytes)):
+            return None
+        try:
+            payload = json.loads(message)
+        except (TypeError, ValueError):
+            return None
+        if not isinstance(payload, dict):
+            return None
+        if (
+            payload.get("type") != "profile_route"
+            or type(payload.get("schema")) is not int
+            or payload.get("schema") != 1
+        ):
+            return None
+        request_id = payload.get("request_id")
+        if (
+            not isinstance(request_id, str)
+            or not 0 < len(request_id) <= MAX_BROWSER_ROUTE_REQUEST_ID_LENGTH
+            or any(char.isspace() for char in request_id)
+            or any(ord(char) < 32 or ord(char) == 127 for char in request_id)
+        ):
+            return None
+        return request_id
 
     @staticmethod
     def _http_response(

@@ -132,6 +132,7 @@ async def check_state_channel(
     origin: str,
     timeout: float,
     tls_context: ssl.SSLContext | None,
+    expected_wake_phrases: tuple[str, ...] | None = None,
 ) -> None:
     connect_kwargs = {
         "origin": origin,
@@ -159,6 +160,19 @@ async def check_state_channel(
         or payload.get("state") not in EXPECTED_STATES
     ):
         raise CheckError("/state returned an invalid initial snapshot")
+    if expected_wake_phrases is not None:
+        capabilities = payload.get("capabilities")
+        features = capabilities.get("features") if isinstance(capabilities, dict) else None
+        wake_phrases = capabilities.get("wake_phrases") if isinstance(capabilities, dict) else None
+        if (
+            not isinstance(features, list)
+            or "browser_hands_free" not in features
+            or not isinstance(wake_phrases, list)
+            or not all(isinstance(phrase, str) for phrase in wake_phrases)
+            or set(wake_phrases) != set(expected_wake_phrases)
+            or len(wake_phrases) != len(expected_wake_phrases)
+        ):
+            raise CheckError("/state does not advertise the expected wake-word catalog")
 
 
 async def run_check(
@@ -167,6 +181,7 @@ async def run_check(
     timeout: float = DEFAULT_TIMEOUT,
     ca_file: Path | None = None,
     insecure: bool = False,
+    expected_wake_phrases: tuple[str, ...] | None = None,
 ) -> None:
     origin, page_url, websocket_url = origin_urls(origin_url)
     tls_context = _tls_context(ca_file=ca_file, insecure=insecure)
@@ -177,6 +192,7 @@ async def run_check(
         origin=origin,
         timeout=timeout,
         tls_context=_tls_context(ca_file=ca_file, insecure=insecure),
+        expected_wake_phrases=expected_wake_phrases,
     )
 
 
@@ -191,6 +207,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "--insecure",
         action="store_true",
         help="disable HTTPS certificate verification for a deliberate local check",
+    )
+    parser.add_argument(
+        "--require-wake-phrase",
+        action="append",
+        default=[],
+        help="require a wake phrase in the advertised browser catalog (repeatable)",
     )
     return parser
 
@@ -207,6 +229,7 @@ def main(argv: list[str] | None = None) -> int:
                 timeout=args.timeout,
                 ca_file=args.ca_file,
                 insecure=args.insecure,
+                expected_wake_phrases=(tuple(args.require_wake_phrase) or None),
             )
         )
     except (CheckError, OSError, ValueError) as error:

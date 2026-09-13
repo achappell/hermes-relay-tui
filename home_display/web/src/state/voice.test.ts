@@ -728,6 +728,7 @@ describe("BrowserHandsFreeController", () => {
   });
 
   it("returns to wake-ready without capturing after a rejected wake-only route", async () => {
+    vi.useFakeTimers();
     const recognitions: FakeRecognition[] = [];
     let rejectRoute: (accepted: boolean) => void = () => {};
     const controller = new BrowserHandsFreeController({
@@ -776,6 +777,34 @@ describe("BrowserHandsFreeController", () => {
     expect(recognitions).toHaveLength(1);
 
     resolveRoute(true);
+    await flushMicrotasks();
+    expect(controller.state).toBe("heard");
+    expect(recognitions).toHaveLength(2);
+    controller.disarm();
+  });
+
+  it("does not start a synchronous route capture until recognition has released", async () => {
+    const recognitions: FakeRecognition[] = [];
+    const initial = new FakeRecognition(true, false);
+    const controller = new BrowserHandsFreeController({
+      recognitionFactory: () => {
+        const recognition = recognitions.length === 0
+          ? initial
+          : new FakeRecognition();
+        recognitions.push(recognition);
+        return recognition;
+      },
+      wakePhrases: ["hey spark"],
+      sendText: vi.fn(() => true),
+      routeWake: () => true,
+    });
+
+    await expect(controller.arm()).resolves.toBe(true);
+    initial.result({ isFinal: true, transcript: "hey spark" });
+    expect(controller.state).toBe("routing");
+    expect(recognitions).toHaveLength(1);
+
+    initial.end();
     await flushMicrotasks();
     expect(controller.state).toBe("heard");
     expect(recognitions).toHaveLength(2);

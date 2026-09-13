@@ -246,5 +246,5 @@
   evidence: The public Ops check and two-tab readiness smoke passed, but the currently deployed service predates WK-2, so sending overlapping turns there would not validate this implementation. The local two-client WebSocket, audio, failure, disconnect, prompt, reconnect, capacity, and full-suite checks pass; the deployed-branch gate needs an explicit operator deployment and live Hermes test.
 
 - source_spec: `_bmad-output/implementation-artifacts/spec-wk-profile-catalog.md`
-  summary: Deploy the three-profile catalog to Ops and complete the public smoke plus physical three-phrase/two-tab verification.
-  evidence: Local Python/browser tests, Svelte diagnostics, production build, and deployment-script checks pass, but the BMad implementation gate forbids remote SSH/service operations. The live check must be run after an authorized deployment to confirm `hey missy`, `hey skippy`, `hey spark`, wake-only routing, and two simultaneous browser sessions against the active Ops service.
+  summary: Complete the physical three-phrase/two-tab verification against the corrected Ops release.
+  evidence: The catalog was deployed to Ops, the service is active, Caddy serves the origin, and the redacted public page/action/state probe verifies `browser_hands_free` plus `hey missy`, `hey skippy`, and `hey spark`. Real browser speech, wake-only capture followed by a live Hermes turn, two simultaneous tabs, and cancellation of an in-flight route still require the supported browser/device gate.

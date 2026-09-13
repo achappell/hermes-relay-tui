@@ -38,7 +38,10 @@ export interface WebSocketLike {
 export const defaultSocketFactory: SocketFactory = (url) => new WebSocket(url) as unknown as WebSocketLike;
 
 const RECONNECT_DELAYS_MS = [250, 500, 1000, 2000, 4000] as const;
-const PROFILE_ROUTE_ACK_TIMEOUT_MS = 10_000;
+// Admission may try several catalog profiles. Keep the browser waiting beyond
+// the server's bounded connect/cleanup sequence so it cannot resume capture
+// while the server is still committing a route.
+const PROFILE_ROUTE_ACK_TIMEOUT_MS = 20_000;
 
 function normaliseWakePhrase(value: string): string {
   return value.trim().replace(/\s+/g, " ");

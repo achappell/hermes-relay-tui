@@ -714,6 +714,10 @@ def test_successful_deploy_activates_a_commit_release_and_records_previous(fake_
     entrypoint = current / "venv/bin/hermes-relay-home"
     assert entrypoint.read_text().splitlines()[0] == f"#!{current.resolve()}/venv/bin/python"
     assert "active_commit=" in result.stdout
+    current_commit = current.resolve().name
+    env_history = Path(fake_ops["etc"]) / "hermes-relay/profile-env-releases"
+    assert (env_history / f"{current_commit}.env").is_file()
+    assert (env_history / "old.env").is_file()
 
 
 @pytest.mark.parametrize(
@@ -828,6 +832,9 @@ def test_rollback_reactivates_previous_release_without_rebuilding(fake_ops):
     assert (Path(fake_ops["base"]) / "current").resolve() == old_release
     assert (Path(fake_ops["base"]) / "previous").resolve() == active_release
     assert "rollback complete" in result.stdout
+    assert "VOICE_SESSION_TOKEN_AMANDA=amanda-test-token" in (
+        Path(fake_ops["etc"]) / "hermes-relay/home.env"
+    ).read_text(encoding="utf-8")
     after_rollback = log.read_text().splitlines()[len(before_rollback) :]
     assert "scp" not in after_rollback
     assert not any(line.startswith("npm ") for line in after_rollback)
