@@ -301,20 +301,80 @@ class Composer(TextArea):
     class PromptOptionSelected(Message):
         """A digit key picked a numbered option on a pending structured prompt."""
 
-        def __init__(self, composer: "Composer", option_id: str) -> None:
+        def __init__(
+            self,
+            composer: "Composer",
+            option_id: str,
+            operation: str | None = None,
+        ) -> None:
             super().__init__()
             self.composer = composer
             self.option_id = option_id
+            self.operation = operation
+
+    class PromptFocusMoved(Message):
+        """Up/Down moved focus inside the active choice panel."""
+
+        def __init__(self, composer: "Composer", delta: int) -> None:
+            super().__init__()
+            self.composer = composer
+            self.delta = delta
+
+    class PromptActionRequested(Message):
+        """A native keyboard action was requested for the focused choice."""
+
+        def __init__(self, composer: "Composer", operation: str, option_id: str) -> None:
+            super().__init__()
+            self.composer = composer
+            self.operation = operation
+            self.option_id = option_id
 
     async def _on_key(self, event: events.Key) -> None:
+        pending = getattr(self.app, "_pending_prompt", None)
+        choice_active = (
+            pending is not None
+            and pending.is_choice
+            and not pending.awaiting_response
+            and bool(pending.options)
+        )
+        if choice_active and event.key in {"up", "down"}:
+            event.stop()
+            event.prevent_default()
+            self.post_message(
+                self.PromptFocusMoved(self, 1 if event.key == "down" else -1)
+            )
+            return
+        if choice_active and event.key in {"enter", "right"}:
+            operation = "choose" if event.key == "enter" else "explore"
+            event.stop()
+            event.prevent_default()
+            if not pending.supports_operation(operation):
+                return
+            option = pending.focused_option
+            if option is not None:
+                self.post_message(
+                    self.PromptActionRequested(
+                        self,
+                        operation,
+                        option.id,
+                    )
+                )
+                return
         if len(event.key) == 1 and event.key.isdigit() and event.key != "0":
-            pending = getattr(self.app, "_pending_prompt", None)
             if pending is not None and not pending.awaiting_response and pending.options:
                 option = pending.option_at(int(event.key))
                 if option is not None:
                     event.stop()
                     event.prevent_default()
-                    self.post_message(self.PromptOptionSelected(self, option.id))
+                    if pending.is_choice:
+                        pending.focus_option(option.id)
+                    self.post_message(
+                        self.PromptOptionSelected(
+                            self,
+                            option.id,
+                            "choose" if pending.is_choice else None,
+                        )
+                    )
                     return
         if event.key == "ctrl+c":
             event.stop()
@@ -758,10 +818,13 @@ class HermesStreamingApp(App):
         self.transcript.append_stream(text)
         self._refresh_transcript()
 
-    def _append_block(self, text: str, *, role: str = "system", detail: bool = False) -> None:
+    def _append_block(
+        self, text: str, *, role: str = "system", detail: bool = False
+    ) -> Any:
         """Append a complete typed message to the transcript."""
-        self.transcript.add(role, text, detail=detail)
+        message = self.transcript.add(role, text, detail=detail)
         self._refresh_transcript()
+        return message
 
     def _set_voice_state(self, state: str) -> None:
         result = self.domain.observe_voice_state(state)
@@ -2629,11 +2692,36 @@ class HermesStreamingApp(App):
             exit_on_error=False,
         )
 
+    def on_composer_prompt_focus_moved(self, event: Composer.PromptFocusMoved) -> None:
+        prompt = self._pending_prompt
+        if prompt is None or not prompt.is_choice or prompt.awaiting_response:
+            return
+        prompt.move_focus(event.delta)
+        self._refresh_prompt_panel()
+
+    async def on_composer_prompt_action_requested(
+        self, event: Composer.PromptActionRequested
+    ) -> None:
+        self.run_worker(
+            self._answer_prompt(
+                option_id=event.option_id,
+                value=None,
+                operation=event.operation,
+            ),
+            name="prompt response",
+            group="interaction",
+            exit_on_error=False,
+        )
+
     async def on_composer_prompt_option_selected(
         self, event: Composer.PromptOptionSelected
     ) -> None:
         self.run_worker(
-            self._answer_prompt(option_id=event.option_id, value=None),
+            self._answer_prompt(
+                option_id=event.option_id,
+                value=None,
+                operation=event.operation,
+            ),
             name="prompt response",
             group="interaction",
             exit_on_error=False,
@@ -2648,7 +2736,7 @@ class HermesStreamingApp(App):
         value = event.value
         event.input.value = ""
         self.run_worker(
-            self._answer_prompt(option_id=None, value=value),
+            self._answer_prompt(option_id=None, value=value, operation=None),
             name="prompt response",
             group="interaction",
             exit_on_error=False,
@@ -2664,7 +2752,13 @@ class HermesStreamingApp(App):
             return True
         return self._session_is_current(prompt_session, prompt_generation)
 
-    async def _answer_prompt(self, *, option_id: Optional[str], value: Optional[str]) -> None:
+    async def _answer_prompt(
+        self,
+        *,
+        option_id: Optional[str],
+        value: Optional[str],
+        operation: Optional[str] = None,
+    ) -> None:
         """Send exactly one response for the currently pending prompt.
 
         `value` is never logged or appended to the transcript — sudo/secret
@@ -2680,7 +2774,17 @@ class HermesStreamingApp(App):
                 self._pending_prompt = None
                 self._refresh_prompt_panel()
             return
-        prepared = self.domain.prepare_prompt_action(option_id=option_id, value=value)
+        if prompt.is_choice and operation is None:
+            operation = "choose"
+        choice_object_id = prompt.choice_object_id if prompt.is_choice else None
+        choice_freshness = prompt.choice_freshness if prompt.is_choice else None
+        prepared = self.domain.prepare_prompt_action(
+            option_id=option_id,
+            value=value,
+            operation=operation,
+            object_id=choice_object_id,
+            freshness=choice_freshness,
+        )
         if not prepared.accepted or prepared.action is None:
             diagnostic_logger.debug(
                 "app.prompt.rejected reason=%s", prepared.reason or "unknown"
@@ -2696,6 +2800,9 @@ class HermesStreamingApp(App):
                 prompt_kind=action.prompt_kind,
                 option_id=action.option_id,
                 value=action.value,
+                operation=action.operation,
+                object_id=action.object_id,
+                freshness=action.freshness,
             )
         except Exception as exc:
             if _is_transport_error(exc):
@@ -2722,6 +2829,25 @@ class HermesStreamingApp(App):
                 role="error",
             )
             self._refresh_prompt_panel()
+            return
+        if (
+            sent
+            and action.is_interactive_choice
+            and self._pending_prompt is prompt
+            and self._prompt_is_current(prompt)
+        ):
+            option = next(
+                (candidate for candidate in prompt.options if candidate.id == action.option_id),
+                None,
+            )
+            if option is not None:
+                verb = action.operation.capitalize()
+                prompt.request_message = self._append_block(
+                    f"{verb} requested: {option.label}",
+                    role="user",
+                )
+                prompt.request_rejected = False
+                self._refresh_prompt_panel()
 
     def _selected_transcript_text(self) -> str | None:
         """Return a selection only when it belongs solely to the transcript."""
@@ -4527,12 +4653,30 @@ class HermesStreamingApp(App):
                     kind,
                     domain_result.reason or "unknown",
                 )
+                choice_prompt = (
+                    str(event.get("prompt_kind") or event.get("kind") or "")
+                    .strip()
+                    .lower()
+                    == "choice"
+                )
+                prompt_event_rejected = (
+                    kind == "prompt_request"
+                    and (
+                        domain_result.reason == "duplicate_prompt"
+                        or (
+                            choice_prompt
+                            and str(domain_result.reason or "").startswith(
+                                "invalid_prompt:"
+                            )
+                        )
+                    )
+                )
                 if domain_result.reason not in {
                     "late_turn_event",
                     "stale_turn_event",
                     "stale_session_event",
                     "stale_prompt",
-                }:
+                } and not prompt_event_rejected:
                     error_text = (
                         "invalid turn event: "
                         + (domain_result.reason or "rejected")
@@ -4549,6 +4693,12 @@ class HermesStreamingApp(App):
                     )
                     finalize_failed_turn()
                     return False
+                if prompt_event_rejected and domain_result.reason != "duplicate_prompt":
+                    reason = str(domain_result.reason or "rejected")
+                    self._append_block(
+                        f"[error] prompt rejected: {reason.removeprefix('invalid_prompt:')}",
+                        role="error",
+                    )
                 continue
             if kind in {"connection_lost", "disconnected"}:
                 turn_failed = True
@@ -4571,10 +4721,13 @@ class HermesStreamingApp(App):
                 if player.active:
                     self._last_tts_text = assistant_text
             elif kind == "prompt_request":
-                self._pending_prompt = PendingPrompt.from_event(event)
-                self._pending_prompt.session_identity = session
-                self._pending_prompt.session_generation = session_generation
+                pending_prompt = PendingPrompt.from_event(event)
+                pending_prompt.session_identity = session
+                pending_prompt.session_generation = session_generation
+                self._pending_prompt = pending_prompt
                 self._refresh_prompt_panel()
+                if pending_prompt.is_choice:
+                    self.set_focus(self.query_one("#composer", Composer))
             elif kind == "prompt_resolved":
                 if (
                     self._pending_prompt is not None
@@ -4587,8 +4740,14 @@ class HermesStreamingApp(App):
                     self._pending_prompt is not None
                     and self._pending_prompt.prompt_id == event.get("prompt_id")
                 ):
-                    self._pending_prompt.awaiting_response = False
-                    self._pending_prompt.rejection_reason = str(event.get("reason") or "")
+                    prompt = self._pending_prompt
+                    prompt.awaiting_response = False
+                    prompt.rejection_reason = str(event.get("reason") or "")
+                    if prompt.request_message is not None and not prompt.request_rejected:
+                        reason = prompt.rejection_reason or "rejected"
+                        prompt.request_message.text += f" (rejected: {reason})"
+                        prompt.request_rejected = True
+                        self._refresh_transcript()
                     self._refresh_prompt_panel()
             elif kind == "thinking_delta":
                 if not assistant_started:

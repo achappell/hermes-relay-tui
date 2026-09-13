@@ -386,6 +386,25 @@ async def test_session_exposes_structured_prompt_capability_and_sends_response(
         "option_id": "once",
         "reason": "one-time access",
     }
+    assert await session.send_prompt_response(
+        prompt_id="prompt-choice-1",
+        prompt_kind="choice",
+        option_id="inspect",
+        operation="explore",
+        object_id="choice-1",
+        freshness="version-1",
+    ) is True
+    assert json.loads(websocket.sent[-1]) == {
+        "type": "prompt_response",
+        "protocol_version": 1,
+        "prompt_id": "prompt-choice-1",
+        "prompt_kind": "choice",
+        "session_id": "session",
+        "option_id": "inspect",
+        "operation": "explore",
+        "object_id": "choice-1",
+        "freshness": "version-1",
+    }
 
 
 async def test_session_does_not_send_prompt_response_without_capability(monkeypatch):

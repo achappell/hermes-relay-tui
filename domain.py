@@ -15,6 +15,14 @@ from typing import Any, Literal, Mapping
 
 
 BUSY_MODES = frozenset({"queue", "steer", "interrupt"})
+CHOICE_OPERATIONS = frozenset({"choose", "explore"})
+CHOICE_OPERATION_CAPABILITIES = {
+    "choose": "prompt.choose",
+    "explore": "prompt.explore",
+}
+MAX_CHOICE_CONTEXT_LENGTH = 64
+MAX_CHOICE_OPTIONS = 32
+MAX_CHOICE_LABEL_LENGTH = 256
 
 # These are terminal capabilities, not additions to the v1 room-display
 # schema.  Keeping them explicit makes the richer TUI projection intentional.
@@ -22,6 +30,7 @@ TUI_CAPABILITIES = frozenset(
     {
         "voice.capture",
         "prompt.choose",
+        "prompt.explore",
         "prompt.free_text",
         "prompt.masked_input",
         "turn.queue",
@@ -74,6 +83,9 @@ class PromptState:
     turn_id: str | None = None
     session_id: str | None = None
     timeout_s: float | None = None
+    choice_object_id: str | None = None
+    choice_operations: tuple[str, ...] = ()
+    choice_freshness: str | None = None
 
     @classmethod
     def from_event(cls, event: Mapping[str, Any]) -> "PromptState":
@@ -83,6 +95,9 @@ class PromptState:
         if len(prompt_id) > 64:
             raise ValueError("prompt_id exceeds the shared action limit")
 
+        prompt_kind = str(event.get("prompt_kind") or event.get("kind") or "prompt").strip()
+        is_choice = prompt_kind.lower() == "choice"
+
         raw_options = event.get("options")
         if raw_options is None:
             raw_options = ()
@@ -90,6 +105,7 @@ class PromptState:
             raise ValueError("prompt_request options must be a list")
 
         options: list[PromptOption] = []
+        option_ids: set[str] = set()
         for raw_option in raw_options:
             if not isinstance(raw_option, Mapping):
                 raise ValueError("prompt option must be an object")
@@ -99,7 +115,52 @@ class PromptState:
             if len(option_id) > 32:
                 raise ValueError("prompt option id exceeds the shared action limit")
             label = str(raw_option.get("label") or option_id)
+            if is_choice and option_id in option_ids:
+                raise ValueError("prompt choice contains duplicate option id")
+            if is_choice and len(label) > MAX_CHOICE_LABEL_LENGTH:
+                raise ValueError("prompt choice option label exceeds the choice limit")
+            option_ids.add(option_id)
             options.append(PromptOption(option_id=option_id, label=label))
+
+        choice_object_id: str | None = None
+        choice_operations: tuple[str, ...] = ()
+        choice_freshness: str | None = None
+        if is_choice:
+            raw_choice = event.get("choice")
+            if not isinstance(raw_choice, Mapping):
+                raise ValueError("prompt choice must be an object")
+            raw_object_id = raw_choice.get("object_id")
+            if not isinstance(raw_object_id, str) or not raw_object_id.strip():
+                raise ValueError("prompt choice is missing object_id")
+            choice_object_id = raw_object_id
+            if len(raw_object_id) > MAX_CHOICE_CONTEXT_LENGTH:
+                raise ValueError("prompt choice object_id exceeds the choice limit")
+
+            raw_operations = raw_choice.get("operations")
+            if not isinstance(raw_operations, (list, tuple)) or not raw_operations:
+                raise ValueError("prompt choice operations must be a non-empty list")
+            normalized_operations: list[str] = []
+            for raw_operation in raw_operations:
+                if not isinstance(raw_operation, str):
+                    raise ValueError("prompt choice operation must be a string")
+                operation = raw_operation.strip().lower()
+                if operation not in CHOICE_OPERATIONS:
+                    raise ValueError("prompt choice operation is unsupported")
+                if operation in normalized_operations:
+                    raise ValueError("prompt choice contains duplicate operation")
+                normalized_operations.append(operation)
+            choice_operations = tuple(normalized_operations)
+
+            raw_freshness = raw_choice.get("freshness")
+            if not isinstance(raw_freshness, str) or not raw_freshness.strip():
+                raise ValueError("prompt choice is missing freshness")
+            choice_freshness = raw_freshness
+            if len(raw_freshness) > MAX_CHOICE_CONTEXT_LENGTH:
+                raise ValueError("prompt choice freshness exceeds the choice limit")
+            if not options:
+                raise ValueError("prompt choice must contain at least one option")
+            if len(options) > MAX_CHOICE_OPTIONS:
+                raise ValueError("prompt choice contains too many options")
 
         raw_timeout = event.get("timeout_s")
         timeout_s: float | None
@@ -115,14 +176,21 @@ class PromptState:
 
         return cls(
             prompt_id=prompt_id,
-            prompt_kind=str(event.get("prompt_kind") or event.get("kind") or "prompt"),
+            prompt_kind=prompt_kind,
             text=str(event.get("text") or event.get("question") or ""),
             options=tuple(options),
             sensitive=bool(event.get("sensitive", False)),
             turn_id=_optional_text(event.get("turn_id")),
             session_id=_optional_text(event.get("session_id")),
             timeout_s=timeout_s,
+            choice_object_id=choice_object_id,
+            choice_operations=choice_operations,
+            choice_freshness=choice_freshness,
         )
+
+    @property
+    def is_choice(self) -> bool:
+        return self.prompt_kind.lower() == "choice"
 
     @property
     def masked(self) -> bool:
@@ -130,7 +198,10 @@ class PromptState:
 
     @property
     def accepts_free_text(self) -> bool:
-        return self.masked or self.prompt_kind.lower() == "clarify" or not self.options
+        return (
+            not self.is_choice
+            and (self.masked or self.prompt_kind.lower() == "clarify" or not self.options)
+        )
 
     @property
     def option_ids(self) -> frozenset[str]:
@@ -175,10 +246,24 @@ class PromptAction:
     prompt_kind: str
     option_id: str | None = None
     value: str | None = None
+    operation: str | None = None
+    object_id: str | None = None
+    freshness: str | None = None
+    turn_id: str | None = None
+    session_id: str | None = None
 
     @property
     def is_choice(self) -> bool:
         return self.option_id is not None
+
+    @property
+    def is_interactive_choice(self) -> bool:
+        return (
+            self.prompt_kind.strip().lower() == "choice"
+            and self.operation in CHOICE_OPERATIONS
+            and self.object_id is not None
+            and self.freshness is not None
+        )
 
     def to_display_action(self) -> dict[str, Any] | None:
         """Return the v1 display action shape for an option selection."""
@@ -594,10 +679,17 @@ class TuiDomain:
             return self._transition(TurnPhase.INTERRUPTED)
 
         if event_type == "prompt_request":
+            choice_prompt = (
+                str(event.get("prompt_kind") or event.get("kind") or "")
+                .strip()
+                .lower()
+                == "choice"
+            )
             try:
                 prompt = PromptState.from_event(event)
             except ValueError as exc:
-                return DomainResult(False, self._state, reason=str(exc))
+                reason = f"invalid_prompt:{exc}" if choice_prompt else str(exc)
+                return DomainResult(False, self._state, reason=reason)
             if (
                 self._state.prompt is not None
                 and self._state.prompt.prompt_id == prompt.prompt_id
@@ -678,12 +770,39 @@ class TuiDomain:
         *,
         option_id: str | None = None,
         value: str | None = None,
+        operation: str | None = None,
+        object_id: str | None = None,
+        freshness: str | None = None,
     ) -> str | None:
         prompt = self._state.prompt
         if prompt is None:
             return "no_prompt"
         if self._state.prompt_awaiting:
             return "prompt_response_pending"
+        if prompt.is_choice:
+            if option_id is None:
+                return "missing_prompt_option"
+            if value is not None:
+                return "choice_cannot_include_free_text"
+            if not isinstance(operation, str) or not operation.strip():
+                return "missing_prompt_operation"
+            normalized_operation = operation.strip().lower()
+            if normalized_operation not in CHOICE_OPERATIONS:
+                return "unsupported_prompt_operation"
+            if normalized_operation not in prompt.choice_operations:
+                return "unsupported_prompt_operation"
+            capability = CHOICE_OPERATION_CAPABILITIES[normalized_operation]
+            if capability not in self.capabilities:
+                return "unsupported_prompt_operation"
+            if option_id not in prompt.option_ids:
+                return "invalid_prompt_option"
+            if object_id != prompt.choice_object_id:
+                return "stale_choice_object"
+            if freshness != prompt.choice_freshness:
+                return "stale_choice_freshness"
+            return None
+        if operation is not None or object_id is not None or freshness is not None:
+            return "legacy_prompt_operation"
         if option_id is not None:
             if "prompt.choose" not in self.capabilities:
                 return "unsupported_prompt_choice"
@@ -706,16 +825,32 @@ class TuiDomain:
         *,
         option_id: str | None = None,
         value: str | None = None,
+        operation: str | None = None,
+        object_id: str | None = None,
+        freshness: str | None = None,
     ) -> DomainResult:
-        reason = self.validate_prompt_action(option_id=option_id, value=value)
+        reason = self.validate_prompt_action(
+            option_id=option_id,
+            value=value,
+            operation=operation,
+            object_id=object_id,
+            freshness=freshness,
+        )
         if reason is not None:
             return DomainResult(False, self._state, reason=reason)
         assert self._state.prompt is not None  # guarded by validation
+        if self._state.prompt.is_choice:
+            operation = operation.strip().lower() if operation is not None else None
         action = PromptAction(
             prompt_id=self._state.prompt.prompt_id,
             prompt_kind=self._state.prompt.prompt_kind,
             option_id=option_id,
             value=value,
+            operation=operation,
+            object_id=object_id,
+            freshness=freshness,
+            turn_id=self._state.prompt.turn_id,
+            session_id=self._state.prompt.session_id,
         )
         self._state = replace(self._state, prompt_awaiting=True, prompt_rejection=None)
         return DomainResult(True, self._state, action=action)
