@@ -4,6 +4,29 @@ A small Textual terminal UI for authenticated Hermes voice sessions. Type text, 
 
 This is a client for the existing Hermes voice-session channel. It does not run the Hermes server or provide a session browser.
 
+## BMAD surface ownership
+
+This repository owns BMAD delivery status for the surfaces registered in
+[`bmad-surface.yaml`](bmad-surface.yaml): the TUI, ReSpeaker Puck, ESP32 Touch
+Display, and W/K web/iPad surface. iOS, Android, and Home own their own story
+indexes and local `sprint-status.yaml` files. The epic snapshot and coverage
+matrix here are read-only cross-repository context.
+
+Generate a local roll-up when you need the portfolio view:
+
+```bash
+venv/bin/python scripts/render_surface_status.py \
+  --repo tui=. \
+  --repo ios=../hermes-relay-ios \
+  --repo android=../hermes-relay-android \
+  --repo home=../hermes-relay-home \
+  --repo agent=../hermes-agent \
+  --output _bmad-output/implementation-artifacts/surface-status-report.md
+```
+
+The report is derived output. It never changes a sibling repository and never
+replaces a local tracker.
+
 ## Features
 
 - Streaming text transcript rendered inline as deltas arrive.

@@ -11,6 +11,11 @@ inputDocuments:
 
 # hermes-relay-tui - Epic Breakdown
 
+> **Ownership note:** This file is an imported cross-surface planning snapshot
+> and historical scope reference. TUI owns delivery status only for the
+> surfaces registered in `bmad-surface.yaml`; iOS, Android, and Home status live
+> in their owning repositories. Do not use this file to infer sibling closure.
+
 ## Overview
 
 This document provides the complete epic and story breakdown for hermes-relay-tui, decomposing the requirements from the PRD, the canonical product spec, UX design contract, and Architecture requirements into implementable stories.

@@ -133,31 +133,35 @@ reading order.
 - Use the repository-local BMAD runtime at the intentional shared version; do
   not copy `_bmad/` or local tool configuration from `hermes-relay-ios`.
 - Keep one active vertical slice per repository/workstream. Independent TUI
-  and iOS cards may both be in `Building` when their contracts are settled and
-  their files do not contend. Shared protocol or contract work remains a
+  and iOS slices may both be in `Building` when their contracts are settled
+  and their files do not contend. Shared protocol or contract work remains a
   prerequisite when both clients depend on it. Feed durable cross-repository
   discoveries back to the Personal Vault hub.
-- Surface-specific story maps in `_bmad-output/planning-artifacts/epics.md`
-  define story identities and scope. A story closes only the named surface;
-  `I`, `P`, `E`, `W/K`, and `T` are separate delivery boundaries, with W/K
-  covering both web and iPad deployment and the ESP32 Touch Display owning
-  both its voice and display behavior.
+- This repository owns delivery status only for the surfaces registered in
+  `bmad-surface.yaml`: `T`, `P`, `E`, and `W/K`. A story closes only the named
+  surface; W/K covers both web and iPad deployment and the ESP32 Touch Display
+  owns both its voice and display behavior.
+- `_bmad-output/planning-artifacts/epics.md` is an imported cross-surface
+  planning snapshot and historical scope reference. It is not the status
+  authority for iOS, Android, Home, or any other sibling repository.
 - The owning repository's story specification, validation record, and local
   `sprint-status.yaml` are authoritative for delivery status and formal
   closure. Never infer closure from another surface's implementation or from
   a matrix row.
 - Read the surface coverage index before selecting the next story. Use it to
   find applicable surfaces, cross-repository gaps, evidence, and shared
-  prerequisites; then follow the story ID to its owning `epics.md` and story
-  artifact. The index must not duplicate acceptance criteria, formal status,
-  or a task queue.
+  prerequisites; then follow the story ID to its owning repository's local
+  story index, tracker, and artifact. The index must not duplicate acceptance
+  criteria, formal status, or a task queue.
 - Update the surface coverage index only when surface applicability, evidence,
   ownership, or a cross-surface dependency changes. Keep it compact: story
   IDs, owner, evidence/dependency, and links to the authoritative artifacts.
 - After a planning change is merged, run the BMad sprint-planning readiness
-  gate and refresh the local sprint tracker from the surface-specific epics
-  before selecting new implementation work. Preserve the matrix as planning
-  context, not as a replacement for the tracker.
+  gate and update this repository's local tracker only for TUI-owned surfaces
+  before selecting new implementation work. Use
+  `scripts/render_surface_status.py` for a read-only cross-repository roll-up;
+  preserve the matrix as applicability and dependency context, not as a
+  replacement for any local tracker.
 - The BMad framework under `_bmad/` and local tool integrations under
   `.agents/`, `.claude/`, and `.opencode/` are tooling, not product scope by
   themselves. Rendered workflow/cache output is transient. Include these
@@ -187,9 +191,10 @@ surface reconciliation is completed. Until she explicitly reopens the board:
   strongest useful coverage across incomplete surfaces and settled
   prerequisites; then choose the smallest independently verifiable vertical
   slice. Keep one active slice per repository/workstream.
-- Use local `sprint-status.yaml` and story artifacts to record delivery state.
-  The surface coverage index records cross-surface evidence and dependencies,
-  not formal closure in another repository and not a replacement task queue.
+- Use local `sprint-status.yaml` and story artifacts to record delivery state
+  for TUI-owned surfaces. Sibling repositories own their own trackers. The
+  surface coverage index records cross-surface evidence and dependencies, not
+  formal closure in another repository and not a replacement task queue.
 - Do not use this pause to create a competing backlog in `docs/plans/` or
   `.hermes/plans/`; select from the existing BMad epics/stories and record any
   prioritization decision in the appropriate local implementation artifact.

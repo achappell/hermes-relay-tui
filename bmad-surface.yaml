@@ -1,0 +1,15 @@
+schema_version: 1
+repository: hermes-relay-tui
+planning: bmad
+surfaces:
+  - id: T
+    name: Textual TUI
+  - id: P
+    name: ReSpeaker Puck
+  - id: E
+    name: ESP32 Touch Display
+  - id: W/K
+    name: Web and iPad voice/display
+status_tracker: _bmad-output/implementation-artifacts/sprint-status.yaml
+story_index: _bmad-output/planning-artifacts/epics.md
+coordination_authority: product-hub
