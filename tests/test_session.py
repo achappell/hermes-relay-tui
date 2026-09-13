@@ -3,8 +3,10 @@ import json
 import types
 
 import pytest
+from websockets.exceptions import ConnectionClosed
 
 import config
+from client import TransportError
 from session import HermesSession, SessionNotReadyError, UnsupportedTransportError
 
 
@@ -127,6 +129,38 @@ async def test_wait_for_disconnect_propagates_cancellation(monkeypatch):
     assert session.is_connected() is True
 
 
+@pytest.mark.parametrize(
+    "failure",
+    [
+        ConnectionClosed(None, None),
+        ConnectionError("socket closed"),
+        OSError("socket closed"),
+        EOFError("end of stream"),
+        asyncio.TimeoutError(),
+    ],
+)
+async def test_wait_for_disconnect_wraps_close_boundary_failures(monkeypatch, failure):
+    class FailingWaitWebSocket(FakeWebSocket):
+        async def wait_closed(self):
+            raise failure
+
+    websocket = FailingWaitWebSocket(
+        [json.dumps({"type": "hello_ack", "chat_id": "chat"})]
+    )
+    monkeypatch.setattr(
+        config,
+        "connect_factory",
+        lambda: lambda *args, **kwargs: FakeContextManager(websocket),
+    )
+    session = HermesSession(make_args())
+    await session.connect()
+
+    with pytest.raises(TransportError) as caught:
+        await session.wait_for_disconnect()
+
+    assert caught.value.cause_type == type(failure).__name__
+
+
 async def test_session_rejects_a_transport_without_wait_closed_before_hello(monkeypatch):
     class UnsupportedWebSocket:
         async def send(self, data):
@@ -146,6 +180,29 @@ async def test_session_rejects_a_transport_without_wait_closed_before_hello(monk
     with pytest.raises(UnsupportedTransportError, match="wait_closed"):
         await session.connect()
 
+    assert session.ws is None
+    assert session.is_connected() is False
+
+
+async def test_session_rejects_a_non_awaitable_wait_closed_before_hello(monkeypatch):
+    class NonAwaitableWebSocket(FakeWebSocket):
+        def wait_closed(self):
+            return None
+
+    websocket = NonAwaitableWebSocket(
+        [json.dumps({"type": "hello_ack", "chat_id": "chat"})]
+    )
+    monkeypatch.setattr(
+        config,
+        "connect_factory",
+        lambda: lambda *args, **kwargs: FakeContextManager(websocket),
+    )
+    session = HermesSession(make_args())
+
+    with pytest.raises(UnsupportedTransportError, match="awaitable"):
+        await session.connect()
+
+    assert websocket.sent == []
     assert session.ws is None
     assert session.is_connected() is False
 
@@ -269,6 +326,8 @@ async def test_session_uses_the_selected_profile_token_source_without_generic_fa
     assert captured["kwargs"]["extra_headers"] == {
         "Authorization": "Bearer profile-token"
     }
+    assert captured["kwargs"]["ping_interval"] == config.WEBSOCKET_PING_INTERVAL
+    assert captured["kwargs"]["ping_timeout"] == config.WEBSOCKET_PING_TIMEOUT
 
 
 async def test_session_does_not_claim_interrupt_support_when_capability_is_absent(

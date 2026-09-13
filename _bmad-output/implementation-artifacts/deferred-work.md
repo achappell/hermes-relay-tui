@@ -157,6 +157,23 @@
 - source_spec: `_bmad-output/implementation-artifacts/spec-1-p-5-complete-streamed-response-playback-without-underrun.md`
   summary: Exchange and authenticate the firmware build identity with the bridge.
   evidence: The bridge records the configured `respeaker-lite-p5` deployment label and the helper logs the same identity, but no P-5 protocol handshake proves which image is connected. A multi-firmware identity contract would expand the device-administration boundary beyond this story.
+## Deferred from: code review of spec-1-t-6-detect-idle-relay-loss-and-present-honest-recovery-without-replaying-an-uncertain-turn (2026-09-12)
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-1-t-6-detect-idle-relay-loss-and-present-honest-recovery-without-replaying-an-uncertain-turn.md`
+  summary: Carry wake and barge-in callback identity through session replacement.
+  evidence: The T-6 review found that wake and barge callbacks still resolve app state dynamically. T-6 already disarms wake resources before recovery, but complete callback ownership requires the separate T-5 lifecycle slice and must not alter the frozen idle-loss contract.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-1-t-6-detect-idle-relay-loss-and-present-honest-recovery-without-replaying-an-uncertain-turn.md`
+  summary: Bound interrupt-fallback session cleanup through the retained close helper.
+  evidence: The fallback at `app.py:3681` directly awaits the retired session's close. That path predates T-6 and belongs with interrupt/shutdown cleanup rather than idle-loss detection.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-1-t-6-detect-idle-relay-loss-and-present-honest-recovery-without-replaying-an-uncertain-turn.md`
+  summary: Do not reuse a session while a timed-out handshake close is still settling.
+  evidence: The retry loop reuses the same session after bounded cleanup times out. This is pre-existing retry/transport-lifecycle behavior and needs a dedicated regression slice before changing session replacement policy.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-1-t-6-detect-idle-relay-loss-and-present-honest-recovery-without-replaying-an-uncertain-turn.md`
+  summary: Separate the unrelated Puck reader-release test change from the T-6 delivery.
+  evidence: `tests/test_puck_bridge.py` changed in the merged T-6 commit, but the hunk belongs to the Puck response-stream workstream and should be reviewed or split there rather than altered during TUI recovery closure.
 
 ## Deferred from: first Android device session against the live relay (2026-09-12)
 
@@ -191,7 +208,6 @@
 - source_spec: `hermes-relay-android/_bmad-output/implementation-artifacts/spec-a-4-relay-configuration.md`
   summary: OPEN 2026-09-12 -- Android release engineering: the `versionCode` formula caps minor and patch at 99, and `v0.2.0` still publishes an uninstallable unsigned APK.
   evidence: `versionCode` is derived as `major * 10000 + minor * 100 + patch` and fails the build beyond 99 deliberately, because a silent rollover would produce a lower code than the previous release and break in-place upgrades; widen it before any `0.100.x`. The `v0.2.0` release predates signing, so its asset cannot be rebuilt from its own tree; the tag would have to move to produce a signed one.
-
 ## Deferred from: 5-A-3 Night Console visual design pass, first device pass (2026-09-12)
 
 - source_spec: `hermes-relay-android/_bmad-output/implementation-artifacts/android-visual-design-pass.md`

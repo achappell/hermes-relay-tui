@@ -41,7 +41,7 @@ from textual.widgets import Footer, Header, Input, Static, TextArea
 from websockets.exceptions import ConnectionClosed
 
 import config
-from client import TransportError
+from client import TransportError, transport_error_for
 import earcons as earcons_module
 import handsfree
 from attachments import (
@@ -52,7 +52,14 @@ from attachments import (
     format_attachment_preview,
     resolve_attachment,
 )
-from audio import PCMPlayer, audio_device_list, audio_path, read_wav, write_wav
+from audio import (
+    DEFAULT_PREBUFFER_SECONDS,
+    PCMPlayer,
+    audio_device_list,
+    audio_path,
+    read_wav,
+    write_wav,
+)
 from clipboard import ClipboardError, copy_text
 from commands import (
     COMMAND_REGISTRY,
@@ -79,7 +86,12 @@ from history import (
 )
 from help_screen import HelpModal
 from prompts import PendingPrompt
-from session import HermesSession, SessionNotReadyError, SessionProtocol
+from session import (
+    HermesSession,
+    SessionNotReadyError,
+    SessionProtocol,
+    UnsupportedTransportError,
+)
 from session_picker import SessionPickerModal
 from shell import (
     ShellExecutionError,
@@ -810,15 +822,17 @@ class HermesStreamingApp(App):
             diagnostic_logger.debug("app.audio.unavailable reason=%s", reason)
         self._refresh_voice_status()
 
-    def _player_is_playing(self) -> bool:
+    def _player_is_playing(self, player: Any | None = None) -> bool:
         """Return true only when the output port reports audible playback."""
-        playing = getattr(self.player, "playing", None)
+        player = self.player if player is None else player
+        playing = getattr(player, "playing", None)
         if playing is not None:
             return bool(playing)
-        return bool(getattr(self.player, "active", False))
+        return bool(getattr(player, "active", False))
 
-    def _playback_is_disabled(self) -> bool:
-        return not bool(getattr(self.player, "enabled", True))
+    def _playback_is_disabled(self, player: Any | None = None) -> bool:
+        player = self.player if player is None else player
+        return not bool(getattr(player, "enabled", True))
 
     def _set_connection_state(self, state: str) -> None:
         self.connection_state = state
@@ -989,6 +1003,19 @@ class HermesStreamingApp(App):
 
     def _install_session(self, session: SessionProtocol) -> SessionProtocol:
         """Install a session and give its callbacks a new identity generation."""
+        if self.session is not None:
+            previous_player = self.player
+            self.player = PCMPlayer(
+                enabled=bool(getattr(previous_player, "enabled", True)),
+                output_device=getattr(previous_player, "output_device", None),
+                prebuffer_seconds=float(
+                    getattr(
+                        previous_player,
+                        "prebuffer_seconds",
+                        DEFAULT_PREBUFFER_SECONDS,
+                    )
+                ),
+            )
         self.session = session
         self._session_generation += 1
         self._recovery_session_ready = False
@@ -1058,37 +1085,42 @@ class HermesStreamingApp(App):
 
     def _start_connection_watcher(
         self, session: SessionProtocol, generation: int
-    ) -> None:
+    ) -> bool:
         """Observe close completion without becoming a second websocket reader."""
         if self._shutting_down or not self._session_is_current(session, generation):
-            return
+            return False
         wait_for_disconnect = getattr(session, "wait_for_disconnect", None)
-        # Older test doubles and third-party session adapters can still drive
-        # the TUI; the concrete HermesSession enforces this capability before
-        # hello_ack, so a missing method here is never a live supported path.
-        if not callable(wait_for_disconnect):
+        if not callable(wait_for_disconnect) or not (
+            inspect.iscoroutinefunction(wait_for_disconnect)
+            or inspect.iscoroutinefunction(
+                getattr(wait_for_disconnect, "__call__", None)
+            )
+        ):
             diagnostic_logger.debug("app.connection_watch.unsupported_adapter")
-            return
+            return False
         existing = self._connection_watch_task
         if existing is not None and not existing.done():
             if self._connection_watch_key == (id(session), generation):
-                return
+                return True
             diagnostic_logger.error("app.connection_watch.duplicate_suppressed")
-            return
+            return False
+        watcher_coro = self._watch_connection(session, generation)
         try:
             watcher = asyncio.create_task(
-                self._watch_connection(session, generation),
+                watcher_coro,
                 name=f"watch relay connection {generation}",
             )
         except Exception as exc:
+            watcher_coro.close()
             diagnostic_logger.debug(
                 "app.connection_watch.create_failed type=%s",
                 type(exc).__name__,
             )
-            return
+            return False
         self._connection_watch_task = watcher
         self._connection_watch_key = (id(session), generation)
         self._track_cleanup_task(watcher)
+        return True
 
     async def _watch_connection(
         self, session: SessionProtocol, generation: int
@@ -1112,7 +1144,14 @@ class HermesStreamingApp(App):
                     generation=generation,
                 )
         except Exception as exc:
-            if self._session_is_current(session, generation) and key not in self._expected_close_keys:
+            transport_error = transport_error_for("connection close wait", exc)
+            if transport_error is not None:
+                if self._session_is_current(session, generation) and key not in self._expected_close_keys:
+                    await self._mark_connection_lost(
+                        session=session,
+                        generation=generation,
+                    )
+            elif self._session_is_current(session, generation) and key not in self._expected_close_keys:
                 diagnostic_logger.error(
                     "app.connection_watch.failed type=%s",
                     type(exc).__name__,
@@ -1403,12 +1442,25 @@ class HermesStreamingApp(App):
                         self._set_voice_state(VOICE_DISCONNECTED)
                         return False
                 if self.session.is_connected() and not force and not reconnecting:
+                    session = self.session
+                    if not self._start_connection_watcher(
+                        session,
+                        self._session_generation,
+                    ):
+                        self._set_connection_state(CONNECTION_DISCONNECTED)
+                        self._set_voice_state(VOICE_DISCONNECTED)
+                        self._needs_reconnect = True
+                        self._append_block(
+                            "[error] connection liveness observer unavailable; "
+                            "reconnect required."
+                        )
+                        await self._close_session_with_timeout(
+                            session,
+                            event="app.connect.observer_close",
+                        )
+                        return False
                     self._set_connection_state(CONNECTION_CONNECTED)
                     self._set_voice_state(VOICE_READY)
-                    self._start_connection_watcher(
-                        self.session,
-                        self._session_generation,
-                    )
                     return True
 
                 retries = max(0, int(getattr(self.args, "connect_retries", 3)))
@@ -1444,6 +1496,14 @@ class HermesStreamingApp(App):
                             hello = await session.connect()
                         if not session.is_connected():
                             raise ConnectionError("session did not establish a connection")
+                        session_generation = self._session_generation
+                        if not self._start_connection_watcher(
+                            session,
+                            session_generation,
+                        ):
+                            raise UnsupportedTransportError(
+                                "session does not support an awaitable connection liveness observer"
+                            )
                     except asyncio.CancelledError:
                         self._set_connection_state(CONNECTION_DISCONNECTED)
                         self._set_voice_state(VOICE_DISCONNECTED)
@@ -1452,6 +1512,8 @@ class HermesStreamingApp(App):
                         last_error = exc
                         self._set_connection_state(CONNECTION_DISCONNECTED)
                         self._set_voice_state(VOICE_DISCONNECTED)
+                        if isinstance(exc, UnsupportedTransportError):
+                            self._needs_reconnect = True
                         await self._close_session_with_timeout(
                             session,
                             event="app.connect.session_close",
@@ -1466,7 +1528,6 @@ class HermesStreamingApp(App):
                         )
                         continue
 
-                    session_generation = self._session_generation
                     session_id = (
                         getattr(session, "session_id", None)
                         or getattr(self.args, "session_id", "session")
@@ -1476,7 +1537,6 @@ class HermesStreamingApp(App):
                     self._set_voice_state(VOICE_READY)
                     self._needs_reconnect = False
                     self._recovery_session_ready = False
-                    self._start_connection_watcher(session, session_generation)
                     conn_details = []
                     if self._profiles_configured:
                         conn_details.append(f"profile {self._active_profile_name}")
@@ -3941,16 +4001,14 @@ class HermesStreamingApp(App):
                         + (bound_turn.reason or "unknown")
                     )
             if timeout > 0:
-                turn_completed = await asyncio.wait_for(
-                    self._consume_turn(
+                async with asyncio.timeout(timeout):
+                    turn_completed = await self._consume_turn(
                         events,
                         index,
                         generation=index,
                         session=session,
                         session_generation=session_generation,
-                    ),
-                    timeout,
-                )
+                    )
             else:
                 turn_completed = await self._consume_turn(
                     events,
@@ -4111,24 +4169,24 @@ class HermesStreamingApp(App):
             self._loss_in_flight_keys.discard(key)
             self._connection_loss_in_flight = bool(self._loss_in_flight_keys)
 
-    async def _close_player(self, *, abort: bool = False) -> None:
+    async def _close_player(
+        self, *, abort: bool = False, player: Any | None = None
+    ) -> None:
         """Stop playback without blocking Textual's event loop.
 
         sounddevice's ``stop`` may wait for the device buffer to drain. That
         wait must not prevent transcript refreshes, especially the reasoning
         preview that is meant to remain visible while a reply is spoken.
         """
-        if (
-            not (abort or self._shutting_down)
-            and not getattr(self.player, "active", False)
-        ):
+        player = self.player if player is None else player
+        if not (abort or self._shutting_down) and not getattr(player, "active", False):
             return
         if abort or self._shutting_down:
-            close = getattr(self.player, "abort", None)
+            close = getattr(player, "abort", None)
             if not callable(close):
-                close = self.player.close
+                close = player.close
         else:
-            close = self.player.close
+            close = player.close
         await asyncio.to_thread(close)
 
     async def _stop_caption_clock(self) -> None:
@@ -4165,6 +4223,7 @@ class HermesStreamingApp(App):
             if session_generation is None
             else session_generation
         )
+        player = self.player
         audio = bytearray()
         audio_format: Optional[tuple[int, int, int]] = None
         audio_file = bytearray()
@@ -4254,7 +4313,7 @@ class HermesStreamingApp(App):
             return len(audio) / bytes_per_second
 
         def playback_position() -> Optional[float]:
-            position = getattr(self.player, "playback_position", None)
+            position = getattr(player, "playback_position", None)
             if callable(position):
                 position = position()
             try:
@@ -4264,7 +4323,7 @@ class HermesStreamingApp(App):
             return position if math.isfinite(position) and position >= 0 else None
 
         def playback_snapshot() -> dict[str, Any]:
-            snapshot = getattr(self.player, "playback_snapshot", None)
+            snapshot = getattr(player, "playback_snapshot", None)
             if callable(snapshot):
                 try:
                     value = snapshot()
@@ -4274,8 +4333,8 @@ class HermesStreamingApp(App):
                     return value
             position = playback_position()
             return {
-                "active": bool(getattr(self.player, "active", False)),
-                "playing": bool(getattr(self.player, "active", False)),
+                "active": bool(getattr(player, "active", False)),
+                "playing": bool(getattr(player, "active", False)),
                 "playback_position": position if position is not None else -1.0,
                 "scheduled_audio": 0.0,
                 "pending_audio": 0.0,
@@ -4332,7 +4391,7 @@ class HermesStreamingApp(App):
                 visible_assistant_text = ""
 
             candidate: Optional[str]
-            if complete or not audio_started or not self.player.active:
+            if complete or not audio_started or not player.active:
                 candidate = assistant_text
             else:
                 position = playback_position()
@@ -4383,11 +4442,11 @@ class HermesStreamingApp(App):
             self._refresh_transcript()
 
         async def caption_clock() -> None:
-            while self.player.active and self._session_is_current(
+            while player.active and self._session_is_current(
                 session, session_generation
             ):
                 await asyncio.sleep(0.05)
-                if self.player.active and self._session_is_current(
+                if player.active and self._session_is_current(
                     session, session_generation
                 ):
                     log_playback_sample()
@@ -4434,7 +4493,7 @@ class HermesStreamingApp(App):
                     "app.event.stale_session generation=%s",
                     session_generation,
                 )
-                await self._close_player(abort=True)
+                await self._close_player(abort=True, player=player)
                 return False
             event_turn_id = event.get("turn_id")
             if event_turn_id and not turn_id_for_audio:
@@ -4498,7 +4557,7 @@ class HermesStreamingApp(App):
                     text_delta = str(event.get("text") or "")
                     assistant_text += text_delta
                 render_assistant()
-                if self.player.active:
+                if player.active:
                     self._last_tts_text = assistant_text
             elif kind == "prompt_request":
                 self._pending_prompt = PendingPrompt.from_event(event)
@@ -4570,7 +4629,7 @@ class HermesStreamingApp(App):
             elif kind == "audio_start":
                 audio_segment_index += 1
                 audio_chunk_index = 0
-                was_active = bool(self.player.active)
+                was_active = bool(player.active)
                 before = playback_snapshot()
                 audio_started = True
                 audio_duration_final = False
@@ -4579,8 +4638,8 @@ class HermesStreamingApp(App):
                 # Hermes may split one answer into several PCM segments. Keep
                 # one output stream, and therefore one continuous playback
                 # clock, across those boundaries.
-                if not self.player.active:
-                    self.player.start(audio_format)
+                if not player.active:
+                    player.start(audio_format)
                 after = playback_snapshot()
                 diagnostic_logger.debug(
                     "audio.segment.start mono_ms=%d turn_index=%s segment_index=%d "
@@ -4607,15 +4666,15 @@ class HermesStreamingApp(App):
                         audio_format[2],
                         bool(after.get("active", False)),
                     )
-                if self.player.active:
+                if player.active:
                     start_caption_clock()
-                playback_failed = playback_failed or bool(self.player.failure)
-                played_live = played_live or self.player.active
-                if self._player_is_playing():
+                playback_failed = playback_failed or bool(player.failure)
+                played_live = played_live or player.active
+                if self._player_is_playing(player):
                     self._set_voice_state(VOICE_SPEAKING)
-                elif self._playback_is_disabled():
+                elif self._playback_is_disabled(player):
                     self._mark_audio_unavailable("playback disabled")
-                elif self.player.failure:
+                elif player.failure:
                     self._mark_audio_unavailable("playback failed")
                 else:
                     self._set_voice_state(VOICE_BUFFERING)
@@ -4640,15 +4699,15 @@ class HermesStreamingApp(App):
                     bool(before.get("active", False)),
                 )
                 audio.extend(chunk)
-                if self.player.active:
+                if player.active:
                     if not self._session_is_current(session, session_generation):
-                        await self._close_player(abort=True)
+                        await self._close_player(abort=True, player=player)
                         return False
-                    await asyncio.to_thread(self.player.write, chunk)
+                    await asyncio.to_thread(player.write, chunk)
                     if self._session_is_current(session, session_generation):
                         render_assistant()
                     else:
-                        await self._close_player(abort=True)
+                        await self._close_player(abort=True, player=player)
                         return False
                 after = playback_snapshot()
                 diagnostic_logger.debug(
@@ -4670,12 +4729,12 @@ class HermesStreamingApp(App):
                     bool(after.get("active", False)),
                     bool(after.get("playing", False)),
                 )
-                playback_failed = playback_failed or bool(self.player.failure)
-                if self.player.failure:
+                playback_failed = playback_failed or bool(player.failure)
+                if player.failure:
                     self._mark_audio_unavailable("playback failed")
-                elif self._player_is_playing():
+                elif self._player_is_playing(player):
                     self._set_voice_state(VOICE_SPEAKING)
-                elif not self._playback_is_disabled():
+                elif not self._playback_is_disabled(player):
                     self._set_voice_state(VOICE_BUFFERING)
             elif kind == "audio_end":
                 # This closes one PCM segment, not necessarily the response.
@@ -4700,7 +4759,7 @@ class HermesStreamingApp(App):
                 # An abort is an intentional end to the remote audio stream,
                 # not a failed voice turn. The following turn_interrupted
                 # event owns the transcript boundary.
-                await self._close_player(abort=True)
+                await self._close_player(abort=True, player=player)
                 self._set_voice_state(VOICE_INTERRUPTED)
             elif kind == "audio_file_start":
                 audio_started = True
@@ -4715,7 +4774,7 @@ class HermesStreamingApp(App):
                     audio_file_format = (int(metadata[0]), int(metadata[1]), int(metadata[2]))
                 else:
                     audio_file_format = None
-                if self._playback_is_disabled():
+                if self._playback_is_disabled(player):
                     self._mark_audio_unavailable("playback disabled")
                 else:
                     self._set_voice_state(VOICE_BUFFERING)
@@ -4745,34 +4804,34 @@ class HermesStreamingApp(App):
                 audio_format = file_format
                 audio_duration_final = True
                 if not self._session_is_current(session, session_generation):
-                    await self._close_player(abort=True)
+                    await self._close_player(abort=True, player=player)
                     return False
-                self.player.start(file_format)
-                playback_failed = playback_failed or bool(self.player.failure)
-                played_live = played_live or self.player.active
-                if self.player.active:
+                player.start(file_format)
+                playback_failed = playback_failed or bool(player.failure)
+                played_live = played_live or player.active
+                if player.active:
                     if not self._session_is_current(session, session_generation):
-                        await self._close_player(abort=True)
+                        await self._close_player(abort=True, player=player)
                         return False
-                    await asyncio.to_thread(self.player.write, file_audio)
+                    await asyncio.to_thread(player.write, file_audio)
                     if not self._session_is_current(session, session_generation):
-                        await self._close_player(abort=True)
+                        await self._close_player(abort=True, player=player)
                         return False
-                    playback_failed = playback_failed or bool(self.player.failure)
-                    if self.player.failure:
+                    playback_failed = playback_failed or bool(player.failure)
+                    if player.failure:
                         self._mark_audio_unavailable("playback failed")
-                    elif self._player_is_playing():
+                    elif self._player_is_playing(player):
                         self._set_voice_state(VOICE_SPEAKING)
-                    elif not self._playback_is_disabled():
+                    elif not self._playback_is_disabled(player):
                         self._set_voice_state(VOICE_BUFFERING)
-                    await self._close_player()
-                elif self._playback_is_disabled():
+                    await self._close_player(player=player)
+                elif self._playback_is_disabled(player):
                     self._mark_audio_unavailable("playback disabled")
-                elif self.player.failure:
+                elif player.failure:
                     self._mark_audio_unavailable("playback failed")
                 else:
                     self._set_voice_state(VOICE_BUFFERING)
-                render_assistant(complete=not self.player.active)
+                render_assistant(complete=not player.active)
             elif kind == "speech_timing":
                 try:
                     timing = SpeechTiming.from_event(event)
@@ -4810,7 +4869,7 @@ class HermesStreamingApp(App):
                 return False
             elif kind == "turn_interrupted":
                 finalize_failed_turn()
-                await self._close_player(abort=True)
+                await self._close_player(abort=True, player=player)
                 complete_thinking()
                 self.transcript.finish_stream()
                 self._append_block("[interrupted]")
@@ -4820,18 +4879,24 @@ class HermesStreamingApp(App):
                     self._refresh_prompt_panel()
                 return False
             elif kind == "turn_end":
-                turn_completed = True
                 complete_thinking()
                 log_playback_sample(force=True)
                 # turn_end can arrive while the final PCM is still queued in
                 # the output device. Drain it before committing the complete
                 # caption, otherwise the last duration-fallback clause jumps
                 # onto the screen at the remote turn boundary.
-                await self._close_player()
-                if not self._session_is_current(session, session_generation):
-                    await self._close_player(abort=True)
+                await self._close_player(player=player)
+                async with self._connection_lock:
+                    completion_allowed = (
+                        self._session_is_current(session, session_generation)
+                        and not self._connection_loss_in_flight
+                        and self.connection_state != CONNECTION_DISCONNECTED
+                    )
+                if not completion_allowed:
+                    await self._close_player(abort=True, player=player)
                     return False
-                playback_failed = playback_failed or bool(self.player.failure)
+                turn_completed = True
+                playback_failed = playback_failed or bool(player.failure)
                 if playback_failed and audio_started:
                     self._mark_audio_unavailable("playback failed")
                 render_assistant(complete=True)
@@ -4844,7 +4909,6 @@ class HermesStreamingApp(App):
                     played_live,
                     playback_failed,
                 )
-                turn_completed = True
                 continuous_wake = (
                     self.wake_armed
                     and self._wake_coordinator is not None
@@ -4864,7 +4928,7 @@ class HermesStreamingApp(App):
                 not self._session_is_current(session, session_generation)
                 or self.connection_state == CONNECTION_DISCONNECTED
             ):
-                await self._close_player(abort=True)
+                await self._close_player(abort=True, player=player)
                 return False
             error_text = "turn ended without a completion event"
             self.domain.apply_event(

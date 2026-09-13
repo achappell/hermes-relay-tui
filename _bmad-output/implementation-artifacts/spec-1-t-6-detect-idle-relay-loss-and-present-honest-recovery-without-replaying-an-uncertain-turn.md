@@ -69,7 +69,7 @@ At network read and close boundaries, only `ConnectionClosed`, `ConnectionError`
 **Execution:**
 - [x] `config.py`, `client.py`, and `session.py` — implement fixed keepalive settings, the explicit transport boundary, and the wait-for-close session contract — keep the core UI-independent and legacy-compatible.
 - [x] `app.py` — add one generation-guarded watcher, idempotent loss handling, bounded fresh-session recovery, serialized FIFO admission, expected-close suppression, and stale output/prompt rejection — preserve T-4 no-replay behavior.
-- [x] `domain.py` and `audio.py` — enforce stale event/PCM/callback isolation and abort old playback — keep replacement presentation uncontaminated.
+- [x] `domain.py` and `audio.py` — enforce stale event/PCM/callback isolation and abort old playback — keep replacement presentation uncontaminated; the app-owned playback boundary now isolates stale PCM without changing those existing authorities.
 - [x] `tests/test_config.py`, `tests/test_client.py`, `tests/test_session.py`, `tests/test_tui_domain.py`, and `tests/test_app.py` — add fake transport tests for every matrix path while preserving explicit reconnect/streaming coverage.
 
 **Acceptance Criteria:**
@@ -108,3 +108,30 @@ At network read and close boundaries, only `ConnectionClosed`, `ConnectionError`
 
 **Manual checks (if no CLI):**
 - With an unavailable fake endpoint, verify idle loss by the configured bound, preserve uncertain context, send no old prompt, then confirm one fresh post-recovery send.
+
+### Review Findings
+
+- [x] [Review][Patch] Enforce the close-observer contract before publishing connected state, including awaitable `wait_closed()`, fail-closed watcher installation, and coverage of current/legacy keepalive kwargs, raw close-boundary transport conversion, recovered watcher adoption, expected-close races, and non-turn writes [session.py:187, app.py:1059, tests/test_config.py:157] — patched and covered by session, app, client, and config-boundary tests.
+- [x] [Review][Patch] Keep the first lazy turn-stream send inside the loss-admission boundary so a timeout wrapper cannot schedule a send after recovery has begun [app.py:3943] — patched with task-local `asyncio.timeout()` consumption and a deterministic admission race test.
+- [x] [Review][Patch] Serialize `turn_end` completion against an already-signalled connection loss so an uncertain turn cannot be presented as completed [app.py:4822] — patched with the connection lock and loss-state check at the completion boundary.
+- [x] [Review][Patch] Give each turn an owned playback object and route stale cleanup, queued PCM writes, and fallback playback to that owner so an old consumer cannot abort or feed replacement audio [app.py:4432, app.py:4643] — patched with player rotation on session replacement and turn-local playback ownership.
+- [x] [Review][Defer] Carry wake and barge-in callback identity through session replacement [app.py:2098, app.py:2282] — deferred: pre-existing wake-resource lifecycle work owned by T-5; T-6 disarms the listener before recovery and this requires a separate callback-ownership slice.
+- [x] [Review][Defer] Bound interrupt-fallback session cleanup through the retained close helper [app.py:3681] — deferred: pre-existing interrupt teardown path; it is outside the T-6 idle-loss boundary and should be handled with the broader shutdown/interrupt cleanup work.
+- [x] [Review][Defer] Do not reuse a session while a timed-out handshake close is still settling [app.py:1441] — deferred: pre-existing retry/cleanup behavior; changing session replacement policy needs its own transport-lifecycle regression slice.
+- [x] [Review][Defer] Separate the unrelated Puck reader-release test change from the T-6 delivery [tests/test_puck_bridge.py:1529] — deferred: already-merged Puck-surface work; review and any commit-boundary cleanup belong to the Puck workstream.
+
+#### Rejected
+
+- [Review][Rejected] Add raw `OSError` to `_is_transport_error()` — owned websocket reads and writes are converted by `client.py`, and `HermesSession.wait_for_disconnect()` converts close-wait failures; the app intentionally receives `TransportError`, while local playback `OSError` must not claim relay loss.
+- [Review][Rejected] Add a prompt-response lock to prevent crossing a replacement — prompt responses already hold the originating session and generation, and every post-await UI mutation checks both; a late write can affect only the retired session, not the replacement.
+- [Review][Rejected] Rework `_submit_text()` for a FIFO loss race — `_run_turn()` rechecks loss admission and reinserts definitely-unsent work at index zero, preserving the existing queue order.
+- [Review][Rejected] Add another recovery hint for structured-prompt failures — prompt responses occur during the active turn, so `_mark_connection_lost()` suppresses its idle-only hint and `_answer_prompt()` emits the single prompt error hint.
+- [Review][Rejected] Change `domain.py` or `audio.py` solely because the T-6 diff does not touch them — domain stale-event rejection already exists, and the playback defect is an app-owned shared-player race that the playback-ownership patch addresses without changing the frozen contract.
+- [Review][Rejected] Treat the historical `302.5 KiB` review-size claim as proof of a code defect — the isolated T-6 parent-to-commit diff is 114,944 bytes across the T-6 changes; the discrepancy is a review-record limitation, not runtime behavior.
+
+### Review Closure Verification (2026-09-12)
+
+- `../../venv/bin/pytest -q tests/test_app.py tests/test_session.py tests/test_client.py tests/test_config.py` — `358 passed` in 44.01s.
+- `../../venv/bin/pytest` — `1,082 passed, 1 warning` in 124.91s; the warning is the existing `websockets.legacy` deprecation.
+- `python3 -m py_compile app.py session.py tests/test_app.py tests/test_session.py tests/test_client.py` — passed.
+- `git diff --check` — passed before final tracker reconciliation.
