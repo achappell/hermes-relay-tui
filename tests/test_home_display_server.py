@@ -11,7 +11,11 @@ from websockets.exceptions import ConnectionClosed, InvalidHandshake
 from websockets.legacy.client import connect
 
 import home_display.server as server_module
-from home_display.server import DisplayServer, load_tls_context
+from home_display.server import (
+    BrowserProfileRouteResult,
+    DisplayServer,
+    load_tls_context,
+)
 from home_display.state import DisplayStatePublisher
 
 
@@ -193,6 +197,133 @@ async def test_server_dispatches_browser_voice_turn_text(tmp_path):
         assert calls == ["what is the weather?"]
     finally:
         await server.close()
+
+
+@pytest.mark.asyncio
+async def test_legacy_voice_callback_drops_wake_bearing_frames(tmp_path):
+    (tmp_path / "index.html").write_text("ok", encoding="utf-8")
+    calls: list[str] = []
+
+    async def on_voice_turn(text: str) -> None:
+        calls.append(text)
+
+    server = DisplayServer(
+        DisplayStatePublisher(),
+        tmp_path,
+        on_voice_turn=on_voice_turn,
+    )
+    info = await server.start()
+    try:
+        async with connect(info.websocket_url, origin=info.http_url) as socket:
+            await socket.recv()
+            await socket.send(json.dumps({
+                "type": "voice_turn",
+                "schema": 1,
+                "text": "should be dropped",
+                "wake_phrase": "hey skippy",
+            }))
+            await socket.send(json.dumps({
+                "type": "voice_turn",
+                "schema": 1,
+                "text": "legacy turn",
+            }))
+            await asyncio.sleep(0.01)
+        assert calls == ["legacy turn"]
+    finally:
+        await server.close()
+
+
+@pytest.mark.asyncio
+async def test_server_dispatches_profile_route_ack_and_wake_phrase(tmp_path):
+    (tmp_path / "index.html").write_text("ok", encoding="utf-8")
+    routes: list[str] = []
+    turns: list[tuple[str, str | None]] = []
+
+    class Binding:
+        publisher = DisplayStatePublisher()
+
+        async def handle_profile_route(self, wake_phrase: str) -> BrowserProfileRouteResult:
+            routes.append(wake_phrase)
+            return BrowserProfileRouteResult(accepted=True, account="Jensen")
+
+        async def handle_voice_turn(
+            self,
+            text: str,
+            wake_phrase: str | None = None,
+        ) -> None:
+            turns.append((text, wake_phrase))
+
+        async def handle_action(self, _action_id: str, _choice: str) -> None:
+            pass
+
+        async def close(self) -> None:
+            pass
+
+    async def create_binding(_connection_id, _sender):
+        return Binding()
+
+    server = DisplayServer(
+        DisplayStatePublisher(),
+        tmp_path,
+        on_browser_connect=create_binding,
+    )
+    info = await server.start()
+    try:
+        async with connect(info.websocket_url, origin=info.http_url) as socket:
+            await socket.recv()
+            await socket.send(json.dumps({
+                "type": "profile_route",
+                "schema": 1,
+                "request_id": "route-1",
+                "wake_phrase": "hey skippy",
+            }))
+            route_ack = json.loads(await socket.recv())
+            assert route_ack == {
+                "type": "profile_route_ack",
+                "schema": 1,
+                "request_id": "route-1",
+                "accepted": True,
+                "account": "Jensen",
+            }
+
+            await socket.send(json.dumps({
+                "type": "voice_turn",
+                "schema": 1,
+                "text": "what is the weather?",
+                "wake_phrase": "hey skippy",
+            }))
+            await asyncio.sleep(0.01)
+
+        assert routes == ["hey skippy"]
+        assert turns == [("what is the weather?", "hey skippy")]
+    finally:
+        await server.close()
+
+
+def test_server_rejects_malformed_profile_routing_fields():
+    assert DisplayServer._parse_websocket_profile_route(json.dumps({
+        "type": "profile_route",
+        "schema": True,
+        "request_id": "route-1",
+        "wake_phrase": "hey skippy",
+    })) is None
+    assert DisplayServer._parse_websocket_profile_route(json.dumps({
+        "type": "profile_route",
+        "schema": 1,
+        "request_id": "route-1",
+        "wake_phrase": " ",
+    })) is None
+    assert DisplayServer._parse_websocket_voice_turn(json.dumps({
+        "type": "voice_turn",
+        "schema": 1,
+        "text": "question",
+        "wake_phrase": "x" * 129,
+    })) is None
+    assert DisplayServer._parse_websocket_voice_turn(json.dumps({
+        "type": "voice_turn",
+        "schema": True,
+        "text": "question",
+    })) is None
 
 
 @pytest.mark.asyncio

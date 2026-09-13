@@ -47,6 +47,25 @@ BROWSER_SESSION_CAPACITY_REASON = "browser session capacity reached"
 BROWSER_CONTEXT_SETUP_TIMEOUT = 30.0
 MAX_CONNECTION_TASKS = 8
 CONNECTION_TASK_CLEANUP_TIMEOUT = 3.0
+MAX_BROWSER_ROUTE_REQUEST_ID_LENGTH = 64
+MAX_BROWSER_WAKE_PHRASE_LENGTH = 128
+
+
+@dataclass(frozen=True, slots=True)
+class BrowserVoiceTurn:
+    """Validated browser text plus an optional catalog phrase."""
+
+    text: str
+    wake_phrase: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class BrowserProfileRouteResult:
+    """Safe result returned by an appliance-owned profile route."""
+
+    accepted: bool
+    account: str | None = None
+    reason: str | None = None
 
 
 class BrowserAudioSender(Protocol):
@@ -77,7 +96,13 @@ class BrowserSessionBinding(Protocol):
 
     async def handle_action(self, action_id: str, choice: str) -> None: ...
 
-    async def handle_voice_turn(self, text: str) -> None: ...
+    async def handle_voice_turn(
+        self, text: str, wake_phrase: str | None = None
+    ) -> bool | None: ...
+
+    async def handle_profile_route(
+        self, wake_phrase: str
+    ) -> BrowserProfileRouteResult: ...
 
     async def close(self) -> None: ...
 
@@ -622,7 +647,8 @@ class DisplayServer:
                     try:
                         message = incoming.result()
                         action = self._parse_websocket_action(message)
-                        voice_text = self._parse_websocket_voice_turn(message)
+                        voice_turn = self._parse_websocket_voice_turn(message)
+                        profile_route = self._parse_websocket_profile_route(message)
                     except ConnectionClosed:
                         return
                     if binding is not None:
@@ -630,18 +656,36 @@ class DisplayServer:
                             self._track_connection_task(
                                 websocket, binding.handle_action(*action)
                             )
-                        if voice_text is not None:
+                        if profile_route is not None:
                             self._track_connection_task(
-                                websocket, binding.handle_voice_turn(voice_text)
+                                websocket,
+                                self._dispatch_profile_route(
+                                    websocket,
+                                    binding,
+                                    *profile_route,
+                                ),
                             )
+                        if voice_turn is not None:
+                            if voice_turn.wake_phrase is None:
+                                callback = binding.handle_voice_turn(voice_turn.text)
+                            else:
+                                callback = binding.handle_voice_turn(
+                                    voice_turn.text,
+                                    voice_turn.wake_phrase,
+                                )
+                            self._track_connection_task(websocket, callback)
                     else:
                         if action is not None and self._on_action is not None:
                             self._track_connection_task(
                                 websocket, self._on_action(*action)
                             )
-                        if voice_text is not None and self._on_voice_turn is not None:
+                        if (
+                            voice_turn is not None
+                            and voice_turn.wake_phrase is None
+                            and self._on_voice_turn is not None
+                        ):
                             self._track_connection_task(
-                                websocket, self._on_voice_turn(voice_text)
+                                websocket, self._on_voice_turn(voice_turn.text)
                             )
                     incoming = asyncio.create_task(websocket.recv())
 
@@ -783,6 +827,46 @@ class DisplayServer:
             return False
         return True
 
+    async def _dispatch_profile_route(
+        self,
+        websocket: ServerConnection,
+        binding: BrowserSessionBinding,
+        request_id: str,
+        wake_phrase: str,
+    ) -> None:
+        """Resolve one browser route and return its result to that socket."""
+        handler = getattr(binding, "handle_profile_route", None)
+        if not callable(handler):
+            result = BrowserProfileRouteResult(
+                accepted=False,
+                reason="unsupported",
+            )
+        else:
+            try:
+                result = await handler(wake_phrase)
+            except Exception:
+                result = BrowserProfileRouteResult(
+                    accepted=False,
+                    reason="unavailable",
+                )
+            if not isinstance(result, BrowserProfileRouteResult):
+                result = BrowserProfileRouteResult(
+                    accepted=bool(result),
+                    reason=None if result else "unavailable",
+                )
+
+        payload: dict[str, object] = {
+            "type": "profile_route_ack",
+            "schema": 1,
+            "request_id": request_id,
+            "accepted": result.accepted,
+        }
+        if result.accepted and result.account:
+            payload["account"] = result.account[:128]
+        elif not result.accepted and result.reason:
+            payload["reason"] = result.reason[:64]
+        await self._send_connection_json(websocket, payload)
+
     def _forget_connection(self, websocket: ServerConnection) -> None:
         self._state_connections.discard(websocket)
         self._connection_locks.pop(websocket, None)
@@ -820,7 +904,11 @@ class DisplayServer:
             return None
         if not isinstance(payload, dict):
             return None
-        if payload.get("type") != "action" or payload.get("schema") != 1:
+        if (
+            payload.get("type") != "action"
+            or type(payload.get("schema")) is not int
+            or payload.get("schema") != 1
+        ):
             return None
         action_id = payload.get("action_id")
         choice = payload.get("choice")
@@ -834,7 +922,9 @@ class DisplayServer:
         return action_id, choice
 
     @staticmethod
-    def _parse_websocket_voice_turn(message: str | bytes) -> str | None:
+    def _parse_websocket_voice_turn(
+        message: str | bytes,
+    ) -> BrowserVoiceTurn | None:
         if not isinstance(message, (str, bytes)):
             return None
         try:
@@ -843,7 +933,11 @@ class DisplayServer:
             return None
         if not isinstance(payload, dict):
             return None
-        if payload.get("type") != "voice_turn" or payload.get("schema") != 1:
+        if (
+            payload.get("type") != "voice_turn"
+            or type(payload.get("schema")) is not int
+            or payload.get("schema") != 1
+        ):
             return None
         text = payload.get("text")
         if not isinstance(text, str):
@@ -851,7 +945,54 @@ class DisplayServer:
         text = text.strip()
         if not 0 < len(text) <= 4000:
             return None
-        return text
+        wake_phrase: str | None = None
+        if "wake_phrase" in payload:
+            raw_phrase = payload.get("wake_phrase")
+            if (
+                not isinstance(raw_phrase, str)
+                or not 0 < len(raw_phrase) <= MAX_BROWSER_WAKE_PHRASE_LENGTH
+                or any(ord(char) < 32 or ord(char) == 127 for char in raw_phrase)
+            ):
+                return None
+            wake_phrase = raw_phrase.strip()
+            if not wake_phrase:
+                return None
+        return BrowserVoiceTurn(text=text, wake_phrase=wake_phrase)
+
+    @staticmethod
+    def _parse_websocket_profile_route(
+        message: str | bytes,
+    ) -> tuple[str, str] | None:
+        if not isinstance(message, (str, bytes)):
+            return None
+        try:
+            payload = json.loads(message)
+        except (TypeError, ValueError):
+            return None
+        if not isinstance(payload, dict):
+            return None
+        if (
+            payload.get("type") != "profile_route"
+            or type(payload.get("schema")) is not int
+            or payload.get("schema") != 1
+        ):
+            return None
+        request_id = payload.get("request_id")
+        wake_phrase = payload.get("wake_phrase")
+        if (
+            not isinstance(request_id, str)
+            or not 0 < len(request_id) <= MAX_BROWSER_ROUTE_REQUEST_ID_LENGTH
+            or any(char.isspace() for char in request_id)
+            or any(ord(char) < 32 or ord(char) == 127 for char in request_id)
+            or not isinstance(wake_phrase, str)
+            or not 0 < len(wake_phrase) <= MAX_BROWSER_WAKE_PHRASE_LENGTH
+            or any(ord(char) < 32 or ord(char) == 127 for char in wake_phrase)
+        ):
+            return None
+        wake_phrase = wake_phrase.strip()
+        if not wake_phrase:
+            return None
+        return request_id, wake_phrase
 
     @staticmethod
     def _http_response(

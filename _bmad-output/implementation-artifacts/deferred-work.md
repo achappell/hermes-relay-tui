@@ -244,3 +244,7 @@
 - source_spec: `_bmad-output/implementation-artifacts/spec-wk-concurrent-browser-session-isolation.md`
   summary: Run the overlapping-turn and owner-disconnect smoke against the newly deployed WK-2 service on Ops.
   evidence: The public Ops check and two-tab readiness smoke passed, but the currently deployed service predates WK-2, so sending overlapping turns there would not validate this implementation. The local two-client WebSocket, audio, failure, disconnect, prompt, reconnect, capacity, and full-suite checks pass; the deployed-branch gate needs an explicit operator deployment and live Hermes test.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-wk-profile-catalog.md`
+  summary: Deploy the three-profile catalog to Ops and complete the public smoke plus physical three-phrase/two-tab verification.
+  evidence: Local Python/browser tests, Svelte diagnostics, production build, and deployment-script checks pass, but the BMad implementation gate forbids remote SSH/service operations. The live check must be run after an authorized deployment to confirm `hey missy`, `hey skippy`, `hey spark`, wake-only routing, and two simultaneous browser sessions against the active Ops service.

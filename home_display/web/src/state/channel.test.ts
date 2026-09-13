@@ -86,6 +86,123 @@ describe("StateChannel", () => {
     channel.stop();
   });
 
+  it("sends a profile route and resolves it from the matching acknowledgement", async () => {
+    const socket = new FakeSocket();
+    const channel = new StateChannel(
+      "ws://display.test/state",
+      () => {},
+      () => {},
+      () => {},
+      () => socket,
+    );
+
+    channel.start();
+    socket.open();
+    socket.message(rawSnapshot(1));
+    const route = channel.sendProfileRoute("Hey Skippy");
+    expect(JSON.parse(socket.sent[0])).toEqual({
+      type: "profile_route",
+      schema: 1,
+      request_id: "route-1",
+      wake_phrase: "Hey Skippy",
+    });
+
+    socket.message(JSON.stringify({
+      type: "profile_route_ack",
+      schema: 1,
+      request_id: "route-1",
+      accepted: true,
+      account: "Jensen",
+    }));
+    await expect(route).resolves.toBe(true);
+    channel.stop();
+  });
+
+  it("resolves a rejected profile route without accepting an account", async () => {
+    const socket = new FakeSocket();
+    const channel = new StateChannel(
+      "ws://display.test/state",
+      () => {},
+      () => {},
+      () => {},
+      () => socket,
+    );
+
+    channel.start();
+    socket.open();
+    socket.message(rawSnapshot(1));
+    const route = channel.sendProfileRoute("hey alexa");
+    socket.message(JSON.stringify({
+      type: "profile_route_ack",
+      schema: 1,
+      request_id: "route-1",
+      accepted: false,
+      reason: "unknown_phrase",
+    }));
+
+    await expect(route).resolves.toBe(false);
+    channel.stop();
+  });
+
+  it("settles a pending profile route when the socket closes", async () => {
+    const socket = new FakeSocket();
+    const channel = new StateChannel(
+      "ws://display.test/state",
+      () => {},
+      () => {},
+      () => {},
+      () => socket,
+    );
+
+    channel.start();
+    socket.open();
+    socket.message(rawSnapshot(1));
+    const route = channel.sendProfileRoute("hey spark");
+    socket.closeFromServer();
+
+    await expect(route).resolves.toBe(false);
+    channel.stop();
+  });
+
+  it("times out a profile route acknowledgement", async () => {
+    vi.useFakeTimers();
+    const socket = new FakeSocket();
+    const channel = new StateChannel(
+      "ws://display.test/state",
+      () => {},
+      () => {},
+      () => {},
+      () => socket,
+    );
+
+    channel.start();
+    socket.open();
+    socket.message(rawSnapshot(1));
+    const route = channel.sendProfileRoute("hey spark");
+    vi.advanceTimersByTime(10_000);
+
+    await expect(route).resolves.toBe(false);
+    channel.stop();
+  });
+
+  it("rejects an invalid profile route without writing to the socket", async () => {
+    const socket = new FakeSocket();
+    const channel = new StateChannel(
+      "ws://display.test/state",
+      () => {},
+      () => {},
+      () => {},
+      () => socket,
+    );
+
+    channel.start();
+    socket.open();
+    socket.message(rawSnapshot(1));
+    await expect(channel.sendProfileRoute(" ")).resolves.toBe(false);
+    expect(socket.sent).toEqual([]);
+    channel.stop();
+  });
+
   it("sends normalized prompt actions through the hydrated state socket", () => {
     const socket = new FakeSocket();
     const channel = new StateChannel(

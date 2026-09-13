@@ -216,6 +216,73 @@ describe("DisplayBridge", () => {
     bridge.stop();
   });
 
+  it("routes a wake-only phrase through the state channel", async () => {
+    const socket = new FakeSocket();
+    const bridge = new DisplayBridge({
+      url: "ws://display.test/state",
+      onView: () => {},
+      onConnectionState: () => {},
+      socketFactory: () => socket,
+    });
+
+    bridge.start();
+    socket.open();
+    socket.message(JSON.stringify({
+      ...snapshot,
+      state: "idle",
+      sequence: 1,
+      prompt: null,
+      capabilities: undefined,
+    }));
+
+    const route = bridge.routeProfile("Hey Spark");
+    expect(JSON.parse(socket.sent[0])).toEqual({
+      type: "profile_route",
+      schema: 1,
+      request_id: "route-1",
+      wake_phrase: "Hey Spark",
+    });
+    socket.message(JSON.stringify({
+      type: "profile_route_ack",
+      schema: 1,
+      request_id: "route-1",
+      accepted: true,
+      account: "Spark",
+    }));
+    await expect(route).resolves.toBe(true);
+    bridge.stop();
+  });
+
+  it("includes a canonical wake phrase when sending a browser voice turn", async () => {
+    const socket = new FakeSocket();
+    const bridge = new DisplayBridge({
+      url: "ws://display.test/state",
+      onView: () => {},
+      onConnectionState: () => {},
+      socketFactory: () => socket,
+    });
+
+    bridge.start();
+    socket.open();
+    socket.message(JSON.stringify({
+      ...snapshot,
+      state: "idle",
+      sequence: 1,
+      prompt: null,
+      capabilities: undefined,
+    }));
+
+    await expect(bridge.sendVoiceTurn("what is the weather?", "Hey Missy"))
+      .resolves.toBe(true);
+    expect(JSON.parse(socket.sent[0])).toEqual({
+      type: "voice_turn",
+      schema: 1,
+      text: "what is the weather?",
+      wake_phrase: "Hey Missy",
+    });
+    bridge.stop();
+  });
+
   it("re-hydrates a reset reducer after reconnect and ignores stale snapshots", () => {
     vi.useFakeTimers();
     const sockets: FakeSocket[] = [];

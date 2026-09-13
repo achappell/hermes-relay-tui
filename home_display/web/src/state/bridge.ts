@@ -20,7 +20,8 @@ export type { WebSocketLike } from "./channel";
 
 export type ActionTransport = (action: DisplayAction) => Promise<void> | void;
 export type ActionDispatchError = ActionValidationResult | "transport_error";
-export type VoiceTransport = (text: string) => Promise<void> | void;
+export type VoiceTransport = (text: string, wakePhrase?: string) => Promise<void> | void;
+export type VoiceRouteTransport = (wakePhrase: string) => Promise<boolean> | boolean;
 
 const DISPLAY_ACTION_TIMEOUT_MS = 10_000;
 
@@ -36,6 +37,7 @@ export interface DisplayBridgeOptions {
   onAudioEvent?: AudioEventListener;
   onAudioChunk?: AudioChunkListener;
   voiceTransport?: VoiceTransport;
+  profileRouteTransport?: VoiceRouteTransport;
   onVoiceError?: (error: "transport_error") => void;
   socketFactory?: SocketFactory;
 }
@@ -65,6 +67,7 @@ export class DisplayBridge {
   private readonly actionTransport: ActionTransport;
   private readonly onActionError: (error: ActionDispatchError) => void;
   private readonly voiceTransport: VoiceTransport | null;
+  private readonly profileRouteTransport: VoiceRouteTransport | null;
   private readonly onVoiceError: (error: "transport_error") => void;
   private readonly channel: StateChannel;
 
@@ -78,6 +81,7 @@ export class DisplayBridge {
     this.reducer = options.reducer ?? createDisplayReducer();
     this.onActionError = options.onActionError ?? (() => {});
     this.voiceTransport = options.voiceTransport ?? null;
+    this.profileRouteTransport = options.profileRouteTransport ?? null;
     this.onVoiceError = options.onVoiceError ?? (() => {});
 
     this.channel = new StateChannel(
@@ -135,19 +139,31 @@ export class DisplayBridge {
     }
   }
 
-  async sendVoiceTurn(text: string): Promise<boolean> {
+  async sendVoiceTurn(text: string, wakePhrase?: string): Promise<boolean> {
     const normalized = text.trim();
-    if (!normalized || normalized.length > 4000) {
+    const normalizedWakePhrase = wakePhrase === undefined
+      ? undefined
+      : wakePhrase.trim().replace(/\s+/g, " ");
+    if (
+      !normalized ||
+      normalized.length > 4000 ||
+      normalizedWakePhrase !== undefined &&
+        (!normalizedWakePhrase || normalizedWakePhrase.length > 128 || /[\u0000-\u001f\u007f]/.test(normalizedWakePhrase))
+    ) {
       this.deliver(() => this.onVoiceError("transport_error"));
       return false;
     }
 
     try {
       if (this.voiceTransport !== null) {
-        await this.voiceTransport(normalized);
+        if (normalizedWakePhrase === undefined) {
+          await this.voiceTransport(normalized);
+        } else {
+          await this.voiceTransport(normalized, normalizedWakePhrase);
+        }
         return true;
       }
-      if (this.channel.sendVoiceTurn(normalized)) {
+      if (this.channel.sendVoiceTurn(normalized, normalizedWakePhrase)) {
         return true;
       }
     } catch {
@@ -155,6 +171,25 @@ export class DisplayBridge {
     }
     this.deliver(() => this.onVoiceError("transport_error"));
     return false;
+  }
+
+  async routeProfile(wakePhrase: string): Promise<boolean> {
+    const normalized = wakePhrase.trim().replace(/\s+/g, " ");
+    if (
+      !normalized ||
+      normalized.length > 128 ||
+      /[\u0000-\u001f\u007f]/.test(normalized)
+    ) {
+      return false;
+    }
+    try {
+      if (this.profileRouteTransport !== null) {
+        return Boolean(await this.profileRouteTransport(normalized));
+      }
+      return await this.channel.sendProfileRoute(normalized);
+    } catch {
+      return false;
+    }
   }
 
   private deliver(callback: () => void): void {

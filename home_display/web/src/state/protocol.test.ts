@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { parseAction, parseSnapshot } from "./protocol";
+import { parseAction, parseProfileRouteAck, parseSnapshot } from "./protocol";
 
 const snapshot = {
   type: "snapshot",
@@ -172,5 +172,42 @@ describe("parseAction", () => {
     { type: "action", schema: 1, action_id: "sethome", choice: 1 },
   ])("rejects malformed action %#", (raw) => {
     expect(parseAction(raw)).toBeNull();
+  });
+});
+
+describe("parseProfileRouteAck", () => {
+  it("accepts a bounded accepted acknowledgement", () => {
+    expect(parseProfileRouteAck({
+      type: "profile_route_ack",
+      schema: 1,
+      request_id: "route-1",
+      accepted: true,
+      account: "Spark",
+    })).toEqual({
+      type: "profile_route_ack",
+      schema: 1,
+      request_id: "route-1",
+      accepted: true,
+      account: "Spark",
+    });
+  });
+
+  it("rejects malformed or unsafe acknowledgements", () => {
+    const valid = {
+      type: "profile_route_ack",
+      schema: 1,
+      request_id: "route-1",
+      accepted: true,
+    };
+    for (const raw of [
+      { ...valid, schema: true },
+      { ...valid, accepted: 1 },
+      { ...valid, request_id: "route one" },
+      { ...valid, account: "" },
+      { ...valid, account: "x".repeat(129) },
+      { ...valid, reason: "x".repeat(65) },
+    ]) {
+      expect(parseProfileRouteAck(raw)).toBeNull();
+    }
   });
 });
