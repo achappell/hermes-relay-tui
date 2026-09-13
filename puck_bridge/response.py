@@ -24,10 +24,13 @@ way it does rather than being a plain queue:
 
 from __future__ import annotations
 
+import hashlib
 import logging
+import struct
 import threading
 import time
 from collections import deque
+from typing import Callable
 
 logger = logging.getLogger("hermes_relay_tui.puck_bridge.response")
 
@@ -77,15 +80,79 @@ PREBUFFER_SECONDS = 1.5
 # a definite short response beats an indefinite hang.
 STREAM_STALL_SECONDS = 20.0
 
+# The Puck is the real-time consumer. A producer that briefly outruns it may
+# borrow ten source-seconds of memory, but never more. The producer waits in a
+# worker thread when this fills; the Hermes event loop remains free to service
+# the rest of the session.
+MAX_QUEUED_PCM_BYTES = 480_000
+MAX_QUEUE_CHUNK_BYTES = 16_384
+TERMINAL_STATUS_TTL_SECONDS = 60.0
+
+
+def _validate_audio_format(audio_format: tuple[int, int, int]) -> tuple[int, int, int]:
+    """Validate the PCM dimensions before they reach WAV packing or metrics."""
+    if not isinstance(audio_format, (tuple, list)) or len(audio_format) != 3:
+        raise ValueError("audio format must be (sample_rate, channels, sample_width)")
+    sample_rate, channels, sample_width = audio_format
+    if any(
+        isinstance(value, bool) or not isinstance(value, int)
+        for value in (sample_rate, channels, sample_width)
+    ):
+        raise ValueError("audio format dimensions must be integers")
+    if not 1 <= sample_width <= 4:
+        raise ValueError("audio sample width must be between 1 and 4 bytes")
+    if not 1 <= sample_rate <= 0xFFFFFFFF:
+        raise ValueError("audio sample rate is out of range")
+    if not 1 <= channels <= 0xFFFF:
+        raise ValueError("audio channel count is out of range")
+    if sample_rate * channels * sample_width > 0xFFFFFFFF:
+        raise ValueError("audio byte rate is out of range")
+    if channels * sample_width > 0xFFFF:
+        raise ValueError("audio block alignment is out of range")
+    return sample_rate, channels, sample_width
+
+
+class ResponseStreamError(RuntimeError):
+    """Base class for a response that can no longer accept PCM."""
+
+
+class ResponseStreamBackpressure(ResponseStreamError):
+    """The consumer did not make room before the bounded wait expired."""
+
 
 class ResponseStream:
-    """Thread-safe single-response channel: one producer, one consumer."""
+    """Thread-safe single-response channel: one producer, one consumer.
 
-    def __init__(self) -> None:
+    Producer completion and delivery completion are deliberately separate.
+    Hermes can finish while the Puck still has queued PCM; only the consumer
+    may then promote the response to public ``complete`` status.
+    """
+
+    def __init__(
+        self,
+        *,
+        max_queue_bytes: int = MAX_QUEUED_PCM_BYTES,
+        stall_timeout: float = STREAM_STALL_SECONDS,
+        clock: Callable[[], float] | None = None,
+        device_build_identity: str = "unknown",
+    ) -> None:
+        if max_queue_bytes <= 0:
+            raise ValueError("max_queue_bytes must be positive")
+        if stall_timeout <= 0:
+            raise ValueError("stall_timeout must be positive")
         self._cv = threading.Condition()
+        self._clock = clock or time.monotonic
         self._chunks: deque[bytes] = deque()
+        self._queued_bytes = 0
+        self._queue_high_water = 0
+        self._max_queue_bytes = max_queue_bytes
+        self._stall_timeout = stall_timeout
+        self._device_build_identity = device_build_identity
         self._audio_format: tuple[int, int, int] | None = None
-        self._finished = False
+        self._source_terminal: str | None = None
+        self._delivery_terminal: str | None = None
+        self._eof_pending = False
+        self._terminal_at: float | None = None
         self._seq: int | None = None
         # Whether a turn is actually on its way. The device fetches
         # /response as soon as its upload is confirmed, which happens
@@ -103,6 +170,19 @@ class ResponseStream:
         # 2026-09-11), which is exactly that shape. A second reader is
         # refused rather than silently corrupting the first.
         self._reader_active = False
+        self._reader_seq: int | None = None
+        self._source_bytes = 0
+        self._source_hash = hashlib.sha256()
+        self._delivered_bytes = 0
+        self._delivered_hash = hashlib.sha256()
+        self._response_started_at = self._clock()
+        self._first_pcm_at: float | None = None
+        self._last_source_progress = self._response_started_at
+        self._last_consumer_progress = self._response_started_at
+        self._producer_gap_max = 0.0
+        self._stall_duration = 0.0
+        self._terminal_reason: str | None = None
+        self._response_ended_at: float | None = None
 
     # -- producer side (the turn) -----------------------------------------
 
@@ -121,17 +201,36 @@ class ResponseStream:
         corrupt one.
         """
         with self._cv:
-            if self._reader_active:
+            if (
+                self._reader_active
+                or self._expecting
+                or self._eof_pending
+            ):
+                return False
+            # A response that finished at Hermes but was never fetched has no
+            # active reader left to release it. Once the next capture is
+            # admitted, its queued tail is stale by definition; discard it
+            # before resetting the owner so one lost fetch cannot poison every
+            # later response.
+            if self._queued_bytes and self._source_terminal != "complete":
+                return False
+            if seq is not None and self._seq is not None and seq <= self._seq:
                 return False
             self._expecting = True
             self._audio_format = None
-            self._finished = False
-            self._chunks.clear()
+            self._source_terminal = None
+            self._delivery_terminal = None
+            self._eof_pending = False
+            self._terminal_at = None
+            self._terminal_reason = None
+            self._response_ended_at = None
+            self._clear_queue_locked()
             self._seq = seq
+            self._reset_metrics_locked()
             self._cv.notify_all()
             return True
 
-    def abandon(self) -> None:
+    def abandon(self, seq: int | None = None) -> bool:
         """Declare that no audio is coming after all (no turn, or it failed).
 
         A no-op while a reader is active, for the mirror reason `expect()`
@@ -139,11 +238,13 @@ class ResponseStream:
         answer that is still being delivered.
         """
         with self._cv:
-            if self._reader_active:
-                return
-            self._expecting = False
-            self._finished = True
-            self._cv.notify_all()
+            if (
+                not self._matches_locked(seq)
+                or self._reader_active
+                or self._eof_pending
+            ):
+                return False
+            return self._mark_unavailable_locked()
 
     @property
     def expecting(self) -> bool:
@@ -165,51 +266,383 @@ class ResponseStream:
         is the operation that starts a genuinely new response and clears the
         old body.
         """
+        audio_format = _validate_audio_format(audio_format)
         with self._cv:
+            if self._seq is None:
+                self._seq = seq
+                self._expecting = True
+                self._reset_metrics_locked()
+            elif self._seq != seq:
+                raise ValueError(
+                    "response sequence changed while audio was streaming"
+                )
+            if self._source_terminal is not None or self._eof_pending:
+                raise ResponseStreamError("response is already terminal")
             if self._audio_format is not None:
-                if self._seq != seq:
-                    raise ValueError(
-                        "response sequence changed while audio was streaming"
-                    )
                 if self._audio_format != audio_format:
                     raise ValueError(
                         "audio format changed between response segments"
                     )
-                self._finished = False
                 self._cv.notify_all()
                 return
             self._audio_format = audio_format
-            self._finished = False
-            self._seq = seq
             self._cv.notify_all()
         logger.debug("puck response stream opened seq=%s format=%s", seq, audio_format)
 
-    def write(self, data: bytes) -> None:
+    def write(
+        self,
+        data: bytes,
+        *,
+        seq: int | None = None,
+        timeout: float | None = None,
+    ) -> bool:
+        """Queue PCM without exceeding the byte bound.
+
+        This method may wait for consumer progress. ``TurnRunner`` invokes it
+        in ``asyncio.to_thread`` so the bounded wait never blocks Hermes' event
+        loop. A late sequence is rejected without entering the next response.
+        """
         if not data:
-            return
+            return True
         with self._cv:
-            self._chunks.append(data)
+            if (
+                not self._matches_locked(seq)
+                or self._source_terminal is not None
+                or self._eof_pending
+            ):
+                return False
+            now = self._clock()
+            producer_gap = max(0.0, now - self._last_source_progress)
+            self._producer_gap_max = max(self._producer_gap_max, producer_gap)
+            if producer_gap >= self._stall_timeout:
+                self._stall_duration = max(self._stall_duration, producer_gap)
+                self._mark_unavailable_locked(reason="producer_stall")
+                return False
+            self._source_bytes += len(data)
+            self._source_hash.update(data)
+            # Source progress is the arrival of a Hermes PCM event, not the
+            # eventual queue insertion time. This keeps healthy backpressure
+            # from looking like a producer stall while the writer waits for
+            # the consumer to make room.
+            self._last_source_progress = now
+            wait_budget = self._stall_timeout if timeout is None else timeout
+            last_consumer_progress = self._last_consumer_progress
+            deadline = now + wait_budget
+            offset = 0
+            while offset < len(data):
+                while self._queued_bytes >= self._max_queue_bytes:
+                    if self._source_terminal is not None:
+                        raise ResponseStreamError("response became terminal")
+                    if self._last_consumer_progress != last_consumer_progress:
+                        # The budget is for a lack of consumer progress, not
+                        # for the total size of one producer write. A large
+                        # Hermes frame may take several waits to fit while
+                        # the reader is making healthy progress.
+                        last_consumer_progress = self._last_consumer_progress
+                        deadline = self._clock() + wait_budget
+                    remaining = deadline - self._clock()
+                    if remaining <= 0:
+                        self._mark_unavailable_locked(reason="backpressure")
+                        raise ResponseStreamBackpressure(
+                            "response queue stayed full without consumer progress"
+                        )
+                    self._cv.wait(min(CHUNK_POLL_SECONDS, remaining))
+                if self._source_terminal is not None:
+                    raise ResponseStreamError("response became terminal")
+                available = self._max_queue_bytes - self._queued_bytes
+                size = min(
+                    available,
+                    MAX_QUEUE_CHUNK_BYTES,
+                    len(data) - offset,
+                )
+                chunk = bytes(data[offset : offset + size])
+                self._chunks.append(chunk)
+                self._queued_bytes += len(chunk)
+                self._queue_high_water = max(
+                    self._queue_high_water, self._queued_bytes
+                )
+                if self._first_pcm_at is None:
+                    self._first_pcm_at = self._clock()
+                offset += len(chunk)
+                self._cv.notify_all()
+            return True
+
+    def complete(self, seq: int | None = None) -> bool:
+        """Mark Hermes' source complete; delivery still has to drain."""
+        with self._cv:
+            if (
+                not self._matches_locked(seq)
+                or self._delivery_terminal == "unavailable"
+                or self._eof_pending
+            ):
+                return False
+            if self._audio_format is None or self._source_bytes == 0:
+                self._mark_unavailable_locked(reason="empty_source")
+                return False
+            if self._source_terminal is None:
+                self._source_terminal = "complete"
+                self._expecting = False
+                self._cv.notify_all()
+            return True
+
+    def finish(self, seq: int | None = None) -> bool:
+        """Compatibility alias for producer completion."""
+        return self.complete(seq)
+
+    def unavailable(
+        self, seq: int | None = None, *, reason: str = "unavailable"
+    ) -> bool:
+        """Latch an unavailable response and discard queued PCM."""
+        with self._cv:
+            if not self._matches_locked(seq) or self._eof_pending:
+                return False
+            return self._mark_unavailable_locked(reason=reason)
+
+    def _mark_unavailable_locked(self, *, reason: str = "unavailable") -> bool:
+        if self._delivery_terminal == "complete":
+            return False
+        if self._delivery_terminal == "unavailable":
+            return True
+        self._source_terminal = "unavailable"
+        self._delivery_terminal = "unavailable"
+        self._eof_pending = False
+        self._expecting = False
+        self._clear_queue_locked()
+        self._terminal_at = self._clock()
+        self._response_ended_at = self._terminal_at
+        self._terminal_reason = reason
+        self._cv.notify_all()
+        return True
+
+    def _clear_queue_locked(self) -> None:
+        self._chunks.clear()
+        self._queued_bytes = 0
+
+    def _reset_metrics_locked(self) -> None:
+        self._source_bytes = 0
+        self._source_hash = hashlib.sha256()
+        self._delivered_bytes = 0
+        self._delivered_hash = hashlib.sha256()
+        self._response_started_at = self._clock()
+        self._first_pcm_at = None
+        self._last_source_progress = self._response_started_at
+        self._last_consumer_progress = self._response_started_at
+        self._queue_high_water = 0
+        self._producer_gap_max = 0.0
+        self._stall_duration = 0.0
+        self._terminal_reason = None
+        self._response_ended_at = None
+
+    def _matches_locked(self, seq: int | None) -> bool:
+        return seq is None or seq == self._seq
+
+    @property
+    def source_terminal(self) -> str | None:
+        with self._cv:
+            return self._source_terminal
+
+    @property
+    def terminal_status(self) -> str | None:
+        with self._cv:
+            return self._delivery_terminal
+
+    @property
+    def queued_bytes(self) -> int:
+        with self._cv:
+            return self._queued_bytes
+
+    @property
+    def queue_high_water(self) -> int:
+        with self._cv:
+            return self._queue_high_water
+
+    def status_for(self, seq: int) -> str | None:
+        """Return ``active`` or a retained terminal result for ``seq``."""
+        with self._cv:
+            if (
+                self._terminal_at is not None
+                and self._clock() - self._terminal_at
+                > TERMINAL_STATUS_TTL_SECONDS
+            ):
+                self._seq = None
+                self._source_terminal = None
+                self._delivery_terminal = None
+                self._terminal_at = None
+                self._audio_format = None
+                self._expecting = False
+            if self._seq != seq:
+                return None
+            return self._delivery_terminal or "active"
+
+    def acquire_reader(self, seq: int | None = None) -> bool:
+        """Claim the single consumer slot for one sequence."""
+        with self._cv:
+            if (
+                self._reader_active
+                or not self._matches_locked(seq)
+                or self._delivery_terminal is not None
+            ):
+                return False
+            self._reader_active = True
+            self._reader_seq = self._seq if seq is None else seq
+            self._last_consumer_progress = self._clock()
+            return True
+
+    def release_reader(self) -> None:
+        with self._cv:
+            self._reader_active = False
+            self._reader_seq = None
             self._cv.notify_all()
 
-    def finish(self) -> None:
-        """Mark the response complete. Idempotent.
-
-        Also clears `_expecting`: a turn can finish WITHOUT ever declaring a
-        format (a text-only reply, a TTS failure, a stream aborted before
-        audio). Leaving `_expecting` set there left `wait_for_format`'s
-        predicate unsatisfied, so the device waited the full format budget
-        and got a 504 -- exactly the behaviour this class claims to have
-        eliminated.
-        """
+    def mark_delivery_complete(self, seq: int | None = None) -> bool:
+        """Latch public ``complete`` only after the queue is drained."""
         with self._cv:
-            self._finished = True
+            if (
+                not self._matches_locked(seq)
+                or self._source_terminal != "complete"
+                or self._queued_bytes
+                or self._delivery_terminal == "unavailable"
+                or not self._eof_pending
+            ):
+                return False
+            if (
+                self._delivered_bytes != self._source_bytes
+                or self._delivered_hash.digest() != self._source_hash.digest()
+            ):
+                self._mark_unavailable_locked(reason="delivery_accounting")
+                return False
+            self._delivery_terminal = "complete"
+            self._eof_pending = False
+            self._terminal_at = self._clock()
+            self._response_ended_at = self._terminal_at
+            self._terminal_reason = "complete"
             self._expecting = False
             self._cv.notify_all()
+            return True
+
+    def ready_for_eof(self, seq: int | None = None) -> bool:
+        """Reserve the right to emit chunked EOF for this response.
+
+        The reservation is made while holding the response lock. The handler
+        writes the zero chunk immediately afterwards, outside the lock so a
+        socket write cannot block the producer. While the reservation is
+        pending, a concurrent failure cannot silently downgrade the stream
+        underneath a success terminator; the handler must call
+        ``fail_delivery`` if that write fails.
+        """
+        with self._cv:
+            if self._eof_pending:
+                return self._matches_locked(seq)
+            ready = (
+                self._matches_locked(seq)
+                and self._source_terminal == "complete"
+                and not self._queued_bytes
+                and self._delivery_terminal is None
+            )
+            if not ready:
+                return False
+            if (
+                self._delivered_bytes != self._source_bytes
+                or self._delivered_hash.digest() != self._source_hash.digest()
+            ):
+                self._mark_unavailable_locked(reason="delivery_accounting")
+                return False
+            self._eof_pending = True
+            self._cv.notify_all()
+            return True
+
+    def fail_delivery(
+        self, seq: int | None = None, *, reason: str = "delivery_failure"
+    ) -> bool:
+        """Abort a reserved EOF, or fail an in-progress delivery.
+
+        ``unavailable()`` refuses to race a reserved EOF because doing so
+        would leave the consumer free to emit a success terminator anyway.
+        The response handler uses this method when its final socket write
+        fails, which clears that reservation and makes the failure
+        authoritative.
+        """
+        with self._cv:
+            if not self._matches_locked(seq):
+                return False
+            self._eof_pending = False
+            return self._mark_unavailable_locked(reason=reason)
+
+    def record_delivered(self, data: bytes, seq: int | None = None) -> bool:
+        """Account PCM only after its HTTP frame was written successfully."""
+        if not data:
+            return True
+        with self._cv:
+            if not self._matches_locked(seq):
+                return False
+            if self._delivery_terminal is not None or self._eof_pending:
+                return False
+            self._delivered_bytes += len(data)
+            self._delivered_hash.update(data)
+            self._last_consumer_progress = self._clock()
+            return True
+
+    def metrics(self) -> dict[str, object]:
+        """Return bounded, content-safe delivery metrics for one sequence."""
+        with self._cv:
+            now = self._clock()
+            response_ended_at = self._response_ended_at or now
+            source_duration = self._source_bytes / self._bytes_per_second_locked()
+            delivered_duration = (
+                self._delivered_bytes / self._bytes_per_second_locked()
+            )
+            consumer_elapsed = max(
+                0.0,
+                response_ended_at
+                - (self._first_pcm_at or self._response_started_at),
+            )
+            return {
+                "seq": self._seq,
+                "device_build_identity": self._device_build_identity,
+                "audio_format": self._audio_format,
+                "source_bytes": self._source_bytes,
+                "source_duration_seconds": source_duration,
+                "source_sha256": self._source_hash.hexdigest(),
+                "delivered_bytes": self._delivered_bytes,
+                "delivered_duration_seconds": delivered_duration,
+                "delivered_sha256": self._delivered_hash.hexdigest(),
+                "first_pcm_seconds": (
+                    self._first_pcm_at - self._response_started_at
+                    if self._first_pcm_at is not None
+                    else None
+                ),
+                "producer_gap_seconds": max(
+                    0.0, now - self._last_source_progress
+                ),
+                "producer_gap_max_seconds": self._producer_gap_max,
+                "consumer_gap_seconds": max(
+                    0.0, now - self._last_consumer_progress
+                ),
+                "consumer_rate_bytes_per_second": (
+                    self._delivered_bytes / consumer_elapsed
+                    if consumer_elapsed > 0
+                    else 0.0
+                ),
+                "stall_duration_seconds": self._stall_duration,
+                "response_duration_seconds": max(
+                    0.0, response_ended_at - self._response_started_at
+                ),
+                "queued_bytes": self._queued_bytes,
+                "queue_high_water": self._queue_high_water,
+                "terminal": self._delivery_terminal or self._source_terminal,
+                "terminal_reason": self._terminal_reason,
+            }
+
+    def _bytes_per_second_locked(self) -> float:
+        if self._audio_format is None:
+            return 1.0
+        sample_rate, channels, sample_width = self._audio_format
+        return float(sample_rate * channels * sample_width)
 
     @property
     def finished(self) -> bool:
         with self._cv:
-            return self._finished
+            return self._source_terminal is not None
 
     # -- consumer side (the /response handler) -----------------------------
 
@@ -232,26 +665,14 @@ class ResponseStream:
             self._cv.wait_for(
                 lambda: self._audio_format is not None
                 or not self._expecting
-                or self._finished,
+                or self._source_terminal is not None,
                 timeout,
             )
             return self._audio_format
 
-    def acquire_reader(self) -> bool:
-        """Claim the single consumer slot. False if one is already active."""
-        with self._cv:
-            if self._reader_active:
-                return False
-            self._reader_active = True
-            return True
-
-    def release_reader(self) -> None:
-        with self._cv:
-            self._reader_active = False
-
     def wait_for_prebuffer(
         self, audio_format: tuple[int, int, int], seconds: float = PREBUFFER_SECONDS
-    ) -> None:
+    ) -> bool:
         """Block until `seconds` of audio is queued, or the turn finishes.
 
         Gives the device a cushion to start playback with. Returns early if
@@ -259,19 +680,35 @@ class ResponseStream:
         not wait for audio that will never exist.
         """
         sample_rate, channels, width = audio_format
-        target = int(sample_rate * channels * width * seconds)
+        target = min(
+            int(sample_rate * channels * width * seconds),
+            self._max_queue_bytes,
+        )
         if target <= 0:
-            return
+            return True
         with self._cv:
-            self._cv.wait_for(
-                lambda: self._finished
-                or sum(len(c) for c in self._chunks) >= target,
-                # Bounded so a stalled producer cannot hold the device at
-                # the starting line indefinitely.
-                timeout=STREAM_STALL_SECONDS,
-            )
+            last_source_progress = self._last_source_progress
+            while self._source_terminal is None and self._queued_bytes < target:
+                remaining = self._stall_timeout - (
+                    self._clock() - last_source_progress
+                )
+                if remaining <= 0:
+                    self._stall_duration = max(
+                        self._stall_duration, self._stall_timeout
+                    )
+                    self._mark_unavailable_locked(reason="producer_stall")
+                    logger.warning(
+                        "puck response prebuffer stalled for %.0fs; "
+                        "ending the body as unavailable",
+                        self._stall_timeout,
+                    )
+                    return False
+                self._cv.wait(min(CHUNK_POLL_SECONDS, remaining))
+                if self._last_source_progress != last_source_progress:
+                    last_source_progress = self._last_source_progress
+            return self._source_terminal != "unavailable"
 
-    def iter_chunks(self, stall_timeout: float = STREAM_STALL_SECONDS):
+    def iter_chunks(self, stall_timeout: float | None = None):
         """Yield PCM chunks until the response finishes or the producer stalls.
 
         Ends the generator rather than raising on a stall: the consumer's
@@ -286,37 +723,53 @@ class ResponseStream:
         # are supposed to catch a stalled turn. And because the device plays
         # in real time, TCP backpressure is the NORMAL case here, not an
         # edge case. Pop under the lock; yield outside it.
-        last_progress = time.monotonic()
+        timeout = self._stall_timeout if stall_timeout is None else stall_timeout
         while True:
-            batch: list[bytes] = []
+            chunk: bytes | None = None
             with self._cv:
-                while self._chunks:
-                    batch.append(self._chunks.popleft())
-                if not batch:
-                    if self._finished:
+                if self._chunks:
+                    if self._source_terminal is None:
+                        remaining = timeout - (
+                            self._clock() - self._last_source_progress
+                        )
+                        if remaining <= 0:
+                            self._stall_duration = max(
+                                self._stall_duration,
+                                self._clock() - self._last_source_progress,
+                            )
+                            self._mark_unavailable_locked(reason="producer_stall")
+                            logger.warning(
+                                "puck response stream stalled for %.0fs; "
+                                "ending the body as unavailable",
+                                timeout,
+                            )
+                            return
+                    chunk = self._chunks.popleft()
+                    self._queued_bytes -= len(chunk)
+                    self._last_consumer_progress = self._clock()
+                    self._cv.notify_all()
+                else:
+                    if self._source_terminal is not None:
                         return
-                    self._cv.wait(CHUNK_POLL_SECONDS)
-                    if self._chunks:
-                        continue
-                    if self._finished:
+                    remaining = timeout - (
+                        self._clock() - self._last_source_progress
+                    )
+                    if remaining <= 0:
+                        self._stall_duration = max(
+                            self._stall_duration,
+                            self._clock() - self._last_source_progress,
+                        )
+                        self._mark_unavailable_locked(reason="producer_stall")
+                        logger.warning(
+                            "puck response stream stalled for %.0fs; "
+                            "ending the body as unavailable",
+                            timeout,
+                        )
                         return
-            if batch:
-                last_progress = time.monotonic()
-                for chunk in batch:
-                    yield chunk
-                continue
-            # Measure elapsed time rather than counting poll iterations: a
-            # notify_all() that adds no chunk (a concurrent expect/begin)
-            # returns wait() early, so counting iterations charges the
-            # budget for time that never passed and can declare a healthy
-            # producer dead.
-            if time.monotonic() - last_progress >= stall_timeout:
-                logger.warning(
-                    "puck response stream stalled for %.0fs with no audio; "
-                    "ending the body so the device is not left waiting",
-                    stall_timeout,
-                )
-                return
+                    self._cv.wait(min(CHUNK_POLL_SECONDS, remaining))
+                    continue
+            if chunk is not None:
+                yield chunk
 
 
 # A streaming WAV cannot know its length when the header is written. The
@@ -334,9 +787,7 @@ STREAMING_RIFF_SIZE = 0xFFFFFFFF
 
 def streaming_wav_header(audio_format: tuple[int, int, int]) -> bytes:
     """Build a 44-byte PCM WAV header for a stream of unknown length."""
-    import struct
-
-    sample_rate, channels, sample_width = audio_format
+    sample_rate, channels, sample_width = _validate_audio_format(audio_format)
     byte_rate = sample_rate * channels * sample_width
     block_align = channels * sample_width
     return (

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import http.client
+import io
 import struct
 import threading
 import wave
@@ -1164,6 +1165,228 @@ def test_response_stream_delivers_chunks_in_order_then_ends():
     assert list(stream.iter_chunks()) == [b"aa", b"bb"]
 
 
+def test_response_queue_is_bounded_and_full_queue_becomes_unavailable():
+    from puck_bridge.response import (
+        MAX_QUEUED_PCM_BYTES,
+        ResponseStream,
+        ResponseStreamBackpressure,
+    )
+
+    assert MAX_QUEUED_PCM_BYTES == 480_000
+    stream = ResponseStream(max_queue_bytes=32, stall_timeout=0.05)
+    assert stream.expect(seq=1)
+    stream.begin(1, (24000, 1, 2))
+    assert stream.write(b"a" * 32, seq=1)
+    assert stream.queued_bytes == 32
+    with pytest.raises(ResponseStreamBackpressure):
+        stream.write(b"b", seq=1)
+
+    assert stream.queued_bytes == 0
+    assert stream.terminal_status == "unavailable"
+    assert stream.queue_high_water == 32
+    assert list(stream.iter_chunks()) == []
+    assert stream.expect(seq=2)
+    assert not stream.write(b"late", seq=1)
+
+
+def test_response_backpressure_waits_for_consumer_without_dropping_pcm():
+    import time as _time
+
+    from puck_bridge.response import ResponseStream
+
+    stream = ResponseStream(max_queue_bytes=8, stall_timeout=1.0)
+    stream.expect(seq=1)
+    stream.begin(1, (24000, 1, 2))
+    stream.write(b"12345678", seq=1)
+    result: list[bool] = []
+
+    def _produce() -> None:
+        result.append(stream.write(b"ABCDEFGH", seq=1))
+
+    producer = threading.Thread(target=_produce)
+    producer.start()
+    _time.sleep(0.05)
+    assert producer.is_alive(), "the producer should be waiting on the full queue"
+
+    chunks = stream.iter_chunks()
+    assert next(chunks) == b"12345678"
+    producer.join(timeout=2.0)
+    assert not producer.is_alive()
+    assert result == [True]
+    stream.complete(seq=1)
+    assert list(chunks) == [b"ABCDEFGH"]
+    assert stream.queue_high_water == 8
+
+
+def test_prebuffer_target_is_capped_at_the_response_queue_bound():
+    from puck_bridge.response import ResponseStream
+
+    audio_format = (192000, 2, 4)
+    stream = ResponseStream(max_queue_bytes=32, stall_timeout=0.2)
+    stream.expect(seq=1)
+    stream.begin(1, audio_format)
+    assert stream.write(b"x" * 32, seq=1)
+    assert stream.wait_for_prebuffer(audio_format, seconds=1.5)
+
+
+def test_completed_but_unfetched_response_is_superseded_by_the_next_sequence():
+    from puck_bridge.response import ResponseStream
+
+    stream = ResponseStream()
+    stream.expect(seq=1)
+    stream.begin(1, (24000, 1, 2))
+    stream.write(b"orphaned", seq=1)
+    assert stream.complete(seq=1)
+    assert stream.queued_bytes == len(b"orphaned")
+
+    assert stream.expect(seq=2)
+    assert stream.seq == 2
+    assert stream.queued_bytes == 0
+    assert stream.terminal_status is None
+    stream.begin(2, (24000, 1, 2))
+    assert stream.write(b"fresh", seq=2)
+    assert list(stream.iter_chunks()) == [b"fresh"]
+
+
+def test_producer_gap_rejects_late_pcm_even_when_old_pcm_is_buffered():
+    from puck_bridge.response import ResponseStream
+
+    class _Clock:
+        now = 0.0
+
+        def __call__(self) -> float:
+            return self.now
+
+    clock = _Clock()
+    stream = ResponseStream(stall_timeout=20.0, clock=clock)
+    stream.expect(seq=1)
+    stream.begin(1, (24000, 1, 2))
+    stream.write(b"first", seq=1)
+    stream.write(b"buffered-tail", seq=1)
+    chunks = stream.iter_chunks()
+    assert next(chunks) == b"first"
+
+    clock.now = 20.0
+    assert not stream.write(b"late", seq=1)
+    assert stream.terminal_status == "unavailable"
+    assert list(chunks) == []
+
+
+def test_invalid_audio_format_is_rejected_before_wav_packing():
+    from puck_bridge.response import ResponseStream, streaming_wav_header
+
+    stream = ResponseStream()
+    with pytest.raises(ValueError):
+        stream.begin(1, (0, 1, 2))
+    with pytest.raises(ValueError):
+        streaming_wav_header((24000, 0, 2))
+
+
+def test_twenty_second_two_segment_fixture_matches_source_and_delivery():
+    import hashlib
+
+    from puck_bridge.response import MAX_QUEUED_PCM_BYTES, ResponseStream
+
+    segment_a = bytes(range(256)) * 1_875
+    segment_b = bytes(reversed(range(256))) * 1_875
+    expected = segment_a + segment_b
+    stream = ResponseStream()
+    stream.expect(seq=5)
+    stream.begin(5, (24000, 1, 2))
+    received = bytearray()
+    errors: list[BaseException] = []
+
+    def _consume() -> None:
+        try:
+            for chunk in stream.iter_chunks(stall_timeout=1.0):
+                received.extend(chunk)
+                assert stream.record_delivered(chunk, seq=5)
+        except BaseException as exc:
+            errors.append(exc)
+
+    consumer = threading.Thread(target=_consume)
+    consumer.start()
+    assert stream.write(segment_a, seq=5)
+    stream.begin(5, (24000, 1, 2))
+    assert stream.write(segment_b, seq=5)
+    assert stream.complete(seq=5)
+    consumer.join(timeout=2.0)
+
+    assert not consumer.is_alive()
+    assert errors == []
+    assert bytes(received) == expected
+    assert stream.queued_bytes == 0
+    assert stream.queue_high_water <= MAX_QUEUED_PCM_BYTES
+    assert stream.ready_for_eof(seq=5)
+    assert stream.mark_delivery_complete(seq=5)
+    metrics = stream.metrics()
+    assert metrics["source_bytes"] == len(expected) == 960_000
+    assert metrics["delivered_bytes"] == len(expected)
+    assert metrics["source_duration_seconds"] == 20.0
+    assert metrics["delivered_duration_seconds"] == 20.0
+    assert metrics["source_sha256"] == hashlib.sha256(expected).hexdigest()
+    assert metrics["delivered_sha256"] == hashlib.sha256(expected).hexdigest()
+
+
+@pytest.mark.parametrize(
+    ("gap", "expected_terminal"),
+    [(19.9, None), (20.0, "unavailable"), (20.1, "unavailable")],
+)
+def test_response_stall_boundary_is_twenty_seconds(gap, expected_terminal):
+    class _Clock:
+        now = 0.0
+
+        def __call__(self) -> float:
+            return self.now
+
+    from puck_bridge.response import ResponseStream
+
+    clock = _Clock()
+    stream = ResponseStream(stall_timeout=20.0, clock=clock)
+    stream.expect(seq=1)
+    stream.begin(1, (24000, 1, 2))
+    stream.write(b"first", seq=1)
+    chunks = stream.iter_chunks()
+    assert next(chunks) == b"first"
+
+    clock.now = gap
+    if gap < 20.0:
+        stream.write(b"resumed", seq=1)
+        assert next(chunks) == b"resumed"
+        assert stream.complete(seq=1)
+        assert list(chunks) == []
+    else:
+        assert list(chunks) == []
+
+    assert stream.terminal_status == expected_terminal
+
+
+def test_completed_response_cannot_be_downgraded_and_next_sequence_is_clean():
+    from puck_bridge.response import ResponseStream
+
+    stream = ResponseStream()
+    stream.expect(seq=1)
+    stream.begin(1, (24000, 1, 2))
+    stream.write(b"final", seq=1)
+    chunks = stream.iter_chunks()
+    final = next(chunks)
+    assert final == b"final"
+    assert stream.record_delivered(final, seq=1)
+    assert stream.complete(seq=1)
+    assert stream.ready_for_eof(seq=1)
+    assert stream.status_for(1) == "active"
+    assert not stream.unavailable(seq=1, reason="late_failure")
+    assert stream.mark_delivery_complete(seq=1)
+    assert stream.terminal_status == "complete"
+    assert not stream.unavailable(seq=1, reason="late_failure")
+    assert not stream.write(b"late", seq=1)
+
+    assert stream.expect(seq=2)
+    stream.begin(2, (24000, 1, 2))
+    stream.write(b"new", seq=2)
+    assert list(stream.iter_chunks()) == [b"new"]
+
+
 def test_response_stream_ends_the_body_when_the_producer_stalls():
     """Rather than hanging: the device treats a zero-length read as a
     timeout, not EOF, so an unterminated body leaves it waiting for its own
@@ -1252,10 +1475,9 @@ def _get_response(
 ):
     """Fetch /response and return (status, body-bytes).
 
-    `seq` defaults to omitting the parameter entirely: the bridge only
-    validates it when the device actually asks for a specific capture, and
-    most tests here care about other behaviour. Tests that exercise the
-    stale-capture guard pass it explicitly.
+    The Puck always asks for a specific capture, so every response fetch in
+    these tests supplies `seq` as well. Keeping it optional in the helper
+    makes the missing-sequence rejection test readable.
     """
     conn = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
     try:
@@ -1278,7 +1500,186 @@ def _get_response(
         conn.close()
 
 
-def test_response_endpoint_streams_a_wav_the_device_can_decode(tmp_path):
+def _get_response_status(
+    port: int,
+    *,
+    seq: int,
+    token: str | None,
+) -> tuple[int, bytes]:
+    conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+    try:
+        query = f"/response-status?seq={seq}"
+        if token is not None:
+            query += f"&token={token}"
+        conn.request("GET", query)
+        response = conn.getresponse()
+        return response.status, response.read()
+    finally:
+        conn.close()
+
+
+class _FixtureFile(io.BytesIO):
+    """Keep the static wire fixture readable after HTTPResponse closes it."""
+
+    def close(self) -> None:
+        # HTTPResponse closes its file object after consuming a body. The
+        # decoder-boundary probe needs to inspect any bytes left beyond the
+        # declared framing, so this fixture deliberately keeps the buffer
+        # open until the probe has checked it.
+        return None
+
+
+class _FixtureSocket:
+    """Minimal socket facade for feeding a controlled HTTP wire fixture."""
+
+    def __init__(self, wire: bytes) -> None:
+        self.file = _FixtureFile(wire)
+
+    def makefile(self, *_args, **_kwargs):
+        return self.file
+
+
+def _decode_static_decoder_fixture(wire: bytes) -> tuple[str, bytes]:
+    """Probe fixed/chunked framing at the decoder boundary.
+
+    The live bridge remains chunked. This intentionally static probe uses
+    Python's HTTP parser for the controlled wire contract and adds the
+    decoder-boundary rule that excess bytes after declared framing are a
+    failure rather than a second response. No live response is buffered by
+    this test helper.
+    """
+    fixture = _FixtureSocket(wire)
+    response = http.client.HTTPResponse(fixture)
+    try:
+        response.begin()
+        body = response.read()
+    except (http.client.HTTPException, OSError):
+        return "unavailable", b""
+    if fixture.file.read():
+        return "unavailable", b""
+    return "complete", body
+
+
+def _fixed_fixture(body: bytes, *, declared_length: int | None = None) -> bytes:
+    length = len(body) if declared_length is None else declared_length
+    return (
+        b"HTTP/1.1 200 OK\r\n"
+        + b"Content-Type: audio/wav\r\n"
+        + f"Content-Length: {length}\r\n".encode("ascii")
+        + b"\r\n"
+        + body
+    )
+
+
+def _chunked_fixture(body: bytes, *, suffix: bytes = b"") -> bytes:
+    return (
+        b"HTTP/1.1 200 OK\r\n"
+        + b"Content-Type: audio/wav\r\n"
+        + b"Transfer-Encoding: chunked\r\n\r\n"
+        + f"{len(body):X}\r\n".encode("ascii")
+        + body
+        + b"\r\n0\r\n\r\n"
+        + suffix
+    )
+
+
+def test_decoder_boundary_fixture_accepts_fixed_and_chunked_full_bodies():
+    from puck_bridge.response import streaming_wav_header
+
+    body = streaming_wav_header((24000, 1, 2)) + b"fixture-pcm"
+    fixed_status, fixed_body = _decode_static_decoder_fixture(
+        _fixed_fixture(body)
+    )
+    chunked_status, chunked_body = _decode_static_decoder_fixture(
+        _chunked_fixture(body)
+    )
+
+    assert fixed_status == chunked_status == "complete"
+    assert fixed_body == chunked_body == body
+
+
+def test_decoder_boundary_corruption_is_unavailable_and_next_sequence_is_clean():
+    from puck_bridge.response import ResponseStream, streaming_wav_header
+
+    body = streaming_wav_header((24000, 1, 2)) + b"fixture-pcm"
+    malformed = (
+        b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n"
+        b"not-hex\r\n"
+        + body
+        + b"\r\n0\r\n\r\n"
+    )
+    early = (
+        b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n"
+        + f"{len(body):X}\r\n".encode("ascii")
+        + body
+    )
+    cases = {
+        "fixed-short": _fixed_fixture(body, declared_length=len(body) + 1),
+        "fixed-long": _fixed_fixture(body, declared_length=len(body) - 1),
+        "chunked-malformed": malformed,
+        "chunked-early": early,
+        "chunked-trailing": _chunked_fixture(body, suffix=b"late-bytes"),
+    }
+
+    stream = ResponseStream()
+    for offset, (name, wire) in enumerate(cases.items(), start=1):
+        status, decoded = _decode_static_decoder_fixture(wire)
+        assert status == "unavailable", name
+        assert decoded == b"", name
+
+        failed_seq = offset * 2
+        next_seq = failed_seq + 1
+        assert stream.expect(seq=failed_seq)
+        stream.begin(failed_seq, (24000, 1, 2))
+        stream.write(b"response-pcm", seq=failed_seq)
+        stream.complete(seq=failed_seq)
+        assert stream.fail_delivery(seq=failed_seq, reason="framing_failure")
+        assert stream.status_for(failed_seq) == "unavailable"
+
+        assert stream.expect(seq=next_seq), name
+        stream.begin(next_seq, (24000, 1, 2))
+        assert stream.write(b"next-response", seq=next_seq)
+        assert stream.complete(seq=next_seq)
+        assert list(stream.iter_chunks()) == [b"next-response"]
+        # The next loop starts by claiming the following sequence, proving
+        # that the failed fixture did not retain queue or terminal state.
+        stream.unavailable(seq=next_seq, reason="fixture_cleanup")
+
+
+def test_duplicate_response_sequence_parameter_is_rejected(tmp_path):
+    from puck_bridge.response import ResponseStream
+
+    stream = ResponseStream()
+    stream.expect(seq=3)
+    stream.begin(3, (24000, 1, 2))
+    stream.write(b"answer", seq=3)
+    stream.finish(seq=3)
+    handler_cls = make_handler(
+        expected_token="s3cret",
+        on_transcript=_RecordingSink(),
+        transcribe_fn=_fake_transcribe(transcript="x"),
+        work_dir=tmp_path,
+        response_stream=stream,
+    )
+    server = _start_server(handler_cls)
+    conn = http.client.HTTPConnection("127.0.0.1", server.server_address[1], timeout=5)
+    try:
+        conn.request(
+            "GET",
+            "/response?seq=3&seq=3",
+            headers={TOKEN_HEADER: "s3cret"},
+        )
+        response = conn.getresponse()
+        assert response.status == 400
+        assert response.read() == b"bad response sequence"
+    finally:
+        conn.close()
+        server.shutdown()
+
+
+def test_response_endpoint_streams_a_wav_the_device_can_decode(tmp_path, caplog):
+    import hashlib
+
     from puck_bridge.response import ResponseStream
 
     stream = ResponseStream()
@@ -1300,16 +1701,268 @@ def test_response_endpoint_streams_a_wav_the_device_can_decode(tmp_path):
 
     threading.Thread(target=_produce, daemon=True).start()
     try:
-        status, body = _get_response(port, token="s3cret")
+        with caplog.at_level(
+            "INFO", logger="hermes_relay_tui.puck_bridge.receiver"
+        ):
+            status, body = _get_response(port, token="s3cret", seq=1)
     finally:
         server.shutdown()
 
+    pcm = b"\x01\x02" * 8 + b"\x03\x04" * 8
+    digest = hashlib.sha256(pcm).hexdigest()
     assert status == 200
     # http.client de-chunks for us, so this is the reassembled body.
     assert body[:4] == b"RIFF"
     assert struct.unpack("<I", body[24:28])[0] == 24000
     assert struct.unpack("<I", body[40:44])[0] == 0xFFFFFFFF
-    assert body[44:] == b"\x01\x02" * 8 + b"\x03\x04" * 8
+    assert body[44:] == pcm
+    assert "framing=chunked" in caplog.text
+    assert "source_bytes=32" in caplog.text
+    assert "delivered_bytes=32" in caplog.text
+    assert f"source_sha256={digest}" in caplog.text
+    assert f"delivered_sha256={digest}" in caplog.text
+    assert "queue_high_water=32" in caplog.text
+    assert "terminal=complete" in caplog.text
+
+
+def test_response_endpoint_closes_without_success_eof_when_producer_stalls(tmp_path):
+    import socket as _socket
+
+    from puck_bridge.response import ResponseStream
+
+    stream = ResponseStream(stall_timeout=0.2)
+    stream.expect(seq=1)
+    stream.begin(1, (24000, 1, 2))
+    stream.write(b"partial", seq=1)
+    handler_cls = make_handler(
+        expected_token="s3cret",
+        on_transcript=_RecordingSink(),
+        transcribe_fn=_fake_transcribe(transcript="x"),
+        work_dir=tmp_path,
+        response_stream=stream,
+    )
+    server = _start_server(handler_cls)
+    client = _socket.create_connection(server.server_address, timeout=3)
+    client.settimeout(3)
+    try:
+        client.sendall(
+            b"GET /response?seq=1 HTTP/1.1\r\n"
+            b"Host: localhost\r\n"
+            b"X-Puck-Token: s3cret\r\n"
+            b"Connection: close\r\n\r\n"
+        )
+        wire = bytearray()
+        while True:
+            part = client.recv(4096)
+            if not part:
+                break
+            wire.extend(part)
+    finally:
+        client.close()
+        server.shutdown()
+
+    assert b"HTTP/1.1 200" in wire
+    assert b"0\r\n\r\n" not in wire
+    assert stream.terminal_status == "unavailable"
+
+
+def test_response_status_expires_after_its_retention_window(tmp_path):
+    from puck_bridge.response import TERMINAL_STATUS_TTL_SECONDS, ResponseStream
+
+    class _Clock:
+        now = 0.0
+
+        def __call__(self) -> float:
+            return self.now
+
+    clock = _Clock()
+    stream = ResponseStream(clock=clock)
+    stream.expect(seq=1)
+    stream.begin(1, (24000, 1, 2))
+    pcm = b"status-answer"
+    stream.write(pcm, seq=1)
+    chunks = stream.iter_chunks()
+    chunk = next(chunks)
+    assert chunk == pcm
+    assert stream.record_delivered(chunk, seq=1)
+    assert stream.complete(seq=1)
+    assert stream.ready_for_eof(seq=1)
+    assert stream.mark_delivery_complete(seq=1)
+
+    handler_cls = make_handler(
+        expected_token="s3cret",
+        on_transcript=_RecordingSink(),
+        transcribe_fn=_fake_transcribe(transcript="x"),
+        work_dir=tmp_path,
+        response_stream=stream,
+    )
+    server = _start_server(handler_cls)
+    try:
+        before, _ = _get_response_status(server.server_address[1], seq=1, token="s3cret")
+        clock.now = TERMINAL_STATUS_TTL_SECONDS
+        at_boundary, _ = _get_response_status(
+            server.server_address[1], seq=1, token="s3cret"
+        )
+        clock.now += 0.001
+        expired, _ = _get_response_status(
+            server.server_address[1], seq=1, token="s3cret"
+        )
+    finally:
+        server.shutdown()
+
+    assert before == 200
+    assert at_boundary == 200
+    assert expired == 404
+
+
+def test_response_endpoint_requires_a_sequence(tmp_path):
+    from puck_bridge.response import ResponseStream
+
+    stream = ResponseStream()
+    stream.expect(seq=1)
+    stream.begin(1, (24000, 1, 2))
+    stream.write(b"scoped", seq=1)
+    stream.complete(seq=1)
+    handler_cls = make_handler(
+        expected_token="s3cret",
+        on_transcript=_RecordingSink(),
+        transcribe_fn=_fake_transcribe(transcript="x"),
+        work_dir=tmp_path,
+        response_stream=stream,
+    )
+    server = _start_server(handler_cls)
+    try:
+        status, body = _get_response(server.server_address[1], token="s3cret")
+    finally:
+        server.shutdown()
+
+    assert status == 400
+    assert body == b"response sequence required"
+
+
+def test_upload_ack_failure_abandons_the_admitted_response(tmp_path, monkeypatch):
+    from puck_bridge.response import ResponseStream
+
+    stream = ResponseStream()
+    handler_cls = make_handler(
+        expected_token="s3cret",
+        on_transcript=_RecordingSink(),
+        transcribe_fn=_fake_transcribe(transcript="x"),
+        work_dir=tmp_path,
+        response_stream=stream,
+    )
+    original_respond = handler_cls._respond
+
+    def _fail_complete_ack(self, code, body=b"", **kwargs):
+        if code == 200 and not body:
+            raise OSError("client disconnected")
+        return original_respond(self, code, body, **kwargs)
+
+    monkeypatch.setattr(handler_cls, "_respond", _fail_complete_ack)
+    server = _start_server(handler_cls)
+    try:
+        with pytest.raises((OSError, http.client.HTTPException)):
+            _post_chunk(
+                server.server_address[1],
+                seq=1,
+                chunk=0,
+                total=1,
+                body=b"capture",
+                token="s3cret",
+            )
+    finally:
+        server.shutdown()
+
+    assert stream.terminal_status == "unavailable"
+    assert not stream.expecting
+    assert stream.expect(seq=2)
+
+
+def test_response_callback_none_abandons_an_admitted_response(tmp_path):
+    from puck_bridge.response import ResponseStream
+
+    stream = ResponseStream()
+    handler_cls = make_handler(
+        expected_token="s3cret",
+        on_transcript=lambda _text: None,
+        transcribe_fn=_fake_transcribe(transcript="x"),
+        work_dir=tmp_path,
+        response_stream=stream,
+    )
+    server = _start_server(handler_cls)
+    try:
+        status = _post_chunk(
+            server.server_address[1],
+            seq=1,
+            chunk=0,
+            total=1,
+            body=b"capture",
+            token="s3cret",
+        )
+    finally:
+        server.shutdown()
+
+    assert status == 200
+    for _ in range(500):
+        if stream.terminal_status == "unavailable":
+            break
+        threading.Event().wait(0.01)
+    assert stream.terminal_status == "unavailable"
+    assert not stream.expecting
+    assert stream.expect(seq=2)
+
+
+def test_response_status_is_authenticated_sequence_scoped_and_terminal(tmp_path):
+    from puck_bridge.response import ResponseStream
+
+    stream = ResponseStream()
+    stream.expect(seq=11)
+    stream.begin(11, (24000, 1, 2))
+    stream.write(b"status-answer", seq=11)
+    stream.complete(seq=11)
+    handler_cls = make_handler(
+        expected_token="s3cret",
+        on_transcript=_RecordingSink(),
+        transcribe_fn=_fake_transcribe(transcript="x"),
+        work_dir=tmp_path,
+        response_stream=stream,
+    )
+    server = _start_server(handler_cls)
+    port = server.server_address[1]
+    try:
+        active, active_body = _get_response_status(
+            port, seq=11, token="s3cret"
+        )
+        unknown, _ = _get_response_status(port, seq=12, token="s3cret")
+        unauthorized, _ = _get_response_status(port, seq=11, token="wrong")
+        delivered, body = _get_response(port, token="s3cret", seq=11)
+        terminal, terminal_body = _get_response_status(
+            port, seq=11, token="s3cret"
+        )
+        replay, _ = _get_response(port, token="s3cret", seq=11)
+        assert active == 409
+        assert active_body == b"response active"
+        assert unknown == 404
+        assert unauthorized == 401
+        assert delivered == 200
+        assert body[44:] == b"status-answer"
+        assert terminal == 200
+        assert terminal_body == b'{"seq": 11, "status": "complete"}'
+        assert replay == 409
+
+        stream.expect(seq=12)
+        stream.begin(12, (24000, 1, 2))
+        stream.unavailable(seq=12, reason="test_failure")
+        old, _ = _get_response_status(port, seq=11, token="s3cret")
+        failed, failed_body = _get_response_status(
+            port, seq=12, token="s3cret"
+        )
+    finally:
+        server.shutdown()
+
+    assert old == 404
+    assert failed == 200
+    assert failed_body == b'{"seq": 12, "status": "unavailable"}'
 
 
 def test_response_endpoint_rejects_a_bad_token(tmp_path):
@@ -1328,7 +1981,7 @@ def test_response_endpoint_rejects_a_bad_token(tmp_path):
     )
     server = _start_server(handler_cls)
     try:
-        status, _ = _get_response(server.server_address[1], token="wrong")
+        status, _ = _get_response(server.server_address[1], token="wrong", seq=1)
     finally:
         server.shutdown()
     assert status == 401
@@ -1352,8 +2005,12 @@ def test_response_endpoint_accepts_query_token_and_rejects_a_wrong_query_token(t
     server = _start_server(handler_cls)
     port = server.server_address[1]
     try:
-        accepted, body = _get_response(port, token=None, query_token="s3cret")
-        rejected, _ = _get_response(port, token=None, query_token="wrong")
+        accepted, body = _get_response(
+            port, token=None, seq=1, query_token="s3cret"
+        )
+        rejected, _ = _get_response(
+            port, token=None, seq=1, query_token="wrong"
+        )
     finally:
         server.shutdown()
 
@@ -1442,7 +2099,7 @@ def test_a_fetch_arriving_during_transcription_waits_for_the_answer(tmp_path):
     def _sink(_text):
         # The turn produces audio shortly after the transcript lands.
         def _produce():
-            stream.begin(1, (24000, 1, 2))
+            stream.begin(21, (24000, 1, 2))
             stream.write(b"\x07\x08" * 4)
             stream.finish()
         _th.Thread(target=_produce, daemon=True).start()
@@ -1466,7 +2123,7 @@ def test_a_fetch_arriving_during_transcription_waits_for_the_answer(tmp_path):
         ).start()
         assert slow_started.wait(5.0), "transcription should have begun"
         # Fetch mid-transcription, exactly as the device does.
-        status, body = _get_response(port, token="s3cret")
+        status, body = _get_response(port, token="s3cret", seq=21)
     finally:
         server.shutdown()
 
@@ -1485,6 +2142,7 @@ def test_a_second_concurrent_response_fetch_is_refused(tmp_path):
     stream = ResponseStream()
     stream.expect()
     stream.begin(1, (24000, 1, 2))
+    stream.write(b"hold")
 
     handler_cls = make_handler(
         expected_token="s3cret",
@@ -1499,14 +2157,14 @@ def test_a_second_concurrent_response_fetch_is_refused(tmp_path):
 
     def _first():
         # Holds the reader slot while the producer dribbles chunks.
-        first_status.append(_get_response(port, token="s3cret")[0])
+        first_status.append(_get_response(port, token="s3cret", seq=1)[0])
 
     t = _th.Thread(target=_first, daemon=True)
     t.start()
     import time as _t
     _t.sleep(0.4)  # let the first claim the slot
     try:
-        second_status, _ = _get_response(port, token="s3cret")
+        second_status, _ = _get_response(port, token="s3cret", seq=1)
     finally:
         stream.finish()
         t.join(timeout=5)
@@ -1514,6 +2172,51 @@ def test_a_second_concurrent_response_fetch_is_refused(tmp_path):
 
     assert second_status == 409, "a concurrent fetch must be refused, not served"
     assert first_status == [200], "the first fetch must be unaffected"
+
+
+def test_active_sequence_rejects_duplicate_future_and_stale_fetches(tmp_path):
+    import time as _time
+
+    from puck_bridge.response import ResponseStream
+
+    stream = ResponseStream()
+    stream.expect(seq=10)
+    stream.begin(10, (24000, 1, 2))
+    stream.write(b"held-response", seq=10)
+    handler_cls = make_handler(
+        expected_token="s3cret",
+        on_transcript=_RecordingSink(),
+        transcribe_fn=_fake_transcribe(transcript="x"),
+        work_dir=tmp_path,
+        response_stream=stream,
+    )
+    server = _start_server(handler_cls)
+    port = server.server_address[1]
+    first_status: list[int] = []
+
+    def _first() -> None:
+        first_status.append(_get_response(port, token="s3cret", seq=10)[0])
+
+    first = threading.Thread(target=_first, daemon=True)
+    first.start()
+    try:
+        deadline = _time.monotonic() + 2.0
+        while not stream._reader_active and _time.monotonic() < deadline:
+            _time.sleep(0.01)
+        assert stream._reader_active, "the first fetch never claimed ownership"
+
+        duplicate, _ = _get_response(port, token="s3cret", seq=10)
+        future, _ = _get_response(port, token="s3cret", seq=11)
+        stale, _ = _get_response(port, token="s3cret", seq=9)
+        assert duplicate == future == stale == 409
+        assert stream.seq == 10
+        assert stream.queued_bytes == len(b"held-response")
+    finally:
+        stream.finish(seq=10)
+        first.join(timeout=5)
+        server.shutdown()
+
+    assert first_status == [200]
 
 
 def test_the_reader_slot_is_released_after_a_stream_ends(tmp_path):
@@ -1536,7 +2239,7 @@ def test_the_reader_slot_is_released_after_a_stream_ends(tmp_path):
     server = _start_server(handler_cls)
     port = server.server_address[1]
     try:
-        first, _ = _get_response(port, token="s3cret")
+        first, _ = _get_response(port, token="s3cret", seq=1)
         # A later, non-concurrent fetch must not be refused.
         import time as _t
 
@@ -1548,7 +2251,7 @@ def test_the_reader_slot_is_released_after_a_stream_ends(tmp_path):
         stream.begin(2, (24000, 1, 2))
         stream.write(b"cd")
         stream.finish()
-        second, body = _get_response(port, token="s3cret")
+        second, body = _get_response(port, token="s3cret", seq=2)
     finally:
         server.shutdown()
 
@@ -1618,6 +2321,8 @@ def test_the_reader_slot_survives_a_dead_connection(tmp_path):
     """HIGH 3. acquire_reader() ran outside the try/finally, so a header
     write to an already-closed socket leaked the slot and every later fetch
     got 409 -- the Puck went permanently mute until a bridge restart."""
+    import time
+
     from puck_bridge.response import ResponseStream
 
     stream = ResponseStream()
@@ -1632,11 +2337,19 @@ def test_the_reader_slot_survives_a_dead_connection(tmp_path):
     port = server.server_address[1]
     try:
         # Fetch and hang up immediately, mid-headers.
-        for _ in range(3):
+        for seq in range(1, 4):
             conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
-            stream.expect()
-            stream.begin(1, (24000, 1, 2))
-            conn.request("GET", "/response?seq=1", headers={TOKEN_HEADER: "s3cret"})
+            deadline = time.monotonic() + 2.0
+            while not stream.expect(seq=seq):
+                if time.monotonic() >= deadline:
+                    pytest.fail("previous dead response did not release the reader")
+                time.sleep(0.01)
+            stream.begin(seq, (24000, 1, 2))
+            conn.request(
+                "GET",
+                f"/response?seq={seq}",
+                headers={TOKEN_HEADER: "s3cret"},
+            )
             conn.close()  # drop without reading
             import time as _t
             _t.sleep(0.2)
@@ -1644,14 +2357,14 @@ def test_the_reader_slot_survives_a_dead_connection(tmp_path):
         # The slot must still be free for a normal fetch.
         import time as _t
         deadline = _t.monotonic() + 2.0
-        while not stream.expect():
+        while not stream.expect(seq=4):
             if _t.monotonic() >= deadline:
                 pytest.fail("dead response connection did not release the reader slot")
             _t.sleep(0.01)
-        stream.begin(2, (24000, 1, 2))
+        stream.begin(4, (24000, 1, 2))
         stream.write(b"ok")
         stream.finish()
-        status, _ = _get_response(port, token="s3cret")
+        status, _ = _get_response(port, token="s3cret", seq=4)
     finally:
         server.shutdown()
 
@@ -1671,7 +2384,7 @@ def test_a_client_that_stops_reading_releases_the_response_slot(tmp_path, monkey
     stream = ResponseStream()
     stream.expect(seq=1)
     stream.begin(1, (24000, 1, 2))
-    for _ in range(128):
+    for _ in range(7):
         stream.write(b"x" * 65536)
     stream.finish()
     handler_cls = make_handler(
@@ -1682,7 +2395,9 @@ def test_a_client_that_stops_reading_releases_the_response_slot(tmp_path, monkey
         response_stream=stream,
     )
     server = _start_server(handler_cls)
+    server.socket.setsockopt(_socket.SOL_SOCKET, _socket.SO_SNDBUF, 1024)
     client = _socket.create_connection(server.server_address, timeout=2)
+    client.setsockopt(_socket.SOL_SOCKET, _socket.SO_RCVBUF, 1024)
     try:
         client.sendall(
             b"GET /response?seq=1 HTTP/1.1\r\n"
@@ -1693,7 +2408,7 @@ def test_a_client_that_stops_reading_releases_the_response_slot(tmp_path, monkey
         deadline = _time.monotonic() + 2.0
         while not stream._reader_active and _time.monotonic() < deadline:
             _time.sleep(0.01)
-        assert stream._reader_active, "the test client never claimed the reader"
+        assert stream._reader_active, "the test client never claimed the reader slot"
         while stream._reader_active and _time.monotonic() < deadline:
             _time.sleep(0.01)
         assert not stream._reader_active, "a stalled socket retained the reader slot"

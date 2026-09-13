@@ -295,6 +295,15 @@ static bool last_wake_refused = false;
 // two drifting apart.
 static bool last_upload_delivered = false;
 
+// 1-p-2 task 7: set when a capture window closes with audio in it, so the
+// automation can acknowledge it. Deliberately NOT signalled at the wake:
+// the acknowledgement is audible, and the XMOS AEC suppresses the mic
+// while the speaker is active, so acknowledging during capture destroys
+// the very question being captured (measured: transcript went from good
+// to empty). Signalled at the close instead -- which also says something
+// more useful than "I heard a wake word": "I have your question".
+static bool last_capture_captured = false;
+
 // 1-p-2 task 7: the wake automation sets this before playing the short
 // acknowledgement, then starts capture only after the acknowledgement has
 // drained. The XMOS AEC suppresses the mic while the speaker is active, so
@@ -422,6 +431,7 @@ inline void tick(bool vad_active) {
     capturing = false;
     capture_done = true;
     capture_pending_upload = true;
+    last_capture_captured = write_pos > 0;
     ESP_LOGI(TAG, "wake capture ended on VAD silence (%u bytes)", (unsigned) write_pos);
   }
 }

@@ -57,7 +57,7 @@ development_status:
   1-p-2-status-and-response-audio-delivery: done
   1-p-3-bounded-follow-up-and-exact-stop: backlog
   1-p-4-recovery-without-replay: backlog
-  1-p-5-complete-streamed-response-playback-without-underrun: backlog
+  1-p-5-complete-streamed-response-playback-without-underrun: done
   1-p-6-graceful-bridge-service-shutdown-and-entry-point-coverage: backlog
   1-p-7-make-raw-pcm-diagnostics-explicitly-opt-in-and-bounded: backlog
   1-p-8-make-the-vendored-respeaker-audio-format-boundary-determinis: backlog

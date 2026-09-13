@@ -31,7 +31,7 @@ import wave
 from typing import Callable
 from urllib.parse import parse_qs, urlparse
 
-from .response import ResponseStream, streaming_wav_header
+from .response import ResponseStream, ResponseStreamError, streaming_wav_header
 
 logger = logging.getLogger("hermes_relay_tui.puck_bridge.receiver")
 
@@ -68,10 +68,46 @@ def _redact_token(text: str) -> str:
 TOKEN_HEADER = "X-Puck-Token"
 UPLOAD_PATH = "/upload"
 RESPONSE_PATH = "/response"
+RESPONSE_STATUS_PATH = "/response-status"
 # A connected client that stops reading must not retain the single response
 # reader forever. Keep this aligned with the response stream's stall budget;
 # tests may shorten it to exercise the failure path without waiting 20s.
 RESPONSE_WRITE_TIMEOUT_SECONDS = 20.0
+
+
+def _log_response_trace(response_stream: ResponseStream, *, framing: str) -> None:
+    """Write one bounded, content-safe delivery record for the current seq."""
+    metrics = response_stream.metrics()
+    logger.info(
+        "puck bridge response trace seq=%s framing=%s device_build_identity=%s "
+        "audio_format=%s source_bytes=%s source_duration_seconds=%.3f "
+        "source_sha256=%s delivered_bytes=%s delivered_duration_seconds=%.3f "
+        "delivered_sha256=%s first_pcm_seconds=%s producer_gap_seconds=%.3f "
+        "producer_gap_max_seconds=%.3f consumer_gap_seconds=%.3f "
+        "consumer_rate_bytes_per_second=%.1f queue_high_water=%s "
+        "stall_duration_seconds=%.3f response_duration_seconds=%.3f "
+        "terminal=%s terminal_reason=%s",
+        metrics["seq"],
+        framing,
+        metrics["device_build_identity"],
+        metrics["audio_format"],
+        metrics["source_bytes"],
+        metrics["source_duration_seconds"],
+        metrics["source_sha256"],
+        metrics["delivered_bytes"],
+        metrics["delivered_duration_seconds"],
+        metrics["delivered_sha256"],
+        metrics["first_pcm_seconds"],
+        metrics["producer_gap_seconds"],
+        metrics["producer_gap_max_seconds"],
+        metrics["consumer_gap_seconds"],
+        metrics["consumer_rate_bytes_per_second"],
+        metrics["queue_high_water"],
+        metrics["stall_duration_seconds"],
+        metrics["response_duration_seconds"],
+        metrics["terminal"],
+        metrics["terminal_reason"],
+    )
 
 
 def process_frame_sample(raw4: bytes) -> int:
@@ -177,7 +213,7 @@ def _evict_stale_captures(captures: dict[int, _PendingCapture]) -> None:
 def make_handler(
     *,
     expected_token: str,
-    on_transcript: Callable[[str], None],
+    on_transcript: Callable[[str], bool | None],
     set_response_seq: Callable[[int], None] | None = None,
     transcribe_fn: Callable[[str], dict] | None = None,
     work_dir: str | os.PathLike[str] | None = None,
@@ -222,8 +258,16 @@ def make_handler(
             )
             logger.debug(fmt, *safe)
 
-        def _respond(self, code: int, body: bytes = b"") -> None:
+        def _respond(
+            self,
+            code: int,
+            body: bytes = b"",
+            *,
+            content_type: str | None = None,
+        ) -> None:
             self.send_response(code)
+            if content_type is not None:
+                self.send_header("Content-Type", content_type)
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             if body:
@@ -243,7 +287,7 @@ def make_handler(
                 be terminated definitively or the device waits forever.
             """
             path = self.path.split("?", 1)[0]
-            if path != RESPONSE_PATH:
+            if path not in {RESPONSE_PATH, RESPONSE_STATUS_PATH}:
                 self._respond(404, b"not found")
                 return
 
@@ -274,6 +318,10 @@ def make_handler(
                 self._respond(503, b"no response stream configured")
                 return
 
+            if path == RESPONSE_STATUS_PATH:
+                self._do_response_status(query)
+                return
+
             # Distinguish the two "no audio" cases in the log, because they
             # mean very different things: nothing was ever coming (no turn
             # accepted for this capture) versus a turn was accepted but
@@ -289,21 +337,52 @@ def make_handler(
             # neither side able to notice. Mismatch is a conflict, not a
             # not-found: the resource exists, it is simply a different
             # answer than the one being asked for.
-            requested = query.get("seq", [""])[0]
+            seq_values = query.get("seq", [])
+            if len(seq_values) > 1:
+                self._respond(400, b"bad response sequence")
+                return
+            if len(seq_values) != 1:
+                self._respond(400, b"response sequence required")
+                return
+            requested = seq_values[0]
+            try:
+                requested_seq = int(requested)
+            except ValueError:
+                self._respond(400, b"bad response sequence")
+                return
+            if requested_seq < 0:
+                self._respond(400, b"bad response sequence")
+                return
             current = response_stream.seq
-            if requested and current is not None and requested != str(current):
+            if current != requested_seq:
                 logger.warning(
                     "puck bridge response: device asked for capture %s but "
                     "the current answer is for %s; refusing rather than "
                     "playing the wrong one",
-                    requested,
+                    requested_seq,
                     current,
                 )
                 self._respond(409, b"stale capture")
                 return
 
+            # A terminal response is never replayed. The status endpoint is
+            # the durable confirmation path for the device after playback.
+            if response_stream.status_for(requested_seq) in {
+                "complete",
+                "unavailable",
+            }:
+                self._respond(409, b"response is terminal")
+                return
+
             audio_format = response_stream.wait_for_format()
             if audio_format is None:
+                if (
+                    was_expecting
+                    and response_stream.source_terminal is None
+                ):
+                    response_stream.unavailable(
+                        requested_seq, reason="first_audio_timeout"
+                    )
                 if was_expecting:
                     # `expecting` is set when capture processing starts, so
                     # this covers the routine cases too -- an empty
@@ -323,13 +402,18 @@ def make_handler(
                         "capture (no turn was accepted); telling the device "
                         "at once rather than making it wait"
                     )
-                self._respond(504, b"no response audio")
+                self._respond(
+                    503 if response_stream.terminal_status == "unavailable" else 504,
+                    b"no response audio",
+                )
+                if response_stream.terminal_status == "unavailable":
+                    _log_response_trace(response_stream, framing="none")
                 return
 
             # Single consumer: a second concurrent fetch would pop from
             # the same queue and split the answer between the two, so both
             # would play garbage. Refuse rather than corrupt.
-            if not response_stream.acquire_reader():
+            if not response_stream.acquire_reader(requested_seq):
                 logger.warning(
                     "puck bridge response: a second concurrent fetch was "
                     "refused; one is already streaming"
@@ -345,9 +429,13 @@ def make_handler(
             # later fetch 409. That left the Puck permanently mute until
             # the bridge process restarted.
             total = 0
-            previous_socket_timeout = self.connection.gettimeout()
-            self.connection.settimeout(RESPONSE_WRITE_TIMEOUT_SECONDS)
+            stream_seq = response_stream.seq
+            previous_socket_timeout: float | None = None
+            timeout_read = False
             try:
+                previous_socket_timeout = self.connection.gettimeout()
+                timeout_read = True
+                self.connection.settimeout(RESPONSE_WRITE_TIMEOUT_SECONDS)
                 self.send_response(200)
                 self.send_header("Content-Type", "audio/wav")
                 # No Content-Length: the length genuinely is not known yet.
@@ -362,25 +450,87 @@ def make_handler(
                 response_stream.wait_for_prebuffer(audio_format)
                 for chunk in response_stream.iter_chunks():
                     self._write_chunk(chunk)
+                    if not response_stream.record_delivered(chunk, stream_seq):
+                        response_stream.fail_delivery(
+                            stream_seq, reason="delivery_accounting"
+                        )
+                        self.close_connection = True
+                        _log_response_trace(response_stream, framing="chunked")
+                        return
                     total += len(chunk)
-                # Terminating zero-length chunk: this is what makes
-                # esp_http_client_is_complete_data_received() true.
+                # A zero-length chunk is earned only by a normally completed
+                # source whose queue has drained. A stall/failure closes the
+                # body without masquerading as EOF.
+                if not response_stream.ready_for_eof(stream_seq):
+                    # HTTP/1.1 has no implicit end-of-body after a handler
+                    # returns. Close the connection so the device observes
+                    # a failed/truncated response rather than waiting for a
+                    # second request on the same socket.
+                    self.close_connection = True
+                    _log_response_trace(response_stream, framing="chunked")
+                    return
                 self.wfile.write(b"0\r\n\r\n")
                 self.wfile.flush()
+                if not response_stream.mark_delivery_complete(stream_seq):
+                    response_stream.fail_delivery(
+                        stream_seq, reason="delivery_accounting"
+                    )
+                    self.close_connection = True
+                    _log_response_trace(response_stream, framing="chunked")
+                    return
             except OSError:
+                response_stream.fail_delivery(
+                    stream_seq, reason="consumer_disconnect"
+                )
+                self.close_connection = True
                 logger.warning(
                     "puck bridge response: device closed the connection after "
                     "%d bytes -- the answer was cut short or stopped reading",
                     total,
                 )
+                _log_response_trace(response_stream, framing="chunked")
+                return
+            except (ResponseStreamError, TypeError, ValueError, struct.error) as exc:
+                response_stream.fail_delivery(
+                    stream_seq, reason="response_failure"
+                )
+                self.close_connection = True
+                logger.warning(
+                    "puck bridge response failed before completion (%s)",
+                    type(exc).__name__,
+                )
+                _log_response_trace(response_stream, framing="chunked")
                 return
             finally:
-                try:
-                    self.connection.settimeout(previous_socket_timeout)
-                except OSError:
-                    pass
+                if timeout_read:
+                    try:
+                        self.connection.settimeout(previous_socket_timeout)
+                    except OSError:
+                        pass
                 response_stream.release_reader()
             logger.info("puck bridge response streamed %d bytes of PCM", total)
+            _log_response_trace(response_stream, framing="chunked")
+
+        def _do_response_status(self, query: dict[str, list[str]]) -> None:
+            """Return the retained terminal result for exactly one sequence."""
+            values = query.get("seq", [])
+            if len(values) != 1:
+                self._respond(400, b"bad response sequence")
+                return
+            try:
+                seq = int(values[0])
+            except ValueError:
+                self._respond(400, b"bad response sequence")
+                return
+            status = response_stream.status_for(seq)
+            if status is None:
+                self._respond(404, b"unknown response sequence")
+                return
+            if status == "active":
+                self._respond(409, b"response active")
+                return
+            body = b'{"seq": %d, "status": "%s"}' % (seq, status.encode("ascii"))
+            self._respond(200, body, content_type="application/json")
 
         def _write_chunk(self, data: bytes) -> None:
             """Write one HTTP chunked-encoding frame."""
@@ -468,7 +618,18 @@ def make_handler(
                     self._respond(503, b"response stream busy")
                     return
 
-            self._respond(200 if finished_capture is not None else 202)
+            try:
+                self._respond(200 if finished_capture is not None else 202)
+            except OSError:
+                if finished_capture is not None and response_stream is not None:
+                    response_stream.abandon(seq)
+                self.close_connection = True
+                logger.info(
+                    "puck bridge upload acknowledgement failed for seq=%d; "
+                    "capture will not be replayed",
+                    seq,
+                )
+                return
 
             if finished_capture is not None:
                 self._finish_capture(seq, finished_capture)
@@ -540,9 +701,13 @@ def make_handler(
                 if response_stream is not None and accepted_stream:
                     response_stream.abandon()
             else:
-                if delivered is False and response_stream is not None and accepted_stream:
+                if (
+                    delivered is not True
+                    and response_stream is not None
+                    and accepted_stream
+                ):
                     response_stream.abandon()
-                if delivered is False:
+                if delivered is not True:
                     logger.warning(
                         "puck bridge dropped a capture or failed its delivery; "
                         "remote receipt may be uncertain. No automatic replay."

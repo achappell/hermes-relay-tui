@@ -42,6 +42,8 @@ esphome:
     - pcm_capture.h
     # 1-p-1: identity gate -- consulted before capture, fed by upload status.
     - puck_identity.h
+    # P-5: response terminal confirmation and post-playback wake hand-off.
+    - puck_response.h
   # micro_wake_word does not start listening on its own -- MicroWakeWord::setup()
   # never calls start(), and its own data callback explicitly drops audio while
   # state_ == STOPPED. Without a voice_assistant: component (which normally
@@ -486,7 +488,9 @@ media_player:
           }
     on_idle:
       - lambda: |-
-          if (!id(mww).is_running()) {
+          if (puck_response::holds_wake()) {
+            puck_response::media_idle();
+          } else if (!id(mww).is_running()) {
             ESP_LOGI("puck_audio", "resuming wake detection after speaking");
             id(mww).start();
           }
@@ -629,7 +633,8 @@ interval:
           // Skip the self-heal while the speaker is announcing: detection
           // is stopped ON PURPOSE there (see the media_player block), and
           // restarting it would both undo that and fight the automation.
-          if (!id(mww).is_running() &&
+          if (!puck_response::holds_wake() &&
+              !id(mww).is_running() &&
               id(puck_media_player).state != media_player::MEDIA_PLAYER_STATE_ANNOUNCING) {
             ESP_LOGW("mww_diag", "mww stopped -- restarting");
             id(mww).start();
@@ -664,6 +669,56 @@ interval:
       # 1-p-2 task 7 acknowledgement is issued by on_wake_word_detected
       # before capture begins. It must not be moved into this close path:
       # doing so violates the wake-time status contract.
+  # P-5: media_player's idle callback only admits a status check. Polling is
+  # kept on this bounded interval so the callback never waits on HTTP and
+  # wake detection cannot restart before the bridge has confirmed this seq.
+  - interval: 250ms
+    then:
+      - if:
+          condition:
+            lambda: return puck_response::poll_due();
+          then:
+            - http_request.get:
+                id: http_client
+                url: !lambda |-
+                  return std::string("http://${puck_bridge_host}:${puck_bridge_port}/response-status?seq=") +
+                  std::to_string(puck_response::sequence()) +
+                  "&token=" + puck_response::url_encode("${puck_device_token}");
+                capture_response: true
+                max_response_buffer_size: 128
+                on_response:
+                  then:
+                    - lambda: |-
+                        puck_response::note_status(response->status_code, body);
+                on_error:
+                  then:
+                    - lambda: puck_response::note_transport_failure();
+      - if:
+          condition:
+            lambda: return puck_response::refusal_pending();
+          then:
+            - media_player.stop: puck_media_player
+            - media_player.play_media:
+                id: puck_media_player
+                media_url: "audio-file://refused_sound"
+                announcement: true
+            - lambda: puck_response::refusal_started();
+      - if:
+          condition:
+            lambda: return puck_response::refusal_recovery_due();
+          then:
+            # A decoder/file-reader error can leave the media player away from
+            # IDLE, so its callback may never release the wake hold. Stop the
+            # failed refusal once the bounded watchdog expires, then let the
+            # normal READY_TO_RESUME action restart wake detection.
+            - media_player.stop: puck_media_player
+            - lambda: puck_response::refusal_recovered();
+      - if:
+          condition:
+            lambda: return puck_response::ready_to_resume();
+          then:
+            - micro_wake_word.start
+            - lambda: puck_response::wake_resumed();
   # Story 5: the actual outbound upload, from a slow tick (never the
   # real-time audio path or the fast VAD-tick above) -- matches
   # `upload_and_restart`'s existing convention of only ever blocking on a
@@ -690,10 +745,13 @@ interval:
             lambda: return pcm_capture::wake_capture::last_upload_delivered;
           then:
             - lambda: pcm_capture::wake_capture::last_upload_delivered = false;
+            - lambda: |-
+                puck_response::begin(
+                    pcm_capture::wake_capture::last_delivered_seq);
             - media_player.play_media:
                 id: puck_media_player
                 media_url: !lambda |-
                   return std::string("http://${puck_bridge_host}:${puck_bridge_port}/response?seq=") +
-                         std::to_string(pcm_capture::wake_capture::last_delivered_seq) +
-                         "&token=${puck_device_token}";
+                  std::to_string(pcm_capture::wake_capture::last_delivered_seq) +
+                  "&token=" + puck_response::url_encode("${puck_device_token}");
                 announcement: true

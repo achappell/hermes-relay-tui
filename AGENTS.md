@@ -132,6 +132,17 @@ reading order.
   specification.
 - Use the repository-local BMAD runtime at the intentional shared version; do
   not copy `_bmad/` or local tool configuration from `hermes-relay-ios`.
+- Deferred work is recorded in this repository, for every surface. Findings
+  that are real but outside the current slice --- including those discovered
+  while working in `hermes-relay-android`, `hermes-relay-ios`, or firmware ---
+  are appended to
+  [`_bmad-output/implementation-artifacts/deferred-work.md`](_bmad-output/implementation-artifacts/deferred-work.md)
+  under a `## Deferred from:` heading, using the existing
+  `source_spec` / `summary` / `evidence` shape. `source_spec` may name a
+  sibling repository's specification. A sibling repository may also keep a
+  local ticket file, but that never substitutes for the entry here: this file
+  is the single cross-surface record, and a finding logged only in a sibling
+  repository is invisible to planning.
 - Keep one active vertical slice per repository/workstream. Independent TUI
   and iOS cards may both be in `Building` when their contracts are settled and
   their files do not contend. Shared protocol or contract work remains a
