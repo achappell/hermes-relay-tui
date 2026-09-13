@@ -729,7 +729,7 @@ async def test_tui_waits_for_playback_drain_before_opening_a_follow_up():
         {"type": "turn_end", "turn_id": "audio-drain"},
     ])
     session.capture_results = iter(["what is the weather", ""])
-    app, fakes, _ = make_app(session=session, no_play=False)
+    app, fakes, _ = make_app(session=session, no_play=False, earcons=False)
     app.player = BlockingPlayer()
 
     async with app.run_test() as pilot:
