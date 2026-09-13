@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import os
 import shutil
+import stat
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -38,7 +40,21 @@ def fake_ops(tmp_path: Path) -> dict[str, str | Path]:
     fake_etc = tmp_path / "etc"
     (fake_etc / "systemd/system").mkdir(parents=True)
     (fake_etc / "hermes-relay").mkdir()
-    (fake_etc / "hermes-relay/home.env").touch()
+    (fake_etc / "hermes-relay/home.env").write_text(
+        "LEGACY_RUNTIME=keep-me\n", encoding="utf-8"
+    )
+    profile_config = tmp_path / "profile-config.yaml"
+    shutil.copy(
+        ROOT / "deploy/ops/hermes-home-profile-config.yaml.example",
+        profile_config,
+    )
+    profile_env_source = tmp_path / "profile.env"
+    profile_env_source.write_text(
+        "VOICE_SESSION_TOKEN_AMANDA=amanda-test-token\n"
+        "VOICE_SESSION_TOKEN_JENSEN=jensen-test-token\n"
+        "VOICE_SESSION_TOKEN_SPARK=spark-test-token\n",
+        encoding="utf-8",
+    )
     transport_log = tmp_path / "transport.log"
     real_git = shutil.which("git")
     assert real_git
@@ -83,6 +99,11 @@ exit 0
         "fake-python",
         """#!/bin/sh
 set -eu
+case "${1:-}" in
+    *scripts/validate_ops_profile_config.py)
+        exec "$FAKE_REAL_PYTHON" "$@"
+        ;;
+esac
 if [ "${1:-}" = -m ] && [ "${2:-}" = build ]; then
     if [ "${3:-}" = --help ]; then
         exit 0
@@ -175,6 +196,7 @@ set -eu
 map_path() {
     case "$1" in
         /etc/systemd/system/*) printf '%s/%s' "$FAKE_ETC_DIR/systemd/system" "${1#/etc/systemd/system/}" ;;
+        /etc/hermes-relay) printf '%s' "$FAKE_ETC_DIR/hermes-relay" ;;
         /etc/hermes-relay/*) printf '%s/%s' "$FAKE_ETC_DIR/hermes-relay" "${1#/etc/hermes-relay/}" ;;
         *) printf '%s' "$1" ;;
     esac
@@ -321,6 +343,7 @@ esac
     env = {
         "PATH": f"{fake_bin}:{os.environ['PATH']}",
         "FAKE_REAL_GIT": real_git,
+        "FAKE_REAL_PYTHON": sys.executable,
         "FAKE_TRANSPORT_LOG": str(transport_log),
         "FAKE_STATE_DIR": str(state_dir),
         "FAKE_ETC_DIR": str(fake_etc),
@@ -332,6 +355,8 @@ esac
         "base": tmp_path / "releases-root",
         "caddyfile": tmp_path / "Caddyfile",
         "etc": fake_etc,
+        "profile_config": profile_config,
+        "profile_env_source": profile_env_source,
     }
 
 
@@ -356,6 +381,10 @@ def _deploy_args(fake_ops: dict[str, str | Path]) -> tuple[str, ...]:
         str(fake_ops["base"]),
         "--caddyfile",
         str(fake_ops["caddyfile"]),
+        "--profile-config",
+        str(fake_ops["profile_config"]),
+        "--profile-env-source",
+        str(fake_ops["profile_env_source"]),
     )
 
 
@@ -365,6 +394,198 @@ def test_deployment_script_help_is_available_without_an_ops_target():
     assert result.returncode == 0
     assert "deploy" in result.stdout
     assert "rollback" in result.stdout
+    assert "--profile-config" in result.stdout
+    assert "--profile-env-source" in result.stdout
+
+
+def test_profile_validator_filters_the_env_source_to_the_three_allowlisted_tokens(tmp_path):
+    catalog = ROOT / "deploy/ops/hermes-home-profile-config.yaml.example"
+    source = tmp_path / "home.env"
+    filtered = tmp_path / "filtered.env"
+    source.write_text(
+        "VOICE_SESSION_TOKEN_AMANDA=amanda-secret\n"
+        "VOICE_SESSION_TOKEN_JENSEN=jensen-secret\n"
+        "VOICE_SESSION_TOKEN_SPARK=spark-secret\n"
+        "UNRELATED_SETTING=discard-me\n",
+        encoding="utf-8",
+    )
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(ROOT / "scripts/validate_ops_profile_config.py"),
+            "--catalog",
+            str(catalog),
+            "--env-file",
+            str(source),
+            "--write-env",
+            str(filtered),
+        ],
+        cwd=ROOT,
+        text=True,
+        capture_output=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "secret" not in result.stdout
+    assert filtered.read_text(encoding="utf-8") == (
+        "VOICE_SESSION_TOKEN_AMANDA=amanda-secret\n"
+        "VOICE_SESSION_TOKEN_JENSEN=jensen-secret\n"
+        "VOICE_SESSION_TOKEN_SPARK=spark-secret\n"
+    )
+    assert stat.S_IMODE(filtered.stat().st_mode) == 0o600
+    assert "UNRELATED_SETTING" not in filtered.read_text(encoding="utf-8")
+
+
+def test_profile_validator_rejects_an_incomplete_token_source_without_echoing_values(tmp_path):
+    source = tmp_path / "home.env"
+    source.write_text(
+        "VOICE_SESSION_TOKEN_AMANDA=amanda-secret\n"
+        "VOICE_SESSION_TOKEN_JENSEN=jensen-secret\n",
+        encoding="utf-8",
+    )
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(ROOT / "scripts/validate_ops_profile_config.py"),
+            "--catalog",
+            str(ROOT / "deploy/ops/hermes-home-profile-config.yaml.example"),
+            "--env-file",
+            str(source),
+        ],
+        cwd=ROOT,
+        text=True,
+        capture_output=True,
+    )
+
+    assert result.returncode == 1
+    assert "missing a required profile token" in result.stderr
+    assert "secret" not in result.stdout + result.stderr
+
+
+def test_profile_validator_rejects_a_non_wss_catalog_endpoint(tmp_path):
+    catalog = tmp_path / "profile-config.yaml"
+    catalog.write_text(
+        (
+            ROOT / "deploy/ops/hermes-home-profile-config.yaml.example"
+        ).read_text(encoding="utf-8").replace("wss://", "https://", 1),
+        encoding="utf-8",
+    )
+    source = tmp_path / "home.env"
+    source.write_text(
+        "VOICE_SESSION_TOKEN_AMANDA=amanda-secret\n"
+        "VOICE_SESSION_TOKEN_JENSEN=jensen-secret\n"
+        "VOICE_SESSION_TOKEN_SPARK=spark-secret\n",
+        encoding="utf-8",
+    )
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(ROOT / "scripts/validate_ops_profile_config.py"),
+            "--catalog",
+            str(catalog),
+            "--env-file",
+            str(source),
+        ],
+        cwd=ROOT,
+        text=True,
+        capture_output=True,
+    )
+
+    assert result.returncode == 1
+    assert "wss" in result.stderr
+    assert "secret" not in result.stdout + result.stderr
+
+
+@pytest.mark.parametrize(
+    "catalog_text",
+    [
+        "",
+        "version: true\nprofiles: {}\n",
+        (
+            ROOT / "deploy/ops/hermes-home-profile-config.yaml.example"
+        ).read_text(encoding="utf-8").replace("- hey skippy", "- HEY   MISSY"),
+    ],
+    ids=["empty", "non_integer_version", "duplicate_normalized_phrase"],
+)
+def test_invalid_profile_catalog_stops_before_transport_and_preserves_prior_release(
+    fake_ops, tmp_path, catalog_text
+):
+    old_release = _seed_current(Path(fake_ops["base"]))
+    invalid_catalog = tmp_path / "invalid-profile-config.yaml"
+    invalid_catalog.write_text(catalog_text, encoding="utf-8")
+
+    result = _run(
+        *_deploy_args(fake_ops),
+        "--profile-config",
+        str(invalid_catalog),
+        env=fake_ops["env"],
+    )
+
+    assert result.returncode == 1
+    log_path = Path(fake_ops["env"]["FAKE_TRANSPORT_LOG"])
+    if log_path.exists():
+        assert "ssh" not in log_path.read_text(encoding="utf-8")
+    assert (Path(fake_ops["base"]) / "current").resolve() == old_release
+    assert not (old_release / "profile-config.yaml").exists()
+
+
+def test_profile_deploy_pairs_catalog_with_the_release_and_installs_filtered_env(
+    fake_ops, tmp_path
+):
+    old_release = _seed_current(Path(fake_ops["base"]))
+    source = tmp_path / "home.env"
+    source.write_text(
+        "VOICE_SESSION_TOKEN_AMANDA=amanda-secret\n"
+        "VOICE_SESSION_TOKEN_JENSEN=jensen-secret\n"
+        "VOICE_SESSION_TOKEN_SPARK=spark-secret\n"
+        "LEGACY_TOKEN=not-uploaded\n",
+        encoding="utf-8",
+    )
+
+    result = _run(
+        *_deploy_args(fake_ops),
+        "--profile-config",
+        str(ROOT / "deploy/ops/hermes-home-profile-config.yaml.example"),
+        "--profile-env-source",
+        str(source),
+        env=fake_ops["env"],
+    )
+
+    assert result.returncode == 0, result.stderr
+    current = Path(fake_ops["base"]) / "current"
+    assert current.resolve() != old_release
+    assert (current / "profile-config.yaml").read_text(encoding="utf-8") == (
+        ROOT / "deploy/ops/hermes-home-profile-config.yaml.example"
+    ).read_text(encoding="utf-8")
+    assert (old_release / "profile-config.yaml").read_text(encoding="utf-8") == (
+        ROOT / "deploy/ops/hermes-home-profile-config.yaml.example"
+    ).read_text(encoding="utf-8")
+    installed_env = (Path(fake_ops["etc"]) / "hermes-relay/home.env").read_text(
+        encoding="utf-8"
+    )
+    assert stat.S_IMODE(
+        (Path(fake_ops["etc"]) / "hermes-relay/home.env").stat().st_mode
+    ) == 0o600
+    assert installed_env == (
+        "LEGACY_RUNTIME=keep-me\n"
+        "VOICE_SESSION_TOKEN_AMANDA=amanda-secret\n"
+        "VOICE_SESSION_TOKEN_JENSEN=jensen-secret\n"
+        "VOICE_SESSION_TOKEN_SPARK=spark-secret\n"
+    )
+    assert "LEGACY_TOKEN" not in installed_env
+    commit = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=ROOT,
+        check=True,
+        text=True,
+        capture_output=True,
+    ).stdout.strip()
+    assert not (Path(fake_ops["base"]) / ".incoming" / f"profile-config-{commit}.yaml").exists()
+    assert not (Path(fake_ops["base"]) / ".incoming" / f"profile-env-{commit}").exists()
+    assert not Path(f"/tmp/hermes-relay-home-env-backup-{commit}").exists()
 
 
 def test_deployment_script_rejects_an_unknown_operation():
@@ -508,16 +729,29 @@ def test_successful_deploy_activates_a_commit_release_and_records_previous(fake_
 )
 def test_activation_failures_leave_the_prior_current_release_active(fake_ops, failure_env):
     old_release = _seed_current(Path(fake_ops["base"]))
+    env_path = Path(fake_ops["etc"]) / "hermes-relay/home.env"
+    previous_env = env_path.read_text(encoding="utf-8")
     fake_ops["env"].update(failure_env)
 
     result = _run(*_deploy_args(fake_ops), env=fake_ops["env"])
 
     assert result.returncode == 1
     assert (Path(fake_ops["base"]) / "current").resolve() == old_release
+    assert env_path.read_text(encoding="utf-8") == previous_env
+    if failure_env not in ({"FAKE_SCP_FAIL": "1"}, {"FAKE_PIP_FAIL": "1"}):
+        assert (old_release / "profile-config.yaml").is_file()
 
 
 def test_public_smoke_failure_automatically_rolls_back(fake_ops):
     old_release = _seed_current(Path(fake_ops["base"]))
+    env_path = Path(fake_ops["etc"]) / "hermes-relay/home.env"
+    previous_env = (
+        "LEGACY_RUNTIME=keep-me\n"
+        "VOICE_SESSION_TOKEN_AMANDA=old-amanda-token\n"
+        "VOICE_SESSION_TOKEN_JENSEN=old-jensen-token\n"
+        "VOICE_SESSION_TOKEN_SPARK=old-spark-token\n"
+    )
+    env_path.write_text(previous_env, encoding="utf-8")
     fake_ops["env"]["FAKE_CHECK_FAIL"] = "1"
 
     result = _run(*_deploy_args(fake_ops), env=fake_ops["env"])
@@ -525,9 +759,12 @@ def test_public_smoke_failure_automatically_rolls_back(fake_ops):
     assert result.returncode == 1
     assert "previous release restored" in result.stderr
     assert (Path(fake_ops["base"]) / "current").resolve() == old_release
+    assert env_path.read_text(encoding="utf-8") == previous_env
 
 
 def test_first_deploy_smoke_failure_deactivates_without_a_previous_release(fake_ops):
+    env_path = Path(fake_ops["etc"]) / "hermes-relay/home.env"
+    previous_env = env_path.read_text(encoding="utf-8")
     fake_ops["env"]["FAKE_CHECK_FAIL"] = "1"
 
     result = _run(*_deploy_args(fake_ops), env=fake_ops["env"])
@@ -536,6 +773,17 @@ def test_first_deploy_smoke_failure_deactivates_without_a_previous_release(fake_
     assert "failed release deactivated" in result.stderr
     assert "deactivated_failed_release=" in result.stdout
     assert not (Path(fake_ops["base"]) / "current").exists()
+    assert env_path.read_text(encoding="utf-8") == previous_env
+    commit = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=ROOT,
+        check=True,
+        text=True,
+        capture_output=True,
+    ).stdout.strip()
+    assert not (Path(fake_ops["base"]) / ".incoming" / f"profile-config-{commit}.yaml").exists()
+    assert not (Path(fake_ops["base"]) / ".incoming" / f"profile-env-{commit}").exists()
+    assert not Path(f"/tmp/hermes-relay-home-env-backup-{commit}").exists()
 
 
 def test_rollback_refuses_when_no_previous_release_exists(fake_ops):

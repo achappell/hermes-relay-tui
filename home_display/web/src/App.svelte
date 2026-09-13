@@ -274,7 +274,9 @@
       },
     });
     voiceController = new BrowserVoiceController({
-      sendText: (text) => bridge?.sendVoiceTurn(text) ?? false,
+      sendText: (text, wakePhrase) => wakePhrase === undefined
+        ? bridge?.sendVoiceTurn(text) ?? false
+        : bridge?.sendVoiceTurn(text, wakePhrase) ?? false,
       onState: (state) => {
         voiceState = state;
         if (state !== "error") voiceError = null;
@@ -286,8 +288,11 @@
       onTranscript: (text) => setUserTranscript(text),
     });
     handsFreeController = new BrowserHandsFreeController({
-      sendText: (text) => bridge?.sendVoiceTurn(text) ?? false,
+      sendText: (text, wakePhrase) => wakePhrase === undefined
+        ? bridge?.sendVoiceTurn(text) ?? false
+        : bridge?.sendVoiceTurn(text, wakePhrase) ?? false,
       wakePhrases: [],
+      routeWake: (phrase) => bridge?.routeProfile?.(phrase) ?? false,
       onState: (state) => {
         const previousState = handsFreeState;
         handsFreeState = state;
@@ -421,6 +426,8 @@
       <p data-handsfree-error role="alert">{handsFreeError}</p>
     {:else if handsFreeState === "wake_ready"}
       <p data-handsfree-status>Say {wakePhraseLabel}</p>
+    {:else if handsFreeState === "routing"}
+      <p data-handsfree-status>Switching profile…</p>
     {:else if handsFreeState === "heard"}
       <p data-handsfree-status>Heard you</p>
     {:else if handsFreeState === "listening"}

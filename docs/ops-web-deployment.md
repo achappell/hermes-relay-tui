@@ -23,7 +23,7 @@ authentication, and kiosk authentication remains a separate follow-up before
 wider exposure.
 
 Create the service environment on ops, owned and readable only by the service
-user:
+user. The catalog references exactly these three variable names:
 
 ```bash
 sudo install -d -m 0750 -o hermes-home -g hermes-home /etc/hermes-relay
@@ -35,18 +35,21 @@ sudo chmod 0600 /etc/hermes-relay/home.env
 The file contains runtime settings, for example:
 
 ```dotenv
-VOICE_SESSION_TOKEN=redacted-token
-HERMES_VOICE_SESSION_URL=wss://relay.example.internal/voice-session
-VOICE_SESSION_CLIENT_ID=hermes-home-ops
-VOICE_SESSION_DEVICE_ID=hermes-home
-VOICE_SESSION_ID=hermes-home
-VOICE_SESSION_WAKE_PHRASES=hey hermes
+VOICE_SESSION_TOKEN_AMANDA=redacted-token
+VOICE_SESSION_TOKEN_JENSEN=redacted-token
+VOICE_SESSION_TOKEN_SPARK=redacted-token
 ```
 
-The client and device identity must already be allowlisted by the Hermes
-endpoint. If ops already has a working appliance, preserve its accepted pair
-unless the relay administrator has added a new identity; an arbitrary new
-pair will connect to the network but be rejected during `hello`.
+Keep one non-secret catalog outside Git, based on
+`deploy/ops/hermes-home-profile-config.yaml.example`, and fill in the three
+Ops WebSocket endpoints and allowlisted client/device/session identities. The
+catalog fixes `amanda` to `hey missy`, `jensen` to `hey skippy`, and `spark` to
+`hey spark`; the deployment validator rejects a different profile set or token
+mapping.
+
+The client and device identities must already be allowlisted by the Hermes
+endpoint. An arbitrary new pair will connect to the network but be rejected
+during `hello`.
 
 Keep the real token in this file on ops. Do not copy it into the repository,
 the deployment command, a wheel, or a Caddy file.
@@ -78,10 +81,16 @@ the appliance until the first deploy.
 
 ## Routine deploy
 
-Run from a clean worktree containing the commit you want to serve:
+Run from a clean worktree containing the commit you want to serve. A complete
+catalog deploy takes both private inputs; the script validates the catalog,
+replaces only the three allowlisted token bindings, and preserves other
+runtime entries in `/etc/hermes-relay/home.env`:
 
 ```bash
-OPS_HOST=ops.example ./scripts/deploy_ops_web.sh deploy
+OPS_HOST=ops.example \
+  ./scripts/deploy_ops_web.sh deploy \
+  --profile-config /secure/ops/hermes-home-profile-config.yaml \
+  --profile-env-source /secure/ops/home.env
 ```
 
 The command installs Node dependencies in a temporary source snapshot, runs
@@ -97,7 +106,9 @@ Useful overrides:
 ```bash
 OPS_HOST=ops.example ./scripts/deploy_ops_web.sh deploy \
   --origin https://hermes-home.chappell-home.dev \
-  --base-dir /opt/hermes-relay-home
+  --base-dir /opt/hermes-relay-home \
+  --profile-config /secure/ops/hermes-home-profile-config.yaml \
+  --profile-env-source /secure/ops/home.env
 ```
 
 The public-origin option is passed to the appliance as an exact Origin allow
@@ -129,8 +140,8 @@ certificate verification for the local probe, not for the browser or Caddy.
 
 ## Failure handling
 
-- A dirty worktree, missing build tool, failed browser check, or generated
-  asset drift stops before SSH upload.
+- A dirty worktree, missing build tool, failed browser check, generated asset
+  drift, invalid catalog, or missing profile token stops before SSH upload.
 - An install or restart failure leaves the existing `current` release in place
   when one exists.
 - A public smoke failure triggers a remote rollback and reports whether that

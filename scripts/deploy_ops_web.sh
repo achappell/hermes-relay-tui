@@ -41,6 +41,8 @@ remote_python="${OPS_REMOTE_PYTHON:-$DEFAULT_REMOTE_PYTHON}"
 health_ca_file="${OPS_CHECK_CA_FILE:-}"
 health_insecure="${OPS_CHECK_INSECURE:-0}"
 python_bin="${PYTHON_BIN:-}"
+profile_config_source="${OPS_PROFILE_CONFIG:-}"
+profile_env_source="${OPS_PROFILE_ENV_SOURCE:-}"
 
 usage() {
 	cat <<'USAGE'
@@ -63,6 +65,8 @@ Options:
   --origin URL                Public HTTPS origin
   --caddyfile PATH            Remote Caddyfile (default: /etc/caddy/Caddyfile)
   --caddy-site-dir PATH       Imported Caddy site directory
+  --profile-config PATH       Three-profile non-secret catalog to deploy
+  --profile-env-source PATH   Local file containing the three profile tokens
   --ca-file PATH              CA bundle for the public smoke check
   --insecure-health-check     Disable HTTPS verification for a deliberate check
   --help                      Show this help
@@ -70,7 +74,8 @@ Options:
 Environment overrides:
   OPS_HOST, OPS_BASE_DIR, OPS_SERVICE, OPS_SERVICE_USER, OPS_DISPLAY_PORT,
   OPS_ORIGIN, OPS_CADDYFILE, OPS_CADDY_SITE_DIR, OPS_REMOTE_PYTHON,
-  OPS_CHECK_CA_FILE, OPS_CHECK_INSECURE, PYTHON_BIN
+  OPS_PROFILE_CONFIG, OPS_PROFILE_ENV_SOURCE, OPS_CHECK_CA_FILE,
+  OPS_CHECK_INSECURE, PYTHON_BIN
 
 The deploy account must be able to write the remote base directory. The
 bootstrap operation requires sudo for systemd and Caddy configuration.
@@ -130,6 +135,16 @@ while (( $# > 0 )); do
 			caddy_site_dir="$2"
 			shift 2
 			;;
+		--profile-config)
+			need_value "$@"
+			profile_config_source="$2"
+			shift 2
+			;;
+		--profile-env-source)
+			need_value "$@"
+			profile_env_source="$2"
+			shift 2
+			;;
 		--ca-file)
 			need_value "$@"
 			health_ca_file="$2"
@@ -182,6 +197,17 @@ fi
 if [[ -n "$health_ca_file" && ! -f "$health_ca_file" ]]; then
 	die "CA file does not exist: $health_ca_file"
 fi
+if [[ "$operation" == "deploy" ]]; then
+	[[ -n "$profile_config_source" && -n "$profile_env_source" ]] || \
+		die "deploy requires --profile-config and --profile-env-source"
+fi
+if [[ -n "$profile_config_source" || -n "$profile_env_source" ]]; then
+	[[ "$operation" == "deploy" ]] || die "profile inputs are supported only for deploy"
+	[[ -n "$profile_config_source" && -n "$profile_env_source" ]] || \
+		die "--profile-config and --profile-env-source must be supplied together"
+	[[ -f "$profile_config_source" ]] || die "profile catalog does not exist: $profile_config_source"
+	[[ -f "$profile_env_source" ]] || die "profile token source does not exist: $profile_env_source"
+fi
 
 require_command() {
 	command -v "$1" >/dev/null 2>&1 || die "required command not found: $1"
@@ -220,6 +246,11 @@ ensure_clean_tree() {
 
 BUILD_ROOT=""
 DEPLOY_COMMIT=""
+PROFILE_ENV_UPLOAD=""
+PROFILE_CONFIG_ENABLED=0
+PROFILE_CONFIG_INCOMING_REMOTE=""
+PROFILE_ENV_INCOMING_REMOTE=""
+PROFILE_ENV_BACKUP_REMOTE=""
 cleanup() {
 	if [[ -n "$BUILD_ROOT" && -d "$BUILD_ROOT" ]]; then
 		rm -rf -- "$BUILD_ROOT"
@@ -233,6 +264,14 @@ build_release() {
 	"$python_bin" -m build --help >/dev/null 2>&1 || die "Python build module is unavailable in $python_bin"
 
 	BUILD_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/hermes-ops-build.XXXXXX")"
+	if [[ -n "$profile_config_source" ]]; then
+		PROFILE_CONFIG_ENABLED=1
+		PROFILE_ENV_UPLOAD="$BUILD_ROOT/profile.env"
+		"$python_bin" "$REPO_ROOT/scripts/validate_ops_profile_config.py" \
+			--catalog "$profile_config_source" \
+			--env-file "$profile_env_source" \
+			--write-env "$PROFILE_ENV_UPLOAD"
+	fi
 	local snapshot="$BUILD_ROOT/source"
 	local dist="$snapshot/dist"
 	mkdir -p "$snapshot"
@@ -419,24 +458,45 @@ REMOTE_BOOTSTRAP
 
 deploy_remote() {
 	local incoming="$base_dir/.incoming/$WHEEL_NAME"
+	PROFILE_CONFIG_INCOMING_REMOTE="$base_dir/.incoming/profile-config-$DEPLOY_COMMIT.yaml"
+	PROFILE_ENV_INCOMING_REMOTE="$base_dir/.incoming/profile-env-$DEPLOY_COMMIT"
+	PROFILE_ENV_BACKUP_REMOTE="/tmp/hermes-relay-home-env-backup-$DEPLOY_COMMIT"
+	local profile_config_incoming="$PROFILE_CONFIG_INCOMING_REMOTE"
+	local profile_env_incoming="$PROFILE_ENV_INCOMING_REMOTE"
 	ssh "${SSH_OPTIONS[@]}" "$ops_host" "mkdir -p -- $base_dir/.incoming $base_dir/releases"
 	scp "${SSH_OPTIONS[@]}" "$WHEEL_PATH" "$ops_host:$incoming"
+	if (( PROFILE_CONFIG_ENABLED )); then
+		scp "${SSH_OPTIONS[@]}" "$profile_config_source" "$ops_host:$profile_config_incoming"
+		scp "${SSH_OPTIONS[@]}" "$PROFILE_ENV_UPLOAD" "$ops_host:$profile_env_incoming"
+	fi
 	ssh "${SSH_OPTIONS[@]}" "$ops_host" bash -s -- \
-		"$base_dir" "$service_name" "$remote_python" "$display_port" \
-		"$public_origin" "$caddyfile" "$WHEEL_NAME" "$DEPLOY_COMMIT" <<'REMOTE_DEPLOY'
+		"$base_dir" "$service_name" "$service_user" "$remote_python" \
+		"$display_port" "$public_origin" "$caddyfile" "$WHEEL_NAME" \
+		"$DEPLOY_COMMIT" "$PROFILE_CONFIG_ENABLED" "$profile_config_incoming" \
+		"$profile_env_incoming" <<'REMOTE_DEPLOY'
 set -Eeuo pipefail
 
 base_dir="$1"
 service_name="$2"
-remote_python="$3"
-display_port="$4"
-public_origin="$5"
-caddyfile="$6"
-wheel_name="$7"
-commit="$8"
+service_user="$3"
+remote_python="$4"
+display_port="$5"
+public_origin="$6"
+caddyfile="$7"
+wheel_name="$8"
+commit="$9"
+profile_config_enabled="${10}"
+profile_config_incoming="${11}"
+profile_env_incoming="${12}"
 incoming="$base_dir/.incoming/$wheel_name"
 release_dir="$base_dir/releases/$commit"
+profile_env_path="/etc/hermes-relay/home.env"
+profile_env_backup="/tmp/hermes-relay-home-env-backup-$commit"
+profile_env_merged="${profile_env_path}.next.$$"
 release_installing=0
+profile_env_changed=0
+profile_env_had_previous=0
+profile_env_retained=0
 
 fail() {
 	printf 'remote deploy failed: %s\n' "$*" >&2
@@ -451,6 +511,22 @@ cleanup() {
 	fi
 	if ! rm -f -- "$incoming"; then
 		printf 'could not remove uploaded wheel: %s\n' "$incoming" >&2
+	fi
+	if [[ "$profile_config_enabled" == 1 ]]; then
+		if (( ! profile_env_retained )); then
+			rm -f -- "$profile_config_incoming" "$profile_env_incoming"
+		fi
+		sudo rm -f -- "$profile_env_merged" || true
+	fi
+	if (( profile_env_changed )); then
+		if (( profile_env_had_previous )); then
+			sudo install -m 0600 -- "$profile_env_backup" "$profile_env_path" || true
+		else
+			sudo rm -f -- "$profile_env_path" || true
+		fi
+	fi
+	if (( ! profile_env_retained )); then
+		sudo rm -f -- "$profile_env_backup" || true
 	fi
 }
 trap cleanup EXIT
@@ -475,6 +551,12 @@ restart_service() {
 
 [[ -d "$base_dir" && -w "$base_dir" ]] || fail "base directory is not writable: $base_dir"
 [[ -f "$incoming" ]] || fail "uploaded wheel is missing: $incoming"
+if [[ "$profile_config_enabled" == 1 ]]; then
+	[[ -f "$profile_config_incoming" ]] || fail "uploaded profile catalog is missing"
+	[[ -f "$profile_env_incoming" ]] || fail "uploaded profile token source is missing"
+	chmod 0600 "$profile_env_incoming" || fail "could not protect the staged profile environment"
+	id -u "$service_user" >/dev/null 2>&1 || fail "service user does not exist: $service_user"
+fi
 exec 9>"$base_dir/.ops-web.lock"
 flock -n 9 || fail "another ops-web deployment or rollback is active"
 
@@ -486,6 +568,50 @@ validate_release() {
 	grep -Fqx "commit=$expected_commit" "$release/.hermes-release" || \
 		fail "release manifest does not match its commit: $release"
 	[[ -x "$release/venv/bin/hermes-relay-home" ]] || fail "release runtime is incomplete: $release"
+	if [[ "$profile_config_enabled" == 1 ]]; then
+		[[ -f "$release/profile-config.yaml" ]] || fail "release profile catalog is missing: $release"
+	fi
+}
+
+prepare_profile_env() {
+	if [[ "$profile_config_enabled" != 1 ]]; then
+		return
+	fi
+	if sudo test -e "$profile_env_path"; then
+		profile_env_had_previous=1
+		sudo cp -- "$profile_env_path" "$profile_env_backup" || fail "could not back up the service environment"
+	fi
+	sudo install -d -m 0750 -- "${profile_env_path%/*}" || fail "could not prepare the service environment directory"
+	sudo sh -c '
+		set -Eeuo pipefail
+		if [ -r "$1" ]; then
+			sed -E "/^[[:space:]]*(export[[:space:]]+)?VOICE_SESSION_TOKEN_(AMANDA|JENSEN|SPARK)[[:space:]]*=/d" "$1" > "$3"
+		else
+			: > "$3"
+		fi
+		cat "$2" >> "$3"
+		chmod 0600 "$3"
+	' hermes-profile-env-merge "$profile_env_path" "$profile_env_incoming" "$profile_env_merged" || \
+		fail "could not merge the service environment"
+	sudo install -m 0600 -- "$profile_env_merged" "$profile_env_incoming" || fail "could not retain the merged service environment"
+	sudo install -m 0600 -- "$profile_env_merged" "$profile_env_path" || fail "could not install the service environment"
+	profile_env_changed=1
+	sudo rm -f -- "$profile_env_merged" || fail "could not remove the temporary service environment"
+	sudo chown "$service_user:$service_user" "$profile_env_path" || fail "could not assign service environment ownership"
+}
+
+restore_profile_env() {
+	if (( ! profile_env_changed )); then
+		return 0
+	fi
+	if (( profile_env_had_previous )); then
+		sudo install -m 0600 -- "$profile_env_backup" "$profile_env_path" || return 1
+		sudo chown "$service_user:$service_user" "$profile_env_path" || return 1
+	else
+		sudo rm -f -- "$profile_env_path" || return 1
+	fi
+	profile_env_changed=0
+	return 0
 }
 
 restore_pointers() {
@@ -509,12 +635,18 @@ restore_pointers() {
 
 if [[ -e "$release_dir" ]]; then
 	validate_release "$release_dir" "$commit"
+	if [[ "$profile_config_enabled" == 1 ]] && ! cmp -s -- "$profile_config_incoming" "$release_dir/profile-config.yaml"; then
+		fail "existing release has a different profile catalog: $release_dir"
+	fi
 else
 	release_installing=1
 	mkdir -p -- "$release_dir"
 	"$remote_python" -m venv "$release_dir/venv"
 	"$release_dir/venv/bin/python" -m pip install --disable-pip-version-check --no-input "$incoming"
 	cp -- "$incoming" "$release_dir/$wheel_name"
+	if [[ "$profile_config_enabled" == 1 ]]; then
+		install -m 0644 -- "$profile_config_incoming" "$release_dir/profile-config.yaml"
+	fi
 	printf 'commit=%s\nwheel=%s\norigin=%s\n' "$commit" "$wheel_name" "$public_origin" > "$release_dir/.hermes-release"
 	release_installing=0
 fi
@@ -546,7 +678,19 @@ if [[ -n "$previous_target" && "$previous_target" != "$base_dir/releases/"* ]]; 
 	fail "previous points outside the release directory: $previous_target"
 fi
 
+# The first catalog deployment may be upgrading a legacy release that was
+# created before profile-config.yaml existed. Backfill the same validated
+# catalog into that release so an automatic rollback still has the file the
+# managed systemd unit requires.
+if [[ "$profile_config_enabled" == 1 && -n "$current_target" \
+	&& ! -f "$current_target/profile-config.yaml" ]]; then
+	install -m 0644 -- "$profile_config_incoming" "$current_target/profile-config.yaml" || \
+		fail "could not pair the profile catalog with the prior release"
+fi
+
 sudo caddy validate --config "$caddyfile" || fail "Caddy configuration is invalid"
+
+prepare_profile_env
 
 atomic_link "$release_dir" "$base_dir/current"
 if [[ -n "$current_target" && "$current_target" != "$release_dir" ]]; then
@@ -558,6 +702,10 @@ if [[ -n "$current_target" && "$current_target" != "$release_dir" ]]; then
 	fi
 fi
 restore_previous() {
+	if ! restore_profile_env; then
+		printf 'automatic environment restoration failed\n' >&2
+		return 1
+	fi
 	if ! restore_pointers; then
 		printf 'automatic pointer restoration failed\n' >&2
 		return 1
@@ -581,23 +729,52 @@ if ! sudo systemctl reload caddy; then
 	fail "Caddy reload failed and previous release restoration failed"
 fi
 
+profile_env_changed=0
+profile_env_retained=1
+
 printf 'active_commit=%s\nrelease=%s\nport=%s\norigin=%s\n' \
 	"$commit" "$release_dir" "$display_port" "$public_origin"
 REMOTE_DEPLOY
 }
 
+finalize_profile_deploy() {
+	(( PROFILE_CONFIG_ENABLED )) || return 0
+	ssh "${SSH_OPTIONS[@]}" "$ops_host" bash -s -- \
+		"$PROFILE_CONFIG_INCOMING_REMOTE" "$PROFILE_ENV_INCOMING_REMOTE" \
+		"$PROFILE_ENV_BACKUP_REMOTE" <<'REMOTE_FINALIZE'
+set -Eeuo pipefail
+
+profile_config_incoming="$1"
+profile_env_incoming="$2"
+profile_env_backup="$3"
+
+rm -f -- "$profile_config_incoming" "$profile_env_incoming"
+sudo rm -f -- "$profile_env_backup"
+REMOTE_FINALIZE
+}
+
 rollback_remote() {
 	local allow_without_previous="${1:-0}"
+	local profile_env_backup="${2:-}"
+	local profile_env_new="${3:-}"
+	local profile_config_incoming="${4:-}"
 	local remote_output
 	local remote_status
 	if remote_output="$(ssh "${SSH_OPTIONS[@]}" "$ops_host" bash -s -- \
-		"$base_dir" "$service_name" "$caddyfile" "$allow_without_previous" <<'REMOTE_ROLLBACK'
+		"$base_dir" "$service_name" "$service_user" "$caddyfile" \
+		"$allow_without_previous" "$profile_env_backup" "$profile_env_new" \
+		"$profile_config_incoming" <<'REMOTE_ROLLBACK'
 set -Eeuo pipefail
 
 base_dir="$1"
 service_name="$2"
-caddyfile="$3"
-allow_without_previous="$4"
+service_user="$3"
+caddyfile="$4"
+allow_without_previous="$5"
+profile_env_backup="$6"
+profile_env_new="$7"
+profile_config_incoming="$8"
+profile_env_path="/etc/hermes-relay/home.env"
 
 fail() {
 	printf 'remote rollback failed: %s\n' "$*" >&2
@@ -626,6 +803,34 @@ restart_service() {
 	sudo systemctl is-active --quiet "$service_name"
 }
 
+install_profile_env() {
+	local source="$1"
+	sudo test -f "$source" || return 1
+	sudo install -m 0600 -- "$source" "$profile_env_path" || return 1
+	sudo chown "$service_user:$service_user" "$profile_env_path" || return 1
+}
+
+restore_previous_profile_env() {
+	if [[ -z "$profile_env_backup" ]]; then
+		return 0
+	fi
+	if sudo test -f "$profile_env_backup"; then
+		install_profile_env "$profile_env_backup"
+	else
+		sudo rm -f -- "$profile_env_path"
+	fi
+}
+
+restore_new_profile_env() {
+	[[ -z "$profile_env_new" ]] || install_profile_env "$profile_env_new"
+}
+
+remove_profile_artifacts() {
+	[[ -z "$profile_config_incoming" ]] || rm -f -- "$profile_config_incoming"
+	[[ -z "$profile_env_new" ]] || rm -f -- "$profile_env_new"
+	[[ -z "$profile_env_backup" ]] || sudo rm -f -- "$profile_env_backup"
+}
+
 current_target=""
 if [[ -e "$base_dir/current" || -L "$base_dir/current" ]]; then
 	current_target="$(readlink -f -- "$base_dir/current" 2>/dev/null || true)"
@@ -634,12 +839,32 @@ previous_target=""
 if [[ -e "$base_dir/previous" || -L "$base_dir/previous" ]]; then
 	previous_target="$(readlink -f -- "$base_dir/previous" 2>/dev/null || true)"
 fi
+profile_mode=0
+if [[ -n "$profile_env_backup" || -n "$profile_env_new" \
+	|| ( -n "$current_target" && -f "$current_target/profile-config.yaml" ) \
+	|| ( -n "$previous_target" && -f "$previous_target/profile-config.yaml" ) ]]; then
+	profile_mode=1
+fi
 if [[ -z "$previous_target" ]]; then
 	if [[ "$allow_without_previous" == 1 && -n "$current_target" ]]; then
 		[[ "$current_target" == "$base_dir/releases/"* ]] || fail "current points outside releases"
-		[[ -x "$current_target/venv/bin/hermes-relay-home" ]] || fail "active release runtime is incomplete"
+		validate_release() {
+			local release="$1"
+			local expected_commit="$2"
+			[[ -d "$release" && ! -L "$release" ]] || fail "release path is not a directory"
+			[[ -f "$release/.hermes-release" ]] || fail "release exists without a manifest"
+			grep -Fqx "commit=$expected_commit" "$release/.hermes-release" || \
+				fail "release manifest does not match its directory"
+			[[ -x "$release/venv/bin/hermes-relay-home" ]] || fail "active release runtime is incomplete"
+			if (( profile_mode )); then
+				[[ -f "$release/profile-config.yaml" ]] || fail "release profile catalog is missing"
+			fi
+		}
+		validate_release "$current_target" "${current_target##*/}"
 		sudo systemctl stop "$service_name" || fail "could not stop the failed first release"
+		restore_previous_profile_env || fail "could not restore the previous service environment"
 		rm -f -- "$base_dir/current" "$base_dir/previous" || fail "could not clear the failed first release"
+		remove_profile_artifacts
 		printf 'deactivated_failed_release=%s\n' "$current_target"
 		exit 0
 	fi
@@ -658,22 +883,38 @@ validate_release() {
 	[[ -d "$release" && ! -L "$release" ]] || fail "release path is not a directory: $release"
 	[[ -f "$release/.hermes-release" ]] || fail "release exists without a manifest: $release"
 	grep -Fqx "commit=$expected_commit" "$release/.hermes-release" || \
-		fail "release manifest does not match its directory: $release"
-	[[ -x "$release/venv/bin/hermes-relay-home" ]] || fail "release runtime is incomplete: $release"
+			fail "release manifest does not match its directory: $release"
+		[[ -x "$release/venv/bin/hermes-relay-home" ]] || fail "release runtime is incomplete: $release"
+		if (( profile_mode )); then
+			[[ -f "$release/profile-config.yaml" ]] || fail "release profile catalog is missing: $release"
+		fi
 }
 
 validate_release "$current_target" "${current_target##*/}"
 validate_release "$previous_target" "${previous_target##*/}"
 
 sudo caddy validate --config "$caddyfile" || fail "Caddy configuration is invalid"
-atomic_link "$previous_target" "$base_dir/current"
-atomic_link "$current_target" "$base_dir/previous"
+atomic_link "$previous_target" "$base_dir/current" || fail "could not activate previous release"
+atomic_link "$current_target" "$base_dir/previous" || fail "could not record the active release"
+
+restore_previous_profile_env || {
+		printf 'could not restore the previous service environment\n' >&2
+		if atomic_link "$current_target" "$base_dir/current" \
+			&& atomic_link "$previous_target" "$base_dir/previous"; then
+			:
+		fi
+		fail "rollback environment restoration failed"
+}
 
 restore_current() {
 	if ! atomic_link "$current_target" "$base_dir/current"; then
 		return 1
 	fi
 	if ! atomic_link "$previous_target" "$base_dir/previous"; then
+		return 1
+	fi
+	if ! restore_new_profile_env; then
+		printf 'automatic rollback environment restoration failed\n' >&2
 		return 1
 	fi
 	if ! restart_service; then
@@ -684,12 +925,14 @@ restore_current() {
 
 if ! restart_service; then
 	if restore_current; then
+		remove_profile_artifacts
 		fail "rollback service restart failed; original release restored"
 	fi
 	fail "rollback service restart failed and original release restoration failed"
 fi
 if ! sudo systemctl reload caddy; then
 	if restore_current; then
+		remove_profile_artifacts
 		fail "Caddy reload failed during rollback; original release restored"
 	fi
 	fail "Caddy reload failed and original release restoration failed"
@@ -700,6 +943,7 @@ printf 'rolled_back_to=%s\nprevious_release=%s\n' "$previous_target" "$current_t
 if [[ -n "$active_origin" ]]; then
 	printf 'active_origin=%s\n' "$active_origin"
 fi
+remove_profile_artifacts
 REMOTE_ROLLBACK
 	)"; then
 		:
@@ -737,11 +981,13 @@ case "$operation" in
 	deploy_remote
 	if ! run_public_check; then
 		printf 'public smoke check failed; attempting automatic rollback\n' >&2
-		if rollback_remote 1; then
+		if rollback_remote 1 "$PROFILE_ENV_BACKUP_REMOTE" \
+			"$PROFILE_ENV_INCOMING_REMOTE" "$PROFILE_CONFIG_INCOMING_REMOTE"; then
 			die "public smoke check failed; previous release restored or failed release deactivated"
 		fi
 		die "public smoke check failed and automatic rollback failed"
 	fi
+	finalize_profile_deploy || die "deployment is active but temporary profile artifacts could not be removed"
 	printf 'deployment complete: %s\n' "$public_origin"
 	;;
 	rollback)

@@ -317,7 +317,7 @@ async def test_appliance_routes_wake_phrase_to_matching_profile():
         assert session_amanda.closes == 0
 
         # Wake with Jensen's phrase -> switches to Jensen
-        assert await appliance.route_wake("hey skippy") is True
+        assert await appliance.route_wake(" HEY   SKIPPY ") is True
         assert appliance.active_profile.name == "jensen"
         # Amanda session was cleanly closed before Jensen session connected
         assert session_amanda.closes == 1
@@ -521,10 +521,11 @@ async def test_appliance_handles_failed_profile_switch_gracefully():
         # Attempt to switch to Jensen -> fails connection
         result = await appliance.route_wake("hey skippy")
         assert result is False
-        # Previous Amanda session was closed
-        assert sessions["amanda"].closes == 1
-        # Display entered disconnected state
-        assert publisher.history[-1][0] == "disconnected"
+        # The failed target never displaces the usable Amanda session.
+        assert sessions["amanda"].closes == 0
+        assert appliance.active_profile.name == "amanda"
+        assert publisher.history[-1][0] == "idle"
+        assert publisher.history[-1][2] == "Profile unavailable: Jensen"
     finally:
         appliance.stop()
         task.cancel()

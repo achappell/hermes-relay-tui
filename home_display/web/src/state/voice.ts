@@ -60,7 +60,8 @@ export interface SpeechRecognitionLike {
 }
 
 export type SpeechRecognitionFactory = () => SpeechRecognitionLike;
-export type VoiceTextSender = (text: string) => Promise<boolean> | boolean;
+export type VoiceTextSender = (text: string, wakePhrase?: string) => Promise<boolean> | boolean;
+export type VoiceRouteSender = (wakePhrase: string) => Promise<boolean> | boolean;
 export type SpeechRecognitionPreparer = () => Promise<void> | void;
 export type VoiceTranscriptListener = (text: string, isFinal: boolean) => void;
 
@@ -224,6 +225,7 @@ export type HandsFreeState =
   | "off"
   | "arming"
   | "wake_ready"
+  | "routing"
   | "heard"
   | "listening"
   | "follow_up"
@@ -233,6 +235,7 @@ export type HandsFreeState =
 export interface BrowserHandsFreeControllerOptions {
   sendText: VoiceTextSender;
   wakePhrases: string[];
+  routeWake?: VoiceRouteSender;
   wakeListenSeconds?: number;
   followUpSeconds?: number;
   onState?: (state: HandsFreeState) => void;
@@ -246,6 +249,7 @@ export interface BrowserHandsFreeControllerOptions {
 type HandsFreePhase =
   | "off"
   | "wake_ready"
+  | "routing"
   | "heard"
   | "initial_capture"
   | "follow_up"
@@ -269,7 +273,10 @@ export function isLocalStopCommand(text: string): boolean {
     .toLocaleLowerCase() === "stop";
 }
 
-function wakeRemainder(text: string, wakePhrases: string[]): string | null {
+function wakeRemainder(
+  text: string,
+  wakePhrases: string[],
+): { phrase: string; remainder: string } | null {
   const source = normaliseSpeech(text);
   const lowerSource = source.toLocaleLowerCase();
   const phrases = wakePhrases
@@ -283,7 +290,10 @@ function wakeRemainder(text: string, wakePhrases: string[]): string | null {
 
     const next = lowerSource[lowerPhrase.length];
     if (next !== undefined && !/^[\s,.:;!?;…-]$/.test(next)) continue;
-    return normaliseSpeech(source.slice(lowerPhrase.length).replace(/^[\s,.:;!?…-]+/, ""));
+    return {
+      phrase,
+      remainder: normaliseSpeech(source.slice(lowerPhrase.length).replace(/^[\s,.:;!?…-]+/, "")),
+    };
   }
   return null;
 }
@@ -315,6 +325,7 @@ function recognitionText(event: SpeechRecognitionResultEventLike): {
  */
 export class BrowserHandsFreeController {
   private readonly sendText: VoiceTextSender;
+  private readonly routeWake: VoiceRouteSender | null;
   private wakePhrases: string[];
   private wakeListenSeconds: number;
   private followUpSeconds: number;
@@ -324,6 +335,7 @@ export class BrowserHandsFreeController {
   private readonly recognitionFactory: SpeechRecognitionFactory;
   private readonly prepareRecognition: SpeechRecognitionPreparer;
   private readonly language: string;
+  private profileRoutingEnabled: boolean;
   private phase: HandsFreePhase = "off";
   private armed = false;
   private generation = 0;
@@ -344,6 +356,8 @@ export class BrowserHandsFreeController {
 
   constructor(options: BrowserHandsFreeControllerOptions) {
     this.sendText = options.sendText;
+    this.routeWake = options.routeWake ?? null;
+    this.profileRoutingEnabled = options.routeWake !== undefined;
     this.wakePhrases = options.wakePhrases.map(normaliseSpeech).filter(Boolean);
     this.wakeListenSeconds = positiveSeconds(options.wakeListenSeconds);
     this.followUpSeconds = positiveSeconds(options.followUpSeconds);
@@ -377,6 +391,7 @@ export class BrowserHandsFreeController {
     this.wakePhrases = wakePhrases;
     this.wakeListenSeconds = wakeListenSeconds;
     this.followUpSeconds = followUpSeconds;
+    this.profileRoutingEnabled = this.routeWake !== null && wakePhrases.length > 1;
   }
 
   get isArmed(): boolean {
@@ -450,6 +465,7 @@ export class BrowserHandsFreeController {
   private stateForPhase(): HandsFreeState {
     switch (this.phase) {
       case "wake_ready": return "wake_ready";
+      case "routing": return "routing";
       case "heard": return "heard";
       case "initial_capture": return "listening";
       case "follow_up": return "follow_up";
@@ -570,15 +586,20 @@ export class BrowserHandsFreeController {
 
     if (this.phase === "wake_ready") {
       if (!text) return;
-      const remainder = wakeRemainder(text, this.wakePhrases);
-      if (remainder === null) return;
-      if (!remainder || isLocalStopCommand(remainder)) {
-        if (remainder) this.finishCapture(generation);
-        else this.beginInitialCapture(generation);
+      const wakeMatch = wakeRemainder(text, this.wakePhrases);
+      if (wakeMatch === null) return;
+      if (!wakeMatch.remainder || isLocalStopCommand(wakeMatch.remainder)) {
+        if (wakeMatch.remainder) {
+          this.finishCapture(generation);
+        } else if (this.routeWake === null || !this.profileRoutingEnabled) {
+          this.beginInitialCapture(generation);
+        } else {
+          this.routeAndBeginCapture(wakeMatch.phrase, generation);
+        }
         return;
       }
-      this.onTranscript(remainder, true);
-      this.submit(remainder, generation);
+      this.onTranscript(wakeMatch.remainder, true);
+      this.submit(wakeMatch.remainder, generation, wakeMatch.phrase);
       return;
     }
 
@@ -611,6 +632,59 @@ export class BrowserHandsFreeController {
       this.phase = "initial_capture";
       this.emit("listening");
     }, 150);
+    if (this.recognition === null && !this.startRecognition(generation)) {
+      this.fail("Microphone or speech recognition is unavailable");
+    }
+  }
+
+  private routeAndBeginCapture(phrase: string, generation: number): void {
+    if (!this.isCurrent(generation) || this.routeWake === null) return;
+    this.clearCaptureTimer();
+    this.clearHeardTimer();
+    this.stopRecognition();
+    this.phase = "routing";
+    this.emit("routing");
+
+    let routeResult: Promise<boolean> | boolean;
+    try {
+      routeResult = this.routeWake(phrase);
+    } catch {
+      this.finishProfileRoute(false, generation, false);
+      return;
+    }
+    if (typeof routeResult === "boolean") {
+      this.finishProfileRoute(routeResult, generation, false);
+      return;
+    }
+    void Promise.resolve(routeResult).then((accepted) => {
+      this.finishProfileRoute(Boolean(accepted), generation, true);
+    }).catch(() => {
+      this.finishProfileRoute(false, generation, true);
+    });
+  }
+
+  private finishProfileRoute(
+    accepted: boolean,
+    generation: number,
+    waitForRelease: boolean,
+  ): void {
+    if (!this.isCurrent(generation) || this.phase !== "routing") return;
+    if (!accepted) {
+      this.onError("Profile could not be selected");
+      this.enterWakeReady(generation, true);
+      return;
+    }
+    if (!waitForRelease) {
+      this.beginInitialCapture(generation);
+      return;
+    }
+    void this.resumeInitialCapture(generation);
+  }
+
+  private async resumeInitialCapture(generation: number): Promise<void> {
+    await this.waitForRecognitionRelease();
+    if (!this.isCurrent(generation) || this.phase !== "routing") return;
+    this.beginInitialCapture(generation);
   }
 
   private beginFollowUp(generation: number): void {
@@ -738,7 +812,7 @@ export class BrowserHandsFreeController {
     }, Math.min(seconds, MAX_HANDS_FREE_TIMER_SECONDS) * 1000);
   }
 
-  private submit(text: string, generation: number): void {
+  private submit(text: string, generation: number, wakePhrase?: string): void {
     if (!this.isCurrent(generation)) return;
     this.clearCaptureTimer();
     this.clearHeardTimer();
@@ -750,7 +824,9 @@ export class BrowserHandsFreeController {
 
     let sendResult: Promise<boolean> | boolean;
     try {
-      sendResult = this.sendText(text);
+      sendResult = wakePhrase === undefined
+        ? this.sendText(text)
+        : this.sendText(text, wakePhrase);
     } catch {
       this.fail("Turn could not be sent");
       return;

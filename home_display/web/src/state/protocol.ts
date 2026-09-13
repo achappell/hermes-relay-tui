@@ -68,6 +68,15 @@ export interface DisplayAudioAbort {
 
 export type DisplayAudioEvent = DisplayAudioStart | DisplayAudioEnd | DisplayAudioAbort;
 
+export interface DisplayProfileRouteAck {
+  type: "profile_route_ack";
+  schema: 1;
+  request_id: string;
+  accepted: boolean;
+  account?: string;
+  reason?: string;
+}
+
 export interface DisplaySnapshot {
   type: "snapshot";
   schema: 1;
@@ -272,6 +281,43 @@ export function parseAction(raw: unknown): DisplayAction | null {
     return null;
   }
   return { type, schema, action_id, choice };
+}
+
+export function parseProfileRouteAck(raw: unknown): DisplayProfileRouteAck | null {
+  if (!isRecord(raw)) return null;
+  const { type, schema, request_id, accepted, account, reason } = raw;
+  if (
+    type !== "profile_route_ack" ||
+    schema !== 1 ||
+    typeof request_id !== "string" ||
+    request_id.length === 0 ||
+    request_id.length > 64 ||
+    [...request_id].some((character) => /\s/.test(character) || character.charCodeAt(0) < 32 || character.charCodeAt(0) === 127) ||
+    typeof accepted !== "boolean"
+  ) {
+    return null;
+  }
+  if (
+    account !== undefined &&
+    (typeof account !== "string" || account.length === 0 || account.length > 128)
+  ) {
+    return null;
+  }
+  if (
+    reason !== undefined &&
+    (typeof reason !== "string" || reason.length === 0 || reason.length > 64)
+  ) {
+    return null;
+  }
+  const result: DisplayProfileRouteAck = {
+    type,
+    schema,
+    request_id,
+    accepted,
+  };
+  if (account !== undefined) result.account = account;
+  if (reason !== undefined) result.reason = reason;
+  return result;
 }
 
 function parseTurnId(raw: unknown): string | null {

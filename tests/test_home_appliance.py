@@ -24,6 +24,7 @@ import config
 import handsfree
 from home_display import appliance as appliance_module
 from home_display.appliance import Appliance
+from home_display.server import BrowserProfileRouteResult
 from home_display.state import DisplayPrompt, PromptOption
 
 
@@ -225,6 +226,41 @@ def _args(**overrides):
     }
     values.update(overrides)
     return types.SimpleNamespace(**values)
+
+
+def _catalog_profiles(*, jensen_token: str = "jensen-token"):
+    return [
+        config.HouseholdProfile(
+            name="amanda",
+            display_name="Amanda",
+            wake_phrases=("hey missy",),
+            url="ws://amanda.example/voice-session",
+            token="amanda-token",
+            client_id="amanda-client",
+            device_id="amanda-device",
+            session_id="amanda-session",
+        ),
+        config.HouseholdProfile(
+            name="jensen",
+            display_name="Jensen",
+            wake_phrases=("hey skippy",),
+            url="ws://jensen.example/voice-session",
+            token=jensen_token,
+            client_id="jensen-client",
+            device_id="jensen-device",
+            session_id="jensen-session",
+        ),
+        config.HouseholdProfile(
+            name="spark",
+            display_name="Spark",
+            wake_phrases=("hey spark",),
+            url="ws://spark.example/voice-session",
+            token="spark-token",
+            client_id="spark-client",
+            device_id="spark-device",
+            session_id="spark-session",
+        ),
+    ]
 
 
 def _build(appliance_state: dict):
@@ -591,16 +627,57 @@ async def test_browser_hands_free_capability_is_safe_for_invalid_profile_metadat
     assert capabilities.wake_listen_seconds == 8.0
     assert capabilities.wake_followup_seconds == 8.0
 
-    appliance._active_profile = replace(
+    invalid_profile = replace(
         appliance._active_profile,
         wake_phrases=tuple(f"phrase {index}" for index in range(9)),
     )
+    appliance._profiles[0] = invalid_profile
+    appliance._active_profile = invalid_profile
     appliance._publish("thinking")
     assert publisher.capabilities[-1].features == ("browser_voice",)
 
     appliance._connected = False
     appliance._publish("disconnected")
     assert publisher.capabilities[-1] is None
+
+
+@pytest.mark.asyncio
+async def test_browser_catalog_rejects_duplicate_normalized_wake_phrases():
+    first = config.HouseholdProfile(
+        name="amanda",
+        display_name="Amanda",
+        wake_phrases=("hey missy",),
+        url="ws://amanda.example/voice-session",
+        token="amanda-token",
+        client_id="amanda-client",
+        device_id="amanda-device",
+        session_id="amanda-session",
+    )
+    duplicate = config.HouseholdProfile(
+        name="jensen",
+        display_name="Jensen",
+        wake_phrases=(" HEY   MISSY ",),
+        url="ws://jensen.example/voice-session",
+        token="jensen-token",
+        client_id="jensen-client",
+        device_id="jensen-device",
+        session_id="jensen-session",
+    )
+    publisher = RecordingPublisher()
+    appliance = Appliance(
+        _args(browser_voice=True),
+        profiles=[first, duplicate],
+        publisher=publisher,
+        session=FakeSession(),
+    )
+    appliance._connected = True
+    appliance._publish("idle")
+
+    assert publisher.capabilities[-1].features == ("browser_voice",)
+    result = await appliance.route_profile("hey missy")
+    assert result.accepted is False
+    assert result.reason == "ambiguous"
+    assert appliance.active_profile.name == "amanda"
 
 
 @pytest.mark.asyncio
@@ -688,6 +765,444 @@ async def test_browser_contexts_get_fresh_profile_sessions_with_unique_ids(monke
 
 
 @pytest.mark.asyncio
+async def test_browser_admission_skips_a_profile_without_a_token(monkeypatch):
+    profiles = [
+        config.HouseholdProfile(
+            name="amanda",
+            display_name="Amanda",
+            wake_phrases=("hey missy",),
+            url="wss://amanda.example/voice-session",
+            token="",
+            client_id="amanda-client",
+            device_id="amanda-device",
+            session_id="amanda-session",
+        ),
+        config.HouseholdProfile(
+            name="jensen",
+            display_name="Jensen",
+            wake_phrases=("hey skippy",),
+            url="wss://jensen.example/voice-session",
+            token="jensen-token",
+            client_id="jensen-client",
+            device_id="jensen-device",
+            session_id="jensen-session",
+        ),
+    ]
+    created: list[object] = []
+
+    class Session(FakeSession):
+        def __init__(self, args):
+            super().__init__()
+            self.args = args
+            created.append(self)
+
+    monkeypatch.setattr(appliance_module, "HermesSession", Session)
+    appliance = Appliance(
+        _args(browser_voice=True),
+        profiles=profiles,
+        publisher=RecordingPublisher(),
+    )
+
+    context = await appliance._create_browser_context("browser-one", FakeServer())
+    try:
+        assert len(created) == 1
+        assert context._child.active_profile.name == "jensen"
+        assert context._child.publisher.snapshot.account == "Jensen"
+        assert created[0].args.token == "jensen-token"
+    finally:
+        await context.close()
+
+
+@pytest.mark.asyncio
+async def test_browser_context_routes_wake_phrase_through_its_full_profile_catalog():
+    profiles = [
+        config.HouseholdProfile(
+            name="amanda",
+            display_name="Amanda",
+            wake_phrases=("hey missy",),
+            url="ws://amanda.example/voice-session",
+            token="amanda-token",
+            client_id="amanda-client",
+            device_id="amanda-device",
+            session_id="amanda-session",
+        ),
+        config.HouseholdProfile(
+            name="jensen",
+            display_name="Jensen",
+            wake_phrases=("hey skippy",),
+            url="ws://jensen.example/voice-session",
+            token="jensen-token",
+            client_id="jensen-client",
+            device_id="jensen-device",
+            session_id="jensen-session",
+        ),
+        config.HouseholdProfile(
+            name="spark",
+            display_name="Spark",
+            wake_phrases=("hey spark",),
+            url="ws://spark.example/voice-session",
+            token="spark-token",
+            client_id="spark-client",
+            device_id="spark-device",
+            session_id="spark-session",
+        ),
+    ]
+    created_sessions: list[FakeSession] = []
+
+    def create_session(_profile):
+        session = FakeSession()
+        created_sessions.append(session)
+        return session
+
+    appliance = Appliance(
+        _args(browser_voice=True),
+        publisher=RecordingPublisher(),
+        profiles=profiles,
+        session_factory=create_session,
+    )
+
+    first = await appliance._create_browser_context("browser-one", FakeServer())
+    second = await appliance._create_browser_context("browser-two", FakeServer())
+    try:
+        assert [profile.name for profile in first._child.profiles] == [
+            "amanda",
+            "jensen",
+            "spark",
+        ]
+        assert first.publisher.snapshot.capabilities.wake_phrases == (
+            "hey missy",
+            "hey skippy",
+            "hey spark",
+        )
+
+        first_result, second_result = await asyncio.gather(
+            first.handle_voice_turn(
+                "what is the weather?",
+                wake_phrase="hey skippy",
+            ),
+            second.handle_voice_turn(
+                "what is the forecast?",
+                wake_phrase="hey spark",
+            ),
+        )
+
+        assert first_result is True
+        assert second_result is True
+        assert first._child.active_profile.name == "jensen"
+        assert first.publisher.snapshot.account == "Jensen"
+        assert created_sessions[0].turns == []
+        assert created_sessions[1].turns == []
+        assert created_sessions[2].turns == ["what is the weather?"]
+        assert second._child.active_profile.name == "spark"
+        assert second.publisher.snapshot.account == "Spark"
+        assert created_sessions[3].turns == ["what is the forecast?"]
+    finally:
+        await first.close()
+        await second.close()
+
+
+@pytest.mark.asyncio
+async def test_browser_profile_route_failure_keeps_previous_session_usable():
+    profiles = [
+        config.HouseholdProfile(
+            name="amanda",
+            display_name="Amanda",
+            wake_phrases=("hey missy",),
+            url="ws://amanda.example/voice-session",
+            token="amanda-token",
+            client_id="amanda-client",
+            device_id="amanda-device",
+            session_id="amanda-session",
+        ),
+        config.HouseholdProfile(
+            name="jensen",
+            display_name="Jensen",
+            wake_phrases=("hey skippy",),
+            url="ws://jensen.example/voice-session",
+            token="jensen-token",
+            client_id="jensen-client",
+            device_id="jensen-device",
+            session_id="jensen-session",
+        ),
+    ]
+    initial = FakeSession()
+    unavailable = FakeSession(connect_errors=1)
+    appliance = Appliance(
+        _args(browser_voice=True),
+        publisher=RecordingPublisher(),
+        profiles=profiles,
+        session_factory=lambda profile: initial if profile.name == "amanda" else unavailable,
+    )
+
+    context = await appliance._create_browser_context("browser-one", FakeServer())
+    try:
+        result = await context.handle_profile_route("hey skippy")
+
+        assert result.accepted is False
+        assert result.reason == "unavailable"
+        assert context._child.active_profile.name == "amanda"
+        assert context._child._connected is True
+        assert initial.closes == 0
+        assert unavailable.closes == 1
+        assert context.publisher.snapshot.account == "Amanda"
+    finally:
+        await context.close()
+
+
+@pytest.mark.asyncio
+async def test_browser_profile_route_without_a_token_keeps_the_current_profile_usable():
+    initial = FakeSession()
+    appliance = Appliance(
+        _args(browser_voice=True),
+        profiles=_catalog_profiles(jensen_token=""),
+        publisher=RecordingPublisher(),
+        session_factory=lambda _profile: initial,
+    )
+
+    context = await appliance._create_browser_context("browser-one", FakeServer())
+    try:
+        result = await context.handle_profile_route("hey skippy")
+
+        assert result == BrowserProfileRouteResult(False, reason="unavailable")
+        assert context._child.active_profile.name == "amanda"
+        assert context.publisher.snapshot.account == "Amanda"
+        assert initial.connects == 1
+        assert initial.closes == 0
+    finally:
+        await context.close()
+
+
+@pytest.mark.asyncio
+async def test_browser_inline_unknown_route_reports_error_without_submitting_a_turn():
+    profiles = [
+        config.HouseholdProfile(
+            name="amanda",
+            display_name="Amanda",
+            wake_phrases=("hey missy",),
+            url="ws://amanda.example/voice-session",
+            token="amanda-token",
+            client_id="amanda-client",
+            device_id="amanda-device",
+            session_id="amanda-session",
+        ),
+        config.HouseholdProfile(
+            name="jensen",
+            display_name="Jensen",
+            wake_phrases=("hey skippy",),
+            url="ws://jensen.example/voice-session",
+            token="jensen-token",
+            client_id="jensen-client",
+            device_id="jensen-device",
+            session_id="jensen-session",
+        ),
+    ]
+    initial = FakeSession()
+    appliance = Appliance(
+        _args(browser_voice=True),
+        profiles=profiles,
+        session_factory=lambda _profile: initial,
+    )
+    context = await appliance._create_browser_context("browser-one", FakeServer())
+    updates = context.publisher.subscribe()
+    await anext(updates)
+    try:
+        assert await context.handle_voice_turn(
+            "what is the weather?", wake_phrase="hey alexa"
+        ) is False
+        error = await anext(updates)
+        assert error.state == "error"
+        assert error.status_text == "Wake phrase not recognized"
+        await asyncio.sleep(0)
+        idle = await anext(updates)
+        assert idle.state == "idle"
+        assert idle.status_text == "Wake phrase not recognized"
+        assert context._child.active_profile.name == "amanda"
+        assert initial.turns == []
+    finally:
+        await updates.aclose()
+        await context.close()
+
+
+@pytest.mark.asyncio
+async def test_browser_profile_switch_timeout_preserves_the_previous_session(monkeypatch):
+    profiles = [
+        config.HouseholdProfile(
+            name="amanda",
+            display_name="Amanda",
+            wake_phrases=("hey missy",),
+            url="ws://amanda.example/voice-session",
+            token="amanda-token",
+            client_id="amanda-client",
+            device_id="amanda-device",
+            session_id="amanda-session",
+        ),
+        config.HouseholdProfile(
+            name="jensen",
+            display_name="Jensen",
+            wake_phrases=("hey skippy",),
+            url="ws://jensen.example/voice-session",
+            token="jensen-token",
+            client_id="jensen-client",
+            device_id="jensen-device",
+            session_id="jensen-session",
+        ),
+    ]
+
+    class HangingSession(FakeSession):
+        async def connect(self):
+            self.connects += 1
+            await asyncio.sleep(10)
+
+    initial = FakeSession()
+    target = HangingSession()
+    appliance = Appliance(
+        _args(browser_voice=True),
+        profiles=profiles,
+        session_factory=lambda profile: initial if profile.name == "amanda" else target,
+    )
+    monkeypatch.setattr(appliance_module, "PROFILE_CONNECT_TIMEOUT", 0.01)
+    context = await appliance._create_browser_context("browser-one", FakeServer())
+    try:
+        result = await context.handle_profile_route("hey skippy")
+        assert result.accepted is False
+        assert result.reason == "unavailable"
+        assert context._child.active_profile.name == "amanda"
+        assert context._child._connected is True
+        assert initial.closes == 0
+        assert target.closes == 1
+    finally:
+        await context.close()
+
+
+@pytest.mark.asyncio
+async def test_browser_profile_switch_does_not_wait_unboundedly_for_the_old_session(
+    monkeypatch,
+):
+    class HangingCloseSession(FakeSession):
+        def __init__(self):
+            super().__init__()
+            self.release_close = asyncio.Event()
+
+        async def close(self) -> None:
+            self.closes += 1
+            await self.release_close.wait()
+
+    initial = HangingCloseSession()
+    target = FakeSession()
+    appliance = Appliance(
+        _args(browser_voice=True),
+        profiles=_catalog_profiles(),
+        publisher=RecordingPublisher(),
+        session_factory=lambda profile: initial if profile.name == "amanda" else target,
+    )
+    monkeypatch.setattr(appliance_module, "SHUTDOWN_TASK_TIMEOUT", 0.01)
+    context = await appliance._create_browser_context("browser-one", FakeServer())
+    try:
+        result = await asyncio.wait_for(
+            context.handle_profile_route("hey skippy"),
+            timeout=0.2,
+        )
+
+        assert result.accepted is True
+        assert context._child.active_profile.name == "jensen"
+        assert initial.closes == 1
+        initial.release_close.set()
+    finally:
+        initial.release_close.set()
+        await context.close()
+
+
+@pytest.mark.asyncio
+async def test_browser_active_turn_rejects_a_profile_route_without_switching():
+    profiles = [
+        config.HouseholdProfile(
+            name="amanda",
+            display_name="Amanda",
+            wake_phrases=("hey missy",),
+            url="ws://amanda.example/voice-session",
+            token="amanda-token",
+            client_id="amanda-client",
+            device_id="amanda-device",
+            session_id="amanda-session",
+        ),
+        config.HouseholdProfile(
+            name="jensen",
+            display_name="Jensen",
+            wake_phrases=("hey skippy",),
+            url="ws://jensen.example/voice-session",
+            token="jensen-token",
+            client_id="jensen-client",
+            device_id="jensen-device",
+            session_id="jensen-session",
+        ),
+    ]
+
+    class BlockingSession(FakeSession):
+        def __init__(self):
+            super().__init__()
+            self.started = asyncio.Event()
+            self.release = asyncio.Event()
+
+        def send_turn(self, text: str, *, stt_source: str = "local"):
+            self.turns.append(text)
+
+            async def events():
+                self.started.set()
+                yield {"type": "text_delta", "text": "answer"}
+                await self.release.wait()
+                yield {"type": "turn_end"}
+
+            return events()
+
+    initial = BlockingSession()
+    target = FakeSession()
+    appliance = Appliance(
+        _args(browser_voice=True),
+        profiles=profiles,
+        session_factory=lambda profile: initial if profile.name == "amanda" else target,
+    )
+    context = await appliance._create_browser_context("browser-one", FakeServer())
+    first_turn = asyncio.create_task(context.handle_voice_turn("first question"))
+    try:
+        assert await _wait_for(initial.started.is_set)
+        assert await context.handle_voice_turn(
+            "second question", wake_phrase="hey skippy"
+        ) is False
+        assert context._child.active_profile.name == "amanda"
+        assert target.connects == 0
+        initial.release.set()
+        assert await first_turn is True
+        assert initial.turns == ["first question"]
+    finally:
+        initial.release.set()
+        if not first_turn.done():
+            await first_turn
+        await context.close()
+
+
+@pytest.mark.asyncio
+async def test_browser_profile_route_rejects_while_a_structured_prompt_is_active():
+    initial = FakeSession()
+    appliance = Appliance(
+        _args(browser_voice=True),
+        profiles=_catalog_profiles(),
+        publisher=RecordingPublisher(),
+        session_factory=lambda _profile: initial,
+    )
+    context = await appliance._create_browser_context("browser-one", FakeServer())
+    try:
+        context._child._pending_prompt_action_id = "prompt-1"
+
+        result = await context.handle_profile_route("hey spark")
+
+        assert result == BrowserProfileRouteResult(False, reason="active_turn")
+        assert context._child.active_profile.name == "amanda"
+        assert initial.connects == 1
+    finally:
+        await context.close()
+
+
+@pytest.mark.asyncio
 async def test_isolated_browser_run_stops_without_building_a_shared_session():
     ready = asyncio.Event()
     appliance = Appliance(
@@ -715,7 +1230,6 @@ async def test_two_browser_contexts_keep_turns_and_display_state_isolated(tmp_pa
     (tmp_path / "index.html").write_text("ok", encoding="utf-8")
     started: list[asyncio.Event] = []
     releases: list[asyncio.Event] = []
-    sessions: list[FakeSession] = []
 
     class Session(FakeSession):
         def __init__(self, label: str):
@@ -746,8 +1260,10 @@ async def test_two_browser_contexts_keep_turns_and_display_state_isolated(tmp_pa
 
             return events()
 
-    all_sessions = [Session("one"), Session("two")]
-    sessions.extend(all_sessions)
+    initial_sessions = [Session("amanda-one"), Session("amanda-two")]
+    routed_sessions = [Session("jensen-one"), Session("spark-two")]
+    all_sessions = initial_sessions + routed_sessions
+    sessions = list(all_sessions)
 
     def session_factory(_profile):
         return sessions.pop(0)
@@ -755,6 +1271,7 @@ async def test_two_browser_contexts_keep_turns_and_display_state_isolated(tmp_pa
     appliance = Appliance(
         _args(browser_voice=True),
         publisher=RecordingPublisher(),
+        profiles=_catalog_profiles(),
         session_factory=session_factory,
     )
     appliance._build()
@@ -765,39 +1282,56 @@ async def test_two_browser_contexts_keep_turns_and_display_state_isolated(tmp_pa
     try:
         assert json.loads(await first.recv())["state"] == "idle"
         assert json.loads(await second.recv())["state"] == "idle"
-        await first.send(json.dumps({"type": "voice_turn", "schema": 1, "text": "first"}))
-        await second.send(json.dumps({"type": "voice_turn", "schema": 1, "text": "second"}))
-        assert await _wait_for(lambda: all(event.is_set() for event in started))
+        await first.send(json.dumps({
+            "type": "voice_turn",
+            "schema": 1,
+            "text": "first",
+            "wake_phrase": "hey skippy",
+        }))
+        await second.send(json.dumps({
+            "type": "voice_turn",
+            "schema": 1,
+            "text": "second",
+            "wake_phrase": "hey spark",
+        }))
+        assert await _wait_for(
+            lambda: all(session.started.is_set() for session in routed_sessions)
+        )
 
         contexts = list(appliance._browser_contexts.values())
         assert len(contexts) == 2
         assert {
-            all_sessions[0].args.session_id,
-            all_sessions[1].args.session_id,
+            initial_sessions[0].args.session_id,
+            initial_sessions[1].args.session_id,
         } == set(appliance._browser_contexts)
-        assert {context.publisher.snapshot.response_text for context in contexts} == {
-            "answer from one",
-            "answer from two",
+        assert {context.publisher.snapshot.account for context in contexts} == {
+            "Jensen",
+            "Spark",
         }
-        assert [session.turns for session in all_sessions] == [["first"], ["second"]]
+        assert {context.publisher.snapshot.response_text for context in contexts} == {
+            "answer from jensen-one",
+            "answer from spark-two",
+        }
+        assert [session.turns for session in initial_sessions] == [[], []]
+        assert [session.turns for session in routed_sessions] == [["first"], ["second"]]
 
         first_response_frames = await _recv_until(
             first,
             lambda frame, _frames: isinstance(frame, str)
-            and json.loads(frame)["response_text"] == "answer from one",
+            and json.loads(frame)["response_text"] == "answer from jensen-one",
         )
         second_response_frames = await _recv_until(
             second,
             lambda frame, _frames: isinstance(frame, str)
-            and json.loads(frame)["response_text"] == "answer from two",
+            and json.loads(frame)["response_text"] == "answer from spark-two",
         )
         first_response = json.loads(first_response_frames[-1])
         second_response = json.loads(second_response_frames[-1])
-        assert first_response["response_text"] == "answer from one"
-        assert second_response["response_text"] == "answer from two"
+        assert first_response["response_text"] == "answer from jensen-one"
+        assert second_response["response_text"] == "answer from spark-two"
 
-        releases[0].set()
-        releases[1].set()
+        routed_sessions[0].release.set()
+        routed_sessions[1].release.set()
         first_audio = await _recv_until(
             first,
             lambda frame, _frames: isinstance(frame, str)
@@ -808,8 +1342,8 @@ async def test_two_browser_contexts_keep_turns_and_display_state_isolated(tmp_pa
             lambda frame, _frames: isinstance(frame, str)
             and json.loads(frame).get("type") == "audio_end",
         )
-        assert any(frame == b"on" for frame in first_audio)
-        assert any(frame == b"tw" for frame in second_audio)
+        assert any(frame == b"je" for frame in first_audio)
+        assert any(frame == b"sp" for frame in second_audio)
         assert await _wait_for(
             lambda: all(context.publisher.snapshot.state == "idle" for context in contexts)
         )

@@ -626,8 +626,159 @@ describe("BrowserHandsFreeController", () => {
     vi.advanceTimersByTime(50);
 
     recognitions.at(-1)?.result({ isFinal: true, transcript: "hey hermes what time is it" });
-    expect(sendText).toHaveBeenCalledWith("what time is it");
+    expect(sendText).toHaveBeenCalledWith("what time is it", "hey hermes");
     expect(transcripts.at(-1)).toEqual({ text: "what time is it", isFinal: true });
+    controller.disarm();
+  });
+
+  it("sends the canonical matched phrase with a question and routes wake-only capture first", async () => {
+    vi.useFakeTimers();
+    const recognition = new FakeRecognition();
+    const sendText = vi.fn(() => true);
+    const routeWake = vi.fn(() => true);
+    const controller = new BrowserHandsFreeController({
+      recognitionFactory: () => recognition,
+      wakePhrases: ["Hey Skippy"],
+      sendText,
+      routeWake,
+    });
+
+    await expect(controller.arm()).resolves.toBe(true);
+    recognition.result({
+      isFinal: true,
+      transcript: "Hey Skippy, what is the weather?",
+    });
+    expect(sendText).toHaveBeenCalledWith("what is the weather?", "Hey Skippy");
+    expect(routeWake).not.toHaveBeenCalled();
+
+    controller.turnFinished();
+    await flushMicrotasks();
+    expect(controller.state).toBe("follow_up");
+
+    controller.disarm();
+  });
+
+  it("selects the matching canonical phrase from the three-profile catalog", async () => {
+    const recognition = new FakeRecognition();
+    const sendText = vi.fn(() => true);
+    const controller = new BrowserHandsFreeController({
+      recognitionFactory: () => recognition,
+      wakePhrases: ["hey missy", "hey skippy", "hey spark"],
+      sendText,
+    });
+
+    await expect(controller.arm()).resolves.toBe(true);
+    recognition.result({
+      isFinal: true,
+      transcript: "Hey Spark, what is the forecast?",
+    });
+
+    expect(sendText).toHaveBeenCalledWith("what is the forecast?", "hey spark");
+    controller.disarm();
+  });
+
+  it("keeps the selected catalog profile on a wake-free follow-up", async () => {
+    const recognitions: FakeRecognition[] = [];
+    const sendText = vi.fn(() => true);
+    const routeWake = vi.fn(() => true);
+    const controller = new BrowserHandsFreeController({
+      recognitionFactory: () => {
+        const recognition = new FakeRecognition();
+        recognitions.push(recognition);
+        return recognition;
+      },
+      wakePhrases: ["hey missy", "hey skippy", "hey spark"],
+      sendText,
+      routeWake,
+    });
+
+    await expect(controller.arm()).resolves.toBe(true);
+    recognitions[0].result({
+      isFinal: true,
+      transcript: "hey spark, what is the forecast?",
+    });
+    expect(sendText).toHaveBeenCalledWith("what is the forecast?", "hey spark");
+    expect(routeWake).not.toHaveBeenCalled();
+
+    controller.turnFinished();
+    await flushMicrotasks();
+    expect(recognitions).toHaveLength(2);
+    recognitions[1].result({ isFinal: true, transcript: "and tomorrow?" });
+    expect(sendText).toHaveBeenLastCalledWith("and tomorrow?");
+    expect(sendText).toHaveBeenCalledTimes(2);
+    controller.disarm();
+  });
+
+  it("ignores an unconfigured phrase and a partial wake-word match", async () => {
+    const recognition = new FakeRecognition();
+    const sendText = vi.fn(() => true);
+    const controller = new BrowserHandsFreeController({
+      recognitionFactory: () => recognition,
+      wakePhrases: ["hey missy", "hey skippy", "hey spark"],
+      sendText,
+    });
+
+    await expect(controller.arm()).resolves.toBe(true);
+    recognition.result({ isFinal: true, transcript: "hey alexa what is the weather" });
+    recognition.result({ isFinal: true, transcript: "hey sparkly what is the weather" });
+
+    expect(sendText).not.toHaveBeenCalled();
+    expect(controller.state).toBe("wake_ready");
+    controller.disarm();
+  });
+
+  it("returns to wake-ready without capturing after a rejected wake-only route", async () => {
+    const recognitions: FakeRecognition[] = [];
+    let rejectRoute: (accepted: boolean) => void = () => {};
+    const controller = new BrowserHandsFreeController({
+      recognitionFactory: () => {
+        const recognition = new FakeRecognition();
+        recognitions.push(recognition);
+        return recognition;
+      },
+      wakePhrases: ["hey missy", "hey skippy"],
+      sendText: vi.fn(() => true),
+      routeWake: () => new Promise<boolean>((resolve) => { rejectRoute = resolve; }),
+    });
+
+    await expect(controller.arm()).resolves.toBe(true);
+    recognitions[0].result({ isFinal: true, transcript: "hey skippy" });
+    expect(controller.state).toBe("routing");
+    rejectRoute(false);
+    await flushMicrotasks();
+
+    expect(controller.state).toBe("wake_ready");
+    expect(recognitions).toHaveLength(1);
+    controller.disarm();
+  });
+
+  it("waits for a wake-only route acknowledgement before capturing the question", async () => {
+    let resolveRoute: (accepted: boolean) => void = () => {};
+    const routeWake = vi.fn(
+      () => new Promise<boolean>((resolve) => { resolveRoute = resolve; }),
+    );
+    const recognitions: FakeRecognition[] = [];
+    const controller = new BrowserHandsFreeController({
+      recognitionFactory: () => {
+        const recognition = new FakeRecognition();
+        recognitions.push(recognition);
+        return recognition;
+      },
+      wakePhrases: ["hey spark"],
+      sendText: vi.fn(() => true),
+      routeWake,
+    });
+
+    await expect(controller.arm()).resolves.toBe(true);
+    recognitions[0].result({ isFinal: true, transcript: "hey spark" });
+    expect(controller.state).toBe("routing");
+    expect(routeWake).toHaveBeenCalledWith("hey spark");
+    expect(recognitions).toHaveLength(1);
+
+    resolveRoute(true);
+    await flushMicrotasks();
+    expect(controller.state).toBe("heard");
+    expect(recognitions).toHaveLength(2);
     controller.disarm();
   });
 
