@@ -265,6 +265,18 @@ async def test_gateway_audio_interleaves_pcm_and_holds_turn_end_until_audio_end(
             "sample_width": 2,
         }
     )
+    audio.push(
+        {
+            "type": "speech_timing",
+            "segment_id": "speech-tts-0",
+            "text": "Hello",
+            "timing_source": "duration_fallback",
+            "audio_offset": 0.0,
+            "duration": 0.2,
+            "fallback_reason": "disabled",
+            "words": [],
+        }
+    )
     audio.push({"type": "audio_chunk", "data": b"\x00\x01"})
     gateway.push(
         {
@@ -287,6 +299,10 @@ async def test_gateway_audio_interleaves_pcm_and_holds_turn_end_until_audio_end(
 
     kinds = [event["type"] for event in received]
     assert kinds.index("audio_start") < kinds.index("audio_chunk")
+    timing = next(event for event in received if event["type"] == "speech_timing")
+    assert timing["segment_id"] == "speech-tts-0"
+    assert timing["turn_id"]
+    assert timing["session_id"] == "runtime-1"
     assert kinds.index("audio_end") < kinds.index("turn_end")
     assert received[-1]["type"] == "turn_end"
     await session.close()

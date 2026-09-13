@@ -21,6 +21,7 @@ import config
 from client import ProtocolError, TransportError, transport_error_for
 from diagnostics import logger as diagnostic_logger
 from gateway_client import _gateway_connection_kwargs
+from timing import normalize_speech_timing
 
 
 class GatewayAudioProtocolError(ProtocolError):
@@ -313,6 +314,21 @@ class GatewayAudioStream:
         event_type = str(payload.get("type") or "").strip().lower()
         if event_type == "start":
             self._handle_start(payload)
+            return
+        if event_type == "speech_timing":
+            timing_payload = payload.get("payload")
+            if not isinstance(timing_payload, dict):
+                diagnostic_logger.debug(
+                    "gateway.audio.speech_timing.ignored reason=missing_payload"
+                )
+                return
+            timing = normalize_speech_timing(timing_payload)
+            if timing is None:
+                diagnostic_logger.debug(
+                    "gateway.audio.speech_timing.ignored reason=invalid_payload"
+                )
+                return
+            await self._events.put(timing.as_event())
             return
         if event_type == "end":
             if not self._started:

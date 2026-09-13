@@ -50,7 +50,7 @@ class FakeContext:
         self.socket.closed.set()
 
 
-def make_stream():
+def make_stream(queue_size=4):
     socket = FakeSocket()
     calls = []
 
@@ -63,7 +63,7 @@ def make_stream():
         "secret-token",
         profile="amanda",
         connect_factory=connect,
-        queue_size=4,
+        queue_size=queue_size,
     )
     return stream, socket, calls
 
@@ -116,6 +116,52 @@ async def test_stream_translates_start_pcm_end_and_feeds_text():
         {"type": "audio_chunk", "data": b"\x00\x01"},
         {"type": "audio_end"},
     ]
+    await stream.close()
+
+
+@pytest.mark.asyncio
+async def test_nested_speech_timing_is_normalized_without_becoming_an_audio_failure():
+    stream, socket, _calls = make_stream(queue_size=8)
+    await stream.open()
+
+    socket.feed_json({"type": "speech_timing", "payload": {"text": "ignored"}})
+    socket.feed_json({"type": "start", "sample_rate": 24000, "channels": 1})
+    socket.feed_json(
+        {
+            "type": "speech_timing",
+            "turn_id": "server-turn",
+            "session_id": "server-session",
+            "payload": {
+                "segment_id": "speech-tts-0",
+                "text": "Hermes moves.",
+                "timing_source": "duration_fallback",
+                "fallback_reason": "disabled",
+                "audio_offset_ms": 0,
+                "duration_ms": 200,
+                "words": [],
+            },
+        }
+    )
+    socket.feed(b"\x00\x01")
+    socket.feed_json({"type": "end"})
+
+    events = [await asyncio.wait_for(stream.next_event(), 1) for _ in range(4)]
+    assert [event["type"] for event in events] == [
+        "audio_start",
+        "speech_timing",
+        "audio_chunk",
+        "audio_end",
+    ]
+    assert events[1] == {
+        "type": "speech_timing",
+        "segment_id": "speech-tts-0",
+        "text": "Hermes moves.",
+        "timing_source": "duration_fallback",
+        "audio_offset": 0.0,
+        "duration": 0.2,
+        "fallback_reason": "disabled",
+        "words": [],
+    }
     await stream.close()
 
 
