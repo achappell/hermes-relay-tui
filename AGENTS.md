@@ -133,43 +133,42 @@ reading order.
   specification.
 - Use the repository-local BMAD runtime at the intentional shared version; do
   not copy `_bmad/` or local tool configuration from `hermes-relay-ios`.
-- Deferred work is recorded in this repository, for every surface. Findings
-  that are real but outside the current slice --- including those discovered
-  while working in `hermes-relay-android`, `hermes-relay-ios`, or firmware ---
-  are appended to
-  [`_bmad-output/implementation-artifacts/deferred-work.md`](_bmad-output/implementation-artifacts/deferred-work.md)
-  under a `## Deferred from:` heading, using the existing
-  `source_spec` / `summary` / `evidence` shape. `source_spec` may name a
-  sibling repository's specification. A sibling repository may also keep a
-  local ticket file, but that never substitutes for the entry here: this file
-  is the single cross-surface record, and a finding logged only in a sibling
-  repository is invisible to planning.
+- Deferred observations may be recorded in this repository as cross-surface
+  context, using the existing `source_spec` / `summary` / `evidence` shape.
+  They do not replace the owning repository's story, specification,
+  validation, or status tracker. A sibling repository may keep a local
+  finding or ticket record; use the coverage index or product hub for shared
+  context, and never move a sibling story's formal status here.
 - Keep one active vertical slice per repository/workstream. Independent TUI
-  and iOS cards may both be in `Building` when their contracts are settled and
-  their files do not contend. Shared protocol or contract work remains a
+  and iOS slices may both be in `Building` when their contracts are settled
+  and their files do not contend. Shared protocol or contract work remains a
   prerequisite when both clients depend on it. Feed durable cross-repository
   discoveries back to the Personal Vault hub.
-- Surface-specific story maps in `_bmad-output/planning-artifacts/epics.md`
-  define story identities and scope. A story closes only the named surface;
-  `I`, `P`, `E`, `W/K`, and `T` are separate delivery boundaries, with W/K
-  covering both web and iPad deployment and the ESP32 Touch Display owning
-  both its voice and display behavior.
+- This repository owns delivery status only for the surfaces registered in
+  `bmad-surface.yaml`: `T`, `P`, `E`, and `W/K`. A story closes only the named
+  surface; W/K covers both web and iPad deployment and the ESP32 Touch Display
+  owns both its voice and display behavior.
+- `_bmad-output/planning-artifacts/epics.md` is an imported cross-surface
+  planning snapshot and historical scope reference. It is not the status
+  authority for iOS, Android, Home, or any other sibling repository.
 - The owning repository's story specification, validation record, and local
   `sprint-status.yaml` are authoritative for delivery status and formal
   closure. Never infer closure from another surface's implementation or from
   a matrix row.
 - Read the surface coverage index before selecting the next story. Use it to
   find applicable surfaces, cross-repository gaps, evidence, and shared
-  prerequisites; then follow the story ID to its owning `epics.md` and story
-  artifact. The index must not duplicate acceptance criteria, formal status,
-  or a task queue.
+  prerequisites; then follow the story ID to its owning repository's local
+  story index, tracker, and artifact. The index must not duplicate acceptance
+  criteria, formal status, or a task queue.
 - Update the surface coverage index only when surface applicability, evidence,
   ownership, or a cross-surface dependency changes. Keep it compact: story
   IDs, owner, evidence/dependency, and links to the authoritative artifacts.
 - After a planning change is merged, run the BMad sprint-planning readiness
-  gate and refresh the local sprint tracker from the surface-specific epics
-  before selecting new implementation work. Preserve the matrix as planning
-  context, not as a replacement for the tracker.
+  gate and update this repository's local tracker only for TUI-owned surfaces
+  before selecting new implementation work. The public
+  `hermes-relay-coordinator` repository owns the read-only cross-repository
+  roster and portfolio report. Use it for orientation; never repair a sibling
+  tracker from its output.
 - The BMad framework under `_bmad/` and local tool integrations under
   `.agents/`, `.claude/`, and `.opencode/` are tooling, not product scope by
   themselves. Rendered workflow/cache output is transient. Include these
@@ -181,79 +180,20 @@ reading order.
   review the exact staged paths before committing. Never commit bearer tokens,
   profile `.env` files, audio captures, or machine-specific credentials.
 
-## GitHub Project task management — mechanical BMad mirror
+## Portfolio coordination and board mirror
 
-GitHub Project #3 (`https://github.com/users/achappell/projects/3/views/2`) is a
-maintained execution/status mirror of this repository's local BMad plan. Local
-BMad artifacts are authoritative; the board is not a second backlog, planning
-system, or source of truth for choosing the next story.
+The public
+[`hermes-relay-coordinator`](https://github.com/achappell/hermes-relay-coordinator)
+repository owns the cross-repository roster, derived status report, and
+mechanical GitHub Project mirror procedure. This checkout supplies only its
+TUI, Puck, ESP32 Touch Display, and W/K local artifacts. iOS, Android, and Home
+status changes must be made in their owning repositories.
 
-Routine synchronization is deliberately mechanical. When Amanda asks to
-refresh the board, do not reread the product plan, Personal Vault, old board
-history, or friction notes, and do not reconsider whether existing cards make
-sense. Publish the accepted BMad story set and move each card to the status
-represented by the local tracker. Semantic reconciliation, prioritization, and
-board cleanup happen only when Amanda explicitly asks for them.
-
-Canonical inputs and scope:
-
-- `_bmad-output/implementation-artifacts/sprint-status.yaml` is authoritative
-  for formal story status.
-- `_bmad-output/planning-artifacts/epics.md` supplies accepted story identity,
-  title, and surface scope. Use it to publish cards, not to invent additional
-  work during a routine refresh.
-- `_bmad-output/implementation-artifacts/surface-coverage-matrix.md` supplies
-  cross-repository evidence and dependencies only. Do not infer formal status
-  or closure from a matrix row.
-- The synchronized project is owner `achappell`, project number `3`. Never
-  print credentials or token values.
-
-Routine mirror procedure:
-
-1. Run `gh auth status`, then query Project #3's items and field metadata. Use
-   the field names returned by GitHub rather than assuming option IDs.
-2. Read the local tracker and the accepted story rows in `epics.md`. Compare
-   cards by their stable BMad story ID, not by title alone. Stories include
-   surface-specific IDs such as `1-A-1`; exclude epic, retrospective, and
-   action-item rows.
-3. Preserve existing project-item/card identity. Update only the BMad ID,
-   title/body/source reference, coverage, and status fields needed to mirror
-   the local artifacts. A card manually moved on GitHub is corrected from the
-   tracker; its GitHub position is never treated as a BMad decision.
-4. Create a card for an accepted BMad story that is present in the local
-   tracker and has no matching card. Do not create cards for implementation
-   subtasks, friction notes, proposed stories, or work absent from accepted
-   BMad scope.
-5. Map BMad story status to the board fields as follows:
-
-   | BMad status | Status | Workflow |
-   | --- | --- | --- |
-   | `backlog` | `Todo` | `Inbox` |
-   | `ready-for-dev` | `Todo` | `Ready` |
-   | `in-progress` | `In Progress` | `Building` |
-   | `review` | `In Progress` | `Verify` |
-   | `done` | `Done` | `Done` |
-
-6. Never move a card to `Done` unless `sprint-status.yaml` says `done`. Routine
-   synchronization does not close GitHub issues or pull requests and does not
-   archive or delete cards. Leave unmatched legacy cards in place and report
-   them; archive/delete only during an explicitly requested cleanup.
-7. After mutations, query the project again and verify that every accepted
-   tracker story has exactly one matching card and that each card's BMad ID,
-   title/scope reference, coverage, Status, and Workflow match the local
-   inputs. Report counts and changes, including unmatched cards or ambiguous
-   tracker/epic identities, instead of inventing a mapping.
-
-For GitHub CLI details, `gh project item-list 3 --owner achappell --format json`
-and `gh project field-list 3 --owner achappell --format json` are the normal
-read commands. With `gh project item-edit`, use the project item ID for field
-updates; draft card title/body edits require the draft content ID. Keep the
-update smallest and re-query after it.
-
-Before answering "what's next" or starting substantive story work, still read
-the surface coverage index, relevant epic context, and owning repository's
-implementation or validation artifacts. The board reflects those decisions;
-it does not replace them.
+GitHub Project work is paused unless Amanda explicitly reopens it. While it is
+paused, do not inspect, query, create, edit, move, delete, archive, or reconcile
+board items. When reopened, follow the coordinator's procedure and mirror only
+the accepted TUI-owned story rows from this repository's local tracker and story
+index.
 
 ## Working agreement
 

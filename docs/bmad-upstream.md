@@ -1,28 +1,41 @@
 # BMAD upstream context
 
-Hermes Home product planning is canonical in the Personal Vault hub:
+Hermes Home product planning is canonical in the private product hub.
 
-`~/Documents/Vaults/Personal Vault/projects/hermes-home/hermes-home.md`
-
-This repository is the downstream TUI/home-display implementation and the historical source of the imported product-planning snapshot. It owns terminal/home-display presentation and local interaction while respecting the shared Hermes protocol boundary. The planned native Android Client is a separate downstream delivery boundary with capability parity to the native iOS Client; it does not belong in this Python repository.
+This repository is the downstream TUI/home-display implementation and the
+historical source of the imported product-planning snapshot. It owns delivery
+for the TUI, Puck, ESP32 Touch, and W/K surfaces registered in
+`bmad-surface.yaml`; it does not own mobile or Home-service status.
 
 ## Before planning or building
 
-1. Read the Personal Vault hub and the linked upstream brief, PRD, epic, architecture, and UX notes relevant to the slice.
-2. Inspect GitHub Project #3 for the card's priority, status, owner, dependencies, and current evidence:
-   `https://github.com/users/achappell/projects/3/views/2`
-3. Read this repository's `AGENTS.md` and the relevant local implementation notes.
-4. Use this repository's local BMAD runtime for delivery work. Do not copy `_bmad/` or tool configuration from `hermes-relay-ios`.
+1. Read the Personal Vault hub and the linked upstream brief, PRD, epic,
+   architecture, and UX notes relevant to the slice.
+2. While GitHub Project work is paused, do not inspect or mutate the board.
+   Use this repository's local story artifacts and tracker for TUI delivery.
+3. Read this repository's `AGENTS.md` and the relevant local implementation
+   notes.
+4. Use this repository's local BMAD runtime for delivery work. Do not copy
+   `_bmad/` or tool configuration from `hermes-relay-ios`.
 
 The existing `_bmad-output/` documents remain useful historical implementation evidence. New cross-repository product decisions belong in the Personal Vault hub first; do not maintain a second, silently divergent PRD or epic set here.
 
 ## Traceability
 
-Every substantive TUI item must have a Project #3 card with an outcome, acceptance criteria, UX expectation, validation scenario, and implementation evidence. Keep the upstream IDs in the card and in implementation artifacts. Product or shared-behaviour changes discovered during delivery flow back to the Personal Vault hub.
+Every substantive TUI item must have an entry in the local story map, a local
+specification, an acceptance contract, a validation scenario, and
+implementation evidence. The local `sprint-status.yaml` is the formal status
+authority for registered TUI-owned surfaces. Product or shared-behaviour
+changes discovered during delivery flow back to the Personal Vault hub.
 
 ## Parallel work
 
-`TUI-*`/`HOME-*` cards belong here; `IOS-*` cards belong in `hermes-relay-ios`; planned `ANDROID-*` cards belong in `hermes-relay-android`; shared Hermes protocol work belongs in its owning repository. One active slice is allowed per repository/workstream, so independent TUI, iOS, and Android slices may all be in `Building` when their shared behavior is settled and their files do not contend. Shared contract or protocol work remains a prerequisite when multiple clients depend on it.
+TUI, Puck, ESP32 Touch, and W/K stories belong here; iOS, Android, Home, and
+shared Hermes protocol work belong in their owning repositories. One active
+slice is allowed per repository/workstream, so independent TUI, iOS, and
+Android slices may all be in `Building` when their shared behavior is settled
+and their files do not contend. Shared contract or protocol work remains a
+prerequisite when multiple clients depend on it.
 
 ## Current upstream baseline
 

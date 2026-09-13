@@ -7,6 +7,21 @@ still uses that channel. An opt-in `gateway` transport can also talk to the
 standard Hermes `/api/ws` WebSocket, which lets us test how much of the TUI can
 work without a forked agent. It does not run the Hermes server.
 
+## BMAD surface ownership
+
+This repository owns BMAD delivery status for the surfaces registered in
+[`bmad-surface.yaml`](bmad-surface.yaml): the TUI, ReSpeaker Puck, ESP32 Touch
+Display, and W/K web/iPad surface. iOS, Android, and Home own their own story
+indexes and local `sprint-status.yaml` files. The epic snapshot and coverage
+matrix here are read-only cross-repository context.
+
+Portfolio coordination lives in the public
+[`hermes-relay-coordinator`](https://github.com/achappell/hermes-relay-coordinator)
+repository. It owns the read-only repository roster, status renderer, and any
+mechanical board-mirror procedure. This repository owns only TUI, Puck, ESP32,
+and W/K delivery records; do not add sibling status or coordinator tooling
+here.
+
 ## Features
 
 - Streaming text transcript rendered inline as deltas arrive.

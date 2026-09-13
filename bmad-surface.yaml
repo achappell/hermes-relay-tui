@@ -1,0 +1,20 @@
+schema_version: 1
+repository: hermes-relay-tui
+planning: bmad
+surfaces:
+  - id: T
+    name: Textual TUI
+  - id: P
+    name: ReSpeaker Puck
+  - id: E
+    name: ESP32 Touch Display
+  - id: W/K
+    name: Web and iPad voice/display
+status_tracker: _bmad-output/implementation-artifacts/sprint-status.yaml
+story_index: _bmad-output/planning-artifacts/epics.md
+coordination_authority: product-hub
+story_aliases:
+  1-1-start-an-authorized-hermes-turn: T-1
+  1-2-render-honest-turn-phases-and-response-delivery: T-2
+  1-3-continue-with-bounded-follow-up-and-exact-stop: T-3
+  1-4-recover-without-replaying-an-uncertain-turn: T-4
