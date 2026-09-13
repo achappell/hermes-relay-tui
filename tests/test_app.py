@@ -81,19 +81,33 @@ class FakeSession:
         self._session_id = val
 
     async def send_prompt_response(
-        self, *, prompt_id, prompt_kind, option_id=None, value=None, reason=None
+        self,
+        *,
+        prompt_id,
+        prompt_kind,
+        option_id=None,
+        value=None,
+        reason=None,
+        operation=None,
+        object_id=None,
+        freshness=None,
     ):
         if not self.supports_structured_prompts:
             return False
-        self.prompt_responses.append(
-            {
-                "prompt_id": prompt_id,
-                "prompt_kind": prompt_kind,
-                "option_id": option_id,
-                "value": value,
-                "reason": reason,
-            }
-        )
+        response = {
+            "prompt_id": prompt_id,
+            "prompt_kind": prompt_kind,
+            "option_id": option_id,
+            "value": value,
+            "reason": reason,
+        }
+        if operation is not None:
+            response["operation"] = operation
+        if object_id is not None:
+            response["object_id"] = object_id
+        if freshness is not None:
+            response["freshness"] = freshness
+        self.prompt_responses.append(response)
         return True
 
     async def list_sessions(self, *, limit=20, search=""):
@@ -5550,6 +5564,366 @@ APPROVAL_REQUEST = {
     "sensitive": False,
     "timeout_s": 300,
 }
+
+
+CHOICE_REQUEST = {
+    "type": "prompt_request",
+    "prompt_id": "choice-p1",
+    "prompt_kind": "choice",
+    "turn_id": "t1",
+    "session_id": "s1",
+    "text": "What should Hermes do?",
+    "options": [
+        {"id": "inspect", "label": "Inspect it"},
+        {"id": "commit", "label": "Commit it"},
+    ],
+    "choice": {
+        "object_id": "choice-1",
+        "operations": ["choose", "explore"],
+        "freshness": "version-1",
+    },
+    "sensitive": False,
+    "timeout_s": 300,
+}
+
+
+async def test_choice_prompt_renders_profile_operations_and_clamped_focus():
+    session = QueuedEventsSession()
+    app = HermesStreamingApp(args=make_args(), session_factory=lambda: session)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        turn = asyncio.create_task(app._run_turn("evaluate the recommendation"))
+        await asyncio.sleep(0)
+
+        await session.push(dict(CHOICE_REQUEST))
+        await pilot.pause()
+
+        panel = app.query_one("#prompt-panel", Static)
+        assert panel.display is True
+        panel_text = str(panel.content)
+        assert "What should Hermes do?" in panel_text
+        assert "1) Inspect it" in panel_text
+        assert "2) Commit it" in panel_text
+        assert "[focused]" in panel_text
+        assert "Choose [Enter]" in panel_text
+        assert "Explore [Right Arrow]" in panel_text
+        assert "Profile: hermes" in connection_status_of(app)
+
+        await pilot.press("down")
+        await pilot.pause()
+        assert "2) Commit it  [focused]" in str(panel.content)
+        await pilot.press("down")
+        await pilot.pause()
+        assert "2) Commit it  [focused]" in str(panel.content)
+        await pilot.press("up")
+        await pilot.pause()
+        assert "1) Inspect it  [focused]" in str(panel.content)
+
+        await session.push({"type": "turn_end", "turn_id": "t1"})
+        await session.push(None)
+        await turn
+
+
+async def test_choice_enter_and_right_send_one_contextual_action_and_mark_rejection():
+    session = QueuedEventsSession()
+    app = HermesStreamingApp(args=make_args(), session_factory=lambda: session)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        turn = asyncio.create_task(app._run_turn("evaluate the recommendation"))
+        await asyncio.sleep(0)
+
+        await session.push(dict(CHOICE_REQUEST))
+        await pilot.pause()
+        await pilot.press("down")
+        await pilot.press("enter")
+        await pilot.pause()
+
+        assert session.prompt_responses == [
+            {
+                "prompt_id": "choice-p1",
+                "prompt_kind": "choice",
+                "option_id": "commit",
+                "value": None,
+                "reason": None,
+                "operation": "choose",
+                "object_id": "choice-1",
+                "freshness": "version-1",
+            }
+        ]
+        assert transcript_of(app).count("Choose requested: Commit it") == 1
+        assert app._pending_prompt is not None
+        assert app._pending_prompt.awaiting_response is True
+
+        # A second keypress while the write is pending cannot send a duplicate.
+        await pilot.press("right")
+        await pilot.press("2")
+        await pilot.pause()
+        assert len(session.prompt_responses) == 1
+
+        await session.push(
+            {
+                "type": "prompt_response_rejected",
+                "prompt_id": "choice-p1",
+                "reason": "expired",
+                "session_id": "s1",
+            }
+        )
+        await pilot.pause()
+        assert transcript_of(app).count("(rejected: expired)") == 1
+        assert app._pending_prompt.awaiting_response is False
+
+        await session.push(
+            {
+                "type": "prompt_response_rejected",
+                "prompt_id": "choice-p1",
+                "reason": "expired",
+                "session_id": "s1",
+            }
+        )
+        await pilot.pause()
+        assert transcript_of(app).count("(rejected: expired)") == 1
+
+        await session.push({"type": "turn_end", "turn_id": "t1"})
+        await session.push(None)
+        await turn
+
+
+async def test_choice_failed_write_creates_no_request_line_and_releases_retry_gate():
+    class FlakyChoiceSession(QueuedEventsSession):
+        def __init__(self):
+            super().__init__()
+            self.prompt_attempts = 0
+
+        async def send_prompt_response(self, **kwargs):
+            self.prompt_attempts += 1
+            if self.prompt_attempts == 1:
+                return False
+            return await super().send_prompt_response(**kwargs)
+
+    session = FlakyChoiceSession()
+    app = HermesStreamingApp(args=make_args(), session_factory=lambda: session)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        turn = asyncio.create_task(app._run_turn("retry the choice"))
+        await asyncio.sleep(0)
+
+        await session.push(dict(CHOICE_REQUEST))
+        await pilot.pause()
+        await pilot.press("enter")
+        await pilot.pause()
+
+        assert session.prompt_attempts == 1
+        assert session.prompt_responses == []
+        assert "Choose requested:" not in transcript_of(app)
+        assert app._pending_prompt is not None
+        assert app._pending_prompt.awaiting_response is False
+        assert app.domain.state.prompt_awaiting is False
+
+        await pilot.press("enter")
+        await pilot.pause()
+        assert session.prompt_attempts == 2
+        assert len(session.prompt_responses) == 1
+        assert transcript_of(app).count("Choose requested: Inspect it") == 1
+
+        await session.push(
+            {
+                "type": "prompt_resolved",
+                "prompt_id": "choice-p1",
+                "session_id": "s1",
+            }
+        )
+        await session.push({"type": "turn_end", "turn_id": "t1"})
+        await session.push(None)
+        await turn
+
+
+async def test_choice_replacement_is_hermes_owned_and_never_replays_rejected_action():
+    session = QueuedEventsSession()
+    app = HermesStreamingApp(args=make_args(), session_factory=lambda: session)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        turn = asyncio.create_task(app._run_turn("replace the choice"))
+        await asyncio.sleep(0)
+
+        await session.push(dict(CHOICE_REQUEST))
+        await pilot.pause()
+        await pilot.press("enter")
+        await pilot.pause()
+        assert len(session.prompt_responses) == 1
+
+        await session.push(
+            {
+                "type": "prompt_response_rejected",
+                "prompt_id": "choice-p1",
+                "reason": "replaced",
+                "session_id": "s1",
+            }
+        )
+        await pilot.pause()
+        assert transcript_of(app).count("(rejected: replaced)") == 1
+
+        replacement = {
+            **CHOICE_REQUEST,
+            "prompt_id": "choice-p2",
+            "text": "Which replacement should Hermes use?",
+            "options": [{"id": "new", "label": "Use the replacement"}],
+            "choice": {
+                "object_id": "choice-2",
+                "operations": ["choose"],
+                "freshness": "version-2",
+            },
+        }
+        await session.push(replacement)
+        await pilot.pause()
+        assert app._pending_prompt is not None
+        assert app._pending_prompt.prompt_id == "choice-p2"
+        assert len(session.prompt_responses) == 1
+        assert transcript_of(app).count("Choose requested: Inspect it") == 1
+
+        # A late rejection for the old object cannot mark or replay the new one.
+        await session.push(
+            {
+                "type": "prompt_response_rejected",
+                "prompt_id": "choice-p1",
+                "reason": "replaced",
+                "session_id": "s1",
+            }
+        )
+        await pilot.pause()
+        assert transcript_of(app).count("(rejected: replaced)") == 1
+        assert len(session.prompt_responses) == 1
+
+        await pilot.press("enter")
+        await pilot.pause()
+        assert len(session.prompt_responses) == 2
+        assert session.prompt_responses[-1]["object_id"] == "choice-2"
+        assert transcript_of(app).count("Choose requested: Use the replacement") == 1
+
+        await session.push(
+            {"type": "prompt_resolved", "prompt_id": "choice-p2", "session_id": "s1"}
+        )
+        await session.push({"type": "turn_end", "turn_id": "t1"})
+        await session.push(None)
+        await turn
+
+
+async def test_malformed_choice_does_not_replace_safe_state_or_fail_the_turn():
+    session = QueuedEventsSession()
+    app = HermesStreamingApp(args=make_args(), session_factory=lambda: session)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        turn = asyncio.create_task(app._run_turn("handle malformed choice"))
+        await asyncio.sleep(0)
+
+        malformed = dict(CHOICE_REQUEST)
+        malformed["choice"] = {"object_id": "choice-1", "operations": ["choose"]}
+        await session.push(malformed)
+        await pilot.pause()
+
+        assert app._pending_prompt is None
+        assert "prompt rejected: prompt choice is missing freshness" in transcript_of(app)
+        assert app._turn_in_flight is True
+
+        await session.push({"type": "turn_end", "turn_id": "t1"})
+        await session.push(None)
+        await turn
+
+
+async def test_choice_explore_uses_right_arrow_and_stays_pending():
+    session = QueuedEventsSession()
+    app = HermesStreamingApp(args=make_args(), session_factory=lambda: session)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        turn = asyncio.create_task(app._run_turn("evaluate the recommendation"))
+        await asyncio.sleep(0)
+
+        await session.push(dict(CHOICE_REQUEST))
+        await pilot.pause()
+        await pilot.press("right")
+        await pilot.pause()
+
+        assert session.prompt_responses == [
+            {
+                "prompt_id": "choice-p1",
+                "prompt_kind": "choice",
+                "option_id": "inspect",
+                "value": None,
+                "reason": None,
+                "operation": "explore",
+                "object_id": "choice-1",
+                "freshness": "version-1",
+            }
+        ]
+        assert transcript_of(app).count("Explore requested: Inspect it") == 1
+        assert app._pending_prompt is not None
+        assert app._pending_prompt.awaiting_response is True
+        assert app.query_one("#prompt-panel", Static).display is True
+
+        await session.push({"type": "turn_end", "turn_id": "t1"})
+        await session.push(None)
+        await turn
+
+
+async def test_choice_only_advertised_operations_are_offered_and_enter_is_safe():
+    session = QueuedEventsSession()
+    choice_request = dict(CHOICE_REQUEST)
+    choice_request["choice"] = {
+        "object_id": "choice-explore-only",
+        "operations": ["explore"],
+        "freshness": "version-1",
+    }
+    app = HermesStreamingApp(args=make_args(), session_factory=lambda: session)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        turn = asyncio.create_task(app._run_turn("inspect only"))
+        await asyncio.sleep(0)
+
+        await session.push(choice_request)
+        await pilot.pause()
+        panel = app.query_one("#prompt-panel", Static)
+        panel_text = str(panel.content)
+        assert "Explore [Right Arrow]" in panel_text
+        assert "Choose [Enter]" not in panel_text
+        assert "Enter choose" not in panel_text
+
+        await pilot.press("enter")
+        await pilot.pause()
+        assert session.prompt_responses == []
+        assert app._pending_prompt is not None
+        assert app._pending_prompt.awaiting_response is False
+
+        await session.push({"type": "turn_end", "turn_id": "t1"})
+        await session.push(None)
+        await turn
+
+
+async def test_choice_focus_reaches_options_beyond_number_shortcuts():
+    session = QueuedEventsSession()
+    choice_request = dict(CHOICE_REQUEST)
+    choice_request["options"] = [
+        {"id": f"option-{index}", "label": f"Option {index}"}
+        for index in range(1, 11)
+    ]
+    app = HermesStreamingApp(args=make_args(), session_factory=lambda: session)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        turn = asyncio.create_task(app._run_turn("evaluate ten options"))
+        await asyncio.sleep(0)
+
+        await session.push(choice_request)
+        await pilot.pause()
+        for _ in range(9):
+            await pilot.press("down")
+        await pilot.press("enter")
+        await pilot.pause()
+
+        assert session.prompt_responses[0]["option_id"] == "option-10"
+        assert session.prompt_responses[0]["operation"] == "choose"
+        assert transcript_of(app).count("Choose requested: Option 10") == 1
+
+        await session.push({"type": "turn_end", "turn_id": "t1"})
+        await session.push(None)
+        await turn
 
 
 async def test_approval_prompt_answers_with_numbered_option_and_stream_reaches_turn_end():
