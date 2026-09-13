@@ -603,7 +603,7 @@ prepare_profile_env() {
 	fi
 	sudo install -d -m 0750 -- "${profile_env_path%/*}" || fail "could not prepare the service environment directory"
 	sudo sh -c '
-		set -Eeuo pipefail
+		set -eu
 		if [ -r "$1" ]; then
 			sed -E "/^[[:space:]]*(export[[:space:]]+)?VOICE_SESSION_TOKEN_(AMANDA|JENSEN|SPARK)[[:space:]]*=/d" "$1" > "$3"
 		else

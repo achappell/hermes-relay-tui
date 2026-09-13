@@ -260,6 +260,15 @@ def make_args(**overrides):
     return args
 
 
+async def wait_until(predicate, *, timeout=1.0):
+    deadline = asyncio.get_running_loop().time() + timeout
+    while not predicate():
+        remaining = deadline - asyncio.get_running_loop().time()
+        if remaining <= 0:
+            raise AssertionError("condition was not met before the timeout")
+        await asyncio.sleep(min(0.01, remaining))
+
+
 # --- mounting and wiring ----------------------------------------------------
 
 
@@ -3769,8 +3778,7 @@ async def test_composer_ctrl_c_reaches_the_app_interrupt_action():
         composer = app.query_one("#composer", Composer)
         composer.text = "first"
         first_press = asyncio.create_task(pilot.press("enter"))
-        await asyncio.sleep(0.05)
-        assert app._turn_in_flight
+        await wait_until(lambda: app._turn_in_flight)
 
         await pilot.press("ctrl+c")
         await pilot.pause()
@@ -3835,7 +3843,7 @@ async def test_submitting_with_a_retained_queue_keeps_shelf_on_newer_prompt():
         shelf = app.query_one("#queue-shelf", Static)
 
         submit = asyncio.create_task(app._submit_text("new"))
-        await asyncio.sleep(0.05)
+        await wait_until(lambda: session.sent_turns == [("pending", "local")])
 
         assert session.sent_turns == [("pending", "local")]
         assert app._queued_prompts == ["new"]
