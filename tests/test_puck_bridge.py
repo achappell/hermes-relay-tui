@@ -13,6 +13,7 @@ import http.client
 import io
 import struct
 import threading
+import time
 import wave
 
 import pytest
@@ -1705,6 +1706,14 @@ def test_response_endpoint_streams_a_wav_the_device_can_decode(tmp_path, caplog)
             "INFO", logger="hermes_relay_tui.puck_bridge.receiver"
         ):
             status, body = _get_response(port, token="s3cret", seq=1)
+            # The response body is flushed before the request thread emits its
+            # final trace record. Keep caplog active until that record arrives;
+            # otherwise this test races the handler's last two log calls.
+            deadline = time.monotonic() + 5
+            while "framing=chunked" not in caplog.text:
+                if time.monotonic() >= deadline:
+                    break
+                time.sleep(0.01)
     finally:
         server.shutdown()
 

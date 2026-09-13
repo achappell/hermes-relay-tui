@@ -10,6 +10,8 @@ __pycache__/
 .DS_Store
 # BMAD workflow snapshots are generated locally and are not project artifacts.
 _bmad/render/
+# Federated BMAD status is derived from each repository's local tracker.
+_bmad-output/implementation-artifacts/surface-status-report.md
 *.wav
 !firmware/respeaker-lite/sounds/
 !firmware/respeaker-lite/sounds/*.wav
