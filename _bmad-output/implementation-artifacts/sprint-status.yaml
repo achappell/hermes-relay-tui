@@ -131,5 +131,6 @@ development_status:
   5-i-1-use-ios-as-an-independent-typed-and-tap-to-speak-conversatio: backlog
   5-a-1-use-android-as-an-independent-typed-and-tap-to-speak-convers: done
   5-a-2-android-accessibility-order-and-focus-restoration: done
-  5-t-1-use-the-tui-as-an-independent-direct-voice-chat-gateway-with: review
+  5-a-3-android-night-console-visual-design-pass-with-material-3-ada: backlog
+  5-t-1-use-the-tui-as-an-independent-direct-voice-chat-gateway-with: done
   epic-5-retrospective: optional

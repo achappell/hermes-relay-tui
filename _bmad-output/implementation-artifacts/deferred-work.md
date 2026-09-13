@@ -134,7 +134,6 @@
   summary: DEFERRED as pre-existing firmware-surface work: authenticate the port-80 web controls.
   evidence: The firmware exposes web controls without authentication, but that surface predates P-2 and is unrelated to the `/response` token handoff. Keep it separate from the P-2 response-authentication decision.
 
-
 - source_spec: `_bmad-output/implementation-artifacts/spec-1-p-5-complete-streamed-response-playback-without-underrun.md`
   summary: Define a reboot-safe response sequence epoch for the Puck capture counter.
   evidence: `pcm_capture.h` resets its in-memory `sample_index` to zero on reboot, while the long-lived bridge now rejects non-increasing response sequences. A reboot after a prior response can therefore reuse an old sequence; resolving that needs a capture/boot-epoch contract outside P-5, and P-5 leaves `pcm_capture.h` unchanged.
@@ -209,3 +208,16 @@
 - source_spec: `hermes-relay-android/_bmad-output/implementation-artifacts/spec-a-4-relay-configuration.md`
   summary: OPEN 2026-09-12 -- Android release engineering: the `versionCode` formula caps minor and patch at 99, and `v0.2.0` still publishes an uninstallable unsigned APK.
   evidence: `versionCode` is derived as `major * 10000 + minor * 100 + patch` and fails the build beyond 99 deliberately, because a silent rollover would produce a lower code than the previous release and break in-place upgrades; widen it before any `0.100.x`. The `v0.2.0` release predates signing, so its asset cannot be rebuilt from its own tree; the tag would have to move to produce a signed one.
+## Deferred from: 5-A-3 Night Console visual design pass, first device pass (2026-09-12)
+
+- source_spec: `hermes-relay-android/_bmad-output/implementation-artifacts/android-visual-design-pass.md`
+  summary: OPEN 2026-09-12 -- `5-A-3` steps 4-7 are not started: the `Scaffold` structure and action hierarchy, the state hierarchy, the composer/history/voice controls, and the hardware TalkBack re-verification.
+  evidence: Steps 1-3 are delivered on `feat/5-a-3-design-pass` -- the doorway is decomposed into zones, and the Night Console palette and its four state roles are in place with contrast coverage widened from 16 pairs to 56. The structural problems the design pass diagnosed are untouched: the Pixel 6a capture shows the relay configuration form consuming the entire first screen, the conversation doorway below the fold, Profile and authorization as two unstyled lines, and `Save relay profile` as the most prominent control on screen. Step 4 addresses all three.
+
+- source_spec: `hermes-relay-android/_bmad-output/implementation-artifacts/spec-a-1-authorized-initiation.md`
+  summary: OPEN 2026-09-12 -- `ANDROID-BUG-F4`: the Android doorway header claims the transport is not connected while the same screen shows a verified, configured Profile against a live relay.
+  evidence: The header reads `Android Client bootstrap` and "The native Android surface is alive, but Hermes session transport is not connected yet", three rows above `Authorization: Verified`. Seen on a Pixel 6a during the `5-A-3` device pass. The snapshot's `titleRes` and `descriptionRes` appear to predate working transport. A content defect rather than a visual one, so `5-A-3` did not fix it.
+
+- source_spec: `hermes-relay-android/_bmad-output/implementation-artifacts/spec-5-a-2-accessibility.md`
+  summary: NOTE 2026-09-12 -- the contrast half of `5-A-2`'s environment limitation is closed, but measurement proved insufficient on its own and the two obligations should not be treated as substitutes.
+  evidence: Contrast is now asserted across 56 pairs in both appearances, with each guard verified by deliberate regression rather than trusted because the suite was green. The `5-A-3` device pass nonetheless found a defect measurement could not catch: `surfaceVariant` and `errorContainer` held the same value, so Material's `contentColorFor` returned `onErrorContainer` for every ordinary `Card` and drew plain informational text in the unavailable colour. Every contrast pair involved was individually fine -- pink on panel measures 7.66:1. The defect was the mapping, not a ratio. TalkBack and font scaling remain entirely unproven.

@@ -291,7 +291,7 @@ iOS, Android, and the TUI provide independent portable and terminal conversation
 **FRs covered:** FR20, FR21
 **Natural dependency:** Consumes Epic 1's session semantics but remains independently usable through configured Client sessions; diagnostics remain an engineering capability rather than a household prerequisite.
 
-### Surface-specific Epic 5 story map — decision 2026-09-10; Android parity addendum 2026-09-11; Android delivery addendum 2026-09-12
+### Surface-specific Epic 5 story map — decision 2026-09-10; Android parity addendum 2026-09-11; Android delivery addendum 2026-09-12; Android design addendum 2026-09-12
 
 Epic 5 is already naturally surface-specific: the iOS and TUI doorways own
 separate Sessions, presentation, and deliberate Local History boundaries.
@@ -301,6 +301,7 @@ separate Sessions, presentation, and deliberate Local History boundaries.
 | `5-I-1` | iOS Client | Use iOS as an independent typed and tap-to-speak conversation doorway with response audio, phase state, recovery, and Local History. |
 | `5-A-1` | Android Client | Use Android as an independent typed and tap-to-speak conversation doorway with response audio, phase state, recovery, secure profile storage, and per-profile Local History matching iOS capability and safety behavior. |
 | `5-A-2` | Android Client | Accessibility order Profile → state → response/Transcription → action with focus restoration, satisfying `UX-DR21`. |
+| `5-A-3` | Android Client | Night Console visual design pass: adopt the shared semantic state roles and the four-zone conversation shell as a Material 3 adaptation, without cloning iOS geometry. |
 | `5-T-1` | TUI | Use the TUI as an independent direct voice-chat gateway with inline response rendering, diagnostics, and deliberate local history. |
 
 The existing numeric Stories 5.1 and 5.2 below remain stable aliases for
