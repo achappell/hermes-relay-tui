@@ -161,7 +161,11 @@ reading order.
   before selecting new implementation work. Use
   `scripts/render_surface_status.py` for a read-only cross-repository roll-up;
   preserve the matrix as applicability and dependency context, not as a
-  replacement for any local tracker.
+  replacement for any local tracker. The standard input roster is
+  `surface-repositories.yaml`; it contains paths only, never status. For
+  worktrees or another checkout layout, pass all five `--repo name=path`
+  arguments explicitly. The command rejects an incomplete roster unless
+  `--allow-partial` is deliberate.
 - The BMad framework under `_bmad/` and local tool integrations under
   `.agents/`, `.claude/`, and `.opencode/` are tooling, not product scope by
   themselves. Rendered workflow/cache output is transient. Include these

@@ -1,8 +1,6 @@
 # BMAD upstream context
 
-Hermes Home product planning is canonical in the Personal Vault hub:
-
-`~/Documents/Vaults/Personal Vault/projects/hermes-home/hermes-home.md`
+Hermes Home product planning is canonical in the private product hub.
 
 This repository is the downstream TUI/home-display implementation and the
 historical source of the imported product-planning snapshot. It owns delivery

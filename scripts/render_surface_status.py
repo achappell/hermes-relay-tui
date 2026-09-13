@@ -5,13 +5,12 @@ from __future__ import annotations
 import argparse
 import re
 import sys
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
-from datetime import date
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Iterable, Sequence
 
 import yaml
-
 
 ALLOWED_STATUSES = {
     "backlog",
@@ -20,6 +19,7 @@ ALLOWED_STATUSES = {
     "review",
     "done",
 }
+DEFAULT_REPOSITORY_ALIASES = ("tui", "ios", "android", "home", "agent")
 META_KEY_PATTERNS = (
     re.compile(r"^epic-"),
     re.compile(r"-retrospective$"),
@@ -63,6 +63,14 @@ class RepositoryReport:
     note: str | None = None
 
 
+@dataclass(frozen=True)
+class RepositoryInput:
+    """A named repository location supplied to the command line or roster."""
+
+    name: str
+    path: Path
+
+
 def _load_yaml(path: Path) -> dict:
     try:
         value = yaml.safe_load(path.read_text(encoding="utf-8"))
@@ -81,7 +89,15 @@ def _repo_relative(root: Path, raw: object, field: str) -> Path:
     path = Path(raw)
     if path.is_absolute():
         raise SurfaceStatusError(f"{field} must not be absolute: {raw}")
-    return root / path
+    repository_root = root.resolve()
+    resolved = (repository_root / path).resolve()
+    try:
+        resolved.relative_to(repository_root)
+    except ValueError as exc:
+        raise SurfaceStatusError(
+            f"{field} must stay inside the repository: {raw}"
+        ) from exc
+    return resolved
 
 
 def _status_key_map(statuses: dict[object, object]) -> dict[str, tuple[str, str]]:
@@ -146,13 +162,19 @@ def _markdown_catalog(path: Path) -> dict[str, tuple[str, str]]:
 
 
 def _catalog_lookup(
-    catalog: dict[str, tuple[str, str]], story_id: str
+    catalog: dict[str, tuple[str, str]],
+    story_id: str,
+    aliases: dict[str, str] | None = None,
 ) -> tuple[str, str] | None:
-    candidates = [story_id.casefold()]
-    shortened = re.sub(r"^[0-9]+-", "", story_id.casefold())
-    if shortened != story_id.casefold():
+    normalized_story_id = story_id.casefold()
+    candidates: list[str] = []
+    if aliases and normalized_story_id in aliases:
+        candidates.append(aliases[normalized_story_id])
+    candidates.append(normalized_story_id)
+    shortened = re.sub(r"^[0-9]+-", "", normalized_story_id)
+    if shortened != normalized_story_id:
         candidates.append(shortened)
-    parts = story_id.casefold().split("-")
+    parts = normalized_story_id.split("-")
     if len(parts) >= 3 and parts[1] in {"t", "p", "e", "wk"}:
         candidates.insert(1, f"{parts[0]}-{parts[1]}-{parts[2]}")
         candidates.append(f"{parts[1]}-{parts[2]}")
@@ -212,12 +234,11 @@ def _yaml_repository_report(
         spec = raw_story.get("spec")
         validation = raw_story.get("validation")
         for field, reference in (("spec", spec), ("validation", validation)):
-            if reference is None or not isinstance(reference, str):
+            if reference is None:
                 continue
-            if "/" in reference or reference.endswith((".md", ".yaml", ".yml")):
-                ref_path = _repo_relative(root, reference, f"{story_id}.{field}")
-                if not ref_path.exists():
-                    issues.append(f"missing {field} for story {story_id}: {reference}")
+            ref_path = _repo_relative(root, reference, f"{story_id}.{field}")
+            if not ref_path.exists():
+                issues.append(f"missing {field} for story {story_id}: {reference}")
         records.append(
             StoryRecord(
                 repository=repository,
@@ -231,7 +252,11 @@ def _yaml_repository_report(
             )
         )
 
-    indexed_ids = {str(raw["id"]).casefold() for raw in raw_stories if isinstance(raw, dict) and raw.get("id")}
+    indexed_ids = {
+        str(raw["id"]).casefold()
+        for raw in raw_stories
+        if isinstance(raw, dict) and raw.get("id")
+    }
     for normalized, (original, _) in status_map.items():
         if normalized not in indexed_ids:
             issues.append(f"tracker story is missing from story index: {original}")
@@ -249,19 +274,18 @@ def _markdown_repository_report(
     index_path: Path,
 ) -> RepositoryReport:
     catalog = _markdown_catalog(index_path)
+    aliases = _story_aliases(manifest, repository)
     records: list[StoryRecord] = []
     issues: list[str] = []
-    default_surface = surfaces[0] if surfaces else "?"
-    for normalized, (story_id, _) in status_map.items():
+    for story_id, _ in status_map.values():
         status = _story_status(story_id, status_map, issues)
         if status is None:
             continue
-        catalog_entry = _catalog_lookup(catalog, story_id)
-        if catalog_entry:
-            surface, title = catalog_entry
-        else:
-            surface = _surface_from_story_id(story_id, surfaces)
-            title = story_id.replace("-", " ")
+        catalog_entry = _catalog_lookup(catalog, story_id, aliases)
+        if catalog_entry is None:
+            issues.append(f"tracker story is missing from story index: {story_id}")
+            continue
+        surface, title = catalog_entry
         if surface not in surfaces:
             issues.append(f"story {story_id} uses unregistered surface: {surface}")
         records.append(
@@ -281,6 +305,29 @@ def _markdown_repository_report(
     return RepositoryReport(repository, True, tuple(records))
 
 
+def _story_aliases(manifest: dict, repository: str) -> dict[str, str]:
+    raw_aliases = manifest.get("story_aliases")
+    if raw_aliases is None:
+        return {}
+    if not isinstance(raw_aliases, dict):
+        raise SurfaceStatusError(f"story_aliases must be a mapping for {repository}")
+    aliases: dict[str, str] = {}
+    for raw_source, raw_target in raw_aliases.items():
+        source = str(raw_source).strip()
+        target = str(raw_target).strip()
+        if not source or not target:
+            raise SurfaceStatusError(
+                f"story_aliases contains an empty key or value for {repository}"
+            )
+        normalized_source = source.casefold()
+        if normalized_source in aliases:
+            raise SurfaceStatusError(
+                f"duplicate story alias for {repository}: {source}"
+            )
+        aliases[normalized_source] = target.casefold()
+    return aliases
+
+
 def _repository_report(root: Path) -> RepositoryReport:
     manifest_path = root / "bmad-surface.yaml"
     if not manifest_path.exists():
@@ -291,7 +338,11 @@ def _repository_report(root: Path) -> RepositoryReport:
     surfaces_data = manifest.get("surfaces")
     if not isinstance(surfaces_data, list):
         raise SurfaceStatusError(f"surfaces must be a list in {manifest_path.name}")
-    surfaces = [str(item.get("id")) for item in surfaces_data if isinstance(item, dict) and item.get("id")]
+    surfaces = [
+        str(item.get("id"))
+        for item in surfaces_data
+        if isinstance(item, dict) and item.get("id")
+    ]
     if planning == "not-applicable":
         return RepositoryReport(
             repository=repository,
@@ -300,11 +351,17 @@ def _repository_report(root: Path) -> RepositoryReport:
             note=str(manifest.get("reason") or "No BMAD delivery scope"),
         )
     if planning != "bmad":
-        raise SurfaceStatusError(f"unsupported planning value for {repository}: {planning}")
+        raise SurfaceStatusError(
+            f"unsupported planning value for {repository}: {planning}"
+        )
     if not surfaces:
-        raise SurfaceStatusError(f"BMAD repository has no registered surfaces: {repository}")
+        raise SurfaceStatusError(
+            f"BMAD repository has no registered surfaces: {repository}"
+        )
 
-    tracker_path = _repo_relative(root, manifest.get("status_tracker"), "status_tracker")
+    tracker_path = _repo_relative(
+        root, manifest.get("status_tracker"), "status_tracker"
+    )
     index_path = _repo_relative(root, manifest.get("story_index"), "story_index")
     if not tracker_path.exists():
         raise SurfaceStatusError(f"missing status tracker for {repository}")
@@ -313,13 +370,21 @@ def _repository_report(root: Path) -> RepositoryReport:
     tracker = _load_yaml(tracker_path)
     raw_statuses = tracker.get("development_status")
     if not isinstance(raw_statuses, dict):
-        raise SurfaceStatusError(f"development_status must be a mapping for {repository}")
+        raise SurfaceStatusError(
+            f"development_status must be a mapping for {repository}"
+        )
     status_map = _status_key_map(raw_statuses)
     if index_path.suffix.casefold() in {".yaml", ".yml"}:
-        return _yaml_repository_report(root, manifest, repository, surfaces, status_map, index_path)
+        return _yaml_repository_report(
+            root, manifest, repository, surfaces, status_map, index_path
+        )
     if index_path.suffix.casefold() == ".md":
-        return _markdown_repository_report(root, manifest, repository, surfaces, status_map, index_path)
-    raise SurfaceStatusError(f"unsupported story index format for {repository}: {index_path.suffix}")
+        return _markdown_repository_report(
+            root, manifest, repository, surfaces, status_map, index_path
+        )
+    raise SurfaceStatusError(
+        f"unsupported story index format for {repository}: {index_path.suffix}"
+    )
 
 
 def _cell(value: str | None) -> str:
@@ -328,17 +393,21 @@ def _cell(value: str | None) -> str:
     return value.replace("|", "\\|").replace("\n", " ")
 
 
-def render_report(repository_roots: Sequence[Path]) -> str:
+def render_report(repository_roots: Sequence[Path | RepositoryInput]) -> str:
     """Validate and render registered repositories without modifying inputs."""
 
     reports: list[RepositoryReport] = []
     issues: list[str] = []
-    for raw_root in repository_roots:
-        root = Path(raw_root)
+    for raw_entry in repository_roots:
+        entry = (
+            raw_entry
+            if isinstance(raw_entry, RepositoryInput)
+            else RepositoryInput(Path(raw_entry).name, Path(raw_entry))
+        )
         try:
-            reports.append(_repository_report(root))
+            reports.append(_repository_report(entry.path))
         except SurfaceStatusError as exc:
-            issues.extend(f"{root.name}: {issue}" for issue in exc.issues)
+            issues.extend(f"{entry.name}: {issue}" for issue in exc.issues)
     if issues:
         raise SurfaceStatusError(issues)
 
@@ -362,7 +431,7 @@ def render_report(repository_roots: Sequence[Path]) -> str:
         "",
         "> Derived output. Read local repository trackers for authority; do not edit this report as a status source.",
         "",
-        f"Generated: {date.today().isoformat()}",
+        f"Generated: {datetime.now(UTC).date().isoformat()}",
         "",
         "## Stories",
         "",
@@ -391,9 +460,13 @@ def render_report(repository_roots: Sequence[Path]) -> str:
     if not_applicable:
         lines.extend(("", "## Repositories without BMAD delivery scope", ""))
         for report in not_applicable:
-            lines.append(f"- `{_cell(report.repository)}` — not applicable: {_cell(report.note)}")
+            lines.append(
+                f"- `{_cell(report.repository)}` — not applicable: {_cell(report.note)}"
+            )
 
-    next_records = [record for record in records if record.status in {"ready-for-dev", "backlog"}]
+    next_records = [
+        record for record in records if record.status in {"ready-for-dev", "backlog"}
+    ]
     next_records.sort(
         key=lambda record: (
             0 if record.status == "ready-for-dev" else 1,
@@ -430,28 +503,102 @@ def render_report(repository_roots: Sequence[Path]) -> str:
     return "\n".join(lines) + "\n"
 
 
-def _parse_repo(value: str) -> Path:
+def _parse_repo(value: str) -> RepositoryInput:
     if "=" not in value:
         raise argparse.ArgumentTypeError("--repo must use name=path")
-    _, raw_path = value.split("=", 1)
-    if not raw_path:
+    raw_name, raw_path = value.split("=", 1)
+    name = raw_name.strip()
+    if not name:
+        raise argparse.ArgumentTypeError("--repo name must not be empty")
+    if not raw_path.strip():
         raise argparse.ArgumentTypeError("--repo path must not be empty")
-    return Path(raw_path)
+    return RepositoryInput(name, Path(raw_path))
+
+
+def _load_repository_roster(config_path: Path) -> list[RepositoryInput]:
+    config_path = config_path.expanduser().resolve()
+    config = _load_yaml(config_path)
+    raw_repositories = config.get("repositories")
+    if not isinstance(raw_repositories, list):
+        raise SurfaceStatusError(f"repositories must be a list in {config_path.name}")
+
+    entries: list[RepositoryInput] = []
+    for raw_entry in raw_repositories:
+        if not isinstance(raw_entry, dict):
+            raise SurfaceStatusError(f"invalid repository entry in {config_path.name}")
+        raw_name = raw_entry.get("name")
+        raw_path = raw_entry.get("path")
+        if not isinstance(raw_name, str) or not raw_name.strip():
+            raise SurfaceStatusError(
+                f"repository name must be a non-empty string in {config_path.name}"
+            )
+        if not isinstance(raw_path, str) or not raw_path.strip():
+            raise SurfaceStatusError(
+                f"repository path must be a non-empty string in {config_path.name}"
+            )
+        path = Path(raw_path)
+        if path.is_absolute():
+            raise SurfaceStatusError(
+                f"repository paths must be relative in {config_path.name}: {raw_path}"
+            )
+        entries.append(
+            RepositoryInput(raw_name.strip(), (config_path.parent / path).resolve())
+        )
+    return entries
+
+
+def _validate_roster(entries: Sequence[RepositoryInput], allow_partial: bool) -> None:
+    seen: set[str] = set()
+    issues: list[str] = []
+    for entry in entries:
+        normalized = entry.name.casefold()
+        if normalized in seen:
+            issues.append(f"duplicate repository alias: {entry.name}")
+        seen.add(normalized)
+    if not allow_partial:
+        expected = set(DEFAULT_REPOSITORY_ALIASES)
+        missing = sorted(expected - seen)
+        unexpected = sorted(seen - expected)
+        if missing:
+            issues.append("missing required repository aliases: " + ", ".join(missing))
+        if unexpected:
+            issues.append("unexpected repository aliases: " + ", ".join(unexpected))
+    if issues:
+        raise SurfaceStatusError(issues)
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument(
+    source = parser.add_mutually_exclusive_group()
+    source.add_argument(
         "--repo",
         action="append",
-        required=True,
         type=_parse_repo,
         help="registered repository as name=path; repeat for each repository",
     )
-    parser.add_argument("--output", type=Path, help="write the derived Markdown report here")
+    source.add_argument(
+        "--config",
+        type=Path,
+        help="repository roster YAML; defaults to surface-repositories.yaml",
+    )
+    parser.add_argument(
+        "--allow-partial",
+        action="store_true",
+        help="allow a subset of the standard Hermes repository roster",
+    )
+    parser.add_argument(
+        "--output", type=Path, help="write the derived Markdown report here"
+    )
     args = parser.parse_args(argv)
     try:
-        report = render_report(args.repo)
+        if args.repo is not None:
+            entries = args.repo
+        else:
+            entries = _load_repository_roster(
+                args.config or Path("surface-repositories.yaml")
+            )
+        _validate_roster(entries, args.allow_partial)
+        report = render_report(entries)
     except SurfaceStatusError as exc:
         for issue in exc.issues:
             print(f"error: {issue}", file=sys.stderr)

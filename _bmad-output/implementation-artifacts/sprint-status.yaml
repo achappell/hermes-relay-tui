@@ -92,7 +92,6 @@ development_status:
   epic-3-retrospective: optional
 
   epic-4: backlog
-  4-c-1-qualify-events-only-with-usable-location-route-or-estimate-f: backlog
   4-e-1-promote-the-household-wide-departure-card-in-native-lvgl-whi: backlog
   4-e-2-recompute-and-clear-the-native-departure-card-on-time-locati: backlog
   4-wk-1-promote-the-same-departure-card-in-the-shared-web-ipad-brows: backlog

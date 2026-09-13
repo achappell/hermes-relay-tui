@@ -15,14 +15,16 @@ matrix here are read-only cross-repository context.
 Generate a local roll-up when you need the portfolio view:
 
 ```bash
-venv/bin/python scripts/render_surface_status.py \
-  --repo tui=. \
-  --repo ios=../hermes-relay-ios \
-  --repo android=../hermes-relay-android \
-  --repo home=../hermes-relay-home \
-  --repo agent=../hermes-agent \
+uv run python scripts/render_surface_status.py \
+  --config surface-repositories.yaml \
   --output _bmad-output/implementation-artifacts/surface-status-report.md
 ```
+
+The roster is only a list of repositories to read; it contains no story
+statuses. It assumes the five Hermes repositories are adjacent checkouts. For
+worktrees or another layout, pass all five `--repo name=path` arguments
+explicitly; the command rejects an incomplete roster unless
+`--allow-partial` is deliberate.
 
 The report is derived output. It never changes a sibling repository and never
 replaces a local tracker.

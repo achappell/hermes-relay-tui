@@ -1,0 +1,13 @@
+schema_version: 1
+purpose: report-input-roster
+repositories:
+  - name: tui
+    path: .
+  - name: ios
+    path: ../hermes-relay-ios
+  - name: android
+    path: ../hermes-relay-android
+  - name: home
+    path: ../hermes-relay-home
+  - name: agent
+    path: ../hermes-agent
