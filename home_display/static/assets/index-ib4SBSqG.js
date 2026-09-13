@@ -5648,14 +5648,11 @@ class BrowserHandsFreeController {
     __publicField(this, "followUpRetryTimer", null);
     __publicField(this, "followUpWatchdogTimer", null);
     __publicField(this, "followUpAttempt", 0);
-<<<<<<<< HEAD:home_display/static/assets/index-4-_N7Rxp.js
-========
     __publicField(this, "followUpDeadlineAt", null);
     __publicField(this, "followUpRecoveryPending", false);
     __publicField(this, "followUpErrorCategory", null);
     __publicField(this, "lastRecognitionErrorCategory", null);
     __publicField(this, "followUpEligible", false);
->>>>>>>> d1da0fd (fix(web): recover hands-free after playback):home_display/static/assets/index-BtRfo_B_.js
     __publicField(this, "turnInFlight", false);
     __publicField(this, "recognitionRelease", Promise.resolve());
     __publicField(this, "recognitionReleasePending", false);
@@ -5710,11 +5707,8 @@ class BrowserHandsFreeController {
     const generation = this.generation;
     this.armed = true;
     this.phase = "wake_ready";
-<<<<<<<< HEAD:home_display/static/assets/index-4-_N7Rxp.js
-========
     this.lastRecognitionErrorCategory = null;
     this.followUpEligible = false;
->>>>>>>> d1da0fd (fix(web): recover hands-free after playback):home_display/static/assets/index-BtRfo_B_.js
     this.turnInFlight = false;
     this.emit("arming");
     await this.waitForRecognitionRelease();
@@ -5731,13 +5725,10 @@ class BrowserHandsFreeController {
     this.generation += 1;
     this.armed = false;
     this.phase = "off";
-<<<<<<<< HEAD:home_display/static/assets/index-4-_N7Rxp.js
-========
     this.followUpDeadlineAt = null;
     this.followUpRecoveryPending = false;
     this.followUpErrorCategory = null;
     this.followUpEligible = false;
->>>>>>>> d1da0fd (fix(web): recover hands-free after playback):home_display/static/assets/index-BtRfo_B_.js
     this.turnInFlight = false;
     this.clearTimers();
     this.stopRecognition();
@@ -6097,13 +6088,10 @@ class BrowserHandsFreeController {
     this.generation += 1;
     this.armed = false;
     this.phase = "off";
-<<<<<<<< HEAD:home_display/static/assets/index-4-_N7Rxp.js
-========
     this.followUpDeadlineAt = null;
     this.followUpRecoveryPending = false;
     this.followUpErrorCategory = null;
     this.followUpEligible = false;
->>>>>>>> d1da0fd (fix(web): recover hands-free after playback):home_display/static/assets/index-BtRfo_B_.js
     this.turnInFlight = false;
     this.clearTimers();
     this.stopRecognition();
