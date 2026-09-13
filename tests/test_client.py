@@ -121,6 +121,39 @@ async def test_owned_write_failures_are_typed_without_swallowing_programming_err
         )
 
 
+@pytest.mark.parametrize(
+    "operation",
+    ["interrupt", "prompt_response", "session_list", "session_new", "session_switch"],
+)
+async def test_non_turn_write_failures_are_typed_transport_errors(operation):
+    class FailingSendWebSocket(FakeWebSocket):
+        async def send(self, data):
+            raise OSError("socket closed")
+
+    websocket = FailingSendWebSocket([])
+    if operation == "interrupt":
+        request = send_interrupt(websocket, session_id="s1", turn_id="turn-1")
+    elif operation == "prompt_response":
+        request = send_prompt_response(
+            websocket,
+            session_id="s1",
+            prompt_id="prompt-1",
+            prompt_kind="approval",
+            option_id="once",
+        )
+    elif operation == "session_list":
+        request = send_session_list(websocket)
+    elif operation == "session_new":
+        request = send_session_new(websocket)
+    else:
+        request = send_session_switch(websocket, session_id="s2")
+
+    with pytest.raises(TransportError) as caught:
+        await request
+
+    assert caught.value.cause_type == "OSError"
+
+
 async def test_turn_receive_transport_failure_is_typed():
     class FailingTurnWebSocket(FakeWebSocket):
         async def recv(self):
@@ -170,6 +203,48 @@ async def test_send_prompt_response_sends_only_present_response_fields():
         "option_id": "once",
         "reason": "one-time access",
     }
+
+
+async def test_send_prompt_response_carries_choice_operation_context_only_for_choice():
+    ws = FakeWebSocket([])
+
+    await send_prompt_response(
+        ws,
+        session_id="s1",
+        prompt_id="prompt-choice-1",
+        prompt_kind="choice",
+        option_id="inspect",
+        operation="explore",
+        object_id="choice-1",
+        freshness="version-1",
+    )
+
+    assert json.loads(ws.sent[0]) == {
+        "type": "prompt_response",
+        "protocol_version": 1,
+        "prompt_id": "prompt-choice-1",
+        "prompt_kind": "choice",
+        "session_id": "s1",
+        "option_id": "inspect",
+        "operation": "explore",
+        "object_id": "choice-1",
+        "freshness": "version-1",
+    }
+
+    legacy_ws = FakeWebSocket([])
+    await send_prompt_response(
+        legacy_ws,
+        session_id="s1",
+        prompt_id="prompt-legacy",
+        prompt_kind="approval",
+        option_id="once",
+        operation="choose",
+        object_id="should-be-omitted",
+        freshness="should-be-omitted",
+    )
+    assert "operation" not in json.loads(legacy_ws.sent[0])
+    assert "object_id" not in json.loads(legacy_ws.sent[0])
+    assert "freshness" not in json.loads(legacy_ws.sent[0])
 
 
 async def test_send_prompt_response_can_cancel_a_sensitive_prompt():
@@ -269,6 +344,67 @@ async def test_send_turn_normalizes_structured_prompt_request_and_resolution():
             "prompt_kind": "approval",
             "status": "accepted",
             "session_id": "s1",
+        },
+        {"type": "turn_end", "turn_id": "turn-1"},
+    ]
+
+
+async def test_send_turn_normalizes_bounded_choice_context_and_drops_future_fields():
+    frames = [
+        json.dumps(
+            {
+                "type": "prompt_request",
+                "prompt_id": "prompt-choice-1",
+                "prompt_kind": "choice",
+                "turn_id": "turn-1",
+                "session_id": "s1",
+                "text": "What should Hermes do?",
+                "options": [
+                    {
+                        "id": "inspect",
+                        "label": "Inspect it",
+                        "style": "primary",
+                    }
+                ],
+                "choice": {
+                    "object_id": "choice-1",
+                    "operations": ["choose", "explore"],
+                    "freshness": "version-1",
+                    "future_ui": {"arbitrary": True},
+                },
+                "future_prompt_field": "ignored",
+            }
+        ),
+        json.dumps({"type": "turn_end", "turn_id": "turn-1"}),
+    ]
+
+    events = [
+        event
+        async for event in send_turn(
+            FakeWebSocket(frames),
+            session_id="s1",
+            text="hi",
+            stt_source="local",
+            turn_id="turn-1",
+        )
+    ]
+
+    assert events == [
+        {
+            "type": "prompt_request",
+            "prompt_id": "prompt-choice-1",
+            "prompt_kind": "choice",
+            "turn_id": "turn-1",
+            "session_id": "s1",
+            "text": "What should Hermes do?",
+            "options": [{"id": "inspect", "label": "Inspect it"}],
+            "sensitive": False,
+            "timeout_s": 300,
+            "choice": {
+                "object_id": "choice-1",
+                "operations": ["choose", "explore"],
+                "freshness": "version-1",
+            },
         },
         {"type": "turn_end", "turn_id": "turn-1"},
     ]

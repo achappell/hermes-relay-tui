@@ -1903,6 +1903,10 @@ def test_response_callback_none_abandons_an_admitted_response(tmp_path):
         server.shutdown()
 
     assert status == 200
+    for _ in range(500):
+        if stream.terminal_status == "unavailable":
+            break
+        threading.Event().wait(0.01)
     assert stream.terminal_status == "unavailable"
     assert not stream.expecting
     assert stream.expect(seq=2)

@@ -29,7 +29,7 @@
 # - Dev moves story to 'review', then runs code-review (fresh context, different LLM recommended)
 # - Retrospective appends its action items to action_items; the status view surfaces open ones
 generated: 09-08-2026 00:00
-last_updated: 2026-09-12
+last_updated: 09-12-2026 20:44
 project: hermes-relay-tui
 project_key: NOKEY
 tracking_system: file-system
@@ -60,7 +60,7 @@ development_status:
   1-wk-1-one-shared-w-k-browser-voice-plus-display-surface-for-author:
     ready-for-dev
   1-t-5-non-blocking-wake-listener-and-microphone-teardown-during-re: backlog
-  1-t-6-detect-idle-relay-loss-and-present-honest-recovery-without-r: review
+  1-t-6-detect-idle-relay-loss-and-present-honest-recovery-without-r: done
   epic-1-retrospective: optional
 
   epic-2: in-progress
@@ -79,7 +79,7 @@ development_status:
   2-wk-6-render-accessible-native-choose-explore-actions-for-current: backlog
   2-t-1-keep-the-direct-tui-doorway-s-capture-and-phase-state-visibl: done
   2-t-2-keep-tui-disconnect-recovery-presentation-honest-without-rep: done
-  2-t-3-render-typed-choice-objects-with-keyboard-choose-explore-act: backlog
+  2-t-3-render-typed-choice-objects-with-keyboard-choose-explore-act: review
   epic-2-retrospective: optional
 
   epic-3: backlog
@@ -99,5 +99,5 @@ development_status:
   epic-4-retrospective: optional
 
   epic-5: in-progress
-  5-t-1-use-the-tui-as-an-independent-direct-voice-chat-gateway-with: review
+  5-t-1-use-the-tui-as-an-independent-direct-voice-chat-gateway-with: done
   epic-5-retrospective: optional

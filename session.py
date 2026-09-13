@@ -9,6 +9,7 @@ front end is expected to drive the same class without importing the TUI.
 from __future__ import annotations
 
 import asyncio
+import inspect
 import threading
 import uuid
 from typing import Any, AsyncIterator, Protocol
@@ -77,6 +78,9 @@ class SessionProtocol(Protocol):
         option_id: str | None = None,
         value: str | None = None,
         reason: str | None = None,
+        operation: str | None = None,
+        object_id: str | None = None,
+        freshness: str | None = None,
     ) -> bool: ...
 
     async def interrupt_active_turn(self) -> bool: ...
@@ -155,6 +159,34 @@ class HermesSession:
         self._shared_recorder = recorder
         self.microphone = None
 
+    @staticmethod
+    def _validate_wait_closed(wait_closed: Any) -> None:
+        """Reject a transport whose close observer is not awaitable."""
+        if not callable(wait_closed):
+            raise UnsupportedTransportError(
+                "websocket transport does not expose wait_closed()"
+            )
+        if inspect.iscoroutinefunction(wait_closed):
+            return
+        try:
+            result = wait_closed()
+        except BaseException as exc:
+            transport_error = transport_error_for("connection close wait", exc)
+            if transport_error is not None:
+                raise transport_error from exc
+            raise UnsupportedTransportError(
+                "websocket transport wait_closed() is not awaitable"
+            ) from exc
+        if not inspect.isawaitable(result):
+            raise UnsupportedTransportError(
+                "websocket transport wait_closed() is not awaitable"
+            )
+        # A callable object can return a coroutine without being reported as
+        # a coroutine function. The probe must not leave that coroutine
+        # unawaited before the real watcher starts.
+        if inspect.iscoroutine(result):
+            result.close()
+
     async def connect(self) -> dict[str, Any]:
         if self._connect_cm is not None or self.ws is not None:
             await self.close()
@@ -184,10 +216,7 @@ class HermesSession:
         try:
             self._connect_cm = connect(self.args.url, **kwargs)
             self.ws = await self._connect_cm.__aenter__()
-            if not callable(getattr(self.ws, "wait_closed", None)):
-                raise UnsupportedTransportError(
-                    "websocket transport does not expose wait_closed()"
-                )
+            self._validate_wait_closed(getattr(self.ws, "wait_closed", None))
             hello = await send_hello(
                 self.ws,
                 client_id=self.args.client_id,
@@ -259,12 +288,14 @@ class HermesSession:
             raise SessionNotReadyError("Not connected to relay")
         websocket = self.ws
         wait_closed = getattr(websocket, "wait_closed", None)
-        if not callable(wait_closed):
-            raise UnsupportedTransportError(
-                "websocket transport does not expose wait_closed()"
-            )
         try:
-            await wait_closed()
+            self._validate_wait_closed(wait_closed)
+            result = wait_closed()
+            if not inspect.isawaitable(result):
+                raise UnsupportedTransportError(
+                    "websocket transport wait_closed() is not awaitable"
+                )
+            await result
         except BaseException as exc:
             transport_error = transport_error_for("connection close wait", exc)
             if transport_error is not None:
@@ -345,6 +376,9 @@ class HermesSession:
         option_id: str | None = None,
         value: str | None = None,
         reason: str | None = None,
+        operation: str | None = None,
+        object_id: str | None = None,
+        freshness: str | None = None,
     ) -> bool:
         """Answer a server prompt through the active turn's reader.
 
@@ -361,6 +395,9 @@ class HermesSession:
             option_id=option_id,
             value=value,
             reason=reason,
+            operation=operation,
+            object_id=object_id,
+            freshness=freshness,
         )
         return True
 

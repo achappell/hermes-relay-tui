@@ -64,8 +64,9 @@ context:
 
 ## Implementation Notes
 
-- Host and firmware contract tests pass: the focused bridge/firmware run is 92 passed, and the complete repository suite is 1079 passed with one unrelated websockets deprecation warning.
-- The P-5 firmware compile was attempted with output kept out of the trace. It is currently blocked by a pre-existing `last_capture_captured` reference in `firmware/respeaker-lite/pcm_capture.h`; P-5 leaves that file unchanged as required. The hardware gate remains pending.
+- Host and firmware contract tests pass: the focused bridge/firmware run is 103 passed, and the complete repository suite is 1,090 passed with one existing `websockets.legacy` deprecation warning.
+- The controlled P-5 firmware build succeeds with `venv-firmware/bin/esphome compile firmware/respeaker-lite/respeaker-lite.yaml`; the resulting `respeaker-lite-p5` image was uploaded over OTA and the device booted cleanly.
+- The controlled hardware gate passed on 2026-09-12 with Mac playback disabled: five 24-second fixture responses delivered 1,152,000 source and delivered PCM bytes with matching SHA-256 values, consumer gaps no larger than 0.001 seconds, and terminal `complete`; a temporary MacBook Air observer detected exactly one defined 240 ms end marker at normalized correlation 0.842, with -0.249 seconds timing error; capture-end-to-first-response-audio was 2.652 seconds median across five runs; and a post-playback second wake completed through response confirmation and wake resumption. Temporary observer audio and diagnostic logs were removed after metric extraction.
 
 ## Spec Change Log
 

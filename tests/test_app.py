@@ -68,6 +68,9 @@ class FakeSession:
         self.gate = gate
         self.supports_structured_prompts = True
         self.prompt_responses = []
+        self.disconnect_event = asyncio.Event()
+        self.wait_started = asyncio.Event()
+        self.wait_calls = 0
 
     @property
     def session_id(self):
@@ -78,19 +81,33 @@ class FakeSession:
         self._session_id = val
 
     async def send_prompt_response(
-        self, *, prompt_id, prompt_kind, option_id=None, value=None, reason=None
+        self,
+        *,
+        prompt_id,
+        prompt_kind,
+        option_id=None,
+        value=None,
+        reason=None,
+        operation=None,
+        object_id=None,
+        freshness=None,
     ):
         if not self.supports_structured_prompts:
             return False
-        self.prompt_responses.append(
-            {
-                "prompt_id": prompt_id,
-                "prompt_kind": prompt_kind,
-                "option_id": option_id,
-                "value": value,
-                "reason": reason,
-            }
-        )
+        response = {
+            "prompt_id": prompt_id,
+            "prompt_kind": prompt_kind,
+            "option_id": option_id,
+            "value": value,
+            "reason": reason,
+        }
+        if operation is not None:
+            response["operation"] = operation
+        if object_id is not None:
+            response["object_id"] = object_id
+        if freshness is not None:
+            response["freshness"] = freshness
+        self.prompt_responses.append(response)
         return True
 
     async def list_sessions(self, *, limit=20, search=""):
@@ -147,6 +164,11 @@ class FakeSession:
 
     def is_connected(self):
         return self.connected
+
+    async def wait_for_disconnect(self):
+        self.wait_calls += 1
+        self.wait_started.set()
+        await self.disconnect_event.wait()
 
     def send_turn(self, text, *, stt_source="local"):
         self.sent_turns.append((text, stt_source))
@@ -298,10 +320,45 @@ async def test_expected_close_cancels_watcher_without_loss_presentation():
         assert "connection liveness monitoring failed" not in transcript_of(app)
 
 
+async def test_expected_close_completion_is_silent():
+    session = WatchedSession(session_id="session")
+    app = HermesStreamingApp(args=make_args(), session_factory=lambda: session)
+
+    async with app.run_test() as pilot:
+        await asyncio.wait_for(session.wait_started.wait(), 1)
+        watcher = app._connection_watch_task
+        assert watcher is not None
+        app._expect_session_close(session, app._session_generation)
+        session.disconnect_event.set()
+        await watcher
+        await pilot.pause()
+
+        assert app.connection_state == app_module.CONNECTION_CONNECTED
+        assert app._needs_reconnect is False
+        assert "connection liveness monitoring failed" not in transcript_of(app)
+        assert app_module.RETRY_HINT not in transcript_of(app)
+
+
 async def test_observer_transport_failure_is_idempotent_disconnect():
     session = WatchedSession(
         watcher_error=TransportError("connection close wait", ConnectionError("gone"))
     )
+    app = HermesStreamingApp(args=make_args(), session_factory=lambda: session)
+
+    async with app.run_test() as pilot:
+        await asyncio.wait_for(session.wait_started.wait(), 1)
+        for _ in range(10):
+            await pilot.pause()
+            if app.connection_state == app_module.CONNECTION_DISCONNECTED:
+                break
+
+        assert app.connection_state == app_module.CONNECTION_DISCONNECTED
+        assert app._needs_reconnect is True
+        assert transcript_of(app).count(app_module.RETRY_HINT) == 1
+
+
+async def test_observer_raw_transport_failure_is_typed_as_disconnect():
+    session = WatchedSession(watcher_error=OSError("socket closed"))
     app = HermesStreamingApp(args=make_args(), session_factory=lambda: session)
 
     async with app.run_test() as pilot:
@@ -334,7 +391,7 @@ async def test_observer_programming_failure_reports_error_without_claiming_loss(
 
 async def test_idle_loss_recovers_with_one_fresh_prompt_and_no_replay():
     old_session = WatchedSession(session_id="old-session")
-    fresh_session = FakeSession(
+    fresh_session = WatchedSession(
         session_id="fresh-session",
         hello={
             "chat_id": "fresh-chat",
@@ -362,6 +419,8 @@ async def test_idle_loss_recovers_with_one_fresh_prompt_and_no_replay():
         assert app._queued_prompts == []
         assert app.connection_state == app_module.CONNECTION_CONNECTED
         assert "old server history" not in transcript_of(app)
+        await asyncio.wait_for(fresh_session.wait_started.wait(), 1)
+        assert fresh_session.wait_calls == 1
 
 
 async def test_watcher_and_active_reader_loss_converge_without_queue_drain():
@@ -450,6 +509,177 @@ async def test_turn_admission_rechecks_loss_before_creating_a_stream():
         assert app._last_prompt_status == app_module.PROMPT_NOT_SENT
 
 
+async def test_timeout_turn_starts_lazy_send_before_recovery_can_replace_session():
+    first_send_started = asyncio.Event()
+    loss_checked = asyncio.Event()
+    release_send = asyncio.Event()
+    loss_before_send = []
+    fresh_session = FakeSession(session_id="fresh-session")
+    app = None
+
+    class AdmissionSession(FakeSession):
+        def send_turn(self, text, *, stt_source="local"):
+            self.sent_turns.append((text, stt_source))
+            self.turn_index += 1
+
+            async def probe_recovery_boundary():
+                await asyncio.sleep(0)
+                loss_before_send.append(not first_send_started.is_set())
+                loss_checked.set()
+                if loss_before_send[-1]:
+                    app._install_session(fresh_session)
+                    app.domain.reset_session("fresh-session")
+
+            asyncio.create_task(probe_recovery_boundary())
+
+            async def stream():
+                first_send_started.set()
+                await release_send.wait()
+                yield {"type": "text_delta", "text": "answer"}
+                yield {"type": "turn_end", "turn_id": "admission"}
+
+            return stream()
+
+    session = AdmissionSession(session_id="old-session")
+    app = HermesStreamingApp(
+        args=make_args(turn_timeout=1), session_factory=lambda: session
+    )
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        turn = asyncio.create_task(app._run_turn("admission prompt"))
+        await asyncio.wait_for(first_send_started.wait(), 1)
+        await asyncio.wait_for(loss_checked.wait(), 1)
+        release_send.set()
+        await turn
+
+        assert loss_before_send == [False]
+        assert app.session is session
+        assert session.sent_turns == [("admission prompt", "local")]
+        assert app._last_prompt_status == app_module.PROMPT_COMPLETED
+
+
+async def test_turn_end_cannot_complete_after_connection_loss_starts():
+    turn_end_ready = asyncio.Event()
+    release_turn_end = asyncio.Event()
+
+    class LossRaceSession(FakeSession):
+        def send_turn(self, text, *, stt_source="local"):
+            self.sent_turns.append((text, stt_source))
+            self.turn_index += 1
+
+            async def stream():
+                yield {"type": "text_delta", "text": "partial"}
+                turn_end_ready.set()
+                await release_turn_end.wait()
+                yield {"type": "turn_end", "turn_id": "loss-race"}
+
+            return stream()
+
+    session = LossRaceSession(session_id="session")
+    app = HermesStreamingApp(args=make_args(), session_factory=lambda: session)
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        turn = asyncio.create_task(app._run_turn("possibly complete"))
+        await asyncio.wait_for(turn_end_ready.wait(), 1)
+        app._connection_loss_in_flight = True
+        release_turn_end.set()
+        await turn
+        app._connection_loss_in_flight = False
+
+        assert app._last_prompt_status == app_module.PROMPT_AMBIGUOUS
+        assert app.voice_state != app_module.VOICE_READY
+
+
+async def test_late_audio_write_cannot_abort_or_feed_replacement_player():
+    write_started = threading.Event()
+    release_write = threading.Event()
+
+    class BlockingPlayer:
+        def __init__(self):
+            self.enabled = True
+            self.output_device = None
+            self.prebuffer_seconds = 0.0
+            self.active = False
+            self.playing = False
+            self.failure = None
+            self.writes = []
+            self.abort_calls = 0
+            self.close_calls = 0
+
+        def start(self, audio_format):
+            self.active = True
+            self.playing = True
+
+        def write(self, chunk):
+            self.writes.append(chunk)
+            write_started.set()
+            release_write.wait(1)
+
+        def abort(self):
+            self.abort_calls += 1
+            self.active = False
+            self.playing = False
+
+        def close(self):
+            self.close_calls += 1
+            self.active = False
+            self.playing = False
+
+        @property
+        def playback_position(self):
+            return 0.0
+
+        def playback_snapshot(self):
+            return {
+                "active": self.active,
+                "playing": self.playing,
+                "playback_position": 0.0,
+                "scheduled_audio": 0.0,
+                "pending_audio": 0.0,
+                "queued_audio": 0.0,
+            }
+
+    class BlockingAudioSession(FakeSession):
+        def send_turn(self, text, *, stt_source="local"):
+            self.sent_turns.append((text, stt_source))
+            self.turn_index += 1
+
+            async def stream():
+                yield {
+                    "type": "audio_start",
+                    "sample_rate": 16000,
+                    "channels": 1,
+                    "sample_width": 2,
+                }
+                yield {"type": "audio_chunk", "data": b"\x00\x01"}
+
+            return stream()
+
+    old_session = BlockingAudioSession(session_id="old-session")
+    fresh_session = FakeSession(session_id="fresh-session")
+    old_player = BlockingPlayer()
+    replacement_player = BlockingPlayer()
+    app = HermesStreamingApp(args=make_args(), session_factory=lambda: old_session)
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.player = old_player
+        turn = asyncio.create_task(app._run_turn("old audio"))
+        await asyncio.to_thread(write_started.wait, 1)
+
+        app._install_session(fresh_session)
+        app.domain.reset_session("fresh-session")
+        app.player = replacement_player
+        release_write.set()
+        await turn
+
+        assert old_player.abort_calls == 1
+        assert replacement_player.abort_calls == 0
+        assert replacement_player.writes == []
+
+
 async def test_stale_stream_failure_cannot_mutate_the_replacement():
     late_failure = asyncio.Event()
 
@@ -494,6 +724,25 @@ async def test_app_mounts_with_transcript_and_input():
         assert app.query_one("#transcript", Static) is not None
         assert app.query_one("#composer", Composer) is not None
         assert voice_status_of(app) == "● ready"
+
+
+async def test_connect_fails_closed_when_session_lacks_a_liveness_observer():
+    class UnsupportedSession(FakeSession):
+        wait_for_disconnect = None
+
+    session = UnsupportedSession()
+    app = HermesStreamingApp(args=make_args(), session_factory=lambda: session)
+
+    async with app.run_test() as pilot:
+        for _ in range(10):
+            await pilot.pause()
+            if app.connection_state == app_module.CONNECTION_DISCONNECTED:
+                break
+
+        assert app.connection_state == app_module.CONNECTION_DISCONNECTED
+        assert app._needs_reconnect is True
+        assert "Connected to" not in transcript_of(app)
+        assert "liveness observer" in transcript_of(app)
 
 
 async def test_profile_display_name_is_used_for_header_and_responses():
@@ -5315,6 +5564,366 @@ APPROVAL_REQUEST = {
     "sensitive": False,
     "timeout_s": 300,
 }
+
+
+CHOICE_REQUEST = {
+    "type": "prompt_request",
+    "prompt_id": "choice-p1",
+    "prompt_kind": "choice",
+    "turn_id": "t1",
+    "session_id": "s1",
+    "text": "What should Hermes do?",
+    "options": [
+        {"id": "inspect", "label": "Inspect it"},
+        {"id": "commit", "label": "Commit it"},
+    ],
+    "choice": {
+        "object_id": "choice-1",
+        "operations": ["choose", "explore"],
+        "freshness": "version-1",
+    },
+    "sensitive": False,
+    "timeout_s": 300,
+}
+
+
+async def test_choice_prompt_renders_profile_operations_and_clamped_focus():
+    session = QueuedEventsSession()
+    app = HermesStreamingApp(args=make_args(), session_factory=lambda: session)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        turn = asyncio.create_task(app._run_turn("evaluate the recommendation"))
+        await asyncio.sleep(0)
+
+        await session.push(dict(CHOICE_REQUEST))
+        await pilot.pause()
+
+        panel = app.query_one("#prompt-panel", Static)
+        assert panel.display is True
+        panel_text = str(panel.content)
+        assert "What should Hermes do?" in panel_text
+        assert "1) Inspect it" in panel_text
+        assert "2) Commit it" in panel_text
+        assert "[focused]" in panel_text
+        assert "Choose [Enter]" in panel_text
+        assert "Explore [Right Arrow]" in panel_text
+        assert "Profile: hermes" in connection_status_of(app)
+
+        await pilot.press("down")
+        await pilot.pause()
+        assert "2) Commit it  [focused]" in str(panel.content)
+        await pilot.press("down")
+        await pilot.pause()
+        assert "2) Commit it  [focused]" in str(panel.content)
+        await pilot.press("up")
+        await pilot.pause()
+        assert "1) Inspect it  [focused]" in str(panel.content)
+
+        await session.push({"type": "turn_end", "turn_id": "t1"})
+        await session.push(None)
+        await turn
+
+
+async def test_choice_enter_and_right_send_one_contextual_action_and_mark_rejection():
+    session = QueuedEventsSession()
+    app = HermesStreamingApp(args=make_args(), session_factory=lambda: session)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        turn = asyncio.create_task(app._run_turn("evaluate the recommendation"))
+        await asyncio.sleep(0)
+
+        await session.push(dict(CHOICE_REQUEST))
+        await pilot.pause()
+        await pilot.press("down")
+        await pilot.press("enter")
+        await pilot.pause()
+
+        assert session.prompt_responses == [
+            {
+                "prompt_id": "choice-p1",
+                "prompt_kind": "choice",
+                "option_id": "commit",
+                "value": None,
+                "reason": None,
+                "operation": "choose",
+                "object_id": "choice-1",
+                "freshness": "version-1",
+            }
+        ]
+        assert transcript_of(app).count("Choose requested: Commit it") == 1
+        assert app._pending_prompt is not None
+        assert app._pending_prompt.awaiting_response is True
+
+        # A second keypress while the write is pending cannot send a duplicate.
+        await pilot.press("right")
+        await pilot.press("2")
+        await pilot.pause()
+        assert len(session.prompt_responses) == 1
+
+        await session.push(
+            {
+                "type": "prompt_response_rejected",
+                "prompt_id": "choice-p1",
+                "reason": "expired",
+                "session_id": "s1",
+            }
+        )
+        await pilot.pause()
+        assert transcript_of(app).count("(rejected: expired)") == 1
+        assert app._pending_prompt.awaiting_response is False
+
+        await session.push(
+            {
+                "type": "prompt_response_rejected",
+                "prompt_id": "choice-p1",
+                "reason": "expired",
+                "session_id": "s1",
+            }
+        )
+        await pilot.pause()
+        assert transcript_of(app).count("(rejected: expired)") == 1
+
+        await session.push({"type": "turn_end", "turn_id": "t1"})
+        await session.push(None)
+        await turn
+
+
+async def test_choice_failed_write_creates_no_request_line_and_releases_retry_gate():
+    class FlakyChoiceSession(QueuedEventsSession):
+        def __init__(self):
+            super().__init__()
+            self.prompt_attempts = 0
+
+        async def send_prompt_response(self, **kwargs):
+            self.prompt_attempts += 1
+            if self.prompt_attempts == 1:
+                return False
+            return await super().send_prompt_response(**kwargs)
+
+    session = FlakyChoiceSession()
+    app = HermesStreamingApp(args=make_args(), session_factory=lambda: session)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        turn = asyncio.create_task(app._run_turn("retry the choice"))
+        await asyncio.sleep(0)
+
+        await session.push(dict(CHOICE_REQUEST))
+        await pilot.pause()
+        await pilot.press("enter")
+        await pilot.pause()
+
+        assert session.prompt_attempts == 1
+        assert session.prompt_responses == []
+        assert "Choose requested:" not in transcript_of(app)
+        assert app._pending_prompt is not None
+        assert app._pending_prompt.awaiting_response is False
+        assert app.domain.state.prompt_awaiting is False
+
+        await pilot.press("enter")
+        await pilot.pause()
+        assert session.prompt_attempts == 2
+        assert len(session.prompt_responses) == 1
+        assert transcript_of(app).count("Choose requested: Inspect it") == 1
+
+        await session.push(
+            {
+                "type": "prompt_resolved",
+                "prompt_id": "choice-p1",
+                "session_id": "s1",
+            }
+        )
+        await session.push({"type": "turn_end", "turn_id": "t1"})
+        await session.push(None)
+        await turn
+
+
+async def test_choice_replacement_is_hermes_owned_and_never_replays_rejected_action():
+    session = QueuedEventsSession()
+    app = HermesStreamingApp(args=make_args(), session_factory=lambda: session)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        turn = asyncio.create_task(app._run_turn("replace the choice"))
+        await asyncio.sleep(0)
+
+        await session.push(dict(CHOICE_REQUEST))
+        await pilot.pause()
+        await pilot.press("enter")
+        await pilot.pause()
+        assert len(session.prompt_responses) == 1
+
+        await session.push(
+            {
+                "type": "prompt_response_rejected",
+                "prompt_id": "choice-p1",
+                "reason": "replaced",
+                "session_id": "s1",
+            }
+        )
+        await pilot.pause()
+        assert transcript_of(app).count("(rejected: replaced)") == 1
+
+        replacement = {
+            **CHOICE_REQUEST,
+            "prompt_id": "choice-p2",
+            "text": "Which replacement should Hermes use?",
+            "options": [{"id": "new", "label": "Use the replacement"}],
+            "choice": {
+                "object_id": "choice-2",
+                "operations": ["choose"],
+                "freshness": "version-2",
+            },
+        }
+        await session.push(replacement)
+        await pilot.pause()
+        assert app._pending_prompt is not None
+        assert app._pending_prompt.prompt_id == "choice-p2"
+        assert len(session.prompt_responses) == 1
+        assert transcript_of(app).count("Choose requested: Inspect it") == 1
+
+        # A late rejection for the old object cannot mark or replay the new one.
+        await session.push(
+            {
+                "type": "prompt_response_rejected",
+                "prompt_id": "choice-p1",
+                "reason": "replaced",
+                "session_id": "s1",
+            }
+        )
+        await pilot.pause()
+        assert transcript_of(app).count("(rejected: replaced)") == 1
+        assert len(session.prompt_responses) == 1
+
+        await pilot.press("enter")
+        await pilot.pause()
+        assert len(session.prompt_responses) == 2
+        assert session.prompt_responses[-1]["object_id"] == "choice-2"
+        assert transcript_of(app).count("Choose requested: Use the replacement") == 1
+
+        await session.push(
+            {"type": "prompt_resolved", "prompt_id": "choice-p2", "session_id": "s1"}
+        )
+        await session.push({"type": "turn_end", "turn_id": "t1"})
+        await session.push(None)
+        await turn
+
+
+async def test_malformed_choice_does_not_replace_safe_state_or_fail_the_turn():
+    session = QueuedEventsSession()
+    app = HermesStreamingApp(args=make_args(), session_factory=lambda: session)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        turn = asyncio.create_task(app._run_turn("handle malformed choice"))
+        await asyncio.sleep(0)
+
+        malformed = dict(CHOICE_REQUEST)
+        malformed["choice"] = {"object_id": "choice-1", "operations": ["choose"]}
+        await session.push(malformed)
+        await pilot.pause()
+
+        assert app._pending_prompt is None
+        assert "prompt rejected: prompt choice is missing freshness" in transcript_of(app)
+        assert app._turn_in_flight is True
+
+        await session.push({"type": "turn_end", "turn_id": "t1"})
+        await session.push(None)
+        await turn
+
+
+async def test_choice_explore_uses_right_arrow_and_stays_pending():
+    session = QueuedEventsSession()
+    app = HermesStreamingApp(args=make_args(), session_factory=lambda: session)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        turn = asyncio.create_task(app._run_turn("evaluate the recommendation"))
+        await asyncio.sleep(0)
+
+        await session.push(dict(CHOICE_REQUEST))
+        await pilot.pause()
+        await pilot.press("right")
+        await pilot.pause()
+
+        assert session.prompt_responses == [
+            {
+                "prompt_id": "choice-p1",
+                "prompt_kind": "choice",
+                "option_id": "inspect",
+                "value": None,
+                "reason": None,
+                "operation": "explore",
+                "object_id": "choice-1",
+                "freshness": "version-1",
+            }
+        ]
+        assert transcript_of(app).count("Explore requested: Inspect it") == 1
+        assert app._pending_prompt is not None
+        assert app._pending_prompt.awaiting_response is True
+        assert app.query_one("#prompt-panel", Static).display is True
+
+        await session.push({"type": "turn_end", "turn_id": "t1"})
+        await session.push(None)
+        await turn
+
+
+async def test_choice_only_advertised_operations_are_offered_and_enter_is_safe():
+    session = QueuedEventsSession()
+    choice_request = dict(CHOICE_REQUEST)
+    choice_request["choice"] = {
+        "object_id": "choice-explore-only",
+        "operations": ["explore"],
+        "freshness": "version-1",
+    }
+    app = HermesStreamingApp(args=make_args(), session_factory=lambda: session)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        turn = asyncio.create_task(app._run_turn("inspect only"))
+        await asyncio.sleep(0)
+
+        await session.push(choice_request)
+        await pilot.pause()
+        panel = app.query_one("#prompt-panel", Static)
+        panel_text = str(panel.content)
+        assert "Explore [Right Arrow]" in panel_text
+        assert "Choose [Enter]" not in panel_text
+        assert "Enter choose" not in panel_text
+
+        await pilot.press("enter")
+        await pilot.pause()
+        assert session.prompt_responses == []
+        assert app._pending_prompt is not None
+        assert app._pending_prompt.awaiting_response is False
+
+        await session.push({"type": "turn_end", "turn_id": "t1"})
+        await session.push(None)
+        await turn
+
+
+async def test_choice_focus_reaches_options_beyond_number_shortcuts():
+    session = QueuedEventsSession()
+    choice_request = dict(CHOICE_REQUEST)
+    choice_request["options"] = [
+        {"id": f"option-{index}", "label": f"Option {index}"}
+        for index in range(1, 11)
+    ]
+    app = HermesStreamingApp(args=make_args(), session_factory=lambda: session)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        turn = asyncio.create_task(app._run_turn("evaluate ten options"))
+        await asyncio.sleep(0)
+
+        await session.push(choice_request)
+        await pilot.pause()
+        for _ in range(9):
+            await pilot.press("down")
+        await pilot.press("enter")
+        await pilot.pause()
+
+        assert session.prompt_responses[0]["option_id"] == "option-10"
+        assert session.prompt_responses[0]["operation"] == "choose"
+        assert transcript_of(app).count("Choose requested: Option 10") == 1
+
+        await session.push({"type": "turn_end", "turn_id": "t1"})
+        await session.push(None)
+        await turn
 
 
 async def test_approval_prompt_answers_with_numbered_option_and_stream_reaches_turn_end():
