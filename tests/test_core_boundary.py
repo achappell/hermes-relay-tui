@@ -26,6 +26,7 @@ CORE_MODULES = [
     "diagnostics",
     "domain",
     "earcons",
+    "gateway_audio",
     "gateway_client",
     "gateway_session",
     "handsfree",

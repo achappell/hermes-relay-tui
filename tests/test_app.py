@@ -4085,6 +4085,7 @@ async def test_turn_audio_is_written_to_a_wav_when_playback_is_off(tmp_path):
             {"type": "turn_end", "turn_id": "t3"},
         ]
     )
+    session._gateway_audio_enabled = True
     app = HermesStreamingApp(
         args=make_args(output=output), session_factory=lambda: session
     )
@@ -4525,6 +4526,84 @@ async def test_audio_unavailable_state_clears_for_a_later_successful_turn():
 
         assert voice_status_of(app) == "● ready"
         assert "audio unavailable" not in voice_status_of(app)
+
+
+async def test_gateway_audio_sidecar_failure_keeps_response_text_readable():
+    session = FakeSession(
+        events=[
+            {"type": "audio_unavailable", "reason": "server fallback"},
+            {"type": "text_delta", "text": "Readable without sound."},
+            {"type": "turn_end", "turn_id": "audio-sidecar"},
+        ]
+    )
+    app = HermesStreamingApp(args=make_args(), session_factory=lambda: session)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await app._run_turn("hi")
+
+        assert "Readable without sound." in transcript_of(app)
+        assert voice_status_of(app) == "● ready · audio unavailable"
+
+
+async def test_gateway_audio_keeps_text_ahead_of_playback_until_audio_starts():
+    class GatewayAudioSession(FakeSession):
+        def __init__(self):
+            super().__init__(events=[])
+            self._gateway_audio_enabled = True
+            self.text_ready = asyncio.Event()
+            self.audio_gate = asyncio.Event()
+
+        def send_turn(self, text, *, stt_source="local"):
+            self.sent_turns.append((text, stt_source))
+
+            async def stream():
+                self.text_ready.set()
+                yield {"type": "text_delta", "text": "Hermes answer remains behind playback."}
+                await self.audio_gate.wait()
+                yield {
+                    "type": "audio_start",
+                    "sample_rate": 24000,
+                    "channels": 1,
+                    "sample_width": 2,
+                }
+                yield {"type": "audio_chunk", "data": b"\x00\x01"}
+                yield {"type": "audio_end"}
+                yield {"type": "turn_end", "turn_id": "paced-gateway"}
+
+            return stream()
+
+    class RecordingPlayer:
+        enabled = True
+        active = False
+        failure = None
+        playback_position = 0.0
+
+        def start(self, audio_format):  # noqa: ARG002 - mirrors PCMPlayer
+            self.active = True
+
+        def write(self, chunk):  # noqa: ARG002 - mirrors PCMPlayer
+            pass
+
+        def close(self):
+            self.active = False
+
+    session = GatewayAudioSession()
+    app = HermesStreamingApp(
+        args=make_args(no_play=False), session_factory=lambda: session
+    )
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.player = RecordingPlayer()
+        task = asyncio.create_task(app._run_turn("hi"))
+        await asyncio.wait_for(session.text_ready.wait(), 1)
+        await pilot.pause()
+
+        assert "Hermes answer remains behind playback." not in transcript_of(app)
+        assert "Hermes" in transcript_of(app)
+
+        session.audio_gate.set()
+        await task
+        assert "Hermes answer remains behind playback." in transcript_of(app)
 
 
 async def test_a_turn_that_ends_without_audio_end_still_closes_the_speaker():

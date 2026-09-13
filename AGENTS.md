@@ -33,7 +33,7 @@ ends that consume it.
 `session.py`, `client.py`, `config.py`, `diagnostics.py`, `audio.py`,
 `earcons.py`, `mic.py`, `shell.py`, `attachments.py`, `clipboard.py`,
 `history.py`, `timing.py`, `wake.py`, `handsfree.py`, `domain.py`,
-`gateway_client.py`, `gateway_session.py`.
+`gateway_audio.py`, `gateway_client.py`, `gateway_session.py`.
 
 **Front-end-specific:** `app.py` (Textual), `transcript.py` (Rich rendering for
 a terminal transcript), `prompts.py` (structured-prompt state and rendering

@@ -4383,6 +4383,7 @@ class HermesStreamingApp(App):
         audio_segment_index = -1
         audio_chunk_index = 0
         audio_bytes_received = 0
+        audio_expected = bool(getattr(session, "_gateway_audio_enabled", False))
         last_playback_trace_ms = -250
         turn_completed = False
         turn_failed = False
@@ -4528,8 +4529,18 @@ class HermesStreamingApp(App):
                 visible_assistant_text = ""
 
             candidate: Optional[str]
-            if complete or not audio_started or not player.active:
+            if (
+                complete
+                or (not audio_started and not audio_expected)
+                or (audio_started and not player.active)
+                or (not audio_started and self._playback_is_disabled(player))
+            ):
                 candidate = assistant_text
+            elif not audio_started:
+                # Gateway TTS announces its format on a separate sidecar. Do
+                # not reveal the full answer while that first frame is still
+                # in flight; a short prefix is the conservative bridge.
+                candidate = first_word_prefix(assistant_text)
             else:
                 position = playback_position()
                 candidate = None
@@ -4796,7 +4807,12 @@ class HermesStreamingApp(App):
                 self._append_block(
                     f"[unhandled server event: {event_type}]", role="error"
                 )
+            elif kind == "audio_unavailable":
+                audio_expected = False
+                reason = str(event.get("reason") or "sidecar unavailable").strip()
+                self._mark_audio_unavailable(reason)
             elif kind == "audio_start":
+                audio_expected = False
                 audio_segment_index += 1
                 audio_chunk_index = 0
                 was_active = bool(player.active)

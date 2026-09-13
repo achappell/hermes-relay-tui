@@ -329,14 +329,21 @@ inspection, so treat this as a compatibility path rather than a new auth
 design. `--hermes-profile` / `HERMES_PROFILE` selects the Hermes server profile;
 it is separate from the local relay `--profile` setting.
 
-This first gateway slice is text-first. It supports session create/resume/list,
-inline streamed text, activity updates, and confirmed interruption. It does
-not yet provide response audio, file or attachment upload, command dispatch,
-event replay, or structured approval/clarify/secret/sudo prompts. If one of
-those prompt requests arrives, the client interrupts the turn and reports the
-unsupported capability; it does not ask for or log a value. Those boundaries
-are deliberate mining targets, not claims that the standard channel is a
-drop-in replacement for every feature.
+Gateway mode also opens Hermes' existing `/api/audio/speak-stream` sidecar for
+each turn. New response text is fed to that second WebSocket, signed 16-bit
+PCM is played through the TUI's existing audio path, and the transcript reveal
+is paced by the local playback clock. The two lanes are independent: readable
+text survives an audio-sidecar failure, while a gateway-lane failure remains
+uncertain and is never replayed automatically. Captions are monotonic and
+playback-paced, but this sidecar does not provide word timestamps, so the
+reveal is an approximation rather than exact word alignment.
+
+The gateway transport still does not provide file or attachment upload,
+command dispatch, event replay, or structured approval/clarify/secret/sudo
+prompts. If one of those prompt requests arrives, the client interrupts the
+turn and reports the unsupported capability; it does not ask for or log a
+value. Those boundaries are deliberate mining targets, not claims that the
+standard channel is a drop-in replacement for every feature.
 
 ## Named relay profiles
 

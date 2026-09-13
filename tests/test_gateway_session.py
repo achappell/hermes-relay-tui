@@ -22,6 +22,7 @@ def make_args(**overrides):
         "mic_silence_duration": 1.5,
         "mic_silence_threshold": 200,
         "stt_model": None,
+        "transport": "voice-session",
     }
     values.update(overrides)
     return SimpleNamespace(**values)
@@ -98,11 +99,55 @@ class FakeGateway:
         self.events.put_nowait(event)
 
 
+class FakeAudio:
+    instances = []
+
+    def __init__(self, url, token, *, profile=None):
+        self.url = url
+        self.token = token
+        self.profile = profile
+        self.events = asyncio.Queue()
+        self.text = []
+        self.finished = False
+        self.stopped = False
+        self.closed = False
+        type(self).instances.append(self)
+
+    async def open(self):
+        return None
+
+    async def send_text(self, text):
+        self.text.append(text)
+
+    async def finish(self):
+        self.finished = True
+
+    async def next_event(self):
+        return await self.events.get()
+
+    async def stop(self):
+        self.stopped = True
+        self.closed = True
+
+    async def close(self):
+        self.closed = True
+
+    def push(self, event):
+        self.events.put_nowait(event)
+
+
 @pytest.fixture
 def fake_gateway(monkeypatch):
     FakeGateway.instances.clear()
     monkeypatch.setattr(gateway_session_module, "GatewayClient", FakeGateway)
     return FakeGateway
+
+
+@pytest.fixture
+def fake_audio(monkeypatch):
+    FakeAudio.instances.clear()
+    monkeypatch.setattr(gateway_session_module, "GatewayAudioStream", FakeAudio)
+    return FakeAudio
 
 
 async def connected_session(fake_gateway, **args_overrides):
@@ -182,6 +227,379 @@ async def test_text_turn_is_inline_ignores_other_sessions_and_ends_once(fake_gat
     assert "wrong" not in "".join(event.get("text", "") for event in received)
     assert received[-1]["type"] == "turn_end"
     assert received[-1]["text"] == "Hello"
+    await session.close()
+
+
+@pytest.mark.asyncio
+async def test_gateway_audio_interleaves_pcm_and_holds_turn_end_until_audio_end(
+    fake_gateway, fake_audio
+):
+    session, gateway, _hello = await connected_session(
+        fake_gateway,
+        transport="gateway",
+        gateway_audio_enabled=True,
+    )
+    stream = session.send_turn("say hello")
+    received = []
+
+    async def consume():
+        async for event in stream:
+            received.append(event)
+
+    task = asyncio.create_task(consume())
+    await asyncio.sleep(0)
+    audio = fake_audio.instances[-1]
+    gateway.push(
+        {
+            "type": "message.delta",
+            "session_id": "runtime-1",
+            "payload": {"text": "Hello"},
+        }
+    )
+    await asyncio.sleep(0)
+    audio.push(
+        {
+            "type": "audio_start",
+            "sample_rate": 24000,
+            "channels": 1,
+            "sample_width": 2,
+        }
+    )
+    audio.push({"type": "audio_chunk", "data": b"\x00\x01"})
+    gateway.push(
+        {
+            "type": "message.complete",
+            "session_id": "runtime-1",
+            "payload": {"text": "Hello", "status": "complete"},
+        }
+    )
+    for _ in range(20):
+        await asyncio.sleep(0)
+        if audio.finished:
+            break
+
+    assert audio.text == ["Hello"]
+    assert audio.finished is True
+    assert not any(event["type"] == "turn_end" for event in received)
+
+    audio.push({"type": "audio_end"})
+    await task
+
+    kinds = [event["type"] for event in received]
+    assert kinds.index("audio_start") < kinds.index("audio_chunk")
+    assert kinds.index("audio_end") < kinds.index("turn_end")
+    assert received[-1]["type"] == "turn_end"
+    await session.close()
+
+
+@pytest.mark.asyncio
+async def test_gateway_audio_activity_extends_the_drain_deadline(
+    fake_gateway, fake_audio, monkeypatch
+):
+    monkeypatch.setattr(gateway_session_module, "AUDIO_DRAIN_TIMEOUT", 0.1)
+    session, gateway, _hello = await connected_session(
+        fake_gateway,
+        transport="gateway",
+        gateway_audio_enabled=True,
+    )
+    stream = session.send_turn("long audio")
+    received = []
+
+    async def consume():
+        async for event in stream:
+            received.append(event)
+
+    task = asyncio.create_task(consume())
+    await asyncio.sleep(0)
+    audio = fake_audio.instances[-1]
+    audio.push(
+        {
+            "type": "audio_start",
+            "sample_rate": 24000,
+            "channels": 1,
+            "sample_width": 2,
+        }
+    )
+    gateway.push(
+        {
+            "type": "message.complete",
+            "session_id": "runtime-1",
+            "payload": {"text": "Long audio", "status": "complete"},
+        }
+    )
+    for _ in range(20):
+        await asyncio.sleep(0)
+        if audio.finished:
+            break
+    assert audio.finished is True
+
+    await asyncio.sleep(0.06)
+    audio.push({"type": "audio_chunk", "data": b"\x00\x01"})
+    await asyncio.sleep(0.06)
+    audio.push({"type": "audio_end"})
+    await task
+
+    assert not any(event["type"] == "audio_unavailable" for event in received)
+    assert received[-1]["type"] == "turn_end"
+    await session.close()
+
+
+@pytest.mark.asyncio
+async def test_gateway_audio_drain_timeout_releases_a_stalled_turn(
+    fake_gateway, fake_audio, monkeypatch
+):
+    monkeypatch.setattr(gateway_session_module, "AUDIO_DRAIN_TIMEOUT", 0.05)
+    session, gateway, _hello = await connected_session(
+        fake_gateway,
+        transport="gateway",
+        gateway_audio_enabled=True,
+    )
+    stream = session.send_turn("stalled audio")
+    received = []
+
+    async def consume():
+        async for event in stream:
+            received.append(event)
+
+    task = asyncio.create_task(consume())
+    await asyncio.sleep(0)
+    audio = fake_audio.instances[-1]
+    audio.push(
+        {
+            "type": "audio_start",
+            "sample_rate": 24000,
+            "channels": 1,
+            "sample_width": 2,
+        }
+    )
+    gateway.push(
+        {
+            "type": "message.delta",
+            "session_id": "runtime-1",
+            "payload": {"text": "Readable while audio stalls"},
+        }
+    )
+    gateway.push(
+        {
+            "type": "message.complete",
+            "session_id": "runtime-1",
+            "payload": {
+                "text": "Readable while audio stalls",
+                "status": "complete",
+            },
+        }
+    )
+    await task
+
+    assert audio.finished is True
+    assert any(
+        event["type"] == "audio_unavailable"
+        and "timed out" in event["reason"]
+        for event in received
+    )
+    assert received[-1]["type"] == "turn_end"
+    assert received[-1]["text"] == "Readable while audio stalls"
+    await session.close()
+
+
+@pytest.mark.asyncio
+async def test_gateway_audio_open_failure_keeps_the_text_lane_alive(
+    fake_gateway, fake_audio, monkeypatch
+):
+    async def fail_open(_audio):
+        raise TimeoutError("sidecar did not accept the connection")
+
+    monkeypatch.setattr(FakeAudio, "open", fail_open)
+    session, gateway, _hello = await connected_session(
+        fake_gateway,
+        transport="gateway",
+        gateway_audio_enabled=True,
+    )
+    stream = session.send_turn("open failure")
+    received = []
+
+    async def consume():
+        async for event in stream:
+            received.append(event)
+
+    task = asyncio.create_task(consume())
+    await asyncio.sleep(0)
+    gateway.push(
+        {
+            "type": "message.delta",
+            "session_id": "runtime-1",
+            "payload": {"text": "Text survives sidecar setup"},
+        }
+    )
+    gateway.push(
+        {
+            "type": "message.complete",
+            "session_id": "runtime-1",
+            "payload": {
+                "text": "Text survives sidecar setup",
+                "status": "complete",
+            },
+        }
+    )
+    await task
+
+    assert [method for method, _params in gateway.requests].count("prompt.submit") == 1
+    assert any(event["type"] == "audio_unavailable" for event in received)
+    assert received[-1]["type"] == "turn_end"
+    assert received[-1]["text"] == "Text survives sidecar setup"
+    await session.close()
+
+
+@pytest.mark.asyncio
+async def test_gateway_audio_failure_keeps_text_turn_certain(fake_gateway, fake_audio):
+    session, gateway, _hello = await connected_session(
+        fake_gateway,
+        transport="gateway",
+        gateway_audio_enabled=True,
+    )
+    stream = session.send_turn("text only")
+    received = []
+
+    async def consume():
+        async for event in stream:
+            received.append(event)
+
+    task = asyncio.create_task(consume())
+    await asyncio.sleep(0)
+    audio = fake_audio.instances[-1]
+    audio.push({"type": "audio_unavailable", "reason": "server fallback"})
+    gateway.push(
+        {
+            "type": "message.delta",
+            "session_id": "runtime-1",
+            "payload": {"text": "Readable"},
+        }
+    )
+    gateway.push(
+        {
+            "type": "message.complete",
+            "session_id": "runtime-1",
+            "payload": {"text": "Readable", "status": "complete"},
+        }
+    )
+    await task
+
+    assert any(event["type"] == "audio_unavailable" for event in received)
+    assert received[-1]["type"] == "turn_end"
+    assert received[-1]["text"] == "Readable"
+    await session.close()
+
+
+@pytest.mark.asyncio
+async def test_gateway_text_deltas_feed_audio_once_without_cumulative_duplicates(
+    fake_gateway, fake_audio
+):
+    session, gateway, _hello = await connected_session(
+        fake_gateway,
+        transport="gateway",
+        gateway_audio_enabled=True,
+    )
+    stream = session.send_turn("delta test")
+    task = asyncio.create_task(stream.__anext__())
+    await asyncio.sleep(0)
+    audio = fake_audio.instances[-1]
+    gateway.push(
+        {
+            "type": "message.delta",
+            "session_id": "runtime-1",
+            "payload": {"rendered": "Hel"},
+        }
+    )
+    first = await task
+    assert first["text"] == "Hel"
+    gateway.push(
+        {
+            "type": "message.delta",
+            "session_id": "runtime-1",
+            "payload": {"rendered": "Hello"},
+        }
+    )
+    second = await stream.__anext__()
+    assert second["text"] == "lo"
+    assert audio.text == ["Hel", "lo"]
+    await stream.aclose()
+    await session.close()
+
+
+@pytest.mark.asyncio
+async def test_gateway_loss_closes_audio_without_replaying_the_prompt(fake_gateway, fake_audio):
+    session, gateway, _hello = await connected_session(
+        fake_gateway,
+        transport="gateway",
+        gateway_audio_enabled=True,
+    )
+    stream = session.send_turn("do not replay")
+    received = []
+
+    async def consume():
+        try:
+            async for event in stream:
+                received.append(event)
+        except GatewayTransportError:
+            return
+
+    task = asyncio.create_task(consume())
+    await asyncio.sleep(0)
+    audio = fake_audio.instances[-1]
+    gateway.push(
+        {
+            "type": "message.delta",
+            "session_id": "runtime-1",
+            "payload": {"text": "Partial answer"},
+        }
+    )
+    await asyncio.sleep(0)
+    gateway.push(
+        GatewayTransportError("gateway receive", ConnectionError("lost"))
+    )
+    await task
+
+    assert audio.closed is True
+    assert [method for method, _params in gateway.requests].count("prompt.submit") == 1
+    assert "Partial answer" in "".join(
+        event.get("text", "") for event in received
+    )
+    assert not any(event["type"] == "turn_end" for event in received)
+    await session.close()
+
+
+@pytest.mark.asyncio
+async def test_interrupt_stops_audio_and_waits_for_gateway_cancellation(
+    fake_gateway, fake_audio
+):
+    session, gateway, _hello = await connected_session(
+        fake_gateway,
+        transport="gateway",
+        gateway_audio_enabled=True,
+    )
+    stream = session.send_turn("stop speaking")
+    received = []
+
+    async def consume():
+        async for event in stream:
+            received.append(event)
+
+    task = asyncio.create_task(consume())
+    await asyncio.sleep(0)
+    audio = fake_audio.instances[-1]
+    assert await session.interrupt_active_turn() is True
+    gateway.push(
+        {
+            "type": "message.complete",
+            "session_id": "runtime-1",
+            "payload": {"text": "partial", "status": "cancelled"},
+        }
+    )
+    await task
+
+    assert audio.stopped is True
+    assert any(event["type"] == "turn_interrupted" for event in received)
+    assert not any(event["type"] == "turn_end" for event in received)
     await session.close()
 
 

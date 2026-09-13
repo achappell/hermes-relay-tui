@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import uuid
 from typing import Any, AsyncIterator
 
@@ -15,6 +16,11 @@ from gateway_client import (
     GatewayRPCError,
     GatewayTransportError,
     GatewayUnsupportedError,
+)
+from gateway_audio import (
+    AUDIO_DRAIN_TIMEOUT,
+    GatewayAudioStream,
+    GatewayAudioTransportError,
 )
 from session import HermesSession, SessionNotReadyError
 
@@ -41,6 +47,8 @@ class GatewaySession(HermesSession):
         self._durable_session_id: str | None = None
         self._session_key: str | None = None
         self._gateway_ready = False
+        self._gateway_token: str | None = None
+        self._active_audio: GatewayAudioStream | None = None
 
     @property
     def session_id(self) -> str:
@@ -73,6 +81,7 @@ class GatewaySession(HermesSession):
 
         gateway = GatewayClient(self.args.url, token)
         self._gateway = gateway
+        self._gateway_token = token
         try:
             ready = await gateway.connect()
             requested_resume = self._requested_resume_id()
@@ -132,11 +141,15 @@ class GatewaySession(HermesSession):
         self._hello_verified = False
         self._gateway_ready = False
         self.cancel_voice()
+        audio = self._active_audio
+        self._active_audio = None
         microphone = self.microphone
         self.microphone = None
         gateway = self._gateway
         self._gateway = None
         try:
+            if audio is not None:
+                await audio.close()
             if microphone is not None and self._shared_recorder is None:
                 await asyncio.to_thread(microphone.close)
             if gateway is not None:
@@ -149,6 +162,7 @@ class GatewaySession(HermesSession):
             self.confirmed_context_limit = None
             self.active_turn_id = None
             self._interrupt_sent_for_turn = None
+            self._gateway_token = None
 
     def send_turn(self, text: str, *, stt_source: str = "local") -> AsyncIterator[dict[str, Any]]:
         """Submit one text turn and normalize its session-scoped events."""
@@ -177,7 +191,93 @@ class GatewaySession(HermesSession):
                 "current_draft": None,
                 "streamed_reasoning": False,
             }
+            audio = self._new_audio_stream() if self._gateway_audio_enabled else None
+            self._active_audio = audio
+            audio_task: asyncio.Task[dict[str, Any]] | None = None
+            gateway_task: asyncio.Task[dict[str, Any]] | None = None
+            audio_done = audio is None
+            audio_failure: str | None = None
+            pending_terminal: dict[str, Any] | None = None
+            audio_text_sent = ""
+            drain_deadline: float | None = None
+
+            async def audio_unavailable(reason: str) -> AsyncIterator[dict[str, Any]]:
+                yield {
+                    "type": "audio_unavailable",
+                    "reason": reason,
+                    "turn_id": turn_id,
+                    "session_id": runtime_session_id,
+                }
+
+            async def feed_audio_text(event: dict[str, Any]) -> str | None:
+                """Send only new text; replacements cannot retract spoken words."""
+
+                nonlocal audio_text_sent
+                if audio is None or audio_done:
+                    return None
+                kind = event.get("type")
+                text_fragment = str(event.get("text") or "")
+                if not text_fragment:
+                    return None
+                if kind == "text_replace":
+                    if text_fragment.startswith(audio_text_sent):
+                        text_fragment = text_fragment[len(audio_text_sent):]
+                    else:
+                        diagnostic_logger.debug(
+                            "gateway.audio.text_replace_skipped turn_id=%s",
+                            turn_id,
+                        )
+                        return None
+                if not text_fragment:
+                    return None
+                try:
+                    await audio.send_text(text_fragment)
+                except Exception as exc:
+                    return f"audio sidecar send failed ({type(exc).__name__})"
+                audio_text_sent += text_fragment
+                return None
+
+            async def finish_terminal() -> AsyncIterator[dict[str, Any]]:
+                """Release the held terminal event after audio is settled."""
+
+                nonlocal pending_terminal
+                if pending_terminal is not None:
+                    terminal = pending_terminal
+                    pending_terminal = None
+                    yield terminal
+
+            def refresh_audio_drain_deadline() -> None:
+                """Keep a healthy PCM stream alive; bound only a silent stall."""
+
+                nonlocal drain_deadline
+                if pending_terminal is not None:
+                    drain_deadline = (
+                        asyncio.get_running_loop().time() + AUDIO_DRAIN_TIMEOUT
+                    )
+
+            async def abandon_audio(*, stop: bool = False) -> None:
+                """Invalidate the sidecar reader and discard late PCM."""
+
+                nonlocal audio_done, audio_task
+                audio_done = True
+                if audio_task is not None and not audio_task.done():
+                    audio_task.cancel()
+                    with contextlib.suppress(asyncio.CancelledError):
+                        await audio_task
+                audio_task = None
+                if audio is not None:
+                    if stop:
+                        await audio.stop()
+                    else:
+                        await audio.close()
+
             try:
+                if audio is not None:
+                    try:
+                        await audio.open()
+                    except Exception as exc:
+                        audio_failure = f"audio sidecar unavailable ({type(exc).__name__})"
+                        audio_done = True
                 await gateway.request(
                     "prompt.submit",
                     {
@@ -186,25 +286,160 @@ class GatewaySession(HermesSession):
                         "surface": "tui",
                     },
                 )
+                if audio_failure is not None:
+                    async for unavailable in audio_unavailable(audio_failure):
+                        yield unavailable
+                if audio is not None and not audio_done:
+                    audio_task = asyncio.create_task(audio.next_event())
+                gateway_task = asyncio.create_task(gateway.next_event())
                 while True:
-                    event = await gateway.next_event()
-                    if not self._belongs_to_session(event, runtime_session_id):
-                        continue
-                    async for normalized in self._normalize_event(
-                        event,
-                        turn_id=turn_id,
-                        state=state,
-                        gateway=gateway,
-                        session_id=runtime_session_id,
-                    ):
-                        yield normalized
-                        if normalized["type"] in {
-                            "turn_end",
-                            "turn_interrupted",
-                            "error",
-                        }:
+                    if gateway_task is None and audio_task is None:
+                        break
+                    tasks = {
+                        task
+                        for task in (gateway_task, audio_task)
+                        if task is not None
+                    }
+                    timeout = None
+                    if pending_terminal is not None and audio_task is not None:
+                        if drain_deadline is None:
+                            drain_deadline = asyncio.get_running_loop().time() + AUDIO_DRAIN_TIMEOUT
+                        timeout = max(
+                            0.0,
+                            drain_deadline - asyncio.get_running_loop().time(),
+                        )
+                    done, _pending = await asyncio.wait(
+                        tasks,
+                        timeout=timeout,
+                        return_when=asyncio.FIRST_COMPLETED,
+                    )
+                    if not done:
+                        if pending_terminal is not None:
+                            audio_done = True
+                            if audio_task is not None and not audio_task.done():
+                                audio_task.cancel()
+                                with contextlib.suppress(asyncio.CancelledError):
+                                    await audio_task
+                            audio_task = None
+                            async for unavailable in audio_unavailable("audio drain timed out"):
+                                yield unavailable
+                            async for terminal in finish_terminal():
+                                yield terminal
                             return
+                        continue
+
+                    if gateway_task is not None and gateway_task in done:
+                        gateway_task = None
+                        event = done.pop().result() if len(done) == 1 else None
+                        # When both lanes finish in one loop turn, retain the
+                        # gateway event explicitly instead of relying on set
+                        # ordering below.
+                        if event is None:
+                            for completed in tuple(done):
+                                if completed is not audio_task:
+                                    event = completed.result()
+                                    done.remove(completed)
+                                    break
+                        terminal_seen = False
+                        if event is not None and self._belongs_to_session(
+                            event, runtime_session_id
+                        ):
+                            async for normalized in self._normalize_event(
+                                event,
+                                turn_id=turn_id,
+                                state=state,
+                                gateway=gateway,
+                                session_id=runtime_session_id,
+                            ):
+                                if normalized["type"] in {"text_delta", "text_replace"}:
+                                    failure = await feed_audio_text(normalized)
+                                    if failure is not None:
+                                        await abandon_audio()
+                                        async for unavailable in audio_unavailable(failure):
+                                            yield unavailable
+                                if normalized["type"] == "turn_end":
+                                    pending_terminal = normalized
+                                    terminal_seen = True
+                                    if audio is None or audio_done:
+                                        async for terminal in finish_terminal():
+                                            yield terminal
+                                        return
+                                    try:
+                                        await audio.finish()
+                                    except Exception as exc:
+                                        await abandon_audio()
+                                        async for unavailable in audio_unavailable(
+                                            f"audio finish failed ({type(exc).__name__})"
+                                        ):
+                                            yield unavailable
+                                        async for terminal in finish_terminal():
+                                            yield terminal
+                                        return
+                                    drain_deadline = (
+                                        asyncio.get_running_loop().time()
+                                        + AUDIO_DRAIN_TIMEOUT
+                                    )
+                                    continue
+                                if normalized["type"] in {"turn_interrupted", "error"}:
+                                    if audio is not None and not audio_done:
+                                        await abandon_audio(stop=True)
+                                    yield normalized
+                                    return
+                                yield normalized
+                        if not terminal_seen and gateway_task is None:
+                            gateway_task = asyncio.create_task(gateway.next_event())
+
+                    if audio_task is not None and audio_task in done:
+                        audio_task = None
+                        try:
+                            audio_event = next(
+                                completed.result()
+                                for completed in done
+                                if completed is not gateway_task
+                            )
+                        except StopIteration:
+                            audio_event = None
+                        except GatewayAudioTransportError:
+                            audio_event = {
+                                "type": "audio_unavailable",
+                                "reason": "audio sidecar disconnected",
+                            }
+                        if audio_event is not None:
+                            kind = audio_event.get("type")
+                            audio_event.update(
+                                {"turn_id": turn_id, "session_id": runtime_session_id}
+                            )
+                            if kind == "audio_unavailable":
+                                audio_done = True
+                                yield audio_event
+                                if pending_terminal is not None:
+                                    async for terminal in finish_terminal():
+                                        yield terminal
+                                    return
+                            else:
+                                if kind == "audio_end":
+                                    audio_done = True
+                                else:
+                                    refresh_audio_drain_deadline()
+                                yield audio_event
+                                if audio_done and pending_terminal is not None:
+                                    async for terminal in finish_terminal():
+                                        yield terminal
+                                    return
+                            if not audio_done:
+                                audio_task = asyncio.create_task(audio.next_event())
             finally:
+                for task in (gateway_task, audio_task):
+                    if task is not None and not task.done():
+                        task.cancel()
+                for task in (gateway_task, audio_task):
+                    if task is not None:
+                        with contextlib.suppress(asyncio.CancelledError):
+                            await task
+                if audio is not None:
+                    await audio.close()
+                if self._active_audio is audio:
+                    self._active_audio = None
                 if self.active_turn_id == turn_id:
                     self.active_turn_id = None
                 self._interrupt_sent_for_turn = None
@@ -219,13 +454,21 @@ class GatewaySession(HermesSession):
             return False
         if self._interrupt_sent_for_turn == turn_id:
             return True
-        result = await self._gateway.request(
-            "session.interrupt",
-            {"session_id": self._session_id},
-        )
+        audio = self._active_audio
+        try:
+            result = await self._gateway.request(
+                "session.interrupt",
+                {"session_id": self._session_id},
+            )
+        except BaseException:
+            if audio is not None:
+                await audio.stop()
+            raise
         status = str(result.get("status") or "") if isinstance(result, dict) else ""
         if status and status.lower() not in _CANCELLATION_STATUSES:
             return False
+        if audio is not None:
+            await audio.stop()
         self._interrupt_sent_for_turn = turn_id
         diagnostic_logger.debug(
             "gateway.turn.interrupt_requested session_id=%s turn_id=%s",
@@ -233,6 +476,21 @@ class GatewaySession(HermesSession):
             turn_id,
         )
         return True
+
+    @property
+    def _gateway_audio_enabled(self) -> bool:
+        configured = getattr(self.args, "gateway_audio_enabled", None)
+        if configured is not None:
+            return bool(configured)
+        return getattr(self.args, "transport", "voice-session") == "gateway"
+
+    def _new_audio_stream(self) -> GatewayAudioStream:
+        token = self._gateway_token or self._resolve_token()
+        return GatewayAudioStream(
+            self.args.url,
+            token,
+            profile=getattr(self.args, "hermes_profile", None),
+        )
 
     async def send_prompt_response(
         self,
