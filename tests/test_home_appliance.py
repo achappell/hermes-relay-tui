@@ -678,7 +678,9 @@ async def test_browser_contexts_get_fresh_profile_sessions_with_unique_ids(monke
         assert created[0].args.session_id == "browser-one"
         assert created[1].args.session_id == "browser-two"
         assert created[0].args.client_id == appliance.active_profile.client_id
-        assert created[1].args.device_id == appliance.active_profile.device_id
+        assert created[0].args.device_id != created[1].args.device_id
+        assert created[0].args.device_id.startswith("browser-")
+        assert created[1].args.device_id.startswith("browser-")
         assert set(appliance._browser_contexts) == {"browser-one", "browser-two"}
     finally:
         await first.close()

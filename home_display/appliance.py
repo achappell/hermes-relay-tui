@@ -1390,6 +1390,10 @@ class Appliance:
     ) -> tuple[Any, Any]:
         """Build a fresh session and profile-scoped arguments per socket."""
         profile_args = config.make_profile_args(self.args, profile)
+        # Hermes permits one live voice socket per client/device pair. A
+        # browser tab is a virtual device, so reusing the configured physical
+        # device ID would make the next tab evict the previous one.
+        profile_args.device_id = connection_id
         profile_args.session_id = connection_id
         if self._session_factory is not None:
             session = self._session_factory(profile)
