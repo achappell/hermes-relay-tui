@@ -2,9 +2,10 @@
 title: 'Recover W/K hands-free after response playback'
 type: 'bugfix'
 created: '2026-09-10'
-status: 'ready-for-dev'
+status: 'in-review'
 route: 'correct-course'
 review_loop_iteration: 0
+baseline_commit: '959dc2b7ea89c83d4d1908560ef9f4115ed84b81'
 source_story: 'WK-1'
 change_proposal: '{project-root}/_bmad-output/planning-artifacts/sprint-change-proposal-2026-09-10.md'
 context:
@@ -78,14 +79,15 @@ paths to accommodate one unobserved Samsung error.
 
 **Execution:**
 
-- [ ] Preserve the existing Safari prime/watchdog/retry behavior while making
+- [x] Preserve the existing Safari prime/watchdog/retry behavior while making
   post-playback error handling explicit for other browser implementations.
-- [ ] Retain a safe recognition error category and expose a specific,
+- [x] Retain a safe recognition error category and expose a specific,
   recoverable user state after bounded retry exhaustion.
-- [ ] Add fake-recognition coverage for a successful first turn followed by a
+- [x] Add fake-recognition coverage for a successful first turn followed by a
   vendor error, retry, recovery, bounded failure, disarm, and late callback.
-- [ ] Update the browser smoke note with the Samsung Bespoke observation and
-  the exact error category once captured without sensitive content.
+- [x] Update the browser smoke note with the Samsung Bespoke observation and
+  the safe error-category capture procedure; the exact category remains a
+  manual review gate because the existing observation did not expose it.
 
 **Acceptance Criteria:**
 
@@ -112,13 +114,52 @@ paths to accommodate one unobserved Samsung error.
 
 - Amanda's Samsung Bespoke browser completed the first voice turn, so initial
   microphone permission and speech recognition are known to work on that
-  device. The precise `SpeechRecognitionErrorEvent.error` value was not
-  captured and must be observed during implementation validation.
+  device. The follow-up recovery screenshot captured the safe
+  `audio-capture` category; the browser failed to reacquire the microphone
+  after playback, rather than proving that the surface is unsupported.
 - The existing Safari recovery artifact remains the regression baseline. This
   slice addresses the post-playback path's generic error handling and
   vendor-specific evidence gap; it does not reopen the frozen Safari intent.
 - The browser remains a presentation and capture adapter. Hermes remains the
   answer authority, session owner, and no-replay boundary.
+- 2026-09-10 — Implemented generation-safe post-playback retry and watchdog
+  recovery, bounded by the configured follow-up deadline. Browser recognition
+  errors are reduced to an allowlisted safe category and terminal recovery
+  reports that category in the user-facing state.
+- 2026-09-11 — Kept the safe recognition category visible on narrow displays;
+  browser voice error paragraphs now wrap instead of truncating the diagnostic
+  with an ellipsis.
+- 2026-09-11 — Added a bounded wait for the prior recognizer's release and a
+  short grace period after the temporary microphone probe stops, so embedded
+  browsers do not immediately contend for the same capture device.
+- Automated validation passed: 185 web tests, `npm run check`, `npm run
+  build`, and 947 Python tests.
+- Manual gate status: existing iPad/Safari evidence remains recorded. The
+  Samsung screenshot now records `audio-capture` from the pre-fix recovery
+  attempt; no post-fix Chrome, iPad, or Samsung success recapture was available
+  in this session. Keep the story in review until the physical/browser gates
+  are rerun.
+
+## Review Triage Log
+
+- `medium` / `patch` — `home_display/web/src/state/voice.ts` — A successful
+  post-playback retry left recovery marked pending, so a quiet follow-up could
+  be reported as failed at the capture deadline even though recognition had
+  restarted. Clearing the pending flag on the recognizer's current `onstart`
+  callback and adding a quiet-recovery test removes that false failure.
+- The configured Blind Hunter, Edge Case Hunter, and Verification Gap review
+  layers were launched twice but timed out without returning findings. The
+  local audit verified the retry-state defect, and the focused, full, type,
+  build, and Python checks were rerun after the patch.
+- `low` / `patch` — `home_display/web/src/styles.css` — The shared one-line
+  ellipsis rule hid the browser recognition error category on narrow display
+  surfaces. Error paragraphs now wrap while ordinary status text remains
+  compact; focused tests, type checking, and the production build pass.
+- `medium` / `patch` — `home_display/web/src/state/voice.ts` — Samsung
+  follow-up recovery reported `audio-capture` after the previous recognizer or
+  temporary microphone probe had not fully released the device. The controller
+  now waits for `end` with a bounded fallback before replacement recognition;
+  the fake-recognition suite covers the delayed release.
 
 ## Validation Plan
 
@@ -126,6 +167,11 @@ paths to accommodate one unobserved Samsung error.
   first.
 - `npm run check` and `npm run build` from `home_display/web`.
 - `venv/bin/pytest` from the repository root.
+- Matrix audit: `voice.test.ts` covers `FOLLOW_UP_READY`,
+  `TRANSIENT_RESTART`, `SILENT_HANG`, `VENDOR_ERROR`, `LATE_CALLBACK`, and
+  delayed recognizer release;
+  `App.test.ts` covers the rendered terminal error and `DISCONNECT`. All ran
+  in the 185-test web suite.
 - Manual Chrome and physical iPad/Safari follow-up checks, then Samsung
   Bespoke first-turn/follow-up validation with the safe error category
   recorded if recovery still fails.
@@ -134,7 +180,15 @@ paths to accommodate one unobserved Samsung error.
 
 - 2026-09-10 — Created through the approved BMad Correct Course proposal
   after live Samsung Bespoke feedback.
+- 2026-09-10 — Implementation complete; moved to review with manual browser
+  and device gates explicitly retained as pending evidence.
+- 2026-09-10 — Local review fixed a stale recovery-pending flag and added safe
+  category sanitization coverage.
 - 2026-09-10 — The approved cross-surface
   `spec-continuous-wake-free-follow-ups.md` supersedes the one-follow-up
   boundary recorded here for future W/K behavior; the current implementation
   and acceptance are tracked by that cross-surface spec.
+- 2026-09-11 — Review follow-up made terminal recognition categories visible
+  on narrow displays.
+- 2026-09-11 — Samsung follow-up evidence identified `audio-capture`; added
+  bounded recognizer/probe release handoff and kept physical validation open.

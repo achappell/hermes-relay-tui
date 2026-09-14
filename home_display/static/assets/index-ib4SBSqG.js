@@ -4634,9 +4634,9 @@ function StateSurface($$anchor, $$props) {
     }
   );
   legacy_pre_effect(
-    () => (deep_read_state(protocolError()), deep_read_state(audioPlaybackFailed()), get(displayState), deep_read_state(snapshot()), get(renderedState)),
+    () => (deep_read_state(protocolError()), deep_read_state(audioPlaybackFailed()), get(displayState), deep_read_state(connectionState()), deep_read_state(snapshot()), get(renderedState)),
     () => {
-      set(status, protocolError() ?? (audioPlaybackFailed() && get(displayState) === "speaking" ? "Audio unavailable — response text remains visible" : snapshot().status_text ?? fallbackStatus[get(renderedState)] ?? null));
+      set(status, protocolError() ?? (audioPlaybackFailed() && get(displayState) === "speaking" ? "Audio unavailable — response text remains visible" : connectionState() === "capacity" ? "All browser sessions are busy — retrying" : snapshot().status_text ?? fallbackStatus[get(renderedState)] ?? null));
     }
   );
   legacy_pre_effect(
@@ -4929,6 +4929,28 @@ function parseSnapshot(raw) {
   if (parsedCapabilities !== void 0) snapshot.capabilities = parsedCapabilities;
   return snapshot;
 }
+function parseProfileRouteAck(raw) {
+  if (!isRecord(raw)) return null;
+  const { type, schema, request_id, accepted, account, reason } = raw;
+  if (type !== "profile_route_ack" || schema !== 1 || typeof request_id !== "string" || request_id.length === 0 || request_id.length > 64 || [...request_id].some((character) => /\s/.test(character) || character.charCodeAt(0) < 32 || character.charCodeAt(0) === 127) || typeof accepted !== "boolean") {
+    return null;
+  }
+  if (account !== void 0 && (typeof account !== "string" || account.length === 0 || account.length > 128)) {
+    return null;
+  }
+  if (reason !== void 0 && (typeof reason !== "string" || reason.length === 0 || reason.length > 64)) {
+    return null;
+  }
+  const result = {
+    type,
+    schema,
+    request_id,
+    accepted
+  };
+  if (account !== void 0) result.account = account;
+  if (reason !== void 0) result.reason = reason;
+  return result;
+}
 function parseTurnId(raw) {
   return typeof raw === "string" && raw.length > 0 && raw.length <= 128 ? raw : null;
 }
@@ -4962,6 +4984,16 @@ function parseAudioEvent(raw) {
 }
 const defaultSocketFactory = (url) => new WebSocket(url);
 const RECONNECT_DELAYS_MS = [250, 500, 1e3, 2e3, 4e3];
+const PROFILE_ROUTE_ACK_TIMEOUT_MS = 2e4;
+function normaliseWakePhrase(value) {
+  return value.trim().replace(/\s+/g, " ");
+}
+function hasControlCharacter(value) {
+  return [...value].some((character) => {
+    const code = character.charCodeAt(0);
+    return code < 32 || code === 127;
+  });
+}
 class StateChannel {
   constructor(url, onSnapshot, onConnectionState, onProtocolError = () => {
   }, socketFactory = defaultSocketFactory, onValidSnapshot = () => {
@@ -4975,6 +5007,8 @@ class StateChannel {
     __publicField(this, "hasHydratedSocket", false);
     __publicField(this, "socketOpen", false);
     __publicField(this, "running", false);
+    __publicField(this, "routeSequence", 0);
+    __publicField(this, "pendingProfileRoutes", /* @__PURE__ */ new Map());
     this.url = url;
     this.onSnapshot = onSnapshot;
     this.onConnectionState = onConnectionState;
@@ -4994,6 +5028,7 @@ class StateChannel {
   stop() {
     this.running = false;
     this.socketOpen = false;
+    this.settlePendingProfileRoutes();
     if (this.reconnectTimer !== null) {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
@@ -5017,6 +5052,7 @@ class StateChannel {
     try {
       socket = this.socketFactory(this.url);
     } catch {
+      this.settlePendingProfileRoutes();
       this.deliver(() => this.onConnectionState("disconnected"));
       this.scheduleReconnect();
       return;
@@ -5030,7 +5066,6 @@ class StateChannel {
       }
       this.socketOpen = true;
       this.lastSequence = -1;
-      this.reconnectAttempt = 0;
     };
     socket.onmessage = (event2) => {
       if (!this.isCurrent(socket)) {
@@ -5040,26 +5075,75 @@ class StateChannel {
     };
     socket.onerror = () => {
     };
-    socket.onclose = () => {
+    socket.onclose = (event2) => {
       if (!this.isCurrent(socket)) {
         return;
       }
       this.socket = null;
       this.socketOpen = false;
-      this.deliver(() => this.onConnectionState("disconnected"));
+      this.settlePendingProfileRoutes();
+      this.deliver(() => this.onConnectionState((event2 == null ? void 0 : event2.code) === 1013 ? "capacity" : "disconnected"));
       this.scheduleReconnect();
     };
   }
-  sendVoiceTurn(text) {
+  sendVoiceTurn(text, wakePhrase) {
     const normalized = text.trim();
-    if (!this.socketOpen || !this.hasHydratedSocket || !this.socket || !normalized || normalized.length > 4e3) {
+    const normalizedWakePhrase = wakePhrase === void 0 ? void 0 : normaliseWakePhrase(wakePhrase);
+    if (!this.socketOpen || !this.hasHydratedSocket || !this.socket || !normalized || normalized.length > 4e3 || normalizedWakePhrase !== void 0 && (!normalizedWakePhrase || normalizedWakePhrase.length > 128 || hasControlCharacter(normalizedWakePhrase))) {
       return false;
     }
     if (typeof this.socket.send !== "function") {
       return false;
     }
     try {
-      this.socket.send(JSON.stringify({ type: "voice_turn", schema: 1, text: normalized }));
+      const payload = { type: "voice_turn", schema: 1, text: normalized };
+      if (normalizedWakePhrase !== void 0) payload.wake_phrase = normalizedWakePhrase;
+      this.socket.send(JSON.stringify(payload));
+      return true;
+    } catch {
+      return false;
+    }
+  }
+  sendProfileRoute(wakePhrase) {
+    const normalized = normaliseWakePhrase(wakePhrase);
+    const socket = this.socket;
+    const send = socket == null ? void 0 : socket.send;
+    if (!this.socketOpen || !this.hasHydratedSocket || !socket || typeof send !== "function" || !normalized || normalized.length > 128 || hasControlCharacter(normalized)) {
+      return Promise.resolve(false);
+    }
+    const requestId = `route-${this.routeSequence + 1}`;
+    if (requestId.length > 64) {
+      return Promise.resolve(false);
+    }
+    this.routeSequence += 1;
+    return new Promise((resolve) => {
+      const timer = setTimeout(() => {
+        const pending = this.pendingProfileRoutes.get(requestId);
+        if (pending === void 0) return;
+        this.pendingProfileRoutes.delete(requestId);
+        pending.resolve(false);
+      }, PROFILE_ROUTE_ACK_TIMEOUT_MS);
+      this.pendingProfileRoutes.set(requestId, { resolve, timer });
+      try {
+        send.call(socket, JSON.stringify({
+          type: "profile_route",
+          schema: 1,
+          request_id: requestId,
+          wake_phrase: normalized
+        }));
+      } catch {
+        clearTimeout(timer);
+        this.pendingProfileRoutes.delete(requestId);
+        resolve(false);
+      }
+    });
+  }
+  sendAction(action) {
+    if (!this.socketOpen || !this.hasHydratedSocket || !this.socket || typeof this.socket.send !== "function") {
+      return false;
+    }
+    try {
+      this.socket.send(JSON.stringify(action));
       return true;
     } catch {
       return false;
@@ -5096,6 +5180,11 @@ class StateChannel {
       this.deliver(() => this.onAudioEvent(audioEvent));
       return;
     }
+    const routeAck = parseProfileRouteAck(raw);
+    if (routeAck !== null) {
+      this.resolveProfileRoute(routeAck);
+      return;
+    }
     const snapshot = parseSnapshot(raw);
     if (snapshot === null) {
       this.reportProtocolError();
@@ -5109,6 +5198,7 @@ class StateChannel {
     this.deliver(() => this.onSnapshot(snapshot));
     if (!this.hasHydratedSocket) {
       this.hasHydratedSocket = true;
+      this.reconnectAttempt = 0;
       this.deliver(() => this.onConnectionState("connected"));
     }
   }
@@ -5128,6 +5218,20 @@ class StateChannel {
   }
   reportProtocolError() {
     this.deliver(() => this.onProtocolError("display data unavailable"));
+  }
+  resolveProfileRoute(ack) {
+    const pending = this.pendingProfileRoutes.get(ack.request_id);
+    if (pending === void 0) return;
+    this.pendingProfileRoutes.delete(ack.request_id);
+    clearTimeout(pending.timer);
+    pending.resolve(ack.accepted);
+  }
+  settlePendingProfileRoutes() {
+    for (const [requestId, pending] of this.pendingProfileRoutes) {
+      clearTimeout(pending.timer);
+      pending.resolve(false);
+      this.pendingProfileRoutes.delete(requestId);
+    }
   }
   deliver(callback) {
     try {
@@ -5213,26 +5317,6 @@ function createInitialDisplayView() {
     prompt: null
   });
 }
-const DISPLAY_ACTION_TIMEOUT_MS = 1e4;
-const postDisplayAction = async (action) => {
-  const query = new URLSearchParams({
-    action_id: action.action_id,
-    choice: action.choice
-  });
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), DISPLAY_ACTION_TIMEOUT_MS);
-  try {
-    const response = await fetch(`/action?${query.toString()}`, {
-      method: "POST",
-      signal: controller.signal
-    });
-    if (!response.ok) {
-      throw new Error(`display action failed with HTTP ${response.status}`);
-    }
-  } finally {
-    clearTimeout(timeoutId);
-  }
-};
 class DisplayBridge {
   /**
    * Keep browser transport and action encoding at the edge. The reducer is an
@@ -5245,13 +5329,14 @@ class DisplayBridge {
     __publicField(this, "actionTransport");
     __publicField(this, "onActionError");
     __publicField(this, "voiceTransport");
+    __publicField(this, "profileRouteTransport");
     __publicField(this, "onVoiceError");
     __publicField(this, "channel");
     this.reducer = options.reducer ?? createDisplayReducer();
-    this.actionTransport = options.actionTransport ?? postDisplayAction;
     this.onActionError = options.onActionError ?? (() => {
     });
     this.voiceTransport = options.voiceTransport ?? null;
+    this.profileRouteTransport = options.profileRouteTransport ?? null;
     this.onVoiceError = options.onVoiceError ?? (() => {
     });
     this.channel = new StateChannel(
@@ -5271,7 +5356,7 @@ class DisplayBridge {
         var _a2, _b2;
         if (state2 === "connecting") {
           this.reducer.reset();
-        } else if (state2 === "disconnected") {
+        } else if (state2 === "disconnected" || state2 === "capacity") {
           (_b2 = (_a2 = this.reducer).setConnectionState) == null ? void 0 : _b2.call(_a2, "disconnected");
         }
         this.deliver(() => options.onConnectionState(state2));
@@ -5282,6 +5367,11 @@ class DisplayBridge {
       options.onAudioEvent,
       options.onAudioChunk
     );
+    this.actionTransport = options.actionTransport ?? ((action) => {
+      if (!this.channel.sendAction(action)) {
+        throw new Error("display action unavailable");
+      }
+    });
   }
   start() {
     this.channel.start();
@@ -5303,18 +5393,23 @@ class DisplayBridge {
       return false;
     }
   }
-  async sendVoiceTurn(text) {
+  async sendVoiceTurn(text, wakePhrase) {
     const normalized = text.trim();
-    if (!normalized || normalized.length > 4e3) {
+    const normalizedWakePhrase = wakePhrase === void 0 ? void 0 : wakePhrase.trim().replace(/\s+/g, " ");
+    if (!normalized || normalized.length > 4e3 || normalizedWakePhrase !== void 0 && (!normalizedWakePhrase || normalizedWakePhrase.length > 128 || /[\u0000-\u001f\u007f]/.test(normalizedWakePhrase))) {
       this.deliver(() => this.onVoiceError("transport_error"));
       return false;
     }
     try {
       if (this.voiceTransport !== null) {
-        await this.voiceTransport(normalized);
+        if (normalizedWakePhrase === void 0) {
+          await this.voiceTransport(normalized);
+        } else {
+          await this.voiceTransport(normalized, normalizedWakePhrase);
+        }
         return true;
       }
-      if (this.channel.sendVoiceTurn(normalized)) {
+      if (this.channel.sendVoiceTurn(normalized, normalizedWakePhrase)) {
         return true;
       }
     } catch {
@@ -5322,12 +5417,41 @@ class DisplayBridge {
     this.deliver(() => this.onVoiceError("transport_error"));
     return false;
   }
+  async routeProfile(wakePhrase) {
+    const normalized = wakePhrase.trim().replace(/\s+/g, " ");
+    if (!normalized || normalized.length > 128 || /[\u0000-\u001f\u007f]/.test(normalized)) {
+      return false;
+    }
+    try {
+      if (this.profileRouteTransport !== null) {
+        return Boolean(await this.profileRouteTransport(normalized));
+      }
+      return await this.channel.sendProfileRoute(normalized);
+    } catch {
+      return false;
+    }
+  }
   deliver(callback) {
     try {
       callback();
     } catch {
     }
   }
+}
+const SAFE_RECOGNITION_ERROR_CATEGORIES = /* @__PURE__ */ new Set([
+  "aborted",
+  "audio-capture",
+  "bad-grammar",
+  "language-not-supported",
+  "network",
+  "no-speech",
+  "not-allowed",
+  "phrases-not-supported",
+  "service-not-allowed"
+]);
+function classifySpeechRecognitionError(error) {
+  const category = typeof error === "string" ? error.trim().toLowerCase() : "";
+  return SAFE_RECOGNITION_ERROR_CATEGORIES.has(category) ? category : "unknown";
 }
 function defaultRecognitionFactory() {
   const windowWithSpeech = window;
@@ -5343,6 +5467,7 @@ async function defaultRecognitionPreparer() {
   try {
     const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
     for (const track of stream.getTracks()) track.stop();
+    await new Promise((resolve) => setTimeout(resolve, 250));
   } catch {
   }
 }
@@ -5458,6 +5583,7 @@ const MAX_HANDS_FREE_TIMER_SECONDS = 2147483647e-3;
 const FOLLOW_UP_START_TIMEOUT_MS = 1e3;
 const FOLLOW_UP_ACTIVITY_TIMEOUT_MS = 3500;
 const FOLLOW_UP_RETRY_DELAYS_MS = [300, 1e3, 2e3, 3500];
+const RECOGNITION_RELEASE_TIMEOUT_MS = 1e3;
 function normaliseSpeech(text) {
   return text.trim().replace(/\s+/g, " ");
 }
@@ -5473,7 +5599,10 @@ function wakeRemainder(text, wakePhrases) {
     if (lowerSource !== lowerPhrase && !lowerSource.startsWith(lowerPhrase)) continue;
     const next = lowerSource[lowerPhrase.length];
     if (next !== void 0 && !/^[\s,.:;!?;…-]$/.test(next)) continue;
-    return normaliseSpeech(source2.slice(lowerPhrase.length).replace(/^[\s,.:;!?…-]+/, ""));
+    return {
+      phrase,
+      remainder: normaliseSpeech(source2.slice(lowerPhrase.length).replace(/^[\s,.:;!?…-]+/, ""))
+    };
   }
   return null;
 }
@@ -5498,6 +5627,7 @@ function recognitionText(event2) {
 class BrowserHandsFreeController {
   constructor(options) {
     __publicField(this, "sendText");
+    __publicField(this, "routeWake");
     __publicField(this, "wakePhrases");
     __publicField(this, "wakeListenSeconds");
     __publicField(this, "followUpSeconds");
@@ -5507,6 +5637,7 @@ class BrowserHandsFreeController {
     __publicField(this, "recognitionFactory");
     __publicField(this, "prepareRecognition");
     __publicField(this, "language");
+    __publicField(this, "profileRoutingEnabled");
     __publicField(this, "phase", "off");
     __publicField(this, "armed", false);
     __publicField(this, "generation", 0);
@@ -5517,8 +5648,17 @@ class BrowserHandsFreeController {
     __publicField(this, "followUpRetryTimer", null);
     __publicField(this, "followUpWatchdogTimer", null);
     __publicField(this, "followUpAttempt", 0);
+    __publicField(this, "followUpDeadlineAt", null);
+    __publicField(this, "followUpRecoveryPending", false);
+    __publicField(this, "followUpErrorCategory", null);
+    __publicField(this, "lastRecognitionErrorCategory", null);
+    __publicField(this, "followUpEligible", false);
     __publicField(this, "turnInFlight", false);
+    __publicField(this, "recognitionRelease", Promise.resolve());
+    __publicField(this, "recognitionReleasePending", false);
     this.sendText = options.sendText;
+    this.routeWake = options.routeWake ?? null;
+    this.profileRoutingEnabled = options.routeWake !== void 0;
     this.wakePhrases = options.wakePhrases.map(normaliseSpeech).filter(Boolean);
     this.wakeListenSeconds = positiveSeconds(options.wakeListenSeconds);
     this.followUpSeconds = positiveSeconds(options.followUpSeconds);
@@ -5546,9 +5686,13 @@ class BrowserHandsFreeController {
     this.wakePhrases = wakePhrases;
     this.wakeListenSeconds = wakeListenSeconds;
     this.followUpSeconds = followUpSeconds;
+    this.profileRoutingEnabled = this.routeWake !== null && wakePhrases.length > 1;
   }
   get isArmed() {
     return this.armed;
+  }
+  get lastRecognitionError() {
+    return this.lastRecognitionErrorCategory;
   }
   get state() {
     return this.stateForPhase();
@@ -5563,9 +5707,14 @@ class BrowserHandsFreeController {
     const generation = this.generation;
     this.armed = true;
     this.phase = "wake_ready";
+    this.lastRecognitionErrorCategory = null;
+    this.followUpEligible = false;
     this.turnInFlight = false;
     this.emit("arming");
-    if (!this.startRecognition(generation)) {
+    await this.waitForRecognitionRelease();
+    if (!this.isCurrent(generation)) return false;
+    if (!this.startRecognition(generation) || !this.isCurrent(generation)) {
+      if (!this.isCurrent(generation)) return false;
       this.fail("Microphone or speech recognition is unavailable");
       return false;
     }
@@ -5576,6 +5725,10 @@ class BrowserHandsFreeController {
     this.generation += 1;
     this.armed = false;
     this.phase = "off";
+    this.followUpDeadlineAt = null;
+    this.followUpRecoveryPending = false;
+    this.followUpErrorCategory = null;
+    this.followUpEligible = false;
     this.turnInFlight = false;
     this.clearTimers();
     this.stopRecognition();
@@ -5598,6 +5751,8 @@ class BrowserHandsFreeController {
     switch (this.phase) {
       case "wake_ready":
         return "wake_ready";
+      case "routing":
+        return "routing";
       case "heard":
         return "heard";
       case "initial_capture":
@@ -5626,6 +5781,7 @@ class BrowserHandsFreeController {
       if (!this.isCurrent(generation) || this.recognition !== recognition) return;
       started = true;
       if (this.phase === "follow_up") {
+        this.followUpRecoveryPending = false;
         this.scheduleFollowUpWatchdog(
           generation,
           recognition,
@@ -5634,14 +5790,17 @@ class BrowserHandsFreeController {
       }
     };
     recognition.onresult = (event2) => {
+      if (!this.isCurrent(generation) || this.recognition !== recognition) return;
+      this.followUpRecoveryPending = false;
       this.clearFollowUpWatchdog();
       this.handleResult(event2, generation);
     };
     recognition.onerror = (event2) => {
-      var _a2;
       if (!this.isCurrent(generation) || this.recognition !== recognition) return;
-      const code = (_a2 = event2.error) == null ? void 0 : _a2.toLocaleLowerCase();
-      if (code === "no-speech" || code === "aborted") {
+      const category = classifySpeechRecognitionError(event2.error);
+      this.lastRecognitionErrorCategory = category;
+      if (this.phase === "follow_up") this.followUpErrorCategory = category;
+      if (category === "no-speech" || category === "aborted") {
         if (this.phase === "follow_up") {
           this.stopRecognition();
           this.scheduleFollowUpRetry(generation);
@@ -5650,7 +5809,16 @@ class BrowserHandsFreeController {
         }
         return;
       }
-      this.fail("Microphone or speech recognition is unavailable");
+      if (this.phase === "follow_up" && isTransientFollowUpError(category)) {
+        this.stopRecognition();
+        this.scheduleFollowUpRetry(generation);
+        return;
+      }
+      if (this.phase === "follow_up") {
+        this.fail(followUpRecognitionErrorMessage(category));
+        return;
+      }
+      this.fail(recognitionErrorMessage(category));
     };
     recognition.onend = () => {
       if (!this.isCurrent(generation) || this.recognition !== recognition) return;
@@ -5677,6 +5845,7 @@ class BrowserHandsFreeController {
     } catch {
       this.recognition = null;
       this.clearFollowUpWatchdog();
+      this.releaseRecognition(recognition);
       return false;
     }
   }
@@ -5697,15 +5866,20 @@ class BrowserHandsFreeController {
     const { liveText, finalText: text } = recognitionText(event2);
     if (this.phase === "wake_ready") {
       if (!text) return;
-      const remainder = wakeRemainder(text, this.wakePhrases);
-      if (remainder === null) return;
-      if (!remainder || isLocalStopCommand(remainder)) {
-        if (remainder) this.finishCapture(generation);
-        else this.beginInitialCapture(generation);
+      const wakeMatch = wakeRemainder(text, this.wakePhrases);
+      if (wakeMatch === null) return;
+      if (!wakeMatch.remainder || isLocalStopCommand(wakeMatch.remainder)) {
+        if (wakeMatch.remainder) {
+          this.finishCapture(generation);
+        } else if (this.routeWake === null || !this.profileRoutingEnabled) {
+          this.beginInitialCapture(generation);
+        } else {
+          this.routeAndBeginCapture(wakeMatch.phrase, generation);
+        }
         return;
       }
-      this.onTranscript(remainder, true);
-      this.submit(remainder, generation);
+      this.onTranscript(wakeMatch.remainder, true);
+      this.submit(wakeMatch.remainder, generation, wakeMatch.phrase);
       return;
     }
     if (this.phase !== "heard" && this.phase !== "initial_capture" && this.phase !== "follow_up") return;
@@ -5732,16 +5906,66 @@ class BrowserHandsFreeController {
       this.phase = "initial_capture";
       this.emit("listening");
     }, 150);
+    if (this.recognition === null && !this.startRecognition(generation)) {
+      this.fail("Microphone or speech recognition is unavailable");
+    }
+  }
+  routeAndBeginCapture(phrase, generation) {
+    if (!this.isCurrent(generation) || this.routeWake === null) return;
+    this.clearCaptureTimer();
+    this.clearHeardTimer();
+    this.stopRecognition();
+    this.phase = "routing";
+    this.emit("routing");
+    let routeResult;
+    try {
+      routeResult = this.routeWake(phrase);
+    } catch {
+      this.finishProfileRoute(false, generation);
+      return;
+    }
+    if (typeof routeResult === "boolean") {
+      this.finishProfileRoute(routeResult, generation);
+      return;
+    }
+    void Promise.resolve(routeResult).then((accepted) => {
+      this.finishProfileRoute(Boolean(accepted), generation);
+    }).catch(() => {
+      this.finishProfileRoute(false, generation);
+    });
+  }
+  finishProfileRoute(accepted, generation) {
+    if (!this.isCurrent(generation) || this.phase !== "routing") return;
+    if (!accepted) {
+      this.onError("Profile could not be selected");
+      this.enterWakeReady(generation, true);
+      return;
+    }
+    if (this.recognitionReleasePending) {
+      void this.resumeInitialCapture(generation);
+    } else {
+      this.beginInitialCapture(generation);
+    }
+  }
+  async resumeInitialCapture(generation) {
+    await this.waitForRecognitionRelease();
+    if (!this.isCurrent(generation) || this.phase !== "routing") return;
+    this.beginInitialCapture(generation);
   }
   beginFollowUp(generation) {
     if (!this.isCurrent(generation)) return;
     this.phase = "follow_up";
     this.followUpAttempt = 0;
+    this.followUpDeadlineAt = Date.now() + Math.min(this.followUpSeconds, MAX_HANDS_FREE_TIMER_SECONDS) * 1e3;
+    this.followUpRecoveryPending = false;
+    this.followUpErrorCategory = null;
     this.emit("follow_up");
     this.startCaptureTimer(generation, this.followUpSeconds);
     void this.prepareAndStartFollowUp(generation);
   }
   async prepareAndStartFollowUp(generation) {
+    await this.waitForRecognitionRelease();
+    if (!this.isCurrent(generation) || this.phase !== "follow_up") return;
     try {
       await this.prepareRecognition();
     } catch {
@@ -5753,18 +5977,35 @@ class BrowserHandsFreeController {
     if (!this.isCurrent(generation) || this.phase !== "follow_up" || this.followUpRetryTimer !== null) return;
     const nextAttempt = this.followUpAttempt + 1;
     const delay = FOLLOW_UP_RETRY_DELAYS_MS[nextAttempt - 1];
+    this.followUpRecoveryPending = true;
     if (delay === void 0) {
-      this.fail("Speech recognition could not resume after playback");
+      this.fail(followUpRecoveryFailureMessage(this.followUpErrorCategory));
+      return;
+    }
+    const remaining = this.followUpDeadlineAt === null ? delay : this.followUpDeadlineAt - Date.now();
+    if (remaining <= 0) {
+      this.fail(followUpRecoveryFailureMessage(this.followUpErrorCategory, true));
       return;
     }
     this.followUpRetryTimer = setTimeout(() => {
       this.followUpRetryTimer = null;
       if (!this.isCurrent(generation) || this.phase !== "follow_up") return;
-      this.followUpAttempt = nextAttempt;
-      if (!this.startRecognition(generation)) {
-        this.scheduleFollowUpRetry(generation);
+      if (this.followUpDeadlineAt !== null && Date.now() >= this.followUpDeadlineAt) {
+        this.fail(followUpRecoveryFailureMessage(this.followUpErrorCategory, true));
+        return;
       }
-    }, delay);
+      void this.startFollowUpAttempt(generation, nextAttempt);
+    }, Math.min(delay, remaining));
+  }
+  async startFollowUpAttempt(generation, attempt) {
+    await this.waitForRecognitionRelease();
+    if (!this.isCurrent(generation) || this.phase !== "follow_up") return;
+    if (this.followUpDeadlineAt !== null && Date.now() >= this.followUpDeadlineAt) {
+      this.fail(followUpRecoveryFailureMessage(this.followUpErrorCategory, true));
+      return;
+    }
+    this.followUpAttempt = attempt;
+    if (!this.startRecognition(generation)) this.scheduleFollowUpRetry(generation);
   }
   scheduleFollowUpWatchdog(generation, recognition, delay) {
     this.clearFollowUpWatchdog();
@@ -5778,12 +6019,26 @@ class BrowserHandsFreeController {
   enterWakeReady(generation, deferRecognition = false) {
     if (!this.isCurrent(generation)) return;
     this.clearFollowUpRetryTimer();
+    this.followUpDeadlineAt = null;
+    this.followUpRecoveryPending = false;
+    this.followUpErrorCategory = null;
     this.phase = "wake_ready";
     this.clearHeardTimer();
     this.emit("wake_ready");
-    if (deferRecognition || !this.startRecognition(generation)) {
+    if (deferRecognition) {
+      if (this.recognitionReleasePending) {
+        void this.resumeWakeRecognition(generation);
+      } else {
+        this.scheduleRecognitionRestart(generation);
+      }
+    } else if (!this.startRecognition(generation)) {
       this.scheduleRecognitionRestart(generation);
     }
+  }
+  async resumeWakeRecognition(generation) {
+    await this.waitForRecognitionRelease();
+    if (!this.isCurrent(generation) || this.phase !== "wake_ready") return;
+    if (!this.startRecognition(generation)) this.scheduleRecognitionRestart(generation);
   }
   finishCapture(generation) {
     if (!this.isCurrent(generation)) return;
@@ -5798,11 +6053,15 @@ class BrowserHandsFreeController {
       this.captureTimer = null;
       if (!this.isCurrent(generation)) return;
       this.onTranscript("", true);
+      if (this.phase === "follow_up" && this.followUpRecoveryPending) {
+        this.fail(followUpRecoveryFailureMessage(this.followUpErrorCategory, true));
+        return;
+      }
       this.stopRecognition();
       this.enterWakeReady(generation, true);
     }, Math.min(seconds, MAX_HANDS_FREE_TIMER_SECONDS) * 1e3);
   }
-  submit(text, generation) {
+  submit(text, generation, wakePhrase) {
     if (!this.isCurrent(generation)) return;
     this.clearCaptureTimer();
     this.clearHeardTimer();
@@ -5813,7 +6072,7 @@ class BrowserHandsFreeController {
     this.emit("submitting");
     let sendResult;
     try {
-      sendResult = this.sendText(text);
+      sendResult = wakePhrase === void 0 ? this.sendText(text) : this.sendText(text, wakePhrase);
     } catch {
       this.fail("Turn could not be sent");
       return;
@@ -5829,6 +6088,10 @@ class BrowserHandsFreeController {
     this.generation += 1;
     this.armed = false;
     this.phase = "off";
+    this.followUpDeadlineAt = null;
+    this.followUpRecoveryPending = false;
+    this.followUpErrorCategory = null;
+    this.followUpEligible = false;
     this.turnInFlight = false;
     this.clearTimers();
     this.stopRecognition();
@@ -5870,18 +6133,40 @@ class BrowserHandsFreeController {
       this.followUpWatchdogTimer = null;
     }
   }
+  waitForRecognitionRelease() {
+    return this.recognitionRelease;
+  }
   stopRecognition() {
     this.clearFollowUpWatchdog();
     const recognition = this.recognition;
     this.recognition = null;
     if (recognition === null) return;
+    this.releaseRecognition(recognition);
+  }
+  releaseRecognition(recognition) {
     recognition.onstart = null;
     recognition.onresult = null;
     recognition.onerror = null;
-    recognition.onend = null;
+    this.recognitionReleasePending = true;
+    let settled = false;
+    let resolveRelease = () => {
+    };
+    let releaseTimer = null;
+    this.recognitionRelease = new Promise((resolve) => {
+      resolveRelease = () => {
+        if (settled) return;
+        settled = true;
+        this.recognitionReleasePending = false;
+        if (releaseTimer !== null) clearTimeout(releaseTimer);
+        resolve();
+      };
+    });
+    recognition.onend = resolveRelease;
+    releaseTimer = setTimeout(resolveRelease, RECOGNITION_RELEASE_TIMEOUT_MS);
     try {
       recognition.stop();
     } catch {
+      resolveRelease();
     }
   }
   isCurrent(generation) {
@@ -5890,6 +6175,20 @@ class BrowserHandsFreeController {
   emit(state2) {
     this.onState(state2);
   }
+}
+function isTransientFollowUpError(category) {
+  return category === "audio-capture" || category === "network" || category === "unknown";
+}
+function recognitionErrorMessage(category) {
+  return `Speech recognition failed (error category: ${category}); hands-free is off. Enable hands-free to try again.`;
+}
+function followUpRecognitionErrorMessage(category) {
+  return `Speech recognition failed after playback (error category: ${category}); hands-free is off. Enable hands-free to try again.`;
+}
+function followUpRecoveryFailureMessage(category, deadline = false) {
+  const categoryDetail = category === null ? "" : ` (error category: ${category})`;
+  const reason = deadline ? " before the follow-up recovery window expired" : "";
+  return `Speech recognition could not resume after playback${categoryDetail}${reason}; hands-free is off. Enable hands-free to try again.`;
 }
 function positiveSeconds(value) {
   return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : DEFAULT_HANDS_FREE_SECONDS;
@@ -6035,12 +6334,13 @@ var root_2 = /* @__PURE__ */ from_html(`<p data-voice-status="">Listening…</p>
 var root_3 = /* @__PURE__ */ from_html(`<p data-voice-status="">Sending…</p>`);
 var root_4 = /* @__PURE__ */ from_html(`<p data-handsfree-error="" role="alert"> </p>`);
 var root_5 = /* @__PURE__ */ from_html(`<p data-handsfree-status=""> </p>`);
-var root_6 = /* @__PURE__ */ from_html(`<p data-handsfree-status="">Heard you</p>`);
-var root_7 = /* @__PURE__ */ from_html(`<p data-handsfree-status="">Listening…</p>`);
-var root_8 = /* @__PURE__ */ from_html(`<p data-handsfree-status="">Listening for a follow-up…</p>`);
-var root_9 = /* @__PURE__ */ from_html(`<p data-handsfree-status="">Sending…</p>`);
-var root_10 = /* @__PURE__ */ from_html(`<section class="browser-voice-controls" aria-label="Browser voice"><button type="button" data-voice-button=""> </button> <!> <!> <!></section>`);
-var root_11 = /* @__PURE__ */ from_html(`<div><!></div> <!> <!>`, 1);
+var root_6 = /* @__PURE__ */ from_html(`<p data-handsfree-status="">Switching profile…</p>`);
+var root_7 = /* @__PURE__ */ from_html(`<p data-handsfree-status="">Heard you</p>`);
+var root_8 = /* @__PURE__ */ from_html(`<p data-handsfree-status="">Listening…</p>`);
+var root_9 = /* @__PURE__ */ from_html(`<p data-handsfree-status="">Listening for a follow-up…</p>`);
+var root_10 = /* @__PURE__ */ from_html(`<p data-handsfree-status="">Sending…</p>`);
+var root_11 = /* @__PURE__ */ from_html(`<section class="browser-voice-controls" aria-label="Browser voice"><button type="button" data-voice-button=""> </button> <!> <!> <!></section>`);
+var root_12 = /* @__PURE__ */ from_html(`<div><!></div> <!> <!>`, 1);
 function App($$anchor, $$props) {
   push($$props, false);
   const browserVoiceEnabled = /* @__PURE__ */ mutable_source();
@@ -6192,11 +6492,12 @@ function App($$anchor, $$props) {
       },
       onConnectionState: (state2) => {
         set(connectionState, state2);
+        if (state2 === "capacity") set(protocolError, null);
         if (state2 !== "connected") clearConversationPresentation();
-        if (state2 === "disconnected") {
+        if (state2 === "disconnected" || state2 === "capacity") {
           resetPlayback();
           voiceController == null ? void 0 : voiceController.reset();
-          handsFreeController == null ? void 0 : handsFreeController.abort("Display disconnected — hands-free is off");
+          handsFreeController == null ? void 0 : handsFreeController.abort(state2 === "capacity" ? "Display is at capacity — hands-free is off" : "Display disconnected — hands-free is off");
         } else if (state2 === "connecting") {
           handsFreeController == null ? void 0 : handsFreeController.abort("Display disconnected — hands-free is off");
         }
@@ -6260,7 +6561,7 @@ function App($$anchor, $$props) {
       }
     });
     voiceController = new BrowserVoiceController({
-      sendText: (text) => (bridge == null ? void 0 : bridge.sendVoiceTurn(text)) ?? false,
+      sendText: (text, wakePhrase) => wakePhrase === void 0 ? (bridge == null ? void 0 : bridge.sendVoiceTurn(text)) ?? false : (bridge == null ? void 0 : bridge.sendVoiceTurn(text, wakePhrase)) ?? false,
       onState: (state2) => {
         set(voiceState, state2);
         if (state2 !== "error") set(voiceError, null);
@@ -6272,15 +6573,21 @@ function App($$anchor, $$props) {
       onTranscript: (text) => setUserTranscript(text)
     });
     handsFreeController = new BrowserHandsFreeController({
-      sendText: (text) => (bridge == null ? void 0 : bridge.sendVoiceTurn(text)) ?? false,
+      sendText: (text, wakePhrase) => wakePhrase === void 0 ? (bridge == null ? void 0 : bridge.sendVoiceTurn(text)) ?? false : (bridge == null ? void 0 : bridge.sendVoiceTurn(text, wakePhrase)) ?? false,
       wakePhrases: [],
+      routeWake: (phrase) => {
+        var _a2;
+        return ((_a2 = bridge == null ? void 0 : bridge.routeProfile) == null ? void 0 : _a2.call(bridge, phrase)) ?? false;
+      },
       onState: (state2) => {
         const previousState = get(handsFreeState);
         set(handsFreeState, state2);
         if (state2 === "heard" || state2 === "follow_up" || state2 === "listening" && previousState !== "heard") {
           beginCapturePresentation();
         }
-        if (state2 !== "error") set(handsFreeError, null);
+        if (state2 !== "error" && !(state2 === "wake_ready" && previousState === "routing")) {
+          set(handsFreeError, null);
+        }
       },
       onError: (message) => {
         clearConversationPresentation();
@@ -6380,7 +6687,7 @@ function App($$anchor, $$props) {
   });
   legacy_pre_effect_reset();
   init();
-  var fragment = root_11();
+  var fragment = root_12();
   var div = first_child(fragment);
   var node = child(div);
   StateSurface(node, {
@@ -6432,8 +6739,8 @@ function App($$anchor, $$props) {
   }
   var node_3 = sibling(node_1, 2);
   {
-    var consequent_11 = ($$anchor2) => {
-      var section = root_10();
+    var consequent_12 = ($$anchor2) => {
+      var section = root_11();
       var button = child(section);
       var text_1 = only_child(button, true);
       var node_4 = sibling(button, 2);
@@ -6505,13 +6812,18 @@ function App($$anchor, $$props) {
           var p_8 = root_9();
           append($$anchor3, p_8);
         };
+        var consequent_11 = ($$anchor3) => {
+          var p_9 = root_10();
+          append($$anchor3, p_9);
+        };
         if_block(node_6, ($$render) => {
           if (get(handsFreeError)) $$render(consequent_5);
           else if (get(handsFreeState) === "wake_ready") $$render(consequent_6, 1);
-          else if (get(handsFreeState) === "heard") $$render(consequent_7, 2);
-          else if (get(handsFreeState) === "listening") $$render(consequent_8, 3);
-          else if (get(handsFreeState) === "follow_up") $$render(consequent_9, 4);
-          else if (get(handsFreeState) === "submitting") $$render(consequent_10, 5);
+          else if (get(handsFreeState) === "routing") $$render(consequent_7, 2);
+          else if (get(handsFreeState) === "heard") $$render(consequent_8, 3);
+          else if (get(handsFreeState) === "listening") $$render(consequent_9, 4);
+          else if (get(handsFreeState) === "follow_up") $$render(consequent_10, 5);
+          else if (get(handsFreeState) === "submitting") $$render(consequent_11, 6);
         });
       }
       template_effect(() => {
@@ -6524,7 +6836,7 @@ function App($$anchor, $$props) {
       append($$anchor2, section);
     };
     if_block(node_3, ($$render) => {
-      if (get(browserVoiceEnabled)) $$render(consequent_11);
+      if (get(browserVoiceEnabled)) $$render(consequent_12);
     });
   }
   template_effect(() => set_attribute(div, "aria-hidden", get(promptVisible) ? "true" : void 0));

@@ -152,6 +152,16 @@ Physical evidence recorded on 2026-09-09: Amanda confirmed the refreshed HTTPS
 page on the iPad accepted the hands-free follow-up after playback. The prior
 "listens but ignores me" failure did not recur.
 
+Samsung Bespoke evidence recorded on 2026-09-10 and 2026-09-11: the browser
+completed its first W/K voice turn, proving that initial microphone permission
+and speech recognition worked. Hands-free then failed while recognition
+resumed after response playback. The captured safe category was
+`audio-capture`, meaning the browser could not reacquire the microphone during
+the bounded follow-up recovery; it is not evidence that the browser is
+unsupported. The recovery now waits for the prior recognizer to release and
+allows the temporary microphone probe to settle before retrying. Repeat the
+Samsung gate after this change and record the first-turn and follow-up result.
+
 Record the iPadOS and Safari versions, LAN origin, permission result, wake
 phrase, initial/follow-up counts, both stop cases, the disconnect/recovery
 result, and any recognition or playback interruption. If Safari cannot grant

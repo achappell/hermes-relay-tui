@@ -1,0 +1,17 @@
+# Managed by hermes-relay-tui's ops-web deployment bootstrap.
+[Unit]
+Description=Hermes Home browser voice display
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=@SERVICE_USER@
+WorkingDirectory=@BASE_DIR@/current
+EnvironmentFile=/etc/hermes-relay/home.env
+ExecStart=@BASE_DIR@/current/venv/bin/hermes-relay-home --browser-voice --config @BASE_DIR@/current/profile-config.yaml --profile-env /etc/hermes-relay/home.env --display-host 127.0.0.1 --display-port @DISPLAY_PORT@ --display-public-origin @PUBLIC_ORIGIN@
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

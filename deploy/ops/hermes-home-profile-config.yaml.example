@@ -1,0 +1,31 @@
+# Non-secret Ops catalog for hermes-home.chappell-home.dev.
+# Keep the real file outside Git and pass it with --profile-config.
+version: 1
+profiles:
+  amanda:
+    display_name: Amanda
+    wake_phrases:
+      - hey missy
+    url: wss://replace-with-ops-hermes-host/voice-session
+    token_env: VOICE_SESSION_TOKEN_AMANDA
+    client_id: amanda-home
+    device_id: amanda-home
+    session_id: amanda-home
+  jensen:
+    display_name: Jensen
+    wake_phrases:
+      - hey skippy
+    url: wss://replace-with-ops-hermes-host/voice-session
+    token_env: VOICE_SESSION_TOKEN_JENSEN
+    client_id: jensen-home
+    device_id: jensen-home
+    session_id: jensen-home
+  spark:
+    display_name: Spark
+    wake_phrases:
+      - hey spark
+    url: wss://replace-with-ops-hermes-host/voice-session
+    token_env: VOICE_SESSION_TOKEN_SPARK
+    client_id: spark-home
+    device_id: spark-home
+    session_id: spark-home

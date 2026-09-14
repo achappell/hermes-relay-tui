@@ -47,7 +47,7 @@ from timing import (
     visible_text,
 )
 
-from .server import DisplayServer, load_tls_context
+from .server import BrowserProfileRouteResult, DisplayServer, load_tls_context
 from .state import (
     DisplayCapabilities,
     DisplayPrompt,
@@ -218,6 +218,179 @@ TICK_INTERVAL = 0.25
 # Maximum time to wait for a shutdown task, stream teardown, or connection close
 # before returning control so interpreter shutdown is never stranded.
 SHUTDOWN_TASK_TIMEOUT = 3.0
+# A browser route has its own acknowledgement deadline. Keep target session
+# setup shorter so a stalled Hermes handshake cannot outlive that request and
+# commit a profile after the browser has resumed listening.
+PROFILE_CONNECT_TIMEOUT = 8.0
+
+
+def _normalise_wake_phrase(value: str) -> str:
+    """Use one comparison form for catalog phrases across every front end."""
+    return " ".join(value.strip().split()).casefold()
+
+
+class _BrowserSessionContext:
+    """The appliance-owned state and Hermes session for one browser socket."""
+
+    def __init__(
+        self,
+        owner: "Appliance",
+        connection_id: str,
+        child: "Appliance",
+    ) -> None:
+        self._owner = owner
+        self.connection_id = connection_id
+        self._child = child
+        self.publisher = child.publisher
+        self._closed = False
+        self._close_lock = asyncio.Lock()
+        self._route_lock = asyncio.Lock()
+
+    async def handle_voice_turn(
+        self, text: str, wake_phrase: str | None = None
+    ) -> bool:
+        if (
+            self._closed
+            or self._owner._stopping.is_set()
+            or self._child._pending_prompt_action_id is not None
+        ):
+            return False
+        if self._route_lock.locked():
+            self._child._publish_busy_browser_turn()
+            return False
+        async with self._route_lock:
+            if (
+                self._closed
+                or self._owner._stopping.is_set()
+                or self._child._pending_prompt_action_id is not None
+            ):
+                return False
+            if wake_phrase is not None:
+                result = await self._child.route_profile(
+                    wake_phrase, publish_status=False
+                )
+                if not result.accepted:
+                    self._child._publish_browser_route_rejection(result)
+                    return False
+            return await self._run_voice_turn(text)
+
+    async def _run_voice_turn(self, text: str) -> bool:
+        try:
+            timeout = float(getattr(self._child.args, "turn_timeout", 0) or 0)
+        except (TypeError, ValueError, OverflowError):
+            timeout = 0
+        result = False
+        try:
+            if math.isfinite(timeout) and timeout > 0:
+                result = await asyncio.wait_for(
+                    self._child._on_browser_voice_turn(text), timeout
+                )
+            else:
+                result = await self._child._on_browser_voice_turn(text)
+        except asyncio.TimeoutError:
+            with contextlib.suppress(Exception):
+                self._child._session.cancel_voice()
+            self._child._connected = False
+            self._child._publish(
+                "error",
+                response_text="",
+                status_text="Response timed out",
+            )
+            self._child._set_listening()
+            result = False
+        if not self._child._connected and not self._closed:
+            close_transport = getattr(self._child._server, "close", None)
+            if callable(close_transport):
+                await asyncio.sleep(0)
+                with contextlib.suppress(Exception):
+                    await close_transport(code=1011, reason="browser session unavailable")
+        return bool(result)
+
+    async def handle_profile_route(self, wake_phrase: str) -> BrowserProfileRouteResult:
+        if self._closed or self._owner._stopping.is_set():
+            return BrowserProfileRouteResult(False, reason="unavailable")
+        if self._route_lock.locked() or (
+            self._child._browser_turn_task is not None
+            and not self._child._browser_turn_task.done()
+        ):
+            return BrowserProfileRouteResult(False, reason="active_turn")
+        async with self._route_lock:
+            if (
+                self._closed
+                or self._owner._stopping.is_set()
+                or self._child._pending_prompt_action_id is not None
+                or (
+                    self._child._browser_turn_task is not None
+                    and not self._child._browser_turn_task.done()
+                )
+            ):
+                return BrowserProfileRouteResult(False, reason="active_turn")
+            result = await self._child.route_profile(wake_phrase, publish_status=False)
+            if result.accepted:
+                # Wake-only routing has no subsequent turn to publish the new
+                # account. Emit the selected catalog and capabilities now so
+                # the browser does not keep displaying the previous profile.
+                self._child._publish("idle")
+            return result
+
+    async def handle_action(self, action_id: str, choice: str) -> None:
+        if self._closed or self._owner._stopping.is_set():
+            return
+
+        prompt = self.publisher.snapshot.prompt
+        if (
+            prompt is None
+            or self._child._pending_prompt_action_id != action_id
+            or choice not in {option.id for option in prompt.options}
+        ):
+            logger.debug(
+                "ignoring stale browser action connection=%s action_id=%s",
+                self.connection_id,
+                action_id,
+            )
+            return
+
+        if action_id == "sethome":
+            self._child._pending_prompt_action_id = None
+            self._child._publish("idle", response_text="")
+            if choice == "yes":
+                await self.handle_voice_turn("/sethome")
+            return
+
+        session = self._child._session
+        send_prompt_response = getattr(session, "send_prompt_response", None)
+        if not callable(send_prompt_response):
+            return
+        if not getattr(session, "supports_structured_prompts", False):
+            return
+        try:
+            sent = await send_prompt_response(
+                prompt_id=action_id,
+                prompt_kind=prompt.kind,
+                option_id=choice,
+            )
+        except Exception:
+            logger.debug(
+                "browser prompt response failed connection=%s action_id=%s",
+                self.connection_id,
+                action_id,
+                exc_info=True,
+            )
+            return
+        if sent is False:
+            return
+        self._child._pending_prompt_action_id = None
+        self._child._publish("idle", response_text="")
+
+    async def close(self) -> None:
+        async with self._close_lock:
+            if self._closed:
+                return
+            self._closed = True
+            try:
+                await self._child.aclose()
+            finally:
+                self._owner._browser_contexts.pop(self.connection_id, None)
 
 
 class Appliance:
@@ -270,23 +443,35 @@ class Appliance:
             self._sessions[self._active_profile.name] = session
 
         self._phrase_to_profile: dict[str, config.HouseholdProfile | None] = {}
+        self._ambiguous_phrases: set[str] = set()
         for prof in self._profiles:
             for phrase in prof.wake_phrases:
-                norm = phrase.strip().casefold()
+                if not isinstance(phrase, str):
+                    continue
+                norm = _normalise_wake_phrase(phrase)
                 if not norm:
                     continue
                 if norm in self._phrase_to_profile:
-                    if self._phrase_to_profile[norm] != prof:
-                        self._phrase_to_profile[norm] = None
+                    self._phrase_to_profile[norm] = None
+                    self._ambiguous_phrases.add(norm)
                 else:
                     self._phrase_to_profile[norm] = prof
 
         all_phrases: list[str] = []
+        seen_phrase_norms: set[str] = set()
+        duplicate_phrase = False
         for prof in self._profiles:
             for p in prof.wake_phrases:
+                if not isinstance(p, str):
+                    continue
                 p_clean = p.strip()
+                norm = _normalise_wake_phrase(p_clean)
+                if norm in seen_phrase_norms:
+                    duplicate_phrase = True
+                seen_phrase_norms.add(norm)
                 if p_clean and p_clean not in all_phrases:
                     all_phrases.append(p_clean)
+        self._duplicate_phrase = duplicate_phrase
         if all_phrases:
             if not getattr(self.args, "wake_phrases", None) or len(self._profiles) > 1:
                 self.args.wake_phrases = ", ".join(all_phrases)
@@ -311,6 +496,10 @@ class Appliance:
         self._signals_installed: list[signal.Signals] = []
         self._sigint_count = 0
         self._pending_prompt_action_id: str | None = None
+        self._browser_contexts: dict[str, _BrowserSessionContext] = {}
+        self._browser_context_mode = False
+        self._browser_stop: asyncio.Event | None = None
+        self._browser_connection_id: str | None = None
 
     @property
     def active_profile(self) -> config.HouseholdProfile:
@@ -323,16 +512,20 @@ class Appliance:
     # ---- display -------------------------------------------------------
 
     def _browser_capabilities(self) -> DisplayCapabilities:
-        """Return browser-safe, non-secret capabilities for the active session."""
-        raw_phrases = getattr(self._active_profile, "wake_phrases", ()) or ()
-        phrases = tuple(
-            phrase.strip()
-            for phrase in raw_phrases
-            if isinstance(phrase, str) and phrase.strip()
-        )
+        """Return the complete browser-safe, non-secret profile catalog."""
+        phrases_list: list[str] = []
+        for profile in self._profiles:
+            for raw_phrase in getattr(profile, "wake_phrases", ()) or ():
+                if not isinstance(raw_phrase, str):
+                    continue
+                phrase = " ".join(raw_phrase.strip().split())
+                if phrase and phrase not in phrases_list:
+                    phrases_list.append(phrase)
+        phrases = tuple(phrases_list)
         valid_phrases = (
             0 < len(phrases) <= MAX_DISPLAY_WAKE_PHRASES
-            and len({phrase.casefold() for phrase in phrases}) == len(phrases)
+            and not self._duplicate_phrase
+            and len({_normalise_wake_phrase(phrase) for phrase in phrases}) == len(phrases)
             and all(len(phrase) <= MAX_DISPLAY_WAKE_PHRASE_LENGTH for phrase in phrases)
         )
         if not valid_phrases:
@@ -409,10 +602,26 @@ class Appliance:
         through if the overlay appears mid-turn (unlikely but possible).
         """
         self._response_text = ""
-        self._published = ("prompt", "", None)
+        account = self._active_profile.display_name if self._active_profile else None
+        capabilities = (
+            self._browser_capabilities()
+            if getattr(self.args, "browser_voice", False) and self._connected
+            else None
+        )
+        self._published = ("prompt", "", None, account, capabilities)
 
         def _apply() -> None:
-            self.publisher.publish(state="prompt", prompt=prompt)
+            try:
+                self.publisher.publish(
+                    state="prompt",
+                    response_text="",
+                    status_text=None,
+                    account=account,
+                    prompt=prompt,
+                    capabilities=capabilities,
+                )
+            except TypeError:
+                self.publisher.publish(state="prompt", prompt=prompt)
 
         loop = self._loop
         if loop is None:
@@ -456,24 +665,65 @@ class Appliance:
             "appliance unhandled action action_id=%s choice=%s", action_id, choice
         )
 
-    async def _on_browser_voice_turn(self, text: str) -> None:
+    def _publish_busy_browser_turn(self) -> None:
+        active_state = self.publisher.snapshot.state
+        if active_state not in {
+            "heard",
+            "listening",
+            "thinking",
+            "buffering",
+            "speaking",
+        }:
+            active_state = "thinking"
+        self._publish(
+            active_state,
+            status_text="A response is already in progress",
+        )
+
+    def _publish_browser_route_rejection(
+        self, result: BrowserProfileRouteResult
+    ) -> None:
+        """Report an inline route failure without opening a follow-up turn."""
+        if result.reason == "active_turn":
+            self._publish_busy_browser_turn()
+            return
+        status = {
+            "ambiguous": "Wake phrase is ambiguous",
+            "unknown_phrase": "Wake phrase not recognized",
+            "unavailable": "Profile unavailable",
+        }.get(result.reason or "", "Profile could not be selected")
+        self._publish("error", response_text="", status_text=status)
+
+        # The rejection is terminal for the submitted turn, but the existing
+        # usable Hermes connection should remain available for the next
+        # explicit wake or typed turn. Give the browser one error snapshot so
+        # its controller can clear `submitting`, then return the display to an
+        # idle, ready state without letting that failed turn become a follow-up.
+        loop = self._loop
+        if loop is None:
+            self._publish("idle", response_text="", status_text=status)
+            return
+
+        def restore_idle() -> None:
+            if not self._stopping.is_set() and self._connected:
+                self._publish("idle", response_text="", status_text=status)
+
+        loop.call_soon(restore_idle)
+
+    async def _on_browser_voice_turn(self, text: str) -> bool:
         """Run one browser-recognized turn without opening local audio devices."""
         normalized = text.strip()
         if not normalized or len(normalized) > 4000:
-            return
+            return False
         if self._stopping.is_set() or not self._connected:
-            return
+            return False
         if self._browser_turn_task is not None and not self._browser_turn_task.done():
-            self._publish(
-                "error",
-                response_text="",
-                status_text="A response is already in progress",
-            )
-            return
+            self._publish_busy_browser_turn()
+            return False
 
         self._browser_turn_task = asyncio.current_task()
         try:
-            await self._run_browser_turn(normalized)
+            return await self._run_browser_turn(normalized)
         finally:
             if self._browser_turn_task is asyncio.current_task():
                 self._browser_turn_task = None
@@ -536,6 +786,20 @@ class Appliance:
                         response_text=display_text(response),
                         status_text=str(event.get("text") or "Thinking"),
                     )
+                elif kind == "prompt_request":
+                    prompt = _classify_prompt_request(event)
+                    if prompt is not None:
+                        logger.debug(
+                            "browser prompt_request kind=%s action=%s",
+                            prompt.kind,
+                            prompt.action_id,
+                        )
+                        self._pending_prompt_action_id = prompt.action_id
+                        self._publish_prompt(prompt)
+                    else:
+                        logger.debug(
+                            "browser unrecognised prompt_request event=%r", event
+                        )
                 elif kind == "audio_start":
                     incoming_format = (
                         int(event.get("sample_rate", 0)),
@@ -618,10 +882,20 @@ class Appliance:
                     publish_terminal_error(error_text)
                     return False
                 elif kind == "turn_end":
+                    had_audio = audio_active or streamed_audio or bool(file_audio)
                     if audio_active:
                         await server.send_audio_end(turn_id=turn_id)
                         audio_active = False
-                    self._publish("idle", response_text=display_text(response))
+                    notice = _classify_gateway_notice(response)
+                    if (
+                        self._pending_prompt_action_id is None
+                        and notice is not None
+                        and not had_audio
+                    ):
+                        self._pending_prompt_action_id = notice.action_id
+                        self._publish_prompt(notice)
+                    elif self._pending_prompt_action_id is None:
+                        self._publish("idle", response_text=display_text(response))
                     completed = True
                     break
             if not completed:
@@ -1233,13 +1507,143 @@ class Appliance:
 
     def _create_session_for_profile(self, profile: config.HouseholdProfile) -> Any:
         if self._session_factory is not None:
-            return self._session_factory(profile)
+            session = self._session_factory(profile)
+            self._apply_browser_identity(session)
+            return session
+        if self._browser_connection_id is not None:
+            profile_args = config.make_profile_args(self.args, profile)
+            profile_args.device_id = self._browser_connection_id
+            profile_args.session_id = self._browser_connection_id
+            return HermesSession(profile_args)
         if profile.name in self._sessions:
-            return self._sessions[profile.name]
+            session = self._sessions[profile.name]
+            self._apply_browser_identity(session)
+            return session
         profile_args = config.make_profile_args(self.args, profile)
+        if self._browser_connection_id is not None:
+            profile_args.device_id = self._browser_connection_id
+            profile_args.session_id = self._browser_connection_id
         return HermesSession(profile_args)
 
-    async def _switch_profile(self, profile: config.HouseholdProfile) -> bool:
+    def _apply_browser_identity(
+        self, session: Any, connection_id: str | None = None
+    ) -> None:
+        identity = (
+            connection_id
+            if connection_id is not None
+            else self._browser_connection_id
+        )
+        if identity is None:
+            return
+        with contextlib.suppress(Exception):
+            setattr(session, "session_id", identity)
+        session_args = getattr(session, "args", None)
+        if session_args is not None:
+            with contextlib.suppress(Exception):
+                setattr(session_args, "device_id", identity)
+            with contextlib.suppress(Exception):
+                setattr(session_args, "session_id", identity)
+
+    def _create_browser_session(
+        self, profile: config.HouseholdProfile, connection_id: str
+    ) -> tuple[Any, Any]:
+        """Build a fresh session and profile-scoped arguments per socket."""
+        profile_args = config.make_profile_args(self.args, profile)
+        # Hermes permits one live voice socket per client/device pair. A
+        # browser tab is a virtual device, so reusing the configured physical
+        # device ID would make the next tab evict the previous one.
+        profile_args.device_id = connection_id
+        profile_args.session_id = connection_id
+        if self._session_factory is not None:
+            session = self._session_factory(profile)
+            # Test and embedding factories commonly return a lightweight
+            # session rather than HermesSession(profile_args). Preserve the
+            # same per-browser identity contract for those adapters when they
+            # expose a writable session id or args object.
+            self._apply_browser_identity(session, connection_id)
+            return session, profile_args
+        return HermesSession(profile_args), profile_args
+
+    async def _create_browser_context(self, connection_id: str, audio_sender: Any) -> Any:
+        """Reserve one private Hermes/display context for an admitted browser."""
+        # A missing or unavailable first profile must not make every later
+        # catalog entry unreachable. A factory is an embedding/test boundary
+        # and may resolve credentials itself, so it gets the full ordered list;
+        # real Hermes sessions skip profiles with no resolved private token.
+        if self._session_factory is not None:
+            candidates = list(self._profiles)
+        else:
+            candidates = [profile for profile in self._profiles if profile.token]
+        if not candidates:
+            candidates = [self._active_profile]
+
+        last_error: Exception | None = None
+        for profile in candidates:
+            session: Any | None = None
+            child: Appliance | None = None
+            try:
+                session, profile_args = self._create_browser_session(
+                    profile, connection_id
+                )
+                child = Appliance(
+                    profile_args,
+                    publisher=DisplayStatePublisher(),
+                    session=session,
+                    session_factory=self._session_factory,
+                    profiles=self._profiles,
+                    # Do not give the child ownership of the browser socket
+                    # until its candidate session has connected. A failed
+                    # first catalog entry must not close the shared socket
+                    # while admission tries the next entry.
+                    server=None,
+                )
+                # `session` is already the connected profile's session. The
+                # child constructor starts from the catalog's first entry, so
+                # align its active account and cache before publishing idle.
+                child._active_profile = profile
+                child._sessions = {profile.name: session}
+                child._browser_connection_id = connection_id
+                child._loop = asyncio.get_running_loop()
+                await asyncio.wait_for(
+                    session.connect(), PROFILE_CONNECT_TIMEOUT
+                )
+                if self._stopping.is_set():
+                    raise asyncio.CancelledError
+                child._connected = True
+                child._server = audio_sender
+                context = _BrowserSessionContext(self, connection_id, child)
+                self._browser_contexts[connection_id] = context
+                child._publish("idle")
+                return context
+            except asyncio.CancelledError:
+                if child is not None:
+                    with contextlib.suppress(BaseException):
+                        await child.aclose()
+                elif session is not None:
+                    with contextlib.suppress(BaseException):
+                        await session.close()
+                raise
+            except Exception as error:
+                last_error = error
+                logger.debug(
+                    "browser profile unavailable during admission: %s",
+                    profile.name,
+                    exc_info=True,
+                )
+                if child is not None:
+                    with contextlib.suppress(BaseException):
+                        await child.aclose()
+                elif session is not None:
+                    with contextlib.suppress(BaseException):
+                        await session.close()
+
+        if last_error is not None:
+            raise RuntimeError("no household profile could connect") from last_error
+        raise RuntimeError("no household profile is configured")
+
+    async def _switch_profile(
+        self, profile: config.HouseholdProfile, *, publish_status: bool = True
+    ) -> bool:
         if self._active_profile == profile and self._connected:
             return True
 
@@ -1251,50 +1655,84 @@ class Appliance:
         )
 
         old_session = self._session
-        self._connected = False
-        self._set_listening()
-        if old_session is not None:
-            with contextlib.suppress(Exception):
-                await old_session.close()
-
-        self._active_profile = profile
-        self._session = self._create_session_for_profile(profile)
-        self._session.use_shared_recorder(self._recorder)
-
+        target_session = self._create_session_for_profile(profile)
         try:
-            await self._session.connect()
-            self._connected = True
-            self._set_listening()
-            self._publish("idle", status_text=f"Switched to {profile.display_name}")
-            return True
+            use_shared_recorder = getattr(target_session, "use_shared_recorder", None)
+            if callable(use_shared_recorder):
+                use_shared_recorder(self._recorder)
+            await asyncio.wait_for(target_session.connect(), PROFILE_CONNECT_TIMEOUT)
+            if self._stopping.is_set():
+                raise asyncio.CancelledError
+        except asyncio.CancelledError:
+            if target_session is not old_session:
+                await self._close_session_bounded(target_session)
+            raise
         except Exception:
             logger.debug("switching profile failed for %s", profile.name, exc_info=True)
-            self._connected = False
-            self._set_listening()
-            self._publish(
-                "disconnected",
-                status_text=f"Failed to connect {profile.display_name}",
-            )
-            self._request_reconnect()
+            if target_session is not old_session:
+                await self._close_session_bounded(target_session)
+            if publish_status:
+                self._publish(
+                    "idle",
+                    status_text=f"Profile unavailable: {profile.display_name}",
+                )
             return False
 
-    async def route_wake(self, phrase: str | None) -> bool:
+        self._session = target_session
+        self._active_profile = profile
+        self._connected = True
+        self._set_listening()
+        if publish_status:
+            self._publish("idle", status_text=f"Switched to {profile.display_name}")
+        if old_session is not None and old_session is not target_session:
+            close_task = asyncio.create_task(old_session.close())
+            try:
+                await asyncio.wait_for(
+                    asyncio.shield(close_task), SHUTDOWN_TASK_TIMEOUT
+                )
+            except asyncio.TimeoutError:
+                self._track_cleanup_task(close_task)
+            except asyncio.CancelledError:
+                self._track_cleanup_task(close_task)
+                raise
+            except Exception:
+                logger.debug("closing the previous profile session failed", exc_info=True)
+        return True
+
+    async def route_profile(
+        self, phrase: str | None, *, publish_status: bool = True
+    ) -> BrowserProfileRouteResult:
         if self._stopping.is_set() or not self._connected:
-            return False
+            return BrowserProfileRouteResult(False, reason="unavailable")
         if not phrase:
             if len(self._profiles) == 1:
-                return True
-            return False
-
-        normalized = phrase.strip().casefold()
-        profile = self._phrase_to_profile.get(normalized)
-        if profile is None:
-            logger.debug("ignoring unknown or ambiguous wake phrase: %r", phrase)
-            return False
+                profile = self._active_profile
+            else:
+                return BrowserProfileRouteResult(False, reason="unknown_phrase")
+        else:
+            normalized = _normalise_wake_phrase(phrase)
+            profile = self._phrase_to_profile.get(normalized)
+            if profile is None:
+                reason = (
+                    "ambiguous"
+                    if normalized in self._ambiguous_phrases
+                    else "unknown_phrase"
+                )
+                logger.debug("ignoring %s wake phrase: %r", reason, phrase)
+                return BrowserProfileRouteResult(False, reason=reason)
 
         current_state = self._coordinator.state if self._coordinator else handsfree.IDLE
+        if (
+            self._browser_turn_task is not None
+            and not self._browser_turn_task.done()
+        ):
+            return BrowserProfileRouteResult(False, reason="active_turn")
         if self._active_profile and profile.name == self._active_profile.name:
-            return True
+            if current_state != handsfree.IDLE:
+                return BrowserProfileRouteResult(False, reason="active_turn")
+            return BrowserProfileRouteResult(
+                True, account=self._active_profile.display_name
+            )
 
         if current_state != handsfree.IDLE:
             logger.debug(
@@ -1302,9 +1740,22 @@ class Appliance:
                 profile.name,
                 current_state,
             )
-            return False
+            return BrowserProfileRouteResult(False, reason="active_turn")
 
-        return await self._switch_profile(profile)
+        if not profile.token:
+            if publish_status:
+                self._publish(
+                    "idle",
+                    status_text=f"Profile unavailable: {profile.display_name}",
+                )
+            return BrowserProfileRouteResult(False, reason="unavailable")
+
+        if not await self._switch_profile(profile, publish_status=publish_status):
+            return BrowserProfileRouteResult(False, reason="unavailable")
+        return BrowserProfileRouteResult(True, account=profile.display_name)
+
+    async def route_wake(self, phrase: str | None) -> bool:
+        return (await self.route_profile(phrase)).accepted
 
     def _route_wake(self, phrase: str | None) -> bool:
         loop = self._loop
@@ -1343,22 +1794,37 @@ class Appliance:
             raise RuntimeError(str(error)) from error
 
     def _build(self) -> None:
-        if self._session is None:
-            self._session = self._create_session_for_profile(self._active_profile)
         tls_context = self._display_tls_context()
         if getattr(self.args, "browser_voice", False):
             if self._server is None:
-                self._server = DisplayServer(
-                    self.publisher,
-                    Path(__file__).with_name("static"),
-                    host=getattr(self.args, "display_host", "127.0.0.1"),
-                    port=getattr(self.args, "display_port", 0),
-                    allow_remote=getattr(self.args, "display_remote", False),
-                    on_action=self._on_action,
-                    on_voice_turn=self._on_browser_voice_turn,
-                    ssl_context=tls_context,
+                try:
+                    self._server = DisplayServer(
+                        self.publisher,
+                        Path(__file__).with_name("static"),
+                        host=getattr(self.args, "display_host", "127.0.0.1"),
+                        port=getattr(self.args, "display_port", 0),
+                        allow_remote=getattr(self.args, "display_remote", False),
+                        ssl_context=tls_context,
+                        public_origin=getattr(self.args, "display_public_origin", None),
+                        browser_session_limit=getattr(
+                            self.args, "display_max_browser_sessions", 8
+                        ),
+                        on_browser_connect=self._create_browser_context,
+                    )
+                except ValueError as error:
+                    raise RuntimeError(str(error)) from error
+                self._browser_context_mode = True
+            else:
+                self._browser_context_mode = bool(
+                    getattr(self._server, "browser_contexts_enabled", False)
                 )
+                if not self._browser_context_mode and self._session is None:
+                    self._session = self._create_session_for_profile(
+                        self._active_profile
+                    )
             return
+        if self._session is None:
+            self._session = self._create_session_for_profile(self._active_profile)
         if self._player is None:
             self._player = audio_module.PCMPlayer(
                 enabled=not getattr(self.args, "no_play", False),
@@ -1430,14 +1896,18 @@ class Appliance:
             )
         self._listener, self._coordinator = built
         if self._server is None:
-            self._server = DisplayServer(
-                self.publisher,
-                Path(__file__).with_name("static"),
-                host=getattr(self.args, "display_host", "127.0.0.1"),
-                port=getattr(self.args, "display_port", 0),
-                allow_remote=getattr(self.args, "display_remote", False),
-                on_action=self._on_action,
-            )
+            try:
+                self._server = DisplayServer(
+                    self.publisher,
+                    Path(__file__).with_name("static"),
+                    host=getattr(self.args, "display_host", "127.0.0.1"),
+                    port=getattr(self.args, "display_port", 0),
+                    allow_remote=getattr(self.args, "display_remote", False),
+                    on_action=self._on_action,
+                    public_origin=getattr(self.args, "display_public_origin", None),
+                )
+            except ValueError as error:
+                raise RuntimeError(str(error)) from error
         self._session.use_shared_recorder(self._recorder)
 
     def stop(self) -> None:
@@ -1446,6 +1916,8 @@ class Appliance:
         loop, reconnect = self._loop, self._reconnect
         if loop is not None and reconnect is not None:
             loop.call_soon_threadsafe(reconnect.set)
+        if loop is not None and self._browser_stop is not None:
+            loop.call_soon_threadsafe(self._browser_stop.set)
         if (
             loop is not None
             and self._supervisor_task is not None
@@ -1494,6 +1966,28 @@ class Appliance:
                 logger.debug("appliance cleanup failed", exc_info=True)
 
         task.add_done_callback(finished)
+
+    async def _close_session_bounded(self, session: Any) -> None:
+        """Close a session without holding a profile route indefinitely."""
+        close = getattr(session, "close", None)
+        if not callable(close):
+            return
+        try:
+            close_task = asyncio.create_task(close())
+        except Exception:
+            logger.debug("starting profile session cleanup failed", exc_info=True)
+            return
+        try:
+            await asyncio.wait_for(
+                asyncio.shield(close_task), SHUTDOWN_TASK_TIMEOUT
+            )
+        except asyncio.TimeoutError:
+            self._track_cleanup_task(close_task)
+        except asyncio.CancelledError:
+            self._track_cleanup_task(close_task)
+            raise
+        except Exception:
+            logger.debug("profile session cleanup failed", exc_info=True)
 
     async def _wait_for_cleanup_tasks(self) -> None:
         tasks = [task for task in self._cleanup_tasks if not task.done()]
@@ -1584,6 +2078,9 @@ class Appliance:
     async def run(self) -> None:
         self._loop = asyncio.get_running_loop()
         self._reconnect = asyncio.Event()
+        self._browser_stop = asyncio.Event()
+        if self._stopping.is_set():
+            self._browser_stop.set()
         self._install_signals(self._loop)
         self._build()
         self.info = await self._server.start()
@@ -1591,6 +2088,20 @@ class Appliance:
         if getattr(self.args, "browser_voice", False):
             if self._on_ready is not None:
                 self._on_ready(self.info)
+            if self._browser_context_mode:
+                try:
+                    await self._browser_stop.wait()
+                except asyncio.CancelledError:
+                    current = asyncio.current_task()
+                    if current is not None and getattr(current, "cancelling", lambda: 0)() > 0:
+                        raise
+                except KeyboardInterrupt:
+                    pass
+                finally:
+                    self._remove_signals(self._loop)
+                    await self.aclose()
+                return
+
             self._supervisor_task = asyncio.create_task(self._supervise())
             try:
                 await self._supervisor_task
@@ -1666,6 +2177,8 @@ class Appliance:
             return
         self._shutting_down = True
         self._stopping.set()
+        if self._browser_stop is not None:
+            self._browser_stop.set()
         self._connected = False
         self._set_listening()
         if self._session is not None:
@@ -1677,6 +2190,19 @@ class Appliance:
             self._browser_turn_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await self._browser_turn_task
+        for context in list(self._browser_contexts.values()):
+            cleanup_task = asyncio.create_task(context.close())
+            try:
+                await asyncio.wait_for(
+                    asyncio.shield(cleanup_task), SHUTDOWN_TASK_TIMEOUT
+                )
+            except asyncio.TimeoutError:
+                self._track_cleanup_task(cleanup_task)
+            except asyncio.CancelledError:
+                self._track_cleanup_task(cleanup_task)
+                raise
+            except Exception:
+                logger.debug("closing browser context failed", exc_info=True)
         if self._earcons is not None:
             abort = getattr(self._earcons, "abort", None)
             if callable(abort):
@@ -1751,6 +2277,22 @@ def build_arg_parser(argv: list[str] | None = None) -> argparse.ArgumentParser:
         "--browser-voice",
         action="store_true",
         help="let the browser own microphone capture and speaker playback",
+    )
+    parser.add_argument(
+        "--display-public-origin",
+        default=None,
+        metavar="URL",
+        help=(
+            "additional exact browser Origin allowed behind a reverse proxy "
+            "(for example, https://hermes-home.chappell-home.dev)"
+        ),
+    )
+    parser.add_argument(
+        "--display-max-browser-sessions",
+        type=int,
+        default=8,
+        metavar="COUNT",
+        help="maximum number of concurrent browser voice sessions (default: 8)",
     )
 
     # Only substitute the hands-free default when nobody has said otherwise.

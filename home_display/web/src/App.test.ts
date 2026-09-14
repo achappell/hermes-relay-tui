@@ -10,11 +10,12 @@ import type { DisplayView } from "./state/reducer";
 type BridgeOptions = {
   reducer?: unknown;
   onView: (view: DisplayView) => void;
-  onConnectionState: (state: "connecting" | "connected" | "disconnected") => void;
+  onConnectionState: (state: "connecting" | "connected" | "disconnected" | "capacity") => void;
   onProtocolError: (message: string) => void;
   onValidSnapshot?: () => void;
   onActionError?: (message: string) => void;
-  sendVoiceTurn?: (text: string) => Promise<boolean>;
+  sendVoiceTurn?: (text: string, wakePhrase?: string) => Promise<boolean>;
+  routeProfile?: (wakePhrase: string) => Promise<boolean>;
   onAudioEvent?: (event: DisplayAudioEvent) => void;
   onAudioChunk?: (chunk: ArrayBuffer) => void;
 };
@@ -25,6 +26,7 @@ const bridges = vi.hoisted(() => ({
     stop: ReturnType<typeof vi.fn>;
     dispatchAction: ReturnType<typeof vi.fn>;
     sendVoiceTurn: ReturnType<typeof vi.fn>;
+    routeProfile: ReturnType<typeof vi.fn>;
   }>,
   options: [] as BridgeOptions[],
 }));
@@ -35,6 +37,7 @@ vi.mock("./state/bridge", () => ({
     stop = vi.fn();
     dispatchAction = vi.fn(async (_action: DisplayAction) => true);
     sendVoiceTurn = vi.fn(async (_text: string) => true);
+    routeProfile = vi.fn(async (_wakePhrase: string) => true);
 
     constructor(...args: unknown[]) {
       bridges.instances.push(this);
@@ -175,6 +178,101 @@ describe("App", () => {
     expect(recognitions[2].stop).toHaveBeenCalledOnce();
 
     unmount();
+    delete (window as Window & { SpeechRecognition?: unknown }).SpeechRecognition;
+    delete (window as Window & { AudioContext?: unknown }).AudioContext;
+  });
+
+  it("wires the profile catalog through phrase-plus-question and wake-only hands-free turns", async () => {
+    const recognitions: FakeRecognition[] = [];
+    class FakeRecognition {
+      continuous = false;
+      interimResults = false;
+      lang = "";
+      onresult: ((event: unknown) => void) | null = null;
+      onerror: ((event: unknown) => void) | null = null;
+      onend: (() => void) | null = null;
+      start = vi.fn();
+      stop = vi.fn();
+
+      constructor() {
+        recognitions.push(this);
+      }
+    }
+    class FakeAudioContext {
+      state = "running";
+      currentTime = 0;
+      destination = {};
+      resume = vi.fn(async () => {});
+      createBuffer = vi.fn();
+      createBufferSource = vi.fn();
+    }
+    Object.defineProperty(window, "SpeechRecognition", {
+      configurable: true,
+      value: FakeRecognition,
+    });
+    Object.defineProperty(window, "AudioContext", {
+      configurable: true,
+      value: FakeAudioContext,
+    });
+
+    const { container, unmount } = render(App);
+    await tick();
+    const options = bridges.options.at(-1);
+    const capabilities = {
+      actions: [],
+      features: ["browser_voice", "browser_hands_free"],
+      wake_phrases: ["hey missy", "hey skippy", "hey spark"],
+      wake_listen_seconds: 8,
+      wake_followup_seconds: 8,
+    };
+    const idleSnapshot = {
+      type: "snapshot" as const,
+      schema: 1 as const,
+      sequence: 1,
+      state: "idle" as const,
+      response_text: "",
+      status_text: null,
+      media: null,
+      prompt: null,
+      capabilities,
+      is_busy: false,
+      connection_healthy: true,
+      can_choose: false,
+      can_dismiss: false,
+    };
+    options?.onConnectionState("connected");
+    options?.onView(idleSnapshot);
+    await tick();
+    await fireEvent.click(container.querySelector("[data-handsfree-button]") as HTMLElement);
+    await tick();
+
+    recognitions[0].onresult?.({
+      resultIndex: 0,
+      results: [{ isFinal: true, 0: { transcript: "hey spark, what should I cook" } }],
+    });
+    await tick();
+    expect(bridges.instances.at(-1)?.sendVoiceTurn).toHaveBeenCalledWith(
+      "what should I cook",
+      "hey spark",
+    );
+
+    unmount();
+    const second = render(App);
+    await tick();
+    const secondOptions = bridges.options.at(-1);
+    const secondIdleSnapshot = { ...idleSnapshot, sequence: 10 };
+    secondOptions?.onConnectionState("connected");
+    secondOptions?.onView(secondIdleSnapshot);
+    await tick();
+    await fireEvent.click(second.container.querySelector("[data-handsfree-button]") as HTMLElement);
+    await tick();
+    recognitions.at(-1)?.onresult?.({
+      resultIndex: 0,
+      results: [{ isFinal: true, 0: { transcript: "hey missy" } }],
+    });
+    await tick();
+    expect(bridges.instances.at(-1)?.routeProfile).toHaveBeenCalledWith("hey missy");
+    second.unmount();
     delete (window as Window & { SpeechRecognition?: unknown }).SpeechRecognition;
     delete (window as Window & { AudioContext?: unknown }).AudioContext;
   });
@@ -776,6 +874,113 @@ describe("App", () => {
     unmount();
   });
 
+  it("shows a safe browser error category after post-playback recovery fails", async () => {
+    const recognitions: Array<{
+      onresult: ((event: unknown) => void) | null;
+      onerror: ((event: unknown) => void) | null;
+      start: ReturnType<typeof vi.fn>;
+      stop: ReturnType<typeof vi.fn>;
+    }> = [];
+    class FakeRecognition {
+      continuous = false;
+      interimResults = false;
+      lang = "";
+      onresult: ((event: unknown) => void) | null = null;
+      onerror: ((event: unknown) => void) | null = null;
+      onend: (() => void) | null = null;
+      start = vi.fn();
+      stop = vi.fn(() => this.onend?.());
+
+      constructor() {
+        recognitions.push(this);
+      }
+    }
+    class FakeAudioContext {
+      state = "running";
+      currentTime = 0;
+      destination = {};
+      resume = vi.fn(async () => {});
+      createBuffer = vi.fn();
+      createBufferSource = vi.fn();
+    }
+    Object.defineProperty(window, "SpeechRecognition", {
+      configurable: true,
+      value: FakeRecognition,
+    });
+    Object.defineProperty(window, "AudioContext", {
+      configurable: true,
+      value: FakeAudioContext,
+    });
+
+    const { container, unmount } = render(App);
+    await tick();
+    const options = bridges.options.at(-1);
+    const capabilities = {
+      actions: [],
+      features: ["browser_voice", "browser_hands_free"],
+      wake_phrases: ["hey hermes"],
+      wake_listen_seconds: 8,
+      wake_followup_seconds: 8,
+    };
+    options?.onConnectionState("connected");
+    options?.onView({
+      type: "snapshot",
+      schema: 1,
+      sequence: 1,
+      state: "idle",
+      response_text: "",
+      status_text: null,
+      media: null,
+      prompt: null,
+      capabilities,
+      is_busy: false,
+      connection_healthy: true,
+      can_choose: false,
+      can_dismiss: false,
+    });
+    await tick();
+
+    await fireEvent.click(container.querySelector("[data-handsfree-button]") as HTMLElement);
+    await tick();
+    expect(recognitions).toHaveLength(1);
+    recognitions[0].onresult?.({
+      resultIndex: 0,
+      results: [{ isFinal: true, 0: { transcript: "hey hermes what is the weather" } }],
+    });
+    options?.onView({
+      type: "snapshot",
+      schema: 1,
+      sequence: 2,
+      state: "idle",
+      response_text: "Sunny.",
+      status_text: null,
+      media: null,
+      prompt: null,
+      capabilities,
+      is_busy: false,
+      connection_healthy: true,
+      can_choose: false,
+      can_dismiss: false,
+    });
+    await tick();
+    await tick();
+    expect(recognitions).toHaveLength(2);
+
+    recognitions[1].onerror?.({ error: "service-not-allowed" });
+    await tick();
+    expect(container.querySelector("[data-handsfree-error]")).toHaveTextContent(
+      "error category: service-not-allowed",
+    );
+    expect(container.querySelector("[data-handsfree-button]")).toHaveTextContent(
+      "Enable hands-free",
+    );
+    expect(bridges.instances.at(-1)?.sendVoiceTurn).toHaveBeenCalledOnce();
+
+    unmount();
+    delete (window as Window & { SpeechRecognition?: unknown }).SpeechRecognition;
+    delete (window as Window & { AudioContext?: unknown }).AudioContext;
+  });
+
   it("disarms hands-free when the state channel disconnects", async () => {
     class FakeRecognition {
       continuous = false;
@@ -872,7 +1077,7 @@ describe("App", () => {
       onerror: ((event: unknown) => void) | null = null;
       onend: (() => void) | null = null;
       start = vi.fn();
-      stop = vi.fn();
+      stop = vi.fn(() => this.onend?.());
 
       constructor() {
         recognitions.push(this);
@@ -1389,6 +1594,28 @@ describe("App", () => {
     await tick();
     expect(container.querySelector(".prompt-overlay")).toBeNull();
     expect(container.querySelector('[data-state="disconnected"]')).not.toBeNull();
+    unmount();
+  });
+
+  it("shows capacity instead of a stale protocol error while retrying", async () => {
+    const { container, unmount } = render(App);
+    await tick();
+    const options = bridges.options.at(-1);
+
+    options?.onProtocolError("display data unavailable");
+    await tick();
+    expect(container.querySelector(".status-text")).toHaveTextContent(
+      "display data unavailable",
+    );
+
+    options?.onConnectionState("capacity");
+    await tick();
+    expect(container.querySelector(".status-text")).toHaveTextContent(
+      "All browser sessions are busy — retrying",
+    );
+    expect(container.querySelector(".status-text")).not.toHaveTextContent(
+      "display data unavailable",
+    );
     unmount();
   });
 

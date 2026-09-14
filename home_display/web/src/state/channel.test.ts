@@ -6,7 +6,7 @@ class FakeSocket implements WebSocketLike {
   onopen: (() => void) | null = null;
   onmessage: ((event: MessageEvent<unknown>) => void) | null = null;
   onerror: (() => void) | null = null;
-  onclose: (() => void) | null = null;
+  onclose: ((event?: { code?: number }) => void) | null = null;
   binaryType: "blob" | "arraybuffer" = "blob";
   closed = false;
   sent: string[] = [];
@@ -27,8 +27,8 @@ class FakeSocket implements WebSocketLike {
     this.onmessage?.({ data } as MessageEvent<unknown>);
   }
 
-  closeFromServer(): void {
-    this.onclose?.();
+  closeFromServer(code = 1000): void {
+    this.onclose?.({ code });
   }
 }
 
@@ -86,6 +86,157 @@ describe("StateChannel", () => {
     channel.stop();
   });
 
+  it("sends a profile route and resolves it from the matching acknowledgement", async () => {
+    const socket = new FakeSocket();
+    const channel = new StateChannel(
+      "ws://display.test/state",
+      () => {},
+      () => {},
+      () => {},
+      () => socket,
+    );
+
+    channel.start();
+    socket.open();
+    socket.message(rawSnapshot(1));
+    const route = channel.sendProfileRoute("Hey Skippy");
+    expect(JSON.parse(socket.sent[0])).toEqual({
+      type: "profile_route",
+      schema: 1,
+      request_id: "route-1",
+      wake_phrase: "Hey Skippy",
+    });
+
+    socket.message(JSON.stringify({
+      type: "profile_route_ack",
+      schema: 1,
+      request_id: "route-1",
+      accepted: true,
+      account: "Jensen",
+    }));
+    await expect(route).resolves.toBe(true);
+    channel.stop();
+  });
+
+  it("resolves a rejected profile route without accepting an account", async () => {
+    const socket = new FakeSocket();
+    const channel = new StateChannel(
+      "ws://display.test/state",
+      () => {},
+      () => {},
+      () => {},
+      () => socket,
+    );
+
+    channel.start();
+    socket.open();
+    socket.message(rawSnapshot(1));
+    const route = channel.sendProfileRoute("hey alexa");
+    socket.message(JSON.stringify({
+      type: "profile_route_ack",
+      schema: 1,
+      request_id: "route-1",
+      accepted: false,
+      reason: "unknown_phrase",
+    }));
+
+    await expect(route).resolves.toBe(false);
+    channel.stop();
+  });
+
+  it("settles a pending profile route when the socket closes", async () => {
+    const socket = new FakeSocket();
+    const channel = new StateChannel(
+      "ws://display.test/state",
+      () => {},
+      () => {},
+      () => {},
+      () => socket,
+    );
+
+    channel.start();
+    socket.open();
+    socket.message(rawSnapshot(1));
+    const route = channel.sendProfileRoute("hey spark");
+    socket.closeFromServer();
+
+    await expect(route).resolves.toBe(false);
+    channel.stop();
+  });
+
+  it("times out a profile route acknowledgement", async () => {
+    vi.useFakeTimers();
+    const socket = new FakeSocket();
+    const channel = new StateChannel(
+      "ws://display.test/state",
+      () => {},
+      () => {},
+      () => {},
+      () => socket,
+    );
+
+    channel.start();
+    socket.open();
+    socket.message(rawSnapshot(1));
+    const route = channel.sendProfileRoute("hey spark");
+    vi.advanceTimersByTime(20_000);
+
+    await expect(route).resolves.toBe(false);
+    channel.stop();
+  });
+
+  it("rejects an invalid profile route without writing to the socket", async () => {
+    const socket = new FakeSocket();
+    const channel = new StateChannel(
+      "ws://display.test/state",
+      () => {},
+      () => {},
+      () => {},
+      () => socket,
+    );
+
+    channel.start();
+    socket.open();
+    socket.message(rawSnapshot(1));
+    await expect(channel.sendProfileRoute(" ")).resolves.toBe(false);
+    expect(socket.sent).toEqual([]);
+    channel.stop();
+  });
+
+  it("sends normalized prompt actions through the hydrated state socket", () => {
+    const socket = new FakeSocket();
+    const channel = new StateChannel(
+      "ws://display.test/state",
+      () => {},
+      () => {},
+      () => {},
+      () => socket,
+    );
+
+    channel.start();
+    socket.open();
+    expect(channel.sendAction({
+      type: "action",
+      schema: 1,
+      action_id: "sethome",
+      choice: "yes",
+    })).toBe(false);
+    socket.message(rawSnapshot(1));
+    expect(channel.sendAction({
+      type: "action",
+      schema: 1,
+      action_id: "sethome",
+      choice: "yes",
+    })).toBe(true);
+    expect(JSON.parse(socket.sent[0])).toEqual({
+      type: "action",
+      schema: 1,
+      action_id: "sethome",
+      choice: "yes",
+    });
+    channel.stop();
+  });
+
   it("emits only newer snapshots and resets the sequence on a new socket", () => {
     const sockets: FakeSocket[] = [];
     const received: number[] = [];
@@ -131,6 +282,47 @@ describe("StateChannel", () => {
     socket.open();
     socket.closeFromServer();
     expect(states).toEqual(["connecting", "disconnected"]);
+  });
+
+  it("reports capacity separately when the server closes with retryable 1013", () => {
+    vi.useFakeTimers();
+    const socket = new FakeSocket();
+    const states: string[] = [];
+    const channel = new StateChannel(
+      "ws://display.test/state",
+      () => {},
+      (state) => states.push(state),
+      () => {},
+      () => socket,
+    );
+
+    channel.start();
+    socket.closeFromServer(1013);
+    expect(states).toEqual(["connecting", "capacity"]);
+    channel.stop();
+  });
+
+  it("keeps the accumulated reconnect backoff after an unhydrated capacity close", () => {
+    vi.useFakeTimers();
+    const sockets: FakeSocket[] = [];
+    const factory = vi.fn(() => {
+      const socket = new FakeSocket();
+      sockets.push(socket);
+      return socket;
+    });
+    const channel = new StateChannel("ws://display.test/state", () => {}, () => {}, () => {}, factory);
+
+    channel.start();
+    sockets[0].closeFromServer();
+    vi.advanceTimersByTime(250);
+    expect(factory).toHaveBeenCalledTimes(2);
+    sockets[1].open();
+    sockets[1].closeFromServer(1013);
+    vi.advanceTimersByTime(499);
+    expect(factory).toHaveBeenCalledTimes(2);
+    vi.advanceTimersByTime(1);
+    expect(factory).toHaveBeenCalledTimes(3);
+    channel.stop();
   });
 
   it("uses exponential reconnect backoff with one pending timer", () => {

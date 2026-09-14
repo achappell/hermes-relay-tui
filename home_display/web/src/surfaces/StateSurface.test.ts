@@ -215,6 +215,19 @@ describe("StateSurface", () => {
     expect(screen.queryByText("stale response")).not.toBeInTheDocument();
   });
 
+  it("shows retryable capacity without exposing stale response content", () => {
+    const { container } = render(StateSurface, {
+      props: {
+        snapshot: snapshot("speaking", "stale response"),
+        connectionState: "capacity",
+      },
+    });
+
+    expect(container.querySelector('[data-state="disconnected"]')).not.toBeNull();
+    expect(screen.getByText("All browser sessions are busy — retrying")).toBeInTheDocument();
+    expect(screen.queryByText("stale response")).not.toBeInTheDocument();
+  });
+
   it("hides stale speaking content while the channel is reconnecting", () => {
     const { container } = render(StateSurface, {
       props: { snapshot: snapshot("speaking", "stale response"), connectionState: "connecting" },

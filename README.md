@@ -404,6 +404,14 @@ profiles:
     client_id: jensen-laptop
     device_id: jensen-mac
     session_id: jensen-session
+  spark:
+    display_name: Spark
+    wake_phrase: "hey spark"
+    url: wss://spark.example/voice-session
+    token_env: VOICE_SESSION_TOKEN_SPARK
+    client_id: spark-laptop
+    device_id: spark-mac
+    session_id: spark-session
 ```
 
 The `session_id` values in configuration are retained legacy/config labels,
@@ -701,14 +709,16 @@ For an iPad Safari browser tab, pass `--browser-voice` with the remote display
 options. The served page owns microphone permission, browser speech recognition,
 and speaker playback; ops receives only the recognized turn text and does not
 open a local audio device. After the display is connected and idle, tap
-**Enable hands-free** to grant permission and listen for the active profile's
-configured wake phrase. The browser discards ambient speech, strips the wake
-phrase before sending a question, opens an eight-second wake-free follow-up
-window after each completed answer, and reopens that window after every
-non-empty follow-up. Exactly `stop` is a silent local cancel. A disconnect,
-server error, or recognition failure turns hands-free off; it never replays an
-uncertain transcript. The browser reconnects to the same-origin state channel
-after an ops/container restart:
+**Enable hands-free** to grant permission and listen for the complete profile
+catalog. A recognized phrase selects that profile; the browser discards
+ambient speech, sends a phrase-plus-question as one turn with its exact
+configured wake phrase, and routes a wake-only capture through an
+acknowledgement before it records the question. After each completed answer it
+opens an eight-second wake-free follow-up window and reopens that window after
+every non-empty follow-up. Exactly `stop` is a silent local cancel. A
+disconnect, server error, or recognition failure turns hands-free off; it
+never replays an uncertain transcript. The browser reconnects to the
+same-origin state channel after an ops/container restart:
 
 ```bash
 hermes-relay-home --browser-voice \
@@ -727,6 +737,45 @@ The private key stays on the ops Mac; transfer only the public CA certificate
 to the iPad. For this story, validate the page in that Safari tab under Guided
 Access. Home Screen/PWA packaging is not included until it has passed a
 physical iPad gate.
+
+### Ops deployment behind Caddy
+
+The repeatable W/K deployment targets the ops Linux box at
+`https://hermes-home.chappell-home.dev`. The appliance binds to loopback on
+the ops host; Caddy owns HTTPS and proxies the page, `/state` WebSocket, and
+`/action` route. The Hermes token stays in the ops systemd environment and is
+never sent to the browser.
+
+Run the one-time bootstrap after adding the documented Caddy import and creating
+`/etc/hermes-relay/home.env` on ops:
+
+```bash
+OPS_HOST=ops.example ./scripts/deploy_ops_web.sh bootstrap \
+  --service-user hermes-home
+```
+
+Then deploy from a clean worktree with:
+
+```bash
+OPS_HOST=ops.example \
+  ./scripts/deploy_ops_web.sh deploy \
+  --profile-config /secure/ops/hermes-home-profile-config.yaml \
+  --profile-env-source /secure/ops/home.env
+```
+
+Each deploy builds and verifies an isolated `HEAD` snapshot, installs a
+versioned remote runtime and matching non-secret profile catalog, atomically
+switches the active release, restarts the service, validates/reloads Caddy, and
+checks the public page plus both browser transport routes. Roll back the
+previous installed release with:
+
+```bash
+OPS_HOST=ops.example ./scripts/deploy_ops_web.sh rollback
+```
+
+See the [ops deployment runbook](docs/ops-web-deployment.md) for SSH/sudo
+prerequisites, the service environment, DNS/TLS, failure recovery, and the
+physical browser voice gate.
 
 **A plain install does not include this.** `pip install hermes-relay-tui` and
 `brew install hermes-relay-tui` give you the typed client and the

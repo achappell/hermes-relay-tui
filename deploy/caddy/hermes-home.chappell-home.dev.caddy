@@ -1,0 +1,5 @@
+# Managed by hermes-relay-tui's ops-web deployment bootstrap.
+# The main Caddyfile must import this directory before this file is installed.
+@PUBLIC_HOST@ {
+	reverse_proxy 127.0.0.1:@DISPLAY_PORT@
+}

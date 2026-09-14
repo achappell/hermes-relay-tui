@@ -231,3 +231,30 @@
 - source_spec: `hermes-relay-android/_bmad-output/implementation-artifacts/spec-5-a-2-accessibility.md`
   summary: NOTE 2026-09-12 -- the contrast half of `5-A-2`'s environment limitation is closed, but measurement proved insufficient on its own and the two obligations should not be treated as substitutes.
   evidence: Contrast is now asserted across 56 pairs in both appearances, with each guard verified by deliberate regression rather than trusted because the suite was green. The `5-A-3` device pass nonetheless found a defect measurement could not catch: `surfaceVariant` and `errorContainer` held the same value, so Material's `contentColorFor` returned `onErrorContainer` for every ordinary `Card` and drew plain informational text in the unavailable colour. Every contrast pair involved was individually fine -- pink on panel measures 7.66:1. The defect was the mapping, not a ratio. TalkBack and font scaling remain entirely unproven.
+- source_spec: `_bmad-output/implementation-artifacts/spec-ops-web-deployment-pipeline.md`
+  summary: Add kiosk authentication or a stronger network access boundary before exposing the W/K hostname beyond the trusted household pilot.
+  evidence: The display's exact Origin check is not authentication, and the Caddy site intentionally has no credential or ACL layer; upstream architecture keeps kiosk authentication open and describes the pilot as explicit LAN trust.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-ops-web-deployment-pipeline.md`
+  summary: Make remote dependency installation reproducible with a pinned, hashed lock or an uploaded wheelhouse.
+  evidence: The published project requirements use lower bounds and the remote venv resolves dependencies from the live package index on each deploy, so identical commits can receive different dependency versions or fail offline.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-ops-web-deployment-pipeline.md`
+  summary: Add bounded release retention that protects `current` and `previous` while reclaiming older remote virtual environments.
+  evidence: Each successful commit creates a new release directory and the current pipeline never removes older directories, so long-running ops use can consume the release volume.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-ops-web-deployment-pipeline.md`
+  summary: Add signal-safe recovery for interruption after activation but before the public smoke check completes.
+  evidence: A locally delivered interrupt can terminate the wrapper between the successful remote activation and `run_public_check`; the current remote transaction handles command failures but not every local process interruption, and a correct trap must distinguish pre-activation upload from post-activation state.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-ops-web-deployment-pipeline.md`
+  summary: Decide whether an explicit rollback smoke failure should restore the release that was active before rollback.
+  evidence: `rollback` leaves its selected release active when the subsequent public probe fails; the frozen intent requires reporting rollback and deploy failures but does not specify whether this health failure should trigger a second automatic rollback.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-wk-concurrent-browser-session-isolation.md`
+  summary: Run the overlapping-turn and owner-disconnect smoke against the newly deployed WK-2 service on Ops.
+  evidence: The public Ops check and two-tab readiness smoke passed, but the currently deployed service predates WK-2, so sending overlapping turns there would not validate this implementation. The local two-client WebSocket, audio, failure, disconnect, prompt, reconnect, capacity, and full-suite checks pass; the deployed-branch gate needs an explicit operator deployment and live Hermes test.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-wk-profile-catalog.md`
+  summary: Complete the physical three-phrase/two-tab verification against the corrected Ops release.
+  evidence: The catalog was deployed to Ops, the service is active, Caddy serves the origin, and the redacted public page/action/state probe verifies `browser_hands_free` plus `hey missy`, `hey skippy`, and `hey spark`. Real browser speech, wake-only capture followed by a live Hermes turn, two simultaneous tabs, and cancellation of an in-flight route still require the supported browser/device gate.

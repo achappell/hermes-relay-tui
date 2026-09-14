@@ -10,17 +10,22 @@ from __future__ import annotations
 
 import asyncio
 import io
+import json
 import threading
 import types
 import wave
 from dataclasses import replace
 
 import pytest
+from websockets.exceptions import ConnectionClosed
+from websockets.legacy.client import connect
 
 import config
 import handsfree
 from home_display import appliance as appliance_module
 from home_display.appliance import Appliance
+from home_display.server import BrowserProfileRouteResult
+from home_display.state import DisplayPrompt, PromptOption
 
 
 class FakeSession:
@@ -217,9 +222,45 @@ def _args(**overrides):
         "wake_followup_seconds": 6.0,
         "wake_barge_in": False,
         "browser_voice": False,
+        "display_public_origin": None,
     }
     values.update(overrides)
     return types.SimpleNamespace(**values)
+
+
+def _catalog_profiles(*, jensen_token: str = "jensen-token"):
+    return [
+        config.HouseholdProfile(
+            name="amanda",
+            display_name="Amanda",
+            wake_phrases=("hey missy",),
+            url="ws://amanda.example/voice-session",
+            token="amanda-token",
+            client_id="amanda-client",
+            device_id="amanda-device",
+            session_id="amanda-session",
+        ),
+        config.HouseholdProfile(
+            name="jensen",
+            display_name="Jensen",
+            wake_phrases=("hey skippy",),
+            url="ws://jensen.example/voice-session",
+            token=jensen_token,
+            client_id="jensen-client",
+            device_id="jensen-device",
+            session_id="jensen-session",
+        ),
+        config.HouseholdProfile(
+            name="spark",
+            display_name="Spark",
+            wake_phrases=("hey spark",),
+            url="ws://spark.example/voice-session",
+            token="spark-token",
+            client_id="spark-client",
+            device_id="spark-device",
+            session_id="spark-session",
+        ),
+    ]
 
 
 def _build(appliance_state: dict):
@@ -310,6 +351,19 @@ async def _wait_for(predicate, *, timeout=2.0):
             return True
         await asyncio.sleep(0.005)
     return False
+
+
+async def _recv_until(socket, predicate, *, timeout=2.0):
+    deadline = asyncio.get_running_loop().time() + timeout
+    frames = []
+    while True:
+        remaining = deadline - asyncio.get_running_loop().time()
+        if remaining <= 0:
+            raise asyncio.TimeoutError
+        frame = await asyncio.wait_for(socket.recv(), remaining)
+        frames.append(frame)
+        if predicate(frame, frames):
+            return frames
 
 
 async def _run_until_idle(appliance, state, *, wake_after_connect=True, until=None):
@@ -573,16 +627,57 @@ async def test_browser_hands_free_capability_is_safe_for_invalid_profile_metadat
     assert capabilities.wake_listen_seconds == 8.0
     assert capabilities.wake_followup_seconds == 8.0
 
-    appliance._active_profile = replace(
+    invalid_profile = replace(
         appliance._active_profile,
         wake_phrases=tuple(f"phrase {index}" for index in range(9)),
     )
+    appliance._profiles[0] = invalid_profile
+    appliance._active_profile = invalid_profile
     appliance._publish("thinking")
     assert publisher.capabilities[-1].features == ("browser_voice",)
 
     appliance._connected = False
     appliance._publish("disconnected")
     assert publisher.capabilities[-1] is None
+
+
+@pytest.mark.asyncio
+async def test_browser_catalog_rejects_duplicate_normalized_wake_phrases():
+    first = config.HouseholdProfile(
+        name="amanda",
+        display_name="Amanda",
+        wake_phrases=("hey missy",),
+        url="ws://amanda.example/voice-session",
+        token="amanda-token",
+        client_id="amanda-client",
+        device_id="amanda-device",
+        session_id="amanda-session",
+    )
+    duplicate = config.HouseholdProfile(
+        name="jensen",
+        display_name="Jensen",
+        wake_phrases=(" HEY   MISSY ",),
+        url="ws://jensen.example/voice-session",
+        token="jensen-token",
+        client_id="jensen-client",
+        device_id="jensen-device",
+        session_id="jensen-session",
+    )
+    publisher = RecordingPublisher()
+    appliance = Appliance(
+        _args(browser_voice=True),
+        profiles=[first, duplicate],
+        publisher=publisher,
+        session=FakeSession(),
+    )
+    appliance._connected = True
+    appliance._publish("idle")
+
+    assert publisher.capabilities[-1].features == ("browser_voice",)
+    result = await appliance.route_profile("hey missy")
+    assert result.accepted is False
+    assert result.reason == "ambiguous"
+    assert appliance.active_profile.name == "amanda"
 
 
 @pytest.mark.asyncio
@@ -638,6 +733,1057 @@ async def test_browser_voice_turn_plays_a_valid_wav_fallback_when_pcm_is_not_str
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await task
+
+
+@pytest.mark.asyncio
+async def test_browser_contexts_get_fresh_profile_sessions_with_unique_ids(monkeypatch):
+    created: list[object] = []
+
+    class Session(FakeSession):
+        def __init__(self, args):
+            super().__init__()
+            self.args = args
+            created.append(self)
+
+    monkeypatch.setattr(appliance_module, "HermesSession", Session)
+    appliance = Appliance(_args(browser_voice=True), publisher=RecordingPublisher())
+
+    first = await appliance._create_browser_context("browser-one", FakeServer())
+    second = await appliance._create_browser_context("browser-two", FakeServer())
+    try:
+        assert len(created) == 2
+        assert created[0].args.session_id == "browser-one"
+        assert created[1].args.session_id == "browser-two"
+        assert created[0].args.client_id == appliance.active_profile.client_id
+        assert created[0].args.device_id != created[1].args.device_id
+        assert created[0].args.device_id.startswith("browser-")
+        assert created[1].args.device_id.startswith("browser-")
+        assert set(appliance._browser_contexts) == {"browser-one", "browser-two"}
+    finally:
+        await first.close()
+        await second.close()
+
+
+@pytest.mark.asyncio
+async def test_browser_admission_skips_a_profile_without_a_token(monkeypatch):
+    profiles = [
+        config.HouseholdProfile(
+            name="amanda",
+            display_name="Amanda",
+            wake_phrases=("hey missy",),
+            url="wss://amanda.example/voice-session",
+            token="",
+            client_id="amanda-client",
+            device_id="amanda-device",
+            session_id="amanda-session",
+        ),
+        config.HouseholdProfile(
+            name="jensen",
+            display_name="Jensen",
+            wake_phrases=("hey skippy",),
+            url="wss://jensen.example/voice-session",
+            token="jensen-token",
+            client_id="jensen-client",
+            device_id="jensen-device",
+            session_id="jensen-session",
+        ),
+    ]
+    created: list[object] = []
+
+    class Session(FakeSession):
+        def __init__(self, args):
+            super().__init__()
+            self.args = args
+            created.append(self)
+
+    monkeypatch.setattr(appliance_module, "HermesSession", Session)
+    appliance = Appliance(
+        _args(browser_voice=True),
+        profiles=profiles,
+        publisher=RecordingPublisher(),
+    )
+
+    context = await appliance._create_browser_context("browser-one", FakeServer())
+    try:
+        assert len(created) == 1
+        assert context._child.active_profile.name == "jensen"
+        assert context._child.publisher.snapshot.account == "Jensen"
+        assert created[0].args.token == "jensen-token"
+    finally:
+        await context.close()
+
+
+@pytest.mark.asyncio
+async def test_browser_admission_fallback_does_not_close_the_shared_socket():
+    first = FakeSession(connect_errors=1)
+    second = FakeSession()
+    sessions = [first, second]
+    sender = FakeServer()
+
+    appliance = Appliance(
+        _args(browser_voice=True),
+        publisher=RecordingPublisher(),
+        profiles=_catalog_profiles(),
+        session_factory=lambda _profile: sessions.pop(0),
+    )
+
+    context = await appliance._create_browser_context("browser-one", sender)
+    try:
+        assert context._child.active_profile.name == "jensen"
+        assert sender.closed is False
+        assert first.closes == 1
+    finally:
+        await context.close()
+
+
+@pytest.mark.asyncio
+async def test_browser_context_routes_wake_phrase_through_its_full_profile_catalog():
+    profiles = [
+        config.HouseholdProfile(
+            name="amanda",
+            display_name="Amanda",
+            wake_phrases=("hey missy",),
+            url="ws://amanda.example/voice-session",
+            token="amanda-token",
+            client_id="amanda-client",
+            device_id="amanda-device",
+            session_id="amanda-session",
+        ),
+        config.HouseholdProfile(
+            name="jensen",
+            display_name="Jensen",
+            wake_phrases=("hey skippy",),
+            url="ws://jensen.example/voice-session",
+            token="jensen-token",
+            client_id="jensen-client",
+            device_id="jensen-device",
+            session_id="jensen-session",
+        ),
+        config.HouseholdProfile(
+            name="spark",
+            display_name="Spark",
+            wake_phrases=("hey spark",),
+            url="ws://spark.example/voice-session",
+            token="spark-token",
+            client_id="spark-client",
+            device_id="spark-device",
+            session_id="spark-session",
+        ),
+    ]
+    created_sessions: list[FakeSession] = []
+
+    def create_session(_profile):
+        session = FakeSession()
+        created_sessions.append(session)
+        return session
+
+    appliance = Appliance(
+        _args(browser_voice=True),
+        publisher=RecordingPublisher(),
+        profiles=profiles,
+        session_factory=create_session,
+    )
+
+    first = await appliance._create_browser_context("browser-one", FakeServer())
+    second = await appliance._create_browser_context("browser-two", FakeServer())
+    try:
+        assert [profile.name for profile in first._child.profiles] == [
+            "amanda",
+            "jensen",
+            "spark",
+        ]
+        assert first.publisher.snapshot.capabilities.wake_phrases == (
+            "hey missy",
+            "hey skippy",
+            "hey spark",
+        )
+
+        first_result, second_result = await asyncio.gather(
+            first.handle_voice_turn(
+                "what is the weather?",
+                wake_phrase="hey skippy",
+            ),
+            second.handle_voice_turn(
+                "what is the forecast?",
+                wake_phrase="hey spark",
+            ),
+        )
+
+        assert first_result is True
+        assert second_result is True
+        assert first._child.active_profile.name == "jensen"
+        assert first.publisher.snapshot.account == "Jensen"
+        assert created_sessions[0].turns == []
+        assert created_sessions[1].turns == []
+        assert created_sessions[2].turns == ["what is the weather?"]
+        assert second._child.active_profile.name == "spark"
+        assert second.publisher.snapshot.account == "Spark"
+        assert created_sessions[3].turns == ["what is the forecast?"]
+    finally:
+        await first.close()
+        await second.close()
+
+
+@pytest.mark.asyncio
+async def test_browser_profile_route_failure_keeps_previous_session_usable():
+    profiles = [
+        config.HouseholdProfile(
+            name="amanda",
+            display_name="Amanda",
+            wake_phrases=("hey missy",),
+            url="ws://amanda.example/voice-session",
+            token="amanda-token",
+            client_id="amanda-client",
+            device_id="amanda-device",
+            session_id="amanda-session",
+        ),
+        config.HouseholdProfile(
+            name="jensen",
+            display_name="Jensen",
+            wake_phrases=("hey skippy",),
+            url="ws://jensen.example/voice-session",
+            token="jensen-token",
+            client_id="jensen-client",
+            device_id="jensen-device",
+            session_id="jensen-session",
+        ),
+    ]
+    initial = FakeSession()
+    unavailable = FakeSession(connect_errors=1)
+    appliance = Appliance(
+        _args(browser_voice=True),
+        publisher=RecordingPublisher(),
+        profiles=profiles,
+        session_factory=lambda profile: initial if profile.name == "amanda" else unavailable,
+    )
+
+    context = await appliance._create_browser_context("browser-one", FakeServer())
+    try:
+        result = await context.handle_profile_route("hey skippy")
+
+        assert result.accepted is False
+        assert result.reason == "unavailable"
+        assert context._child.active_profile.name == "amanda"
+        assert context._child._connected is True
+        assert initial.closes == 0
+        assert unavailable.closes == 1
+        assert context.publisher.snapshot.account == "Amanda"
+    finally:
+        await context.close()
+
+
+@pytest.mark.asyncio
+async def test_browser_profile_route_without_a_token_keeps_the_current_profile_usable():
+    initial = FakeSession()
+    appliance = Appliance(
+        _args(browser_voice=True),
+        profiles=_catalog_profiles(jensen_token=""),
+        publisher=RecordingPublisher(),
+        session_factory=lambda _profile: initial,
+    )
+
+    context = await appliance._create_browser_context("browser-one", FakeServer())
+    try:
+        result = await context.handle_profile_route("hey skippy")
+
+        assert result == BrowserProfileRouteResult(False, reason="unavailable")
+        assert context._child.active_profile.name == "amanda"
+        assert context.publisher.snapshot.account == "Amanda"
+        assert initial.connects == 1
+        assert initial.closes == 0
+    finally:
+        await context.close()
+
+
+@pytest.mark.asyncio
+async def test_browser_inline_unknown_route_reports_error_without_submitting_a_turn():
+    profiles = [
+        config.HouseholdProfile(
+            name="amanda",
+            display_name="Amanda",
+            wake_phrases=("hey missy",),
+            url="ws://amanda.example/voice-session",
+            token="amanda-token",
+            client_id="amanda-client",
+            device_id="amanda-device",
+            session_id="amanda-session",
+        ),
+        config.HouseholdProfile(
+            name="jensen",
+            display_name="Jensen",
+            wake_phrases=("hey skippy",),
+            url="ws://jensen.example/voice-session",
+            token="jensen-token",
+            client_id="jensen-client",
+            device_id="jensen-device",
+            session_id="jensen-session",
+        ),
+    ]
+    initial = FakeSession()
+    appliance = Appliance(
+        _args(browser_voice=True),
+        profiles=profiles,
+        session_factory=lambda _profile: initial,
+    )
+    context = await appliance._create_browser_context("browser-one", FakeServer())
+    updates = context.publisher.subscribe()
+    await anext(updates)
+    try:
+        assert await context.handle_voice_turn(
+            "what is the weather?", wake_phrase="hey alexa"
+        ) is False
+        error = await anext(updates)
+        assert error.state == "error"
+        assert error.status_text == "Wake phrase not recognized"
+        await asyncio.sleep(0)
+        idle = await anext(updates)
+        assert idle.state == "idle"
+        assert idle.status_text == "Wake phrase not recognized"
+        assert context._child.active_profile.name == "amanda"
+        assert initial.turns == []
+    finally:
+        await updates.aclose()
+        await context.close()
+
+
+@pytest.mark.asyncio
+async def test_browser_profile_switch_timeout_preserves_the_previous_session(monkeypatch):
+    profiles = [
+        config.HouseholdProfile(
+            name="amanda",
+            display_name="Amanda",
+            wake_phrases=("hey missy",),
+            url="ws://amanda.example/voice-session",
+            token="amanda-token",
+            client_id="amanda-client",
+            device_id="amanda-device",
+            session_id="amanda-session",
+        ),
+        config.HouseholdProfile(
+            name="jensen",
+            display_name="Jensen",
+            wake_phrases=("hey skippy",),
+            url="ws://jensen.example/voice-session",
+            token="jensen-token",
+            client_id="jensen-client",
+            device_id="jensen-device",
+            session_id="jensen-session",
+        ),
+    ]
+
+    class HangingSession(FakeSession):
+        async def connect(self):
+            self.connects += 1
+            await asyncio.sleep(10)
+
+    initial = FakeSession()
+    target = HangingSession()
+    appliance = Appliance(
+        _args(browser_voice=True),
+        profiles=profiles,
+        session_factory=lambda profile: initial if profile.name == "amanda" else target,
+    )
+    monkeypatch.setattr(appliance_module, "PROFILE_CONNECT_TIMEOUT", 0.01)
+    context = await appliance._create_browser_context("browser-one", FakeServer())
+    try:
+        result = await context.handle_profile_route("hey skippy")
+        assert result.accepted is False
+        assert result.reason == "unavailable"
+        assert context._child.active_profile.name == "amanda"
+        assert context._child._connected is True
+        assert initial.closes == 0
+        assert target.closes == 1
+    finally:
+        await context.close()
+
+
+@pytest.mark.asyncio
+async def test_browser_profile_switch_does_not_wait_unboundedly_for_the_old_session(
+    monkeypatch,
+):
+    class HangingCloseSession(FakeSession):
+        def __init__(self):
+            super().__init__()
+            self.release_close = asyncio.Event()
+
+        async def close(self) -> None:
+            self.closes += 1
+            await self.release_close.wait()
+
+    initial = HangingCloseSession()
+    target = FakeSession()
+    appliance = Appliance(
+        _args(browser_voice=True),
+        profiles=_catalog_profiles(),
+        publisher=RecordingPublisher(),
+        session_factory=lambda profile: initial if profile.name == "amanda" else target,
+    )
+    monkeypatch.setattr(appliance_module, "SHUTDOWN_TASK_TIMEOUT", 0.01)
+    context = await appliance._create_browser_context("browser-one", FakeServer())
+    try:
+        result = await asyncio.wait_for(
+            context.handle_profile_route("hey skippy"),
+            timeout=0.2,
+        )
+
+        assert result.accepted is True
+        assert context._child.active_profile.name == "jensen"
+        assert initial.closes == 1
+        initial.release_close.set()
+    finally:
+        initial.release_close.set()
+        await context.close()
+
+
+@pytest.mark.asyncio
+async def test_browser_active_turn_rejects_a_profile_route_without_switching():
+    profiles = [
+        config.HouseholdProfile(
+            name="amanda",
+            display_name="Amanda",
+            wake_phrases=("hey missy",),
+            url="ws://amanda.example/voice-session",
+            token="amanda-token",
+            client_id="amanda-client",
+            device_id="amanda-device",
+            session_id="amanda-session",
+        ),
+        config.HouseholdProfile(
+            name="jensen",
+            display_name="Jensen",
+            wake_phrases=("hey skippy",),
+            url="ws://jensen.example/voice-session",
+            token="jensen-token",
+            client_id="jensen-client",
+            device_id="jensen-device",
+            session_id="jensen-session",
+        ),
+    ]
+
+    class BlockingSession(FakeSession):
+        def __init__(self):
+            super().__init__()
+            self.started = asyncio.Event()
+            self.release = asyncio.Event()
+
+        def send_turn(self, text: str, *, stt_source: str = "local"):
+            self.turns.append(text)
+
+            async def events():
+                self.started.set()
+                yield {"type": "text_delta", "text": "answer"}
+                await self.release.wait()
+                yield {"type": "turn_end"}
+
+            return events()
+
+    initial = BlockingSession()
+    target = FakeSession()
+    appliance = Appliance(
+        _args(browser_voice=True),
+        profiles=profiles,
+        session_factory=lambda profile: initial if profile.name == "amanda" else target,
+    )
+    context = await appliance._create_browser_context("browser-one", FakeServer())
+    first_turn = asyncio.create_task(context.handle_voice_turn("first question"))
+    try:
+        assert await _wait_for(initial.started.is_set)
+        assert await context.handle_voice_turn(
+            "second question", wake_phrase="hey skippy"
+        ) is False
+        assert context._child.active_profile.name == "amanda"
+        assert target.connects == 0
+        initial.release.set()
+        assert await first_turn is True
+        assert initial.turns == ["first question"]
+    finally:
+        initial.release.set()
+        if not first_turn.done():
+            await first_turn
+        await context.close()
+
+
+@pytest.mark.asyncio
+async def test_browser_profile_route_rejects_while_a_structured_prompt_is_active():
+    initial = FakeSession()
+    appliance = Appliance(
+        _args(browser_voice=True),
+        profiles=_catalog_profiles(),
+        publisher=RecordingPublisher(),
+        session_factory=lambda _profile: initial,
+    )
+    context = await appliance._create_browser_context("browser-one", FakeServer())
+    try:
+        context._child._pending_prompt_action_id = "prompt-1"
+
+        result = await context.handle_profile_route("hey spark")
+
+        assert result == BrowserProfileRouteResult(False, reason="active_turn")
+        assert context._child.active_profile.name == "amanda"
+        assert initial.connects == 1
+    finally:
+        await context.close()
+
+
+@pytest.mark.asyncio
+async def test_isolated_browser_run_stops_without_building_a_shared_session():
+    ready = asyncio.Event()
+    appliance = Appliance(
+        _args(browser_voice=True),
+        publisher=RecordingPublisher(),
+        on_ready=lambda _info: ready.set(),
+    )
+    task = asyncio.create_task(appliance.run())
+    try:
+        await asyncio.wait_for(ready.wait(), 2)
+        assert appliance._browser_context_mode is True
+        assert appliance._session is None
+        appliance.stop()
+        await asyncio.wait_for(task, 2)
+        assert appliance._server._server is None
+        assert appliance._browser_contexts == {}
+    finally:
+        if not task.done():
+            appliance.stop()
+            await task
+
+
+@pytest.mark.asyncio
+async def test_two_browser_contexts_keep_turns_and_display_state_isolated(tmp_path):
+    (tmp_path / "index.html").write_text("ok", encoding="utf-8")
+    started: list[asyncio.Event] = []
+    releases: list[asyncio.Event] = []
+
+    class Session(FakeSession):
+        def __init__(self, label: str):
+            super().__init__()
+            self.label = label
+            self.args = types.SimpleNamespace(session_id=f"unassigned-{label}")
+            self.started = asyncio.Event()
+            self.release = asyncio.Event()
+            started.append(self.started)
+            releases.append(self.release)
+
+        def send_turn(self, text: str, *, stt_source: str = "local"):
+            self.turns.append(text)
+
+            async def events():
+                self.started.set()
+                yield {"type": "text_delta", "text": f"answer from {self.label}"}
+                await self.release.wait()
+                yield {
+                    "type": "audio_start",
+                    "sample_rate": 24000,
+                    "channels": 1,
+                    "sample_width": 2,
+                }
+                yield {"type": "audio_chunk", "data": self.label.encode()[:2]}
+                yield {"type": "audio_end"}
+                yield {"type": "turn_end"}
+
+            return events()
+
+    initial_sessions = [Session("amanda-one"), Session("amanda-two")]
+    routed_sessions = [Session("jensen-one"), Session("spark-two")]
+    all_sessions = initial_sessions + routed_sessions
+    sessions = list(all_sessions)
+
+    def session_factory(_profile):
+        return sessions.pop(0)
+
+    appliance = Appliance(
+        _args(browser_voice=True),
+        publisher=RecordingPublisher(),
+        profiles=_catalog_profiles(),
+        session_factory=session_factory,
+    )
+    appliance._build()
+    server = appliance._server
+    info = await server.start()
+    first = await connect(info.websocket_url)
+    second = await connect(info.websocket_url)
+    try:
+        assert json.loads(await first.recv())["state"] == "idle"
+        assert json.loads(await second.recv())["state"] == "idle"
+        await first.send(json.dumps({
+            "type": "voice_turn",
+            "schema": 1,
+            "text": "first",
+            "wake_phrase": "hey skippy",
+        }))
+        await second.send(json.dumps({
+            "type": "voice_turn",
+            "schema": 1,
+            "text": "second",
+            "wake_phrase": "hey spark",
+        }))
+        assert await _wait_for(
+            lambda: all(session.started.is_set() for session in routed_sessions)
+        )
+
+        contexts = list(appliance._browser_contexts.values())
+        assert len(contexts) == 2
+        assert {
+            initial_sessions[0].args.session_id,
+            initial_sessions[1].args.session_id,
+        } == set(appliance._browser_contexts)
+        assert {context.publisher.snapshot.account for context in contexts} == {
+            "Jensen",
+            "Spark",
+        }
+        assert {context.publisher.snapshot.response_text for context in contexts} == {
+            "answer from jensen-one",
+            "answer from spark-two",
+        }
+        assert [session.turns for session in initial_sessions] == [[], []]
+        assert [session.turns for session in routed_sessions] == [["first"], ["second"]]
+
+        first_response_frames = await _recv_until(
+            first,
+            lambda frame, _frames: isinstance(frame, str)
+            and json.loads(frame)["response_text"] == "answer from jensen-one",
+        )
+        second_response_frames = await _recv_until(
+            second,
+            lambda frame, _frames: isinstance(frame, str)
+            and json.loads(frame)["response_text"] == "answer from spark-two",
+        )
+        first_response = json.loads(first_response_frames[-1])
+        second_response = json.loads(second_response_frames[-1])
+        assert first_response["response_text"] == "answer from jensen-one"
+        assert second_response["response_text"] == "answer from spark-two"
+
+        routed_sessions[0].release.set()
+        routed_sessions[1].release.set()
+        first_audio = await _recv_until(
+            first,
+            lambda frame, _frames: isinstance(frame, str)
+            and json.loads(frame).get("type") == "audio_end",
+        )
+        second_audio = await _recv_until(
+            second,
+            lambda frame, _frames: isinstance(frame, str)
+            and json.loads(frame).get("type") == "audio_end",
+        )
+        assert any(frame == b"je" for frame in first_audio)
+        assert any(frame == b"sp" for frame in second_audio)
+        assert await _wait_for(
+            lambda: all(context.publisher.snapshot.state == "idle" for context in contexts)
+        )
+    finally:
+        await first.close()
+        await second.close()
+        await appliance.aclose()
+
+
+@pytest.mark.asyncio
+async def test_browser_context_failure_closes_only_its_socket(tmp_path):
+    (tmp_path / "index.html").write_text("ok", encoding="utf-8")
+
+    class FailingSession(FakeSession):
+        def send_turn(self, text: str, *, stt_source: str = "local"):
+            self.turns.append(text)
+
+            async def events():
+                raise ConnectionError("one upstream failed")
+                yield  # pragma: no cover
+
+            return events()
+
+    healthy = FakeSession([
+        {"type": "text_delta", "text": "still here"},
+        {"type": "turn_end"},
+    ])
+    sessions = [FailingSession(), healthy]
+
+    def session_factory(_profile):
+        return sessions.pop(0)
+
+    appliance = Appliance(
+        _args(browser_voice=True),
+        publisher=RecordingPublisher(),
+        session_factory=session_factory,
+    )
+    appliance._build()
+    info = await appliance._server.start()
+    first = await connect(info.websocket_url)
+    second = await connect(info.websocket_url)
+    try:
+        await first.recv()
+        await second.recv()
+        await first.send(json.dumps({"type": "voice_turn", "schema": 1, "text": "fail"}))
+        await second.send(json.dumps({"type": "voice_turn", "schema": 1, "text": "live"}))
+        assert await _wait_for(lambda: healthy.turns == ["live"])
+        with pytest.raises(ConnectionClosed):
+            while True:
+                await first.recv()
+        assert len(appliance._browser_contexts) == 1
+        assert next(iter(appliance._browser_contexts.values())).publisher.snapshot.response_text == "still here"
+    finally:
+        await first.close()
+        await second.close()
+        await appliance.aclose()
+
+
+@pytest.mark.asyncio
+async def test_browser_disconnect_cancels_only_its_active_turn(tmp_path):
+    (tmp_path / "index.html").write_text("ok", encoding="utf-8")
+
+    class BlockingSession(FakeSession):
+        def __init__(self):
+            super().__init__()
+            self.started = asyncio.Event()
+            self.release = asyncio.Event()
+
+        def send_turn(self, text: str, *, stt_source: str = "local"):
+            self.turns.append(text)
+
+            async def events():
+                self.started.set()
+                yield {"type": "text_delta", "text": "owner response"}
+                await self.release.wait()
+                yield {"type": "turn_end"}
+
+            return events()
+
+    blocked = BlockingSession()
+    healthy = FakeSession(
+        [{"type": "text_delta", "text": "healthy response"}, {"type": "turn_end"}]
+    )
+    sessions = [blocked, healthy]
+    appliance = Appliance(
+        _args(browser_voice=True),
+        publisher=RecordingPublisher(),
+        session_factory=lambda _profile: sessions.pop(0),
+    )
+    appliance._build()
+    info = await appliance._server.start()
+    first = await connect(info.websocket_url)
+    second = await connect(info.websocket_url)
+    try:
+        await first.recv()
+        await second.recv()
+        await first.send(
+            json.dumps({"type": "voice_turn", "schema": 1, "text": "owner"})
+        )
+        assert await _wait_for(blocked.started.is_set)
+
+        await first.close()
+        assert await _wait_for(
+            lambda: blocked.closes == 1
+            and len(appliance._browser_contexts) == 1
+            and appliance._server.browser_sessions_in_use == 1
+        )
+
+        await second.send(
+            json.dumps({"type": "voice_turn", "schema": 1, "text": "healthy"})
+        )
+        assert await _wait_for(lambda: healthy.turns == ["healthy"])
+    finally:
+        blocked.release.set()
+        await first.close()
+        await second.close()
+        await appliance.aclose()
+
+
+@pytest.mark.asyncio
+async def test_browser_context_reconnect_creates_a_fresh_session_without_replay(tmp_path):
+    (tmp_path / "index.html").write_text("ok", encoding="utf-8")
+    all_sessions = [FakeSession(), FakeSession()]
+    sessions = list(all_sessions)
+
+    def session_factory(_profile):
+        return sessions.pop(0)
+
+    appliance = Appliance(
+        _args(browser_voice=True),
+        publisher=RecordingPublisher(),
+        session_factory=session_factory,
+    )
+    appliance._build()
+    info = await appliance._server.start()
+    first = await connect(info.websocket_url)
+    second = None
+    try:
+        await first.recv()
+        first_context_id, first_context = next(iter(appliance._browser_contexts.items()))
+        first_context.publisher.publish(state="speaking", response_text="old answer")
+        await first.close()
+        assert await _wait_for(lambda: not appliance._browser_contexts)
+
+        second = await connect(info.websocket_url)
+        snapshot = json.loads(await second.recv())
+        assert snapshot["state"] == "idle"
+        second_context_id, second_context = next(iter(appliance._browser_contexts.items()))
+        assert second_context_id != first_context_id
+        assert second_context.publisher.snapshot.response_text == ""
+        assert all_sessions[0].closes == 1
+        assert all_sessions[1].connects == 1
+    finally:
+        await first.close()
+        if second is not None:
+            await second.close()
+        await appliance.aclose()
+
+
+@pytest.mark.asyncio
+async def test_a_second_turn_is_busy_only_in_its_browser_context(tmp_path):
+    (tmp_path / "index.html").write_text("ok", encoding="utf-8")
+    session = FakeSession()
+    session.started = asyncio.Event()
+    session.release = asyncio.Event()
+
+    def blocking_turn(text: str, *, stt_source: str = "local"):
+        session.turns.append(text)
+
+        async def events():
+            session.started.set()
+            yield {"type": "text_delta", "text": "first response"}
+            await session.release.wait()
+            yield {"type": "turn_end"}
+
+        return events()
+
+    session.send_turn = blocking_turn
+    other = FakeSession([{"type": "text_delta", "text": "other response"}, {"type": "turn_end"}])
+    all_sessions = [session, other]
+    sessions = list(all_sessions)
+
+    def session_factory(_profile):
+        return sessions.pop(0)
+
+    appliance = Appliance(
+        _args(browser_voice=True),
+        publisher=RecordingPublisher(),
+        session_factory=session_factory,
+    )
+    appliance._build()
+    info = await appliance._server.start()
+    first = await connect(info.websocket_url)
+    second = await connect(info.websocket_url)
+    try:
+        await first.recv()
+        await second.recv()
+        await first.send(json.dumps({"type": "voice_turn", "schema": 1, "text": "first"}))
+        assert await _wait_for(session.started.is_set)
+        await first.send(json.dumps({"type": "voice_turn", "schema": 1, "text": "second"}))
+        await second.send(json.dumps({"type": "voice_turn", "schema": 1, "text": "other"}))
+        first_context = next(
+            context
+            for context in appliance._browser_contexts.values()
+            if context._child._session is session
+        )
+        other_context = next(
+            context
+            for context in appliance._browser_contexts.values()
+            if context._child._session is other
+        )
+        assert await _wait_for(
+            lambda: first_context.publisher.snapshot.status_text
+            == "A response is already in progress"
+        )
+        assert first_context.publisher.snapshot.state in {
+            "heard",
+            "listening",
+            "thinking",
+            "buffering",
+            "speaking",
+        }
+        assert other_context.publisher.snapshot.status_text != "A response is already in progress"
+        assert await _wait_for(lambda: other.turns == ["other"])
+        session.release.set()
+    finally:
+        session.release.set()
+        await first.close()
+        await second.close()
+        await appliance.aclose()
+
+
+@pytest.mark.asyncio
+async def test_browser_prompt_action_cannot_cross_contexts():
+    all_sessions = [FakeSession(), FakeSession()]
+    sessions = list(all_sessions)
+    appliance = Appliance(
+        _args(browser_voice=True),
+        publisher=RecordingPublisher(),
+        session_factory=lambda _profile: sessions.pop(0),
+    )
+    first = await appliance._create_browser_context("browser-one", FakeServer())
+    second = await appliance._create_browser_context("browser-two", FakeServer())
+    prompt = DisplayPrompt(
+        kind="confirm",
+        title="Confirm",
+        body="Use this display?",
+        options=(PromptOption(id="yes", label="Yes"),),
+        action_id="sethome",
+    )
+    try:
+        first._child._pending_prompt_action_id = prompt.action_id
+        first._child._publish_prompt(prompt)
+        await second.handle_action("sethome", "yes")
+        assert first.publisher.snapshot.state == "prompt"
+        assert second.publisher.snapshot.state == "idle"
+        await first.handle_action("sethome", "yes")
+        assert all_sessions[0].turns == ["/sethome"]
+    finally:
+        await first.close()
+        await second.close()
+
+
+@pytest.mark.asyncio
+async def test_browser_prompt_request_and_action_stay_on_the_owning_socket(tmp_path):
+    (tmp_path / "index.html").write_text("ok", encoding="utf-8")
+
+    class PromptSession(FakeSession):
+        supports_structured_prompts = True
+
+        def __init__(self):
+            super().__init__()
+            self.responses = []
+            self.response_ready = asyncio.Event()
+
+        def send_turn(self, text: str, *, stt_source: str = "local"):
+            self.turns.append(text)
+
+            async def events():
+                yield {
+                    "type": "prompt_request",
+                    "kind": "confirm",
+                    "prompt_id": "confirm-1",
+                    "question": "Use the private browser session?",
+                }
+                await self.response_ready.wait()
+                yield {"type": "text_delta", "text": "Confirmed."}
+                yield {"type": "turn_end"}
+
+            return events()
+
+        async def send_prompt_response(self, **payload):
+            self.responses.append(payload)
+            self.response_ready.set()
+            return True
+
+    prompt_session = PromptSession()
+    other_session = FakeSession()
+    sessions = [prompt_session, other_session]
+    appliance = Appliance(
+        _args(browser_voice=True),
+        publisher=RecordingPublisher(),
+        session_factory=lambda _profile: sessions.pop(0),
+    )
+    appliance._build()
+    info = await appliance._server.start()
+    first = await connect(info.websocket_url)
+    second = await connect(info.websocket_url)
+    try:
+        await first.recv()
+        await second.recv()
+        await first.send(
+            json.dumps({"type": "voice_turn", "schema": 1, "text": "confirm"})
+        )
+        prompt_frames = await _recv_until(
+            first,
+            lambda frame, _frames: isinstance(frame, str)
+            and json.loads(frame).get("state") == "prompt",
+        )
+        assert json.loads(prompt_frames[-1])["prompt"]["action_id"] == "confirm-1"
+
+        await second.send(
+            json.dumps(
+                {
+                    "type": "action",
+                    "schema": 1,
+                    "action_id": "confirm-1",
+                    "choice": "yes",
+                }
+            )
+        )
+        await asyncio.sleep(0.01)
+        assert prompt_session.responses == []
+        assert json.loads(prompt_frames[-1])["state"] == "prompt"
+
+        await first.send(
+            json.dumps(
+                {
+                    "type": "action",
+                    "schema": 1,
+                    "action_id": "confirm-1",
+                    "choice": "yes",
+                }
+            )
+        )
+        assert await _wait_for(
+            lambda: prompt_session.responses
+            == [
+                {
+                    "prompt_id": "confirm-1",
+                    "prompt_kind": "confirm",
+                    "option_id": "yes",
+                }
+            ]
+        )
+    finally:
+        await first.close()
+        await second.close()
+        await appliance.aclose()
+
+
+@pytest.mark.asyncio
+async def test_browser_prompt_remains_visible_when_response_is_refused():
+    class RefusingSession(FakeSession):
+        supports_structured_prompts = True
+
+        async def send_prompt_response(self, **_payload):
+            return False
+
+    appliance = Appliance(
+        _args(browser_voice=True),
+        publisher=RecordingPublisher(),
+        session_factory=lambda _profile: RefusingSession(),
+    )
+    context = await appliance._create_browser_context("browser-one", FakeServer())
+    prompt = DisplayPrompt(
+        kind="confirm",
+        title="Confirm",
+        body="Keep waiting?",
+        options=(PromptOption(id="yes", label="Yes"),),
+        action_id="confirm-1",
+    )
+    try:
+        context._child._pending_prompt_action_id = prompt.action_id
+        context._child._publish_prompt(prompt)
+        await context.handle_action("confirm-1", "yes")
+        assert context.publisher.snapshot.state == "prompt"
+        assert context._child._pending_prompt_action_id == "confirm-1"
+    finally:
+        await context.close()
+
+
+@pytest.mark.asyncio
+async def test_browser_gateway_notice_becomes_a_prompt_overlay():
+    publisher = RecordingPublisher()
+    appliance = Appliance(
+        _args(browser_voice=True),
+        session=FakeSession(
+            [
+                {
+                    "type": "text_delta",
+                    "text": "No home channel is set. Type /sethome to configure.",
+                },
+                {"type": "turn_end"},
+            ]
+        ),
+        publisher=publisher,
+        profiles=_catalog_profiles(),
+        server=FakeServer(),
+    )
+    appliance._connected = True
+
+    assert await appliance._run_browser_turn("hello") is True
+    assert publisher.history[-1][0] == "prompt"
+    assert appliance._pending_prompt_action_id == "sethome"
+    assert publisher.accounts[-1] == appliance.active_profile.display_name
+    assert publisher.capabilities[-1].features == ("browser_voice", "browser_hands_free")
 
 
 @pytest.mark.asyncio
@@ -1350,6 +2496,18 @@ def test_display_remote_bind_is_opt_in():
     assert remote.display_remote is True
 
 
+def test_browser_session_limit_is_configurable():
+    from home_display import appliance
+
+    defaults = appliance.build_arg_parser([]).parse_args([])
+    limited = appliance.build_arg_parser([]).parse_args(
+        ["--display-max-browser-sessions", "3"]
+    )
+
+    assert defaults.display_max_browser_sessions == 8
+    assert limited.display_max_browser_sessions == 3
+
+
 def test_display_tls_options_are_optional_paths():
     from home_display import appliance
 
@@ -1367,6 +2525,61 @@ def test_display_tls_options_are_optional_paths():
     assert defaults.display_tls_key is None
     assert str(tls.display_tls_cert) == "cert.pem"
     assert str(tls.display_tls_key) == "key.pem"
+
+
+def test_display_public_origin_is_optional_and_explicit():
+    from home_display import appliance
+
+    defaults = appliance.build_arg_parser([]).parse_args([])
+    public = appliance.build_arg_parser([]).parse_args(
+        ["--display-public-origin", "https://hermes-home.chappell-home.dev"]
+    )
+
+    assert defaults.display_public_origin is None
+    assert public.display_public_origin == "https://hermes-home.chappell-home.dev"
+
+
+def test_browser_display_passes_public_origin_to_server(monkeypatch):
+    from home_display import appliance
+
+    captured = {}
+
+    class CapturingServer:
+        def __init__(self, *args, **kwargs):
+            captured.update(kwargs)
+
+    monkeypatch.setattr(appliance, "DisplayServer", CapturingServer)
+    relay = Appliance(
+        _args(
+            browser_voice=True,
+            display_public_origin="https://hermes-home.chappell-home.dev",
+        ),
+        session=FakeSession(),
+    )
+
+    relay._build()
+
+    assert captured["public_origin"] == "https://hermes-home.chappell-home.dev"
+
+
+def test_browser_display_reports_an_invalid_public_origin(monkeypatch):
+    from home_display import appliance
+
+    class RejectingServer:
+        def __init__(self, *args, **kwargs):
+            raise ValueError("public origin must use http or https with a host")
+
+    monkeypatch.setattr(appliance, "DisplayServer", RejectingServer)
+    relay = Appliance(
+        _args(
+            browser_voice=True,
+            display_public_origin="wss://hermes-home.chappell-home.dev/state",
+        ),
+        session=FakeSession(),
+    )
+
+    with pytest.raises(RuntimeError, match="public origin must use http or https"):
+        relay._build()
 
 
 def test_display_tls_is_restricted_to_browser_voice(tmp_path):
