@@ -1,32 +1,44 @@
 # Reviewer Gate — Rubric
 
-Date: 2026-09-08
+Date: 2026-09-13
 
 ## Verdict
 
-PASS after the sequence-epoch clarification applied to AD-4.
+PASS. The spine now covers the next-wave feature set at build-substrate
+altitude and identifies the first owned delivery slices.
 
 ## Coverage
 
-- The spine names a coherent paradigm and maps it to the actual Python, C, TUI, appliance, firmware, and Web/WASM boundaries.
-- AD-1 through AD-10 cover dependency direction, state ownership, protocol authority, shared data shapes, propagation scope, process topology, recovery, secrets, dependency isolation, and validation.
-- Every AD has Binds, Prevents, and an enforceable Rule.
-- The operational envelope is explicit: local fake-based validation, separate entry points, loopback-by-default display serving, runtime configuration, bounded reconnect, and fresh initiation after recovery.
-- The PRD capability map distinguishes repository-owned capabilities from device, calendar, provisioning, and iOS work outside this spine.
-- Deferred items include the dimensions that the current repository cannot honestly decide: device identity, LAN production security, arbitration, media-server boundaries, calendar providers, iOS coordination, hardware pinning, and centralization.
-
-## Findings
-
-No critical or high findings remain.
-
-The only material ambiguity found during review was whether display sequence numbers survive reconnects. AD-4 now defines a channel epoch: the first valid snapshot after attach/reconnect establishes the baseline, strict increase applies within the epoch, and numbers are not compared across epochs.
-
-The TUI was also explicitly distinguished from display-capable front ends so the spine does not claim that the current terminal transcript already consumes the appliance display contract.
+- The paradigm still matches the brownfield repository: ports and adapters,
+  with a UI-free Python session core and portable C display reducer.
+- AD-1 through AD-13 preserve the existing front-end, display, recovery,
+  secret, dependency, validation, ESP32, mobile, and typed-choice decisions.
+- AD-14 through AD-23 assign Home authority, pairing, Profile claims,
+  capabilities, redacted observation, timing, sensitive entry, artifact
+  mutation, transparent bridge framing, and the safe diagnostics boundary.
+- Every architecture decision has Binds, Prevents, and an enforceable Rule.
+- The operational envelope now names the Home bridge, route identity,
+  server-held Hermes credentials, ephemeral observation, and playback-clock
+  timing.
+- The capability map covers FR-24 through FR-50 and distinguishes Home-owned
+  work, endpoint adapters, deferred native choice semantics, separate artifact
+  backends, and FR-51 through FR-53 diagnostics ownership.
+- AD-23 keeps automatic diagnostics content-safe and best-effort while routing
+  explicit incident controls through Home authorization.
+- Deferred items contain implementation choices that could otherwise be
+  mistaken for settled technology: credential transport details, health
+  vocabulary, notification policy, native choices, backend tickets, and
+  hardware/toolchain evidence.
+- The feature slate records the first three slices in dependency order:
+  pairing/credentials, Profile mapping/conversation claims, and the Home
+  bridge/route roaming path.
 
 ## Evidence
 
-- Architecture lint: zero findings.
-- Python suite: 833 passed.
-- Web suite: 126 passed.
-- Svelte diagnostics: zero errors and zero warnings.
-- Vite production build: passed.
+- `lint_spine.py`: zero findings.
+- The architecture memlog contains the adopted decisions and the added
+  transparent-bridge decision.
+- No source-code files were changed by this architecture pass; the existing
+  dirty implementation artifacts were preserved.
+- The full test suites were not rerun because this pass changed only planning
+  artifacts. Code validation belongs to the owning implementation slice.

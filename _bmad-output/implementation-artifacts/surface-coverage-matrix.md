@@ -18,6 +18,9 @@ sources:
   - shared/display/README.md
   - docs/bmad-upstream.md
   - ../hermes-relay-ios/_bmad-output/implementation-artifacts/epic-1-context.md
+  - ../hermes-relay-home/_bmad-output/specs/spec-profile-mapping-conversation-claims/SPEC.md
+  - ../hermes-relay-home/_bmad-output/planning-artifacts/architecture/architecture-hermes-relay-home-2026-09-12/ARCHITECTURE-SPINE.md
+  - '~/Documents/Vaults/Personal Vault/projects/hermes-home/sources/prds/prd-hermes-home-next-wave-2026-09-13/prd.md'
 ---
 
 # Surface coverage index across BMad epics
@@ -92,6 +95,20 @@ Hermes session authority
 - iOS and Android require capability and safety parity, not pixel or source
   parity. Each native Client owns its platform lifecycle, permissions, audio,
   secure storage, accessibility, and local history.
+
+## Next-wave architecture coverage
+
+These rows are the cross-repository doorway index for the current Home slices.
+They record ownership and dependencies; the linked Home artifacts remain the
+authoritative specifications and architecture decisions.
+
+| Slice | Product requirements | Owner | Architecture / specification | Dependency or gap |
+|---|---|---|---|---|
+| 0 — Standard Hermes compatibility and cross-surface migration | FR-23–FR-27 plus shared migration gate | `hermes-relay-home` with every endpoint owner | [Migration specification](../../hermes-relay-home/_bmad-output/specs/spec-standard-hermes-compatibility-migration/SPEC.md), Home AD-14, TUI AD-24 | Must pin the Standard Hermes baseline, preserve JSON/PCM/timing/prompt/interrupt semantics, and record per-surface configuration, live-smoke, rollback, and no-replay evidence before any default switch. |
+| A — pairing and credentials | FR-25–FR-30 | `hermes-relay-home` | Home foundation specification; Home AD-4 and AD-7 | Endpoint pairing adapters and failure-path evidence remain delivery work. |
+| B — Profile mapping and conversation claims | FR-31–FR-33 | `hermes-relay-home` | [Slice B specification](../../hermes-relay-home/_bmad-output/specs/spec-profile-mapping-conversation-claims/SPEC.md), state machine, and Home AD-8 | Depends on the Slice A credential/grant boundary; wake, display, and TUI adapters must consume the Home claim contract. |
+| C — Home bridge and route roaming | FR-24–FR-30 | `hermes-relay-home` with endpoint adapters | [Slice C specification](../../hermes-relay-home/_bmad-output/specs/spec-home-bridge-route-roaming/SPEC.md), route/session companion, Home AD-9, and TUI AD-22 | Route identity proof, exact bridge envelope/path, active-audio transition, and timing/reconnect evidence remain to be decided or delivered; the standard Hermes channel remains the transport seed. |
+| D — household diagnostics and incident review | FR-51–FR-53 | `hermes-relay-home` with TUI, phone, display, and ops adapters | [Slice D specification](../../hermes-relay-home/_bmad-output/specs/spec-household-diagnostics-incident-review/SPEC.md), diagnostics companion, Home AD-12, and TUI AD-23 | Concrete log/bundle stores, trusted capture surfaces, redaction enforcement, queue policy, and retention/deletion evidence remain open for implementation. |
 
 ## Epic 1 — Have a reliable Hermes conversation
 
