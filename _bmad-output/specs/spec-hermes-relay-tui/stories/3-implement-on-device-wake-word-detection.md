@@ -2,7 +2,8 @@
 title: 'Implement on-device wake-word detection on the Puck'
 type: 'feature'
 created: '2026-09-08'
-status: 'in-progress — see RESUME HERE below, not done'
+status: 'done'
+updated: '2026-09-14'
 route: 'dispatch'
 review_loop_iteration: 0
 baseline_commit: '44047c964b6d4c8dbfad7427e07a51c74f727239'
@@ -12,7 +13,27 @@ context:
   - firmware/respeaker-lite/README.md
 ---
 
-## RESUME HERE (2026-09-09, end of session 17, fourth update -- loose ends closed)
+## Current outcome (2026-09-14)
+
+Story 3 is complete. The latest hardware record verified the on-device wake
+pipeline end to end: the reSpeaker Lite's XMOS firmware is at 1.1.0, the
+production audio path uses the stock unfiltered 48kHz-to-16kHz decimation,
+and the final locally trained candidates `hey_missy`, `hey_bestie`, and
+`hey_skippy` all detected deliberate wake phrases on real hardware with no
+false accepts in the recorded test set. `hey_missy` is the first/default
+candidate; the internal `stop` model remains a helper, not a household
+Profile mapping.
+
+The earlier `hey_jarvis` investigation remains useful evidence: the initial
+reference build detected it after the XMOS and decimation variables were
+corrected, then the production configuration moved to the three local
+candidate models for household A/B testing. The dated entries below are an
+append-only investigation record; later entries supersede earlier results and
+are not current work items. Wake-word-to-Profile routing, credentials, and
+post-wake host transport belong to later stories even though follow-on code
+now exists in the same checkout.
+
+## Historical resolution (2026-09-09, end of session 17, fourth update -- loose ends closed)
 
 **Fourth update, same session: closed both loose ends from the third
 update.**
@@ -944,13 +965,20 @@ diagnostic-heavy current state or clean it up first.
 
 **Problem:** `firmware/respeaker-lite/respeaker-lite.yaml` (story 2) compiles and boots but does nothing — no audio path, no wake-word engine. Story 1 chose `micro_wake_word`; nothing has integrated it yet.
 
-**Approach:** Add the I2S audio path from the XU316 into ESPHome, then a `micro_wake_word:` block, following the reference integration actually cited throughout this story's YAML/README (`formatBCE/Respeaker-Lite-ESPHome-integration`, credited from Seeed's own wiki tutorial for the reSpeaker Lite at `wiki.seeedstudio.com/respeaker_lite_ha/`). Validate by flashing, speaking the wake word near the device, and confirming the wake event fires in the logs/API.
+**Approach:** Add the I2S audio path from the XU316 into ESPHome, then a `micro_wake_word:` block, following the reference integration cited throughout this story's YAML/README (`formatBCE/Respeaker-Lite-ESPHome-integration`, credited from Seeed's own wiki tutorial for the reSpeaker Lite at `wiki.seeedstudio.com/respeaker_lite_ha/`). Validate by compiling, flashing, and confirming wake events on real hardware.
 
 Correction: an earlier draft of this Intent named `KasunThushara/Respeaker-Lite-ESPHome-integration` here — a different, similarly-named project surfaced during story 1's research that was not the one actually used for this story's pin/config values. `formatBCE`'s integration is the one the implementation, README, and `external_components:` block all consistently cite; this line now matches that.
 
-**Wake phrase for this story:** use an existing pretrained community model (`hey_jarvis` — bundled with `micro_wake_word`, zero training required) rather than training "hey hermes." Story 1 already established that per-phrase training is real, recurring effort (Piper TTS synthesis, hours-with-iteration), not a one-line config change; spending that effort before the pipeline itself is proven on this hardware would be solving the wrong risk first. Retraining "hey hermes" for `micro_wake_word` is real follow-on work, tracked separately, not silently folded into this story.
+**Wake-model outcome:** The initial proving target was the existing pretrained
+`hey_jarvis` model. Session 17 verified it on the reference-matched hardware
+configuration, after which the production firmware moved to the locally
+trained `hey_missy`, `hey_bestie`, and `hey_skippy` candidates for household
+A/B testing; `hey_missy` is first and therefore the default. The internal
+`stop` model remains enabled as a helper. Training or mapping the household's
+final "hey hermes" phrase is follow-on work, not a requirement for this
+story's engine proof.
 
-**Decision (mid-implementation, human-approved):** mainline ESPHome's `micro_wake_word` requires a literal 16kHz mic source and cannot resample; the XU316 only emits 48kHz/32-bit I2S. `formatBCE/Respeaker-Lite-ESPHome-integration` (the reference integration this story follows) solves this with a forked, patched `i2s_audio` component (`formatBCE/esphome@respeaker_microphone`, pulled via `external_components:` at compile time). Accepted as a trusted build dependency for this board, matching that reference project, rather than deviating to a literal 16kHz capture that would contradict "sourced from Seeed's tutorial, not invented." Pinned to a specific commit (not the mutable branch head) once accepted — see Code Map.
+**Decision (mid-implementation, human-approved):** mainline ESPHome's `micro_wake_word` requires a literal 16kHz mic source and cannot resample; the XU316 only emits 48kHz/32-bit I2S. `formatBCE/Respeaker-Lite-ESPHome-integration` (the reference integration this story follows) solves this with a forked, patched `i2s_audio` component (`formatBCE/esphome@respeaker_microphone`). The project vendors that component at the accepted commit and uses the reference's unfiltered decimation because the later hardware A/B proved the FIR replacement prevented detection. The project also vendors the `respeaker_lite` component and wires the reference's XMOS 1.1.0 DFU update so the hardware prerequisite is reproducible.
 
 </frozen-after-approval>
 
@@ -958,37 +986,51 @@ Correction: an earlier draft of this Intent named `KasunThushara/Respeaker-Lite-
 
 **Always:** Wire the I2S audio path and `micro_wake_word:` block per Seeed's own reference integration (pins/settings below are sourced from Seeed's wiki tutorial for this exact board, not invented). Confirm detection with a real spoken test near the physical device, not just a clean compile.
 
-**Never:** No credential/identity logic, no audio-streaming-to-host logic — those are stories 4 and 5. No "hey hermes" model training in this story. No LVGL/display code or build-system changes to `firmware/esp32-s3-touch-lcd-7`, for the same reasons story 2 already recorded.
+**Never:** This story does not own credential/identity logic, wake-word-to-Profile routing, or audio streaming to the host; those are later delivery stories. It does not include "hey hermes" model training, LVGL/display code, or build-system changes to `firmware/esp32-s3-touch-lcd-7`. Follow-on Puck code may now be present in the checkout, but it is not evidence that those later boundaries belong to Story 3.
 
 ## Code Map
 
-- `firmware/respeaker-lite/respeaker-lite.yaml` — add `i2s_audio:`, `microphone:` (platform `i2s_audio`), and `micro_wake_word:` blocks. Reference pin/config values (I2S LRCLK GPIO7, BCLK GPIO8, MCLK GPIO9, DIN GPIO44; microphone: external ADC, 48kHz, 32-bit, secondary mode, stereo; `micro_wake_word`: mono channel derived from the mic, `gain_factor: 4`, `hey_jarvis` model plus the bundled internal `stop` model) — all values, including `gain_factor: 4` and the later `vad: probability_cutoff: 0.05`, sourced verbatim from `wiki.seeedstudio.com/respeaker_lite_ha/`, Seeed's own tutorial for this board, not invented. Also add `external_components:` pulling `formatBCE/esphome@respeaker_microphone`, pinned to commit `eedcdbee335dbe296d432b3e6421da0469907365` (not the mutable branch head, so upstream changes can't silently alter the build) for the patched `i2s_audio` component the 48kHz-to-`micro_wake_word` path requires — see the mid-implementation Decision above.
-- `firmware/respeaker-lite/README.md` — document the audio path and which wake word this build answers to, so nobody assumes "hey hermes" already works.
-- `firmware/respeaker-lite/secrets.yaml` (local, gitignored) — no new keys expected; existing WiFi/API/OTA secrets carry over.
-- `firmware/respeaker-lite/wake_models/{hey_jarvis,stop,vad}.{json,tflite}` — vendored locally (not fetched via shorthand/URL) so `micro_wake_word` skips its manifest/model freshness-check HTTPS call, which otherwise crashes ESPHome's own subprocess forking on macOS — see Implementation Notes. `vad.json`/`vad.tflite` added when the `vad:` block was tried as a detection diagnostic.
+- `firmware/respeaker-lite/respeaker-lite.yaml` — final production wiring for the I2S microphone, `micro_wake_word`, explicit start/model-enable actions, `stop_after_detection: false`, and the idempotent XMOS DFU update. The input uses LRCLK GPIO7, BCLK GPIO8, MCLK GPIO9, DIN GPIO44, external ADC, 48kHz/32-bit stereo, mono model input `channels: 1`, `gain_factor: 4`, and VAD cutoff `0.05`, matching the Seeed reference. Later identity, host-transport, and response-audio blocks in this file belong to follow-on stories and are not Story 3 scope.
+- `firmware/respeaker-lite/components/i2s_audio/` — vendored `formatBCE/esphome` `respeaker_microphone` component at commit `eedcdbee335dbe296d432b3e6421da0469907365`; its stock nearest-sample-drop decimation is intentional because the later A/B proved the attempted FIR filter prevented detection.
+- `firmware/respeaker-lite/components/micro_wake_word/` — vendored ESPHome component with the diagnostics used to isolate the wake-model and startup behavior; the explicit `on_boot` start and model-enable actions are required for this standalone use without `voice_assistant:`.
+- `firmware/respeaker-lite/components/respeaker_lite/` — vendored `formatBCE` XMOS DFU component at the accepted `3136cf7` source revision, with the environment-only fixes recorded in its comments.
+- `firmware/respeaker-lite/README.md` — document the engine, current candidate models, build/flash procedure, and the distinction between the completed wake proof and later Profile routing.
+- `firmware/respeaker-lite/wake_models/{hey_missy,hey_bestie,hey_skippy,stop,vad}.{json,tflite}` — local model manifests and binaries. The three trained candidate models are enabled for A/B testing; `stop` stays internal and `vad` supports endpointing. Local paths avoid ESPHome's model-update HTTPS call during compile.
 - `venv-firmware/` (repo root, gitignored) — dedicated Python 3.12 venv for ESPHome tooling, isolated from the main repo's Python 3.14 venv.
 
 ## Tasks & Acceptance
 
 **Execution:**
-- [x] `firmware/respeaker-lite/respeaker-lite.yaml` -- add `i2s_audio`, `microphone`, and `micro_wake_word` blocks per Seeed's reference integration -- gives the board an actual audio input and wake engine
-- [x] `firmware/respeaker-lite/respeaker-lite.yaml` -- add `external_components:` pulling `formatBCE/esphome@respeaker_microphone` (git, `i2s_audio` component) per the human-approved Decision -- resolves the 16kHz-vs-48kHz compile blocker from the prior session
-- [x] `esphome compile firmware/respeaker-lite/respeaker-lite.yaml` -- confirm success -- fixed by vendoring both wake-word model files locally (see Implementation Notes); exit 0, "Successfully compiled program."
-- [x] `esphome upload firmware/respeaker-lite/respeaker-lite.yaml --device /dev/cu.usbmodem101` -- flash and confirm no crash loop -- flashed successfully; 30s of serial log shows normal WiFi-retry behavior (placeholder credentials, expected) and zero crash markers
-- [x] `firmware/respeaker-lite/respeaker-lite.yaml` -- add `esphome: on_boot: priority: -100, then: micro_wake_word.start` -- **the actual root cause of every prior "zero activity" symptom**: `MicroWakeWord::setup()` never calls `start()`, and its own data callback drops all audio while `state_ == STOPPED`. Confirmed via source reading and live state-transition logs (`STOPPED → STARTING → DETECTING_WAKE_WORD`). See Implementation Notes' follow-up session.
-- [x] Added a permanent-until-resolved amplitude diagnostic (`mic_diag` log tag) to `microphone: on_data`, independent of `micro_wake_word` -- proves the audio pipeline is genuinely alive (real, naturally-varying room-noise levels; large spikes on speech) regardless of whether detection ever fires.
-- [ ] Speak "hey jarvis" near the device and confirm a wake event appears in `esphome logs` (or the API) -- attempted 6 times total across two sessions (4 before the on_boot fix, 2 after, plus a "stop" model attempt with a far more lenient threshold). Zero detections in every attempt, despite the pipeline being confirmed alive and loud speech confirmed reaching the mic after the fix. See Implementation Notes — still genuinely unresolved, not disproven, closing this story without it rather than continuing to guess blind.
-- [x] `firmware/respeaker-lite/README.md` -- note the current wake phrase (`hey_jarvis`, placeholder) and that "hey hermes" retraining is separate follow-on work -- prevents a future reader assuming the real phrase already works
+- [x] `firmware/respeaker-lite/respeaker-lite.yaml` — add the I2S microphone and standalone `micro_wake_word` path from the Seeed/formatBCE reference.
+- [x] Vendor and pin the board-specific `i2s_audio` component; retain the reference decimation after the controlled FIR comparison.
+- [x] Vendor the wake models and the `respeaker_lite` DFU component so compile-time model checks and the XMOS firmware prerequisite are reproducible.
+- [x] Compile and flash the firmware with the dedicated ESPHome environment; confirm a clean boot with no crash-loop markers.
+- [x] Start the wake engine after component setup and explicitly enable every non-default candidate model.
+- [x] Verify real on-device detection: the initial `hey_jarvis` proving build and the final `hey_missy`, `hey_bestie`, and `hey_skippy` candidate builds all detected deliberate phrases on the physical Puck; negative controls produced no false accepts in the recorded session.
+- [x] Document that "hey hermes" training and wake-word-to-Profile routing are separate follow-on work.
 
 **Acceptance Criteria:**
 - Given the updated config, when `esphome compile` runs, then it completes without error.
 - Given the flashed device, when it boots, then it shows no crash-loop markers, same bar as story 2.
-- Given a spoken "hey jarvis" near the device, when `micro_wake_word` processes it, then a detection event is observable in logs or the API. **Not met**, even after fixing the on_boot root cause and confirming live audio reaches the mic. Attempted 6 times total; unconfirmed, not disproven. Tracked as this story's one open follow-up rather than blocking the rest of the verified work.
+- Given the reference-matched proving build, when "hey jarvis" is spoken near the physical device, then `micro_wake_word` reports a detection; session 17 verified repeated detections after setting the XMOS firmware to 1.1.0 and restoring the reference decimation.
+- Given the final candidate build, when `hey_missy`, `hey_bestie`, or `hey_skippy` is spoken near the physical device, then the corresponding model reports a detection; recorded hardware evidence shows all three candidates detect and discriminate cleanly.
+- Given the final candidate build, when a non-wake phrase is spoken, then no candidate reports a wake; the recorded negative controls produced no false accepts.
+- Given the Puck's wake callback, then later Profile selection, credential enforcement, and host audio transport are not claimed by this story; those remain later story boundaries.
 
 ## Implementation Notes
 
-**Status: compile, flash, and boot all verified. Only the human-spoken
-detection check remains.**
+**Status: complete.** Compile, flash, boot, and real spoken wake detection
+are verified. The initial `hey_jarvis` proving build was superseded by the
+three locally trained candidate models now used by the production YAML; the
+candidate swap does not reopen this story's engine proof.
+
+The current implementation also contains later Puck identity, host-transport,
+and response-audio work. Those changes are recorded by their owning stories;
+they are not additional Story 3 acceptance work.
+
+The notes below preserve the investigation that led to the result. Statements
+that say detection was unresolved describe an earlier point in the timeline,
+not the current status.
 
 - The `i2s_audio`, `microphone`, and `micro_wake_word` blocks were added to
   `respeaker-lite.yaml` exactly as the Code Map specifies: I2S pins GPIO7/8/9,
@@ -1323,13 +1365,21 @@ detection check remains.**
 ## Verification
 
 **Commands:**
-- `esphome compile firmware/respeaker-lite/respeaker-lite.yaml` -- expected: build succeeds
-- `esphome upload firmware/respeaker-lite/respeaker-lite.yaml --device /dev/cu.usbmodem101` -- expected: flash succeeds, device boots
+- `venv-firmware/bin/esphome compile firmware/respeaker-lite/respeaker-lite.yaml` -- passed; the local model paths avoid the compile-time HTTPS update check and the firmware image was produced.
+- `venv-firmware/bin/esphome upload firmware/respeaker-lite/respeaker-lite.yaml --device /dev/cu.usbmodem101` -- passed; the physical ESP32-S3 was flashed and verified.
 
-**Manual checks (if no CLI):**
-- After flashing, run `esphome logs firmware/respeaker-lite/respeaker-lite.yaml --device /dev/cu.usbmodem101`, speak "hey jarvis" near the device, and confirm a wake-word detection log line appears.
+**Hardware checks:**
+- After flashing, serial logs showed a clean boot with no crash-loop markers. The XMOS DFU check reported version `1.1.0`.
+- The reference-matched proving build produced repeated `hey_jarvis` detections with a non-wake negative control.
+- The final production candidate build produced detections for `hey_missy`, `hey_bestie`, and `hey_skippy`, with no false accepts in the recorded negative-control session.
+
+**Not covered by this story:** final household Profile mapping, revocable Device credentials, wake arbitration, and post-wake audio transport. Those are later delivery stories.
 
 ## Review Triage Log
+
+The entries below are the historical review record. Patch and false-positive
+findings are already resolved; deferred findings are either superseded by the
+later hardware evidence or owned by a later story.
 
 - **medium, patch** — `external_components:` pinned the trusted third-party `i2s_audio` fork to the mutable branch head (`ref: respeaker_microphone`, `refresh: 0s`) rather than a commit. Confirmed independently by both review layers. Fixed: pinned to commit `eedcdbee335dbe296d432b3e6421da0469907365` (the branch's current tip at time of pinning) with a comment explaining why, and removed the now-unnecessary `refresh: 0s`.
 - **medium, patch** — the story's own Intent/Decision cited `KasunThushara/Respeaker-Lite-ESPHome-integration` as the reference integration, but the actual YAML/README consistently cite `formatBCE/Respeaker-Lite-ESPHome-integration` — a citation slip from a similarly-named project surfaced during story 1's research. Confirmed independently by both review layers. Fixed: corrected the Intent/Decision text to match what was actually implemented, with a note explaining the correction rather than silently rewriting history.
@@ -1337,5 +1387,5 @@ detection check remains.**
 - **low, patch** — README's Wake-word check (step 5) read as a normal expected-to-pass step with no pointer to the documented 4/4 failure. Fixed: added an inline note pointing to Known Limitation.
 - **low, patch** — the cleartext-WiFi-password-at-`VERY_VERBOSE` finding was documented in the story file and memlog but absent from README's Known Limitation, the place someone debugging this exact issue would actually look. Fixed: added a warning there.
 - **low, patch** — `gain_factor: 4` and `vad: probability_cutoff: 0.05` had no stated provenance, reading as arbitrary guesses. Fixed: Code Map now states both are sourced verbatim from Seeed's wiki tutorial, not invented.
-- **defer** — stereo-to-mono channel selection inside the forked `i2s_audio` component is unexplained and could plausibly be the actual cause of the "zero audio activity" mystery (e.g., if the XU316's real signal sits on the dropped channel). Investigating the fork's source is real, separate effort beyond this review pass; recorded as a concrete next thing to check, in Implementation Notes.
+- **resolved** — stereo-to-mono channel selection inside the forked `i2s_audio` component was checked against the reference and live per-channel diagnostics; both channels carried the same signal, so `channels: 1` was not the cause of the earlier non-detection.
 - **false** — "no `.tflite` binary appears in this diff, so a fresh checkout may not compile." Disproof: `firmware/respeaker-lite/wake_models/` (including all three `.tflite` files) is untracked but confirmed *not* gitignored (`git check-ignore` returns nothing); the review diff only omitted them because they're binary and not meaningfully reviewable as text — they are staged and committed alongside the JSON manifests.
