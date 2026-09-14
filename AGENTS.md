@@ -402,6 +402,14 @@ local variable values; it appends until manually removed.
 - When `hello_ack` advertises the `interrupt` capability, the client sends an explicit interrupt frame for the active turn and waits for `turn_interrupted`; `audio_abort` is a typed, intentional playback event rather than an unhandled server event. Late JSON frames carrying another turn ID are discarded. Older endpoints without the capability retain the close-and-reconnect fallback and are never described as server-confirmed cancellation.
 - On macOS, microphone permission belongs to the launching app (Terminal, iTerm, VS Code, or the IDE), and a missing accessible default input is reported by PortAudio as device `-1`.
 
+## Worktrees
+
+All linked feature and agent worktrees for this repository belong under
+`.worktrees/<name>` inside the repository's main checkout. Keep `.worktrees/`
+ignored and do not create sibling `*-worktrees` directories or use a global
+tool-specific worktree location. BMAD loop-managed run worktrees under
+`.bmad-loop/runs/<run>/worktrees/` are engine-owned and remain there.
+
 ## Change checklist
 
 Before handing off a change:
