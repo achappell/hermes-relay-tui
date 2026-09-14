@@ -23,7 +23,11 @@ DEFAULT_HISTORY_DIR = DEFAULT_APP_DIR / "history"
 MAX_HISTORY_ENTRIES = 500
 
 
-def history_path_for_url(url: Optional[str]) -> Path:
+def history_path_for_url(
+    url: Optional[str],
+    *,
+    transport: Optional[str] = None,
+) -> Path:
     """Scope the default history file to the connection endpoint's host.
 
     Prompt history is this client's own state, not Hermes's — it lives
@@ -36,13 +40,21 @@ def history_path_for_url(url: Optional[str]) -> Path:
     ``DEFAULT_HISTORY_PATH`` when the URL has no parseable host, e.g.
     tests or callers that never configured one.
     """
-    host = urlsplit(url).hostname if url else None
+    parsed = urlsplit(url) if url else None
+    host = parsed.hostname if parsed else None
     if not host:
         return DEFAULT_HISTORY_PATH
-    port = urlsplit(url).port
+    port = parsed.port if parsed else None
     slug = re.sub(r"[^A-Za-z0-9.-]+", "_", host)
     if port:
         slug = f"{slug}_{port}"
+    # Legacy history predates transport selection and intentionally keeps its
+    # old filename. Standard Hermes must not quietly mix its prompt queue with
+    # the fork when both endpoints share a host and port.
+    selected_transport = str(transport or "").strip().lower()
+    standard_path = (parsed.path.rstrip("/") if parsed else "").endswith("/api/ws")
+    if selected_transport == "gateway" or standard_path:
+        slug += "_gateway"
     return DEFAULT_HISTORY_DIR / f"{slug}.jsonl"
 
 
@@ -71,9 +83,20 @@ def history_path_for_profile(
     *,
     configured_path: Optional[Path] = None,
     legacy: bool = False,
+    transport: Optional[str] = None,
 ) -> Path:
     """Return prompt history isolated from every other named profile."""
-    base = Path(configured_path).expanduser() if configured_path is not None else history_path_for_url(url)
+    base = (
+        Path(configured_path).expanduser()
+        if configured_path is not None
+        else history_path_for_url(url, transport=transport)
+    )
+    if configured_path is not None and not legacy:
+        parsed = urlsplit(url) if url else None
+        selected_transport = str(transport or "").strip().lower()
+        standard_path = (parsed.path.rstrip("/") if parsed else "").endswith("/api/ws")
+        if selected_transport == "gateway" or standard_path:
+            base = base.with_name(f"{base.stem}_gateway{base.suffix}")
     scoped = artifact_path_for_profile(base, profile_name, legacy=legacy)
     return Path(scoped) if scoped is not None else base
 
@@ -83,6 +106,7 @@ def legacy_history_path_for_profile(
     profile_name: str,
     *,
     configured_path: Optional[Path] = None,
+    transport: Optional[str] = None,
 ) -> Path:
     """Return the unscoped history path used before profile namespacing."""
     del profile_name
@@ -91,6 +115,7 @@ def legacy_history_path_for_profile(
         "default",
         configured_path=configured_path,
         legacy=True,
+        transport=transport,
     )
 
 

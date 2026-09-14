@@ -50,8 +50,65 @@ def test_parser_defaults_to_queue_busy_mode(monkeypatch):
 
 def test_parser_defaults_to_local_voice_session_endpoint(monkeypatch):
     monkeypatch.delenv("HERMES_VOICE_SESSION_URL", raising=False)
-    assert build_arg_parser().parse_args([]).url == DEFAULT_URL
+    args = build_arg_parser().parse_args([])
+    assert args.url == DEFAULT_URL
+    assert args.transport == "voice-session"
     assert DEFAULT_URL == "ws://localhost:8792/voice-session"
+
+
+def test_parser_accepts_opt_in_gateway_transport_and_dedicated_server_profile(monkeypatch):
+    monkeypatch.setenv("HERMES_PROFILE", "server-amanda")
+    args = build_arg_parser().parse_args(["--transport", "gateway"])
+
+    assert args.transport == "gateway"
+    assert args.hermes_profile == "server-amanda"
+
+
+def test_parser_reads_gateway_transport_from_environment(monkeypatch):
+    monkeypatch.setenv("HERMES_RELAY_TUI_TRANSPORT", "gateway")
+    assert build_arg_parser().parse_args([]).transport == "gateway"
+
+
+def test_parser_marks_an_explicit_session_id_for_gateway_resume():
+    args = build_arg_parser().parse_args(
+        ["--transport", "gateway", "--session-id", "stored-1"]
+    )
+    assert args.session_id == "stored-1"
+    assert args.session_id_explicit is True
+
+
+def test_parser_uses_named_profile_transport_and_server_profile(tmp_path):
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        "profiles:\n"
+        "  amanda:\n"
+        "    url: wss://hermes.example/api/ws\n"
+        "    transport: gateway\n"
+        "    hermes_profile: server-amanda\n",
+        encoding="utf-8",
+    )
+
+    argv = ["--config", str(config_path), "--profile", "amanda"]
+    args = build_arg_parser(argv).parse_args(argv)
+
+    assert args.transport == "gateway"
+    assert args.hermes_profile == "server-amanda"
+
+
+def test_parser_reloads_gateway_transport_from_legacy_root_config(tmp_path):
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        "url: wss://hermes.example/api/ws\n"
+        "transport: gateway\n"
+        "hermes_profile: server-amanda\n",
+        encoding="utf-8",
+    )
+
+    argv = ["--config", str(config_path)]
+    args = build_arg_parser(argv).parse_args(argv)
+
+    assert args.transport == "gateway"
+    assert args.hermes_profile == "server-amanda"
 
 
 def test_default_token_file_belongs_to_the_relay_app():

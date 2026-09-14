@@ -2,7 +2,13 @@
 
 A small Textual terminal UI for authenticated Hermes voice sessions. Type text, capture a local microphone turn, watch the reply stream into the transcript, and play streamed PCM audio locally.
 
-This is a client for the existing Hermes voice-session channel. It does not run the Hermes server or provide a session browser.
+This is a client for the existing Hermes voice-session channel. The legacy
+channel remains the default. An explicitly selected `gateway` transport also
+proves the pinned Standard Hermes boundary without changing the fork wire
+contract. It is a direct Standard Hermes development/rollback path, not the
+Home bridge: it must not be pointed at Home's planned `/api/v1/bridge/ws`
+route, and it does not claim Home route, Device-credential, opaque-handle, or
+live integration support. It does not run the Hermes server.
 
 ## BMAD surface ownership
 
@@ -35,12 +41,16 @@ here.
 - Connection, timeout, and turn errors shown in the UI instead of crashing the app.
 - Local image staging and `@path` attachment previews with an explicit text-only relay boundary.
 - Opt-in bounded local `!command` execution and `{!command}` prompt interpolation.
+- Opt-in direct Standard Hermes `/api/ws` text turns with a separate PCM speech
+  sidecar. Home authentication and route roaming remain a separate, not-yet-
+  live adapter boundary.
 
 ## Requirements
 
 - Python 3.14
 - Access to a Hermes voice-session WebSocket endpoint
-- A bearer token for that endpoint
+- A bearer token for the legacy or direct Standard endpoint. This is not a Home
+  Device credential; the planned Home bridge credential path is not live here.
 - A working audio input/output device for voice and playback
 
 The base install includes the typed client and configuration support. Local microphone capture and speech-to-text are optional extras, so a package or Homebrew install stays quick; `hermes-relay install` adds them with visible pip progress when you want voice.
@@ -87,11 +97,12 @@ hermes-relay setup
 hermes-relay
 ```
 
-It asks for the Hermes WebSocket endpoint, bearer token, and client/device
+It asks for the direct Hermes WebSocket endpoint, bearer token, and client/device
 names, session name. It writes editable connection
 defaults to `~/.hermes-relay-tui/config.yaml` and keeps the token in the
-private `~/.hermes-relay-tui/.env`. Use `hermes-relay setup` again to change
-them. See [`docs/packaging/jensen-trial.md`](docs/packaging/jensen-trial.md)
+private `~/.hermes-relay-tui/.env`. Those credentials are for the direct
+legacy/Standard path only; they are not the Home Device-credential flow. Use
+`hermes-relay setup` again to change them. See [`docs/packaging/jensen-trial.md`](docs/packaging/jensen-trial.md)
 for the server-side setup and smoke-test steps.
 
 ### Python package
@@ -297,6 +308,51 @@ venv/bin/python app.py \
 ```
 
 The endpoint must be reachable from the machine running the TUI, and the server must accept the supplied bearer token. Use `/new` or `/resume` inside the TUI when you deliberately want to create or resume a server-side conversation.
+
+### Standard Hermes transport (opt-in)
+
+Standard mode is an explicit migration path; the fork's `voice-session` route
+remains the default and rollback path. Select it before a turn, with a Standard
+`/api/ws` URL:
+
+```bash
+VOICE_SESSION_TOKEN='redacted-token' venv/bin/python app.py \
+  --transport gateway \
+  --url wss://example.internal/api/ws \
+  --hermes-profile amanda
+```
+
+This adapter is pinned to Standard Hermes `0.21.1`
+(`2237be355906fbe6065ce1815711eee52b2d646e`). The pin describes the boundary
+this client implements; selecting `gateway` does not change the default fork
+or switch an active turn.
+
+The client waits for `gateway.ready`, creates or resumes a runtime session, and
+uses the returned runtime identity for live requests. An explicitly supplied
+`--session-id` is a durable resume key; an ordinary launch creates a fresh
+doorway session. Standard text events remain behind `SessionProtocol`.
+
+Response speech uses the separate `/api/audio/speak-stream` sidecar. Its signed
+16-bit PCM is validated and passed through the existing playback path; if the
+sidecar fails, completed text remains readable and the prompt is not replayed.
+Timing is shown only when the sidecar supplies a verified playback-clock or
+duration contract. The current gateway slice deliberately leaves structured
+prompts, command dispatch, attachments, and Home's public bridge envelope
+unsupported; it reports those boundaries instead of collecting sensitive input
+or inventing another Hermes authority.
+
+Gateway authentication currently uses the endpoint's legacy `?token=` query
+parameter. Bearer values are redacted from diagnostics, but query credentials
+can still be visible to local process or proxy inspection. No live Standard
+endpoint evidence is implied by the automated tests; run the approved text,
+voice, interrupt, and disconnect checks only when such an endpoint is
+configured.
+
+The guided setup accepts the same explicit choice without rewriting the legacy
+defaults: `hermes-relay setup --transport gateway --hermes-profile amanda`.
+Named profiles can store it with `hermes-relay profile create NAME
+--transport gateway --hermes-profile amanda`. Use `/api/ws` for the profile's
+endpoint; the fork remains the reversible default.
 
 ## Named relay profiles
 
@@ -572,7 +628,9 @@ never replayed automatically.
 | Option | Purpose |
 | --- | --- |
 | `--url URL` | Override the voice-session WebSocket URL |
+| `--transport {voice-session,gateway}` | Select the channel; `voice-session` remains the default |
 | `--profile NAME` | Select a named relay profile for this launch |
+| `--hermes-profile NAME` | Select the Hermes server profile in gateway mode; also `HERMES_PROFILE` |
 | `--token TOKEN` | Supply the bearer token explicitly |
 | `--session-id ID` | Configure the legacy/session label used as launch input; the TUI still mints a unique Session per launch |
 | `--profile-env PATH` | `.env` file used for token lookup |

@@ -162,6 +162,34 @@ def test_history_path_for_url_differs_between_hosts():
     assert laptop != media_server
 
 
+def test_history_path_for_url_separates_standard_gateway_from_fork():
+    fork = history_path_for_url("wss://relay.example:8792/voice-session")
+    standard = history_path_for_url("wss://relay.example:8792/api/ws", transport="gateway")
+
+    assert fork != standard
+    assert standard.name == "relay.example_8792_gateway.jsonl"
+
+
+def test_configured_history_path_is_separated_for_standard_gateway(tmp_path):
+    configured = tmp_path / "history.jsonl"
+    fork = history_path_for_profile(
+        "wss://relay.example/voice-session",
+        "amanda",
+        configured_path=configured,
+        transport="voice-session",
+    )
+    standard = history_path_for_profile(
+        "wss://relay.example/api/ws",
+        "amanda",
+        configured_path=configured,
+        transport="gateway",
+    )
+
+    assert fork != standard
+    assert fork.name == "history.jsonl"
+    assert standard.name == "history_gateway.jsonl"
+
+
 def test_history_path_for_url_falls_back_without_a_host():
     assert history_path_for_url(None) == history_module.DEFAULT_HISTORY_PATH
     assert history_path_for_url("not a url") == history_module.DEFAULT_HISTORY_PATH

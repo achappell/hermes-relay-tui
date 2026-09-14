@@ -78,6 +78,7 @@ from diagnostics import (
     trace_monotonic_ms,
 )
 from domain import TuiDomain, TurnPhase, decide_busy
+from gateway_session import GatewaySession
 from history import (
     PromptHistory,
     artifact_path_for_profile,
@@ -967,14 +968,17 @@ class HermesStreamingApp(App):
     def _profile_target_tuple(args: Any) -> tuple[Any, ...]:
         """Return connection identity without ever rendering its token."""
         configured = bool(getattr(args, "profiles_configured", False))
-        if not configured:
+        transport = getattr(args, "transport", "voice-session")
+        if not configured and transport != "gateway":
             # Legacy reload deliberately retains its existing in-memory
             # session behavior; TUI-02 reconnects only when a named catalog is
             # actually in play.
-            return (False,)
+            return (False, transport)
         return (
-            True,
+            configured,
             getattr(args, "profile_name", None) or getattr(args, "profile", None),
+            transport,
+            getattr(args, "hermes_profile", None),
             getattr(args, "url", None),
             getattr(args, "token", None),
             getattr(args, "client_id", None),
@@ -994,20 +998,32 @@ class HermesStreamingApp(App):
             getattr(args, "url", None),
             profile_name,
             configured_path=configured_path,
-            legacy=not bool(getattr(args, "profiles_configured", False)),
+            legacy=(
+                not bool(getattr(args, "profiles_configured", False))
+                and getattr(args, "transport", "voice-session") != "gateway"
+            ),
+            transport=getattr(args, "transport", "voice-session"),
         )
 
     def _prompt_history_for_args(self, args: Any) -> PromptHistory:
         """Open profile-local prompt history and migrate its old local file."""
         path = self._history_path_for_args(args)
         legacy_paths: tuple[Path, ...] = ()
-        if bool(getattr(args, "profiles_configured", False)):
+        if bool(getattr(args, "profiles_configured", False)) or getattr(
+            args, "transport", "voice-session"
+        ) == "gateway":
+            legacy_transport = (
+                "voice-session"
+                if getattr(args, "transport", "voice-session") == "gateway"
+                else getattr(args, "transport", "voice-session")
+            )
             legacy_path = legacy_history_path_for_profile(
                 getattr(args, "url", None),
                 getattr(args, "profile_name", None)
                 or getattr(args, "profile", None)
                 or "default",
                 configured_path=getattr(args, "history_path", None),
+                transport=legacy_transport,
             )
             if legacy_path != path:
                 legacy_paths = (legacy_path,)
@@ -1019,6 +1035,14 @@ class HermesStreamingApp(App):
         if args is None:
             return args
         session_args = copy.copy(args)
+        if (
+            getattr(args, "transport", "voice-session") == "gateway"
+            and getattr(args, "session_id_explicit", False)
+        ):
+            # A standard gateway session_id is a durable resume key. Preserve
+            # an explicitly requested one; ordinary gateway launches still
+            # create a fresh doorway below.
+            return session_args
         session_args.session_id = uuid.uuid4().hex
         return session_args
 
@@ -1046,6 +1070,8 @@ class HermesStreamingApp(App):
     def _new_session(self, args: Any) -> SessionProtocol:
         """Build a session while retaining the repository's zero-arg test seam."""
         if self._session_factory is None:
+            if getattr(args, "transport", "voice-session") == "gateway":
+                return GatewaySession(args)
             return HermesSession(args)
         factory = self._session_factory
         try:
@@ -2921,7 +2947,13 @@ class HermesStreamingApp(App):
         elif command.name == "voice":
             voice_args = invocation.args.strip().lower()
             if not voice_args or voice_args in VOICE_GATEWAY_COMMANDS:
-                await self._run_turn(invocation.raw, stt_source="command")
+                if getattr(self.args, "transport", "voice-session") == "gateway":
+                    self._append_block(
+                        "[error] /voice controls are not exposed by the Standard gateway; "
+                        "no request was sent."
+                    )
+                else:
+                    await self._run_turn(invocation.raw, stt_source="command")
             else:
                 self._append_block("usage: /voice [on|off|tts|status]")
         elif command.name == "wake":
@@ -4372,6 +4404,7 @@ class HermesStreamingApp(App):
         audio_segment_index = -1
         audio_chunk_index = 0
         audio_bytes_received = 0
+        audio_expected = bool(getattr(session, "_gateway_audio_enabled", False))
         last_playback_trace_ms = -250
         turn_completed = False
         turn_failed = False
@@ -4517,8 +4550,18 @@ class HermesStreamingApp(App):
                 visible_assistant_text = ""
 
             candidate: Optional[str]
-            if complete or not audio_started or not player.active:
+            if (
+                complete
+                or (not audio_started and not audio_expected)
+                or (audio_started and not player.active)
+                or (not audio_started and self._playback_is_disabled(player))
+            ):
                 candidate = assistant_text
+            elif not audio_started:
+                # Gateway TTS announces its format on a separate sidecar. Do
+                # not reveal the full answer while that first frame is still
+                # in flight; a short prefix is the conservative bridge.
+                candidate = first_word_prefix(assistant_text)
             else:
                 position = playback_position()
                 candidate = None
@@ -4785,7 +4828,15 @@ class HermesStreamingApp(App):
                 self._append_block(
                     f"[unhandled server event: {event_type}]", role="error"
                 )
+            elif kind == "audio_unavailable":
+                audio_expected = False
+                reason = str(event.get("reason") or "sidecar unavailable").strip()
+                self._mark_audio_unavailable(reason)
+                # The sidecar has definitively failed; release any text that
+                # was held behind its first-word pacing bridge immediately.
+                render_assistant()
             elif kind == "audio_start":
+                audio_expected = False
                 audio_segment_index += 1
                 audio_chunk_index = 0
                 was_active = bool(player.active)

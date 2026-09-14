@@ -79,6 +79,27 @@ def test_load_relay_profiles_resolves_private_token_source(tmp_path, monkeypatch
     assert profiles[0].token_env == "VOICE_SESSION_TOKEN_AMANDA"
 
 
+def test_named_profile_preserves_standard_transport_selection(tmp_path, monkeypatch):
+    env_path = tmp_path / ".env"
+    env_path.write_text('VOICE_SESSION_TOKEN_AMANDA="secret"\n', encoding="utf-8")
+    profile = load_relay_profiles(
+        {
+            "profile_env": str(env_path),
+            "profiles": {
+                "amanda": {
+                    "url": "wss://hermes.example/api/ws",
+                    "token_env": "VOICE_SESSION_TOKEN_AMANDA",
+                    "transport": "gateway",
+                    "hermes_profile": "server-amanda",
+                }
+            },
+        }
+    )[0]
+
+    assert profile.transport == "gateway"
+    assert profile.hermes_profile == "server-amanda"
+
+
 def test_named_profiles_do_not_fall_back_to_another_profile_token(tmp_path, monkeypatch):
     env_path = tmp_path / ".env"
     env_path.write_text('VOICE_SESSION_TOKEN="default-secret"\n', encoding="utf-8")
@@ -193,6 +214,30 @@ def test_save_profile_preserves_unrelated_config_and_env_values(tmp_path):
     assert "new-secret" not in config_path.read_text(encoding="utf-8")
     assert "UNRELATED=value" in env_path.read_text(encoding="utf-8")
     assert "VOICE_SESSION_TOKEN_AMANDA=\"new-secret\"" in env_path.read_text(encoding="utf-8")
+
+
+def test_save_profile_persists_standard_transport_without_a_token_leak(tmp_path):
+    config_path = tmp_path / "config.yaml"
+    profile = save_relay_profile(
+        config_path,
+        name="amanda",
+        display_name="Amanda",
+        url="wss://hermes.example/api/ws",
+        token="secret",
+        client_id="amanda-client",
+        device_id="device",
+        session_id="session",
+        transport="gateway",
+        hermes_profile="server-amanda",
+        profile_env=tmp_path / ".env",
+    )
+
+    saved = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    assert profile.transport == "gateway"
+    assert profile.hermes_profile == "server-amanda"
+    assert saved["profiles"]["amanda"]["transport"] == "gateway"
+    assert saved["profiles"]["amanda"]["hermes_profile"] == "server-amanda"
+    assert "secret" not in config_path.read_text(encoding="utf-8")
 
 
 def test_select_and_delete_profiles_update_active_selection(tmp_path):
