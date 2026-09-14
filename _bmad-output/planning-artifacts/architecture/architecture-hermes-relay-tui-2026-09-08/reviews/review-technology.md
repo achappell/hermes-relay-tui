@@ -1,21 +1,39 @@
 # Reviewer Gate — Technology Currency and Fit
 
-Date: 2026-09-08
+Date: 2026-09-13
 
 ## Verdict
 
-PASS. The stack rows describe observed or deliberately pinned brownfield baselines, not speculative upgrade targets.
+PASS. The updated spine adds boundaries and contracts, not unverified runtime
+dependencies or upgrade recommendations.
 
 ## Reality checks
 
-- Local runtime reports Python 3.14.7, Textual 8.2.8, and websockets 17.1.
-- The browser lockfile/runtime reports Svelte 5.57.0, TypeScript 5.9.3, Vite 6.4.3, and Vitest 3.2.7.
-- The repository pins LVGL 8.3.11 and Emscripten 6.0.5 in the reproducible WebAssembly build script and native simulator build.
-- PlatformIO is constrained by the existing firmware manifest at espressif32 approximately 6.6.0; the exact ESP-IDF framework pin is correctly deferred rather than invented.
-- Primary documentation confirms Textual 8.2.8 availability, websockets 17.1 support for the Python runtime and current asyncio API, Svelte 5 documentation, Vite 6 build behavior, Vitest 3 integration with Vite, LVGL 8.3.11 documentation, and exact-version Emscripten installation/activation.
+- The stack rows remain the observed brownfield baselines from the existing
+  repository and are explicitly not claims about the latest releases.
+- The sibling Home architecture and contract documentation confirm that Home
+  is already the independent household configuration boundary, that its
+  admin credential is distinct, and that current device claims carry a Wake
+  Mapping ID rather than an arbitrary Profile ID.
+- The local Hermes voice-session documentation confirms that structured
+  prompts belong to the existing session channel. The updated spine therefore
+  reuses that path for sensitive entry and the first harmless choice proof.
+- The existing TUI/client code and test seams confirm that JSON events,
+  streamed PCM, prompt responses, and reconnect/no-replay behavior are real
+  integration boundaries rather than invented technology names.
+- QR enrollment, route discovery, revocation propagation, notification
+  delivery, and artifact backends are described as contracts and slices; no
+  new QR library, broker, database, cloud provider, or transport framework is
+  smuggled into the stack.
+- Household Diagnostics adds no client-side dependency: the TUI boundary is a
+  safe-event adapter and Home owns collector, bundle, and retention choices.
 
 ## Findings
 
 No critical or high findings.
 
-The only caution is that Vite 6, Vitest 3, and LVGL 8.3.11 are project baselines rather than claims of being the latest releases. The spine says so explicitly and requires focused compatibility checks before upgrades. The unpinned ESP-IDF framework is named under Deferred.
+The exact enrollment encoding, route identity proof, encryption policy, and
+endpoint bridge envelope still need implementation specifications and current
+primary-source checks when their owning slices choose concrete mechanisms.
+That is correctly recorded as delivery work rather than disguised as a
+technology decision in this spine.

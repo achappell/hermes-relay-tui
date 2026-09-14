@@ -2,7 +2,7 @@
 title: Surface coverage index across BMad epics
 type: traceability
 status: active
-updated: 2026-09-12
+updated: 2026-09-13
 sources:
   - _bmad-output/planning-artifacts/epics.md
   - _bmad-output/implementation-artifacts/sprint-status.yaml
@@ -18,6 +18,9 @@ sources:
   - shared/display/README.md
   - docs/bmad-upstream.md
   - ../hermes-relay-ios/_bmad-output/implementation-artifacts/epic-1-context.md
+  - ../hermes-relay-home/_bmad-output/specs/spec-profile-mapping-conversation-claims/SPEC.md
+  - ../hermes-relay-home/_bmad-output/planning-artifacts/architecture/architecture-hermes-relay-home-2026-09-12/ARCHITECTURE-SPINE.md
+  - '~/Documents/Vaults/Personal Vault/projects/hermes-home/sources/prds/prd-hermes-home-next-wave-2026-09-13/prd.md'
 ---
 
 # Surface coverage index across BMad epics
@@ -93,6 +96,20 @@ Hermes session authority
   parity. Each native Client owns its platform lifecycle, permissions, audio,
   secure storage, accessibility, and local history.
 
+## Next-wave architecture coverage
+
+These rows are the cross-repository doorway index for the current Home slices.
+They record ownership and dependencies; the linked Home artifacts remain the
+authoritative specifications and architecture decisions.
+
+| Slice | Product requirements | Owner | Architecture / specification | Dependency or gap |
+|---|---|---|---|---|
+| 0 — Standard Hermes compatibility and cross-surface migration | FR-23–FR-27 plus shared migration gate | `hermes-relay-home` with every endpoint owner | [Migration specification](../../hermes-relay-home/_bmad-output/specs/spec-standard-hermes-compatibility-migration/SPEC.md), Home AD-14, TUI AD-24 | Must pin the Standard Hermes baseline, preserve JSON/PCM/timing/prompt/interrupt semantics, and record per-surface configuration, live-smoke, rollback, and no-replay evidence before any default switch. |
+| A — pairing and credentials | FR-25–FR-30 | `hermes-relay-home` | Home foundation specification; Home AD-4 and AD-7 | Endpoint pairing adapters and failure-path evidence remain delivery work. |
+| B — Profile mapping and conversation claims | FR-31–FR-33 | `hermes-relay-home` | [Slice B specification](../../hermes-relay-home/_bmad-output/specs/spec-profile-mapping-conversation-claims/SPEC.md), state machine, and Home AD-8 | Depends on the Slice A credential/grant boundary; wake, display, and TUI adapters must consume the Home claim contract. |
+| C — Home bridge and route roaming | FR-24–FR-30 | `hermes-relay-home` with endpoint adapters | [Slice C specification](../../hermes-relay-home/_bmad-output/specs/spec-home-bridge-route-roaming/SPEC.md), route/session companion, Home AD-9, and TUI AD-22 | Route identity proof, exact bridge envelope/path, active-audio transition, and timing/reconnect evidence remain to be decided or delivered; the standard Hermes channel remains the transport seed. |
+| D — household diagnostics and incident review | FR-51–FR-53 | `hermes-relay-home` with TUI, phone, display, and ops adapters | [Slice D specification](../../hermes-relay-home/_bmad-output/specs/spec-household-diagnostics-incident-review/SPEC.md), diagnostics companion, Home AD-12, and TUI AD-23 | Concrete log/bundle stores, trusted capture surfaces, redaction enforcement, queue policy, and retention/deletion evidence remain open for implementation. |
+
 ## Epic 1 — Have a reliable Hermes conversation
 
 | Surface | Story IDs | Owner | Evidence or dependency |
@@ -143,7 +160,7 @@ Departure Cards remain display-only and must not generate unsolicited audio.
 | Surface | Story IDs | Owner | Evidence or dependency |
 |---|---|---|---|
 | I | `5-I-1` | `hermes-relay-ios` | Independent iOS conversation doorway evidence exists in the sibling repository. |
-| A | `5-A-1`, `5-A-2`, `5-A-3` | `hermes-relay-android` | Delivered and verified in the sibling repository: `5-A-1` independent typed and tap-to-speak conversation doorway, and `5-A-2` accessibility order with focus restoration satisfying `UX-DR21`. The configuration, credential, secure-storage, and transport load that `5-A-1` once absorbed alone is split out into `A-4`. `5-A-2` records a `done-with-environment-limitation` verdict. `5-A-2` was delivered ahead of acceptance and was written into `epics.md` on 2026-09-12. `5-A-3` is accepted and not yet started — the first Android identity to reach this matrix before its implementation rather than after. |
+| A | `5-A-1`, `5-A-2`, `5-A-3` | `hermes-relay-android` | Delivered and verified in the sibling repository: `5-A-1` independent typed and tap-to-speak conversation doorway, and `5-A-2` accessibility order with focus restoration satisfying `UX-DR21`. The configuration, credential, secure-storage, and transport load that `5-A-1` once absorbed alone is split out into `A-4`. `5-A-2` records a `done-with-environment-limitation` verdict. `5-A-2` was delivered ahead of acceptance and was written into `epics.md` on 2026-09-12. `5-A-3` is in progress: Steps 1–6 (zone decomposition, Night Console palette/state roles, Material 3 shell/action hierarchy, explicit no-Profile/unavailable/ready states, composer/history/voice polish, and reduced-motion behavior) are code-verified; the host-audio emulator also passes the non-live suite at normal and 130% text scale, while hardware TalkBack, focus, and rendered-appearance verification remain. |
 | T | `5-T-1` | `hermes-relay-tui` | Existing TUI is substantial foundation; the local story still needs its own BMad workflow. |
 
 ## Android/iOS capability parity — proposed identities
@@ -182,7 +199,7 @@ claim attaches to them.
 | `A-8` | 1 | Android | Delivered; accepted 2026-09-12, never proposed | Response audio playback. |
 | `A-9` | 1 | Android | Delivered; accepted 2026-09-12, never proposed | Microphone capture and on-device transcription. |
 | `5-A-2` | 5 | Android | Delivered; accepted 2026-09-12 | Accessibility order and focus restoration, satisfying `UX-DR21`. |
-| `5-A-3` | 5 | Android | Accepted 2026-09-12; not started | Night Console visual design pass: adopt the shared semantic state roles and the four-zone conversation shell as a Material 3 adaptation, without cloning iOS geometry. |
+| `5-A-3` | 5 | Android | In progress; Steps 1–6 code-verified; emulator scale regression 2026-09-13 | Night Console visual design pass: adopt the shared semantic state roles and the four-zone conversation shell as a Material 3 adaptation, without cloning iOS geometry. |
 | `I-4` | 1 | iOS | Proposed | Retroactive: interrupt an active iOS turn (`IOS-26`). |
 | `I-5` | 1 | iOS | Proposed | Retroactive: iOS hands-free capture and barge-in (`IOS-16`), recorded as intended capability. |
 | `5-I-2` | 5 | iOS | Proposed | Retroactive: iOS accessibility order and focus restoration. |
