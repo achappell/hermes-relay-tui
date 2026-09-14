@@ -1,28 +1,54 @@
 # Reviewer Gate — Adversarial Divergence Review
 
-Date: 2026-09-08
+Date: 2026-09-13
 
 ## Verdict
 
-PASS after tightening the display sequence epoch and the display-capable-front-end boundary.
+PASS after tightening the Home session-bridge contract with AD-22 and the
+diagnostics boundary with AD-23.
 
 ## Hypothetical independent units
 
-### Unit A — a future terminal session surface
+### Unit A — a paired TUI or phone doorway
 
-It uses SessionProtocol, keeps a local draft and queue, translates normalized Hermes events into terminal transcript records, and reconnects without replaying an uncertain turn. AD-1, AD-2, AD-3, AD-7, and AD-9 prevent it from importing Textual into the core, owning server state, parsing wire frames, replaying a turn, or dragging in appliance dependencies.
+It presents a Home device credential, claims a Wake Mapping, opens a session,
+and consumes the ordinary Hermes JSON/PCM/prompt stream. AD-14, AD-15, AD-16,
+AD-17, and AD-22 prevent it from choosing an arbitrary Profile, retaining a
+revoked credential, inventing a Hermes dialect, or replaying an uncertain
+turn.
 
-### Unit B — a future wall-display adapter
+### Unit B — a display and Watch adapter
 
-It consumes the DisplaySnapshot contract, resets its reducer on reconnect, validates actions locally, and renders only the state accepted by the reducer. AD-4, AD-5, AD-6, AD-8, and AD-10 prevent it from inventing prompt semantics, comparing sequence values across reconnect epochs, receiving another room's transcript, centralizing state, or forwarding credentials.
+It renders the owning room's snapshot, accepts only current structured actions,
+and may watch another session. AD-4, AD-5, AD-17, AD-18, and AD-22 prevent it
+from comparing sequence numbers across epochs, receiving raw audio or secret
+prompts, controlling the watched session, or treating redacted observation as
+a session stream.
+
+### Unit C — a notification or artifact backend
+
+It delivers a category-scoped alert or proposes/applies a file change. AD-17,
+AD-18, and AD-21 keep notifications from creating hidden sessions and keep
+artifact mutation explicit, revision-checked, and owned by the backend rather
+than Home.
+
+### Unit D — a TUI diagnostics and incident-review adapter
+
+It emits automatic telemetry and starts an explicit capture. AD-8, AD-14,
+AD-17, and AD-23 keep automatic events content-safe, require Home authorization
+for capture, preserve the separate encrypted path, and prevent collector
+failure from blocking or replaying a live turn.
 
 ## Findings
 
-No remaining pair can choose incompatible ownership, contract semantics, or recovery behavior while obeying the spine.
+The earlier version left the endpoint side of the Home bridge loose enough for
+two clients to obey the ownership rules while defining incompatible Hermes
+event dialects. AD-22 closes that seam: session-bearing endpoints use the
+existing Hermes voice-session shapes through an authenticated, versioned
+bridge; Watch and notifications use separate redacted events.
 
-The initial draft left two seams open:
-
-1. A client could treat a reconnect as part of the old sequence domain while another reset its reducer. AD-4 now defines channel epochs.
-2. The phrase "all front ends consume the shared display contract" would have overstated the current TUI migration. AD-1 now limits the display contract to display-capable front ends while keeping SessionProtocol universal.
-
-The current rules still leave hardware arbitration, device credentials, calendar propagation, and central service design deferred, but those are explicitly outside this repository's present ownership rather than silent holes.
+No remaining critical or high pair can choose incompatible ownership, session
+authority, privacy boundaries, or recovery behavior while obeying the spine.
+Exact wire schemas, expiry values, and backend-specific details remain
+implementation-slice work and are explicitly deferred rather than silently
+left to each client.
