@@ -16,3 +16,5 @@ _bmad-output/implementation-artifacts/surface-status-report.md
 !firmware/respeaker-lite/sounds/
 !firmware/respeaker-lite/sounds/*.wav
 .pytest_cache/
+.bmad-loop/runs/
+.bmad-loop/cache/
