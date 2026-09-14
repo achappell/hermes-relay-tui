@@ -2,7 +2,7 @@
 title: Surface coverage index across BMad epics
 type: traceability
 status: active
-updated: 2026-09-12
+updated: 2026-09-13
 sources:
   - _bmad-output/planning-artifacts/epics.md
   - _bmad-output/implementation-artifacts/sprint-status.yaml
@@ -143,7 +143,7 @@ Departure Cards remain display-only and must not generate unsolicited audio.
 | Surface | Story IDs | Owner | Evidence or dependency |
 |---|---|---|---|
 | I | `5-I-1` | `hermes-relay-ios` | Independent iOS conversation doorway evidence exists in the sibling repository. |
-| A | `5-A-1`, `5-A-2`, `5-A-3` | `hermes-relay-android` | Delivered and verified in the sibling repository: `5-A-1` independent typed and tap-to-speak conversation doorway, and `5-A-2` accessibility order with focus restoration satisfying `UX-DR21`. The configuration, credential, secure-storage, and transport load that `5-A-1` once absorbed alone is split out into `A-4`. `5-A-2` records a `done-with-environment-limitation` verdict. `5-A-2` was delivered ahead of acceptance and was written into `epics.md` on 2026-09-12. `5-A-3` is accepted and not yet started — the first Android identity to reach this matrix before its implementation rather than after. |
+| A | `5-A-1`, `5-A-2`, `5-A-3` | `hermes-relay-android` | Delivered and verified in the sibling repository: `5-A-1` independent typed and tap-to-speak conversation doorway, and `5-A-2` accessibility order with focus restoration satisfying `UX-DR21`. The configuration, credential, secure-storage, and transport load that `5-A-1` once absorbed alone is split out into `A-4`. `5-A-2` records a `done-with-environment-limitation` verdict. `5-A-2` was delivered ahead of acceptance and was written into `epics.md` on 2026-09-12. `5-A-3` is in progress: Steps 1–6 (zone decomposition, Night Console palette/state roles, Material 3 shell/action hierarchy, explicit no-Profile/unavailable/ready states, composer/history/voice polish, and reduced-motion behavior) are code-verified; the host-audio emulator also passes the non-live suite at normal and 130% text scale, while hardware TalkBack, focus, and rendered-appearance verification remain. |
 | T | `5-T-1` | `hermes-relay-tui` | Existing TUI is substantial foundation; the local story still needs its own BMad workflow. |
 
 ## Android/iOS capability parity — proposed identities
@@ -182,7 +182,7 @@ claim attaches to them.
 | `A-8` | 1 | Android | Delivered; accepted 2026-09-12, never proposed | Response audio playback. |
 | `A-9` | 1 | Android | Delivered; accepted 2026-09-12, never proposed | Microphone capture and on-device transcription. |
 | `5-A-2` | 5 | Android | Delivered; accepted 2026-09-12 | Accessibility order and focus restoration, satisfying `UX-DR21`. |
-| `5-A-3` | 5 | Android | Accepted 2026-09-12; not started | Night Console visual design pass: adopt the shared semantic state roles and the four-zone conversation shell as a Material 3 adaptation, without cloning iOS geometry. |
+| `5-A-3` | 5 | Android | In progress; Steps 1–6 code-verified; emulator scale regression 2026-09-13 | Night Console visual design pass: adopt the shared semantic state roles and the four-zone conversation shell as a Material 3 adaptation, without cloning iOS geometry. |
 | `I-4` | 1 | iOS | Proposed | Retroactive: interrupt an active iOS turn (`IOS-26`). |
 | `I-5` | 1 | iOS | Proposed | Retroactive: iOS hands-free capture and barge-in (`IOS-16`), recorded as intended capability. |
 | `5-I-2` | 5 | iOS | Proposed | Retroactive: iOS accessibility order and focus restoration. |
