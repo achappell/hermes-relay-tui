@@ -97,6 +97,31 @@ endpoint-facing state; claim live evidence that was not run.
 
 ## Review Triage Log
 
+### 2026-09-14 — Home bridge contract reconciliation
+- The `gateway` transport in this story is explicitly the direct Standard
+  Hermes path. It sends only Hermes-owned operations to the pinned `/api/ws`
+  boundary and uses the separate Standard response-audio sidecar.
+- It is not a Home adapter. It does not implement `conversation.open`,
+  `conversation.reconnect`, `bridge.ping`, Home endpoint envelopes, route
+  selection, opaque conversation handles, or Device-credential authentication.
+- The public Home adapter is not live in the current Home revision, so this
+  work records no live Home route evidence and does not send Home methods to
+  vanilla `/api/ws`. The direct Standard path remains opt-in and rollback-only
+  until the Home route/credential gate and approved live evidence exist.
+- The direct Standard bearer-token URL behavior is retained only because it is
+  the pinned Hermes `0.21.1` client boundary. It must not be described or used
+  as the Home credential path.
+
+### 2026-09-14 — Final contract-audit follow-up
+- Raw Standard event identity, turn, correlation, request, and sequence fields
+  remain intact at the gateway boundary; conflicting identities fail closed.
+- A prompt acknowledgement's remote turn identity now anchors same-session
+  event filtering, and a resume response is validated before it can mutate the
+  active session when its durable ID does not match the requested one.
+- Audio reader ownership, malformed audio frames, text-before-audio admission,
+  and interrupt serialization are covered by focused fake-socket tests. These
+  are direct Standard safeguards, not evidence of the absent Home adapter.
+
 ### 2026-09-14 — Review pass
 - verdicts: 39 findings — high 4, medium 19, low 4, false 11, maybe-false 1
 - findings:
@@ -158,12 +183,18 @@ Review findings breakdown: 27 findings patched (4 high, 19 medium, 4 low), 1 med
 
 Follow-up review recommendation: true. This first pass patched high-severity event-ordering and interrupt-race findings. The specific remaining risk is the deferred live verification that a Standard endpoint cannot resume a session under a different requested Hermes profile.
 
-Verification performed:
+Verification performed during the initial build:
 
 - `venv/bin/pytest -q tests/test_gateway_client.py tests/test_gateway_audio.py tests/test_gateway_session.py tests/test_setup.py tests/test_profile_cli.py tests/test_config.py tests/test_app.py` — passed.
 - `venv/bin/pytest -q` — `1276 passed, 1 skipped`.
 - `git diff --check` — passed.
 - No approved live Standard endpoint was available, so live text, voice, interrupt, and reconnect checks remain documented manual follow-up rather than invented evidence.
+
+Post-reconciliation verification (2026-09-14):
+
+- `venv/bin/pytest -q tests/test_gateway_client.py tests/test_gateway_audio.py tests/test_gateway_session.py tests/test_setup.py` — `71 passed`.
+- `venv/bin/pytest -q` — `1294 passed, 1 skipped, 6 warnings`.
+- `git diff --check` — passed.
 
 Residual risks: the approved Home credential and route remain outside this TUI-owned slice; live Standard endpoint behavior and profile ownership still require the shared Home bridge contract and an approved endpoint.
 

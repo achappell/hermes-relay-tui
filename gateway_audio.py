@@ -137,6 +137,11 @@ class GatewayAudioStream:
 
         if self._connect_cm is not None or self.ws is not None:
             await self.close()
+        if self._reader_task is not None and not self._reader_task.done():
+            raise GatewayAudioTransportError(
+                "gateway audio connect",
+                RuntimeError("previous gateway audio reader is still shutting down"),
+            )
 
         connect = self._connect_factory or config.connect_factory()
         _require_gateway_path(self.url)
@@ -353,11 +358,14 @@ class GatewayAudioStream:
         if event_type == "fallback":
             await self._mark_unavailable("server audio fallback")
             return
-        diagnostic_logger.debug(
-            "gateway.audio.event.ignored type=%s payload_keys=%s",
+        reason = f"unsupported audio frame type: {event_type or 'missing'}"
+        diagnostic_logger.error(
+            "gateway.audio.event.invalid type=%s payload_keys=%s",
             event_type or "missing",
             ",".join(sorted(str(key) for key in payload)) or "-",
         )
+        await self._mark_unavailable(reason)
+        raise GatewayAudioProtocolError(reason)
 
     def _handle_start(self, payload: dict[str, Any]) -> None:
         if self._started:

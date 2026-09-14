@@ -64,6 +64,7 @@ class GatewaySession(HermesSession):
         self._active_audio: GatewayAudioStream | None = None
         self._last_event_seq = 0
         self._submission_started_for_turn: str | None = None
+        self._submission_lock = asyncio.Lock()
         self._cancel_before_submission_for_turn: str | None = None
 
     @property
@@ -117,7 +118,10 @@ class GatewaySession(HermesSession):
                     self._session_context(),
                 )
                 operation = "create"
-            normalized = self._apply_session_result(result)
+            normalized = self._apply_session_result(
+                result,
+                requested_resume_id=requested_resume,
+            )
             self._hello_verified = True
             self._gateway_ready = True
             diagnostic_logger.debug(
@@ -212,6 +216,7 @@ class GatewaySession(HermesSession):
                 "committed": "",
                 "current_draft": None,
                 "streamed_reasoning": False,
+                "remote_turn_id": None,
             }
             audio = self._new_audio_stream() if self._gateway_audio_enabled else None
             self._active_audio = audio
@@ -302,22 +307,46 @@ class GatewaySession(HermesSession):
                         "reason": "cancelled_before_submission",
                     }
                     return
-                if audio is not None:
+                async with self._submission_lock:
+                    if self._cancel_before_submission_for_turn == turn_id:
+                        yield {
+                            "type": "turn_interrupted",
+                            "turn_id": turn_id,
+                            "session_id": runtime_session_id,
+                            "reason": "cancelled_before_submission",
+                        }
+                        return
+                    self._submission_started_for_turn = turn_id
                     try:
-                        await audio.open()
-                    except Exception as exc:
-                        audio_failure = f"audio sidecar unavailable ({type(exc).__name__})"
+                        submission = await gateway.request(
+                            "prompt.submit",
+                            {
+                                "session_id": runtime_session_id,
+                                "text": text,
+                                "surface": "tui",
+                            },
+                        )
+                        submitted_remote_turn_id = _require_accepted_request(
+                            submission, "prompt.submit"
+                        )
+                        if submitted_remote_turn_id is not None:
+                            state["remote_turn_id"] = submitted_remote_turn_id
+                    except BaseException:
+                        self._submission_started_for_turn = None
+                        raise
+
+                    # Audio is optional and must not delay text admission. Keep
+                    # startup behind the same lock as submission so an
+                    # interrupt cannot close it and then let a late open
+                    # resurrect the sidecar.
+                    if audio is not None and self._interrupt_sent_for_turn != turn_id:
+                        try:
+                            await audio.open()
+                        except Exception as exc:
+                            audio_failure = f"audio sidecar unavailable ({type(exc).__name__})"
+                            audio_done = True
+                    elif audio is not None:
                         audio_done = True
-                self._submission_started_for_turn = turn_id
-                submission = await gateway.request(
-                    "prompt.submit",
-                    {
-                        "session_id": runtime_session_id,
-                        "text": text,
-                        "surface": "tui",
-                    },
-                )
-                _require_accepted_request(submission, "prompt.submit")
                 if audio_failure is not None:
                     async for unavailable in audio_unavailable(audio_failure):
                         yield unavailable
@@ -505,24 +534,30 @@ class GatewaySession(HermesSession):
         if self._interrupt_sent_for_turn == turn_id:
             return True
         audio = self._active_audio
-        if self._submission_started_for_turn != turn_id:
-            self._cancel_before_submission_for_turn = turn_id
+        local_cancel = False
+        async with self._submission_lock:
+            if self._submission_started_for_turn != turn_id:
+                self._cancel_before_submission_for_turn = turn_id
+                self._interrupt_sent_for_turn = turn_id
+                local_cancel = True
+                result = None
+            else:
+                try:
+                    result = await self._gateway.request(
+                        "session.interrupt",
+                        {"session_id": self._session_id},
+                    )
+                except BaseException:
+                    if audio is not None:
+                        await audio.stop()
+                    raise
+        if local_cancel:
             if audio is not None:
                 await audio.stop()
-            self._interrupt_sent_for_turn = turn_id
             diagnostic_logger.debug(
                 "gateway.turn.interrupt_before_submission turn_id=%s", turn_id
             )
             return True
-        try:
-            result = await self._gateway.request(
-                "session.interrupt",
-                {"session_id": self._session_id},
-            )
-        except BaseException:
-            if audio is not None:
-                await audio.stop()
-            raise
         status = str(result.get("status") or "").lower() if isinstance(result, dict) else ""
         if status.lower() in _FAILED_STATUSES or status.lower() in {
             "rejected",
@@ -617,7 +652,7 @@ class GatewaySession(HermesSession):
             "session.resume",
             {"session_id": session_id, **self._session_context()},
         )
-        return self._apply_session_result(result)
+        return self._apply_session_result(result, requested_resume_id=session_id)
 
     def _resolve_token(self) -> str:
         profile_token_env = getattr(self.args, "profile_token_env", None)
@@ -646,7 +681,12 @@ class GatewaySession(HermesSession):
             params["title"] = title
         return params
 
-    def _apply_session_result(self, result: Any) -> dict[str, Any]:
+    def _apply_session_result(
+        self,
+        result: Any,
+        *,
+        requested_resume_id: str | None = None,
+    ) -> dict[str, Any]:
         if not isinstance(result, dict):
             raise GatewayProtocolError("gateway session response is not an object")
         runtime_candidates = [
@@ -663,19 +703,32 @@ class GatewaySession(HermesSession):
         runtime_id = runtime_candidates[0] if runtime_candidates else None
         if not isinstance(runtime_id, str) or not runtime_id.strip():
             raise GatewayProtocolError("gateway session response has no runtime ID")
-        self._session_id = runtime_id.strip()
-        durable_id = result.get("stored_session_id") or result.get("session_key")
-        if durable_id is not None and (
-            not isinstance(durable_id, str) or not durable_id.strip()
+        runtime_id = runtime_id.strip()
+        stored_session_id = result.get("stored_session_id")
+        if stored_session_id is not None and (
+            not isinstance(stored_session_id, str) or not stored_session_id.strip()
         ):
             raise GatewayProtocolError("gateway session response has an invalid durable ID")
-        self._durable_session_id = durable_id.strip() if durable_id else None
+        stored_session_id = stored_session_id.strip() if stored_session_id else None
         session_key = result.get("session_key")
         if session_key is not None and (
             not isinstance(session_key, str) or not session_key.strip()
         ):
             raise GatewayProtocolError("gateway session response has an invalid session key")
-        self._session_key = session_key.strip() if session_key else None
+        session_key = session_key.strip() if session_key else None
+        if requested_resume_id:
+            requested = str(requested_resume_id).strip()
+            returned_durable_ids = {
+                value for value in (stored_session_id, session_key)
+                if value
+            }
+            if requested not in returned_durable_ids:
+                raise GatewayProtocolError(
+                    "gateway resume response does not match the requested durable ID"
+                )
+        self._session_id = runtime_id
+        self._durable_session_id = stored_session_id or session_key
+        self._session_key = session_key
         if self._durable_session_id:
             # App recovery creates a new adapter from copied args. Preserve
             # the durable key there; the runtime ID below is only for this
@@ -704,6 +757,7 @@ class GatewaySession(HermesSession):
         ] if isinstance(raw_messages, list) else []
         self._capabilities = frozenset({"interrupt"})
         self.turn_index = 0
+        self._last_event_seq = 0
         normalized = dict(result)
         normalized["session_id"] = self._session_id
         normalized["history"] = list(self.initial_history)
@@ -713,8 +767,15 @@ class GatewaySession(HermesSession):
     def _belongs_to_session(event: dict[str, Any], session_id: str) -> bool:
         advertised = event.get("session_id")
         payload = event.get("payload")
-        if advertised in (None, "") and isinstance(payload, dict):
-            advertised = payload.get("session_id")
+        payload_session_id = payload.get("session_id") if isinstance(payload, dict) else None
+        if (
+            advertised not in (None, "")
+            and payload_session_id not in (None, "")
+            and str(advertised) != str(payload_session_id)
+        ):
+            raise GatewayProtocolError("gateway event has conflicting session identities")
+        if advertised in (None, ""):
+            advertised = payload_session_id
         return advertised not in (None, "") and str(advertised) == str(session_id)
 
     async def _normalize_event(
@@ -730,6 +791,21 @@ class GatewaySession(HermesSession):
         payload = event.get("payload")
         if not isinstance(payload, dict):
             payload = {}
+
+        remote_turn_id = event.get("turn_id") or payload.get("turn_id")
+        if remote_turn_id not in (None, ""):
+            remote_turn_id = str(remote_turn_id)
+            if (
+                state["remote_turn_id"] is not None
+                and state["remote_turn_id"] != remote_turn_id
+            ):
+                diagnostic_logger.debug(
+                    "gateway.event.foreign_turn_ignored expected=%s actual=%s",
+                    state["remote_turn_id"],
+                    remote_turn_id,
+                )
+                return
+            state["remote_turn_id"] = remote_turn_id
 
         if event_type in _UNSUPPORTED_PROMPT_EVENTS:
             await self._cancel_unsupported_prompt(
@@ -1054,7 +1130,7 @@ def _optional_str(value: Any) -> str | None:
     return text or None
 
 
-def _require_accepted_request(result: Any, operation: str) -> None:
+def _require_accepted_request(result: Any, operation: str) -> str | None:
     """Require explicit Standard acceptance before treating a request as sent."""
 
     if not isinstance(result, dict):
@@ -1068,11 +1144,18 @@ def _require_accepted_request(result: Any, operation: str) -> None:
     status = result.get("status")
     if status is not None and not isinstance(status, str):
         raise GatewayProtocolError(f"gateway {operation} response has invalid status")
+    remote_turn_id = result.get("turn_id")
+    if remote_turn_id is not None and (
+        not isinstance(remote_turn_id, str) or not remote_turn_id.strip()
+    ):
+        raise GatewayProtocolError(
+            f"gateway {operation} response has an invalid turn identity"
+        )
     normalized_status = status.lower() if isinstance(status, str) else ""
     if accepted is False or resolved is False or normalized_status in {"rejected", "refused", "failed", "error"}:
         raise GatewayRPCError(operation, normalized_status or "rejected")
     if accepted is True or resolved is True or normalized_status in _ACCEPTED_REQUEST_STATUSES:
-        return
+        return remote_turn_id.strip() if remote_turn_id else None
     raise GatewayProtocolError(f"gateway {operation} response has no acceptance proof")
 
 

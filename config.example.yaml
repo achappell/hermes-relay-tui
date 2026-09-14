@@ -17,20 +17,23 @@
 # --- connection ---------------------------------------------------------
 # These root-level connection keys are for the legacy single-profile setup.
 # When `profiles:` is present below, each profile owns its own endpoint,
-# credentials, client/device/session identity, display name, and model; these
-# root connection keys are ignored. `profile_env` remains the shared private
-# env-file location for profile token references.
+# direct-path credential reference, client/device/session identity, display
+# name, and model; these root connection keys are ignored. `profile_env`
+# remains the shared private env-file location for legacy/direct Standard
+# bearer-token references. It is not a Home Device-credential store.
 # Which Hermes backend to relay to. Point this at the media-server gateway,
 # your laptop's local Hermes agent, or anywhere else reachable.
 # url: wss://media-server.local:8792/voice-session
 
 # Keep the fork's voice-session transport as the default. Set this to gateway
-# only when --url points at Hermes' standard /api/ws endpoint.
+# only when --url points at the direct Standard Hermes /api/ws endpoint. This
+# is not the planned Home /api/v1/bridge/ws route.
 # transport: voice-session
-# hermes_profile: amanda       # server profile; separate from local --profile
+# hermes_profile: amanda       # direct Standard server profile; not Home routing
 
-# Bearer token. Prefer VOICE_SESSION_TOKEN in your shell env or the
-# profile .env below instead of writing a real token in this file.
+# Direct legacy/Standard bearer token. Prefer VOICE_SESSION_TOKEN in your shell
+# env or the profile .env below instead of writing a real token in this file.
+# Do not use this field for a Home Device credential.
 # token: ""
 
 # --- local voice stack --------------------------------------------------
@@ -88,8 +91,8 @@
 # profiles:
 #   amanda:
 #     display_name: "Amanda"
-#     transport: voice-session  # or gateway for Standard Hermes /api/ws
-#     hermes_profile: amanda    # only used by the Standard gateway
+#     transport: voice-session  # or gateway for direct Standard Hermes /api/ws
+#     hermes_profile: amanda    # only used by the direct Standard gateway
 #     wake_phrase: "hey missy"
 #     url: ws://localhost:8792/voice-session
 #     token_env: VOICE_SESSION_TOKEN_AMANDA
@@ -107,5 +110,7 @@
 #     session_id: jensen-kiosk
 
 # The terminal client also uses this same mapping without wake phrases. Its
-# profile commands write token_env references and keep the bearer values in the
-# private profile_env file; do not add a literal token to YAML.
+# profile commands write direct-path token_env references and keep bearer
+# values in the private profile_env file; do not add a literal token to YAML.
+# The Home bridge's Device credential, route, and opaque conversation handle
+# are a separate adapter contract and are not configured by this file.

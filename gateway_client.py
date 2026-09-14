@@ -405,7 +405,13 @@ class GatewayClient:
             raise GatewayProtocolError("gateway frame is not JSON-RPC 2.0")
         if "id" in payload and type(payload.get("id")) not in {str, int}:
             raise GatewayProtocolError("gateway frame has an invalid request ID")
-        if "id" in payload and ("result" in payload or "error" in payload):
+        has_result = "result" in payload
+        has_error = "error" in payload
+        if "id" in payload and has_result and has_error:
+            raise GatewayProtocolError(
+                "gateway reply contains both result and error"
+            )
+        if "id" in payload and (has_result or has_error):
             request_id = str(payload.get("id"))
             pending = self._pending.get(request_id)
             if pending is None:
@@ -457,16 +463,43 @@ class GatewayClient:
         raw_event_payload = params.get("payload")
         if raw_event_payload is not None and not isinstance(raw_event_payload, dict):
             raise GatewayProtocolError("gateway event payload is not an object")
+        if event_type == "gateway.ready" and not isinstance(raw_event_payload, dict):
+            raise GatewayProtocolError("gateway.ready payload is not an object")
         event_payload = dict(raw_event_payload) if isinstance(raw_event_payload, dict) else {}
         event: dict[str, Any] = {
             "type": event_type,
             "payload": event_payload,
         }
-        session_id = params.get("session_id") or event_payload.get("session_id")
+        outer_session_id = params.get("session_id")
+        payload_session_id = event_payload.get("session_id")
+        for identity in (outer_session_id, payload_session_id):
+            if identity not in (None, "") and not isinstance(identity, str):
+                raise GatewayProtocolError(
+                    "gateway event session identity is not a string"
+                )
+        if (
+            outer_session_id not in (None, "")
+            and payload_session_id not in (None, "")
+            and str(outer_session_id) != str(payload_session_id)
+        ):
+            raise GatewayProtocolError(
+                "gateway event has conflicting session identities"
+            )
+        session_id = outer_session_id or payload_session_id
         if session_id not in (None, "") and not isinstance(session_id, str):
             raise GatewayProtocolError("gateway event session identity is not a string")
         if session_id not in (None, ""):
             event["session_id"] = str(session_id)
+        for key in ("turn_id", "correlation_id", "request_id"):
+            value = params.get(key)
+            if value is None and isinstance(event_payload, dict):
+                value = event_payload.get(key)
+            if value not in (None, ""):
+                if not isinstance(value, str):
+                    raise GatewayProtocolError(
+                        f"gateway event {key} is not a string"
+                    )
+                event[key] = value
         if params.get("seq") is not None:
             sequence = params.get("seq")
             if type(sequence) is not int or sequence < 1:
@@ -478,7 +511,11 @@ class GatewayClient:
             event.get("session_id", "-"),
             summarize_payload(event_payload),
         )
-        if event_type == "gateway.ready" and self._ready is not None and not self._ready.done():
+        if event_type == "gateway.ready":
+            if self._ready is None:
+                raise GatewayProtocolError("gateway.ready arrived without a handshake")
+            if self._ready.done():
+                raise GatewayProtocolError("gateway sent duplicate gateway.ready")
             self._ready.set_result(event)
             # connect() returns the ready envelope. Do not leave it in the
             # application event stream as stale work for the first turn.

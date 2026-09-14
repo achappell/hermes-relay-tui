@@ -1,4 +1,5 @@
 import asyncio
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -31,6 +32,7 @@ def make_args(**overrides):
 class FakeGateway:
     instances = []
     interrupt_status = "interrupted"
+    prompt_turn_id = None
 
     def __init__(self, url, token):
         self.url = url
@@ -72,7 +74,10 @@ class FakeGateway:
                 "info": {"model": "hermes-test"},
             }
         if method == "prompt.submit":
-            return {"status": "streaming"}
+            result = {"status": "streaming"}
+            if type(self).prompt_turn_id is not None:
+                result["turn_id"] = type(self).prompt_turn_id
+            return result
         if method == "session.interrupt":
             return {"status": self.interrupt_status}
         if method == "session.list":
@@ -98,6 +103,38 @@ class FakeGateway:
 
     def push(self, event):
         self.events.put_nowait(event)
+
+
+_RAW_CLOSE = object()
+
+
+class RawGatewaySocket:
+    def __init__(self):
+        self.incoming = asyncio.Queue()
+        self.sent = []
+
+    async def send(self, data):
+        self.sent.append(json.loads(data))
+
+    async def recv(self):
+        frame = await self.incoming.get()
+        if frame is _RAW_CLOSE:
+            raise ConnectionError("socket closed")
+        return frame
+
+    def feed(self, payload):
+        self.incoming.put_nowait(json.dumps(payload))
+
+
+class RawGatewayContext:
+    def __init__(self, socket):
+        self.socket = socket
+
+    async def __aenter__(self):
+        return self.socket
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return None
 
 
 class FakeAudio:
@@ -141,6 +178,7 @@ class FakeAudio:
 def fake_gateway(monkeypatch):
     FakeGateway.instances.clear()
     FakeGateway.interrupt_status = "interrupted"
+    FakeGateway.prompt_turn_id = None
     monkeypatch.setattr(gateway_session_module, "GatewayClient", FakeGateway)
     return FakeGateway
 
@@ -201,6 +239,7 @@ async def test_switch_session_resumes_the_requested_durable_key_and_history(fake
     )
     assert session.session_id == "runtime-resumed"
     assert result["history"] == [{"role": "assistant", "content": "history"}]
+    assert session._last_event_seq == 0
     await session.close()
 
 
@@ -213,6 +252,148 @@ async def test_conflicting_runtime_session_ids_are_rejected(fake_gateway):
             {"session_id": "runtime-a", "runtime_session_id": "runtime-b"}
         )
 
+    await session.close()
+
+
+@pytest.mark.asyncio
+async def test_resume_rejects_a_different_durable_session(fake_gateway):
+    session, _gateway, _hello = await connected_session(fake_gateway)
+
+    with pytest.raises(GatewayProtocolError, match="does not match"):
+        session._apply_session_result(
+            {
+                "session_id": "runtime-other",
+                "stored_session_id": "stored-other",
+            },
+            requested_resume_id="stored-requested",
+        )
+
+    assert session.session_id == "runtime-1"
+    assert session.args.gateway_resume_session_id == "stored-1"
+    await session.close()
+
+
+@pytest.mark.asyncio
+async def test_prompt_response_turn_identity_filters_late_same_session_events(fake_gateway):
+    fake_gateway.prompt_turn_id = "remote-current"
+    session, gateway, _hello = await connected_session(fake_gateway)
+    stream = session.send_turn("keep only this answer")
+    gateway.push(
+        {
+            "type": "message.delta",
+            "session_id": "runtime-1",
+            "turn_id": "remote-old",
+            "payload": {"text": "stale answer"},
+        }
+    )
+    gateway.push(
+        {
+            "type": "message.delta",
+            "session_id": "runtime-1",
+            "turn_id": "remote-current",
+            "payload": {"text": "current answer"},
+        }
+    )
+    gateway.push(
+        {
+            "type": "message.complete",
+            "session_id": "runtime-1",
+            "turn_id": "remote-current",
+            "payload": {"text": "current answer", "status": "complete"},
+        }
+    )
+
+    received = [event async for event in stream]
+
+    assert "stale answer" not in "".join(event.get("text", "") for event in received)
+    assert received[-1]["type"] == "turn_end"
+    await session.close()
+
+
+@pytest.mark.asyncio
+async def test_raw_gateway_events_reach_session_normalizer(monkeypatch):
+    socket = RawGatewaySocket()
+
+    def connect(_url, **_kwargs):
+        return RawGatewayContext(socket)
+
+    monkeypatch.setattr(
+        gateway_session_module.config, "connect_factory", lambda: connect
+    )
+    session = GatewaySession(
+        make_args(transport="gateway", gateway_audio_enabled=False)
+    )
+    opening = asyncio.create_task(session.connect())
+
+    socket.feed(
+        {
+            "jsonrpc": "2.0",
+            "method": "event",
+            "params": {
+                "type": "gateway.ready",
+                "payload": {"heartbeat": True},
+            },
+        }
+    )
+    for _ in range(100):
+        if any(frame.get("method") == "session.create" for frame in socket.sent):
+            break
+        await asyncio.sleep(0)
+    create_frame = next(frame for frame in socket.sent if frame["method"] == "session.create")
+    socket.feed(
+        {
+            "jsonrpc": "2.0",
+            "id": create_frame["id"],
+            "result": {"session_id": "runtime-1", "stored_session_id": "stored-1"},
+        }
+    )
+    await opening
+
+    stream = session.send_turn("hello from the raw socket")
+    consuming = asyncio.create_task(stream.__anext__())
+    for _ in range(100):
+        if any(frame.get("method") == "prompt.submit" for frame in socket.sent):
+            break
+        await asyncio.sleep(0)
+    submit_frame = next(frame for frame in socket.sent if frame["method"] == "prompt.submit")
+    socket.feed(
+        {
+            "jsonrpc": "2.0",
+            "id": submit_frame["id"],
+            "result": {"status": "streaming", "turn_id": "remote-1"},
+        }
+    )
+    socket.feed(
+        {
+            "jsonrpc": "2.0",
+            "method": "event",
+            "params": {
+                "type": "message.delta",
+                "session_id": "runtime-1",
+                "turn_id": "remote-1",
+                "seq": 1,
+                "payload": {"text": "Hello"},
+            },
+        }
+    )
+    first = await asyncio.wait_for(consuming, 1)
+    assert first["type"] == "text_delta"
+    assert first["text"] == "Hello"
+
+    socket.feed(
+        {
+            "jsonrpc": "2.0",
+            "method": "event",
+            "params": {
+                "type": "message.complete",
+                "session_id": "runtime-1",
+                "turn_id": "remote-1",
+                "seq": 2,
+                "payload": {"text": "Hello", "status": "complete"},
+            },
+        }
+    )
+    assert [event async for event in stream][-1]["type"] == "turn_end"
     await session.close()
 
 

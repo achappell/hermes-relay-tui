@@ -237,6 +237,36 @@ async def test_fallback_frame_becomes_audio_unavailable():
 
 
 @pytest.mark.asyncio
+async def test_unknown_audio_frame_becomes_audio_unavailable():
+    stream, socket, _calls = make_stream()
+    await stream.open()
+    socket.feed_json({"type": "future_audio_mode", "payload": {}})
+
+    event = await asyncio.wait_for(stream.next_event(), 1)
+    assert event == {
+        "type": "audio_unavailable",
+        "reason": "unsupported audio frame type: future_audio_mode",
+    }
+    await stream.close()
+
+
+@pytest.mark.asyncio
+async def test_sidecar_refuses_replacement_while_old_reader_is_still_shutting_down():
+    stream, _socket, _calls = make_stream()
+    reader = asyncio.create_task(asyncio.Event().wait())
+    stream._reader_task = reader
+
+    with pytest.raises(GatewayAudioTransportError) as error:
+        await stream.connect()
+    assert error.value.cause_type == "RuntimeError"
+    assert stream._reader_task is reader
+
+    reader.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await reader
+
+
+@pytest.mark.asyncio
 async def test_stop_sends_the_sidecar_stop_frame_before_closing():
     stream, socket, _calls = make_stream()
     await stream.open()

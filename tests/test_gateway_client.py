@@ -192,6 +192,77 @@ async def test_gateway_reply_with_matching_id_but_no_result_or_error_is_protocol
 
 
 @pytest.mark.asyncio
+async def test_gateway_reply_with_result_and_error_is_protocol_failure():
+    client, socket, _calls, _ready = await connect_client()
+    request = asyncio.create_task(client.request("session.create", {"source": "tui"}))
+    await asyncio.sleep(0)
+    request_id = socket.sent[-1]["id"]
+    socket.feed(
+        {
+            "jsonrpc": "2.0",
+            "id": request_id,
+            "result": {"session_id": "runtime-1"},
+            "error": {"code": -32000},
+        }
+    )
+
+    with pytest.raises(GatewayProtocolError, match="both result and error"):
+        await request
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_gateway_rejects_conflicting_event_session_identities():
+    client, socket, _calls, _ready = await connect_client()
+    socket.feed(
+        {
+            "jsonrpc": "2.0",
+            "method": "event",
+            "params": {
+                "type": "message.delta",
+                "session_id": "runtime-1",
+                "payload": {"session_id": "runtime-2", "text": "wrong"},
+            },
+        }
+    )
+
+    with pytest.raises(GatewayProtocolError, match="conflicting session identities"):
+        await client.next_event()
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_raw_standard_event_preserves_identity_and_correlation_fields():
+    client, socket, _calls, _ready = await connect_client()
+    socket.feed(
+        {
+            "jsonrpc": "2.0",
+            "method": "event",
+            "params": {
+                "type": "message.delta",
+                "session_id": "runtime-1",
+                "turn_id": "remote-turn-1",
+                "correlation_id": "corr-1",
+                "request_id": "request-1",
+                "seq": 4,
+                "payload": {"text": "hello"},
+            },
+        }
+    )
+
+    assert await client.next_event() == {
+        "type": "message.delta",
+        "payload": {"text": "hello"},
+        "session_id": "runtime-1",
+        "turn_id": "remote-turn-1",
+        "correlation_id": "corr-1",
+        "request_id": "request-1",
+        "seq": 4,
+    }
+    await client.close()
+
+
+@pytest.mark.asyncio
 async def test_pending_gateway_request_fails_when_the_socket_disconnects():
     client, socket, _calls, _ready = await connect_client()
     request = asyncio.create_task(client.request("session.create", {"source": "tui"}))

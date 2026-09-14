@@ -90,10 +90,28 @@ The exact worker payload was aggregated into the worktree.
 
 - Generated file: `tests/test_gateway_boundary_failures.py` (8 tests: P0 2, P1 4, P2 2).
 - New-file burn-in: 5/5 runs passed, 40/40 individual test executions.
-- Full suite: `../../venv/bin/pytest -q` — 1,285 passed, 1 skipped, 6 warnings in 225.68 seconds. Collection is now 1,286 tests.
+- Full suite at the initial automation checkpoint: `../../venv/bin/pytest -q` — 1,285 passed, 1 skipped, 6 warnings in 225.68 seconds. Collection was 1,286 tests.
 - `git diff --check` passed.
 - Quality scan: no committed focus markers, hard browser waits, console logging, or debug selectors in the generated file; tests use deterministic fake sockets, explicit typed failures, priority tags, and Given/When/Then comments.
 - No coverage percentage was calculated because the worktree environment does not include the `coverage` package; test-count and focused/full execution evidence are recorded instead.
+
+## Contract reconciliation
+
+- Read the Home bridge contract and linked route/session, Standard baseline,
+  surface-migration, credential-lifecycle, and transport companions before
+  reviewing the TUI slice.
+- Confirmed this worktree's `gateway` path is direct Standard Hermes only. It
+  sends no Home bridge methods to vanilla `/api/ws`, adds no Home Device
+  credential, claims no Home route or endpoint envelope, and records no live
+  Home integration because the public adapter is not live.
+- Added direct-boundary checks for `/api/ws` path enforcement, malformed and
+  conflicting identities, durable resume ownership, remote turn correlation,
+  one-reader audio teardown, text-first admission, interrupt serialization,
+  and unsupported audio frames.
+- Focused reconciliation suite: `../../venv/bin/pytest -q tests/test_gateway_client.py tests/test_gateway_audio.py tests/test_gateway_session.py tests/test_setup.py` — 71 passed.
+- Full post-reconciliation suite: `../../venv/bin/pytest -q` — 1,294 passed,
+  1 skipped, 6 warnings. Collection is 1,295 tests.
+- `git diff --check` passed.
 
 ## Files created
 
@@ -104,7 +122,7 @@ No fixtures, factories, package scripts, README, browser sessions, or live endpo
 
 ## Acceptance and residual risk
 
-The local acceptance matrix is covered across the existing Story 3 suite and this expansion: opt-in gateway readiness and session setup, normalized text/audio behavior, readable audio degradation, no-replay recovery, terminal interruption, and transport/profile routing. The remaining deferred item is live evidence that a Standard session cannot resume under a different requested Hermes profile; the story already records that boundary.
+The local acceptance matrix is covered across the existing Story 3 suite and this expansion: opt-in gateway readiness and session setup, normalized text/audio behavior, readable audio degradation, no-replay recovery, terminal interruption, and transport/profile routing. The direct Standard adapter is not the Home bridge and does not close Home route, Device-credential, opaque-handle, endpoint-envelope, or live-route acceptance. The remaining deferred item is live evidence that a Standard session cannot resume under a different requested Hermes profile; the story already records that boundary.
 
 ## Recommended next workflow
 

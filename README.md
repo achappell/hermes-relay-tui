@@ -5,7 +5,10 @@ A small Textual terminal UI for authenticated Hermes voice sessions. Type text, 
 This is a client for the existing Hermes voice-session channel. The legacy
 channel remains the default. An explicitly selected `gateway` transport also
 proves the pinned Standard Hermes boundary without changing the fork wire
-contract. It does not run the Hermes server.
+contract. It is a direct Standard Hermes development/rollback path, not the
+Home bridge: it must not be pointed at Home's planned `/api/v1/bridge/ws`
+route, and it does not claim Home route, Device-credential, opaque-handle, or
+live integration support. It does not run the Hermes server.
 
 ## BMAD surface ownership
 
@@ -38,13 +41,16 @@ here.
 - Connection, timeout, and turn errors shown in the UI instead of crashing the app.
 - Local image staging and `@path` attachment previews with an explicit text-only relay boundary.
 - Opt-in bounded local `!command` execution and `{!command}` prompt interpolation.
-- Opt-in Standard Hermes `/api/ws` text turns with a separate PCM speech sidecar.
+- Opt-in direct Standard Hermes `/api/ws` text turns with a separate PCM speech
+  sidecar. Home authentication and route roaming remain a separate, not-yet-
+  live adapter boundary.
 
 ## Requirements
 
 - Python 3.14
 - Access to a Hermes voice-session WebSocket endpoint
-- A bearer token for that endpoint
+- A bearer token for the legacy or direct Standard endpoint. This is not a Home
+  Device credential; the planned Home bridge credential path is not live here.
 - A working audio input/output device for voice and playback
 
 The base install includes the typed client and configuration support. Local microphone capture and speech-to-text are optional extras, so a package or Homebrew install stays quick; `hermes-relay install` adds them with visible pip progress when you want voice.
@@ -91,11 +97,12 @@ hermes-relay setup
 hermes-relay
 ```
 
-It asks for the Hermes WebSocket endpoint, bearer token, and client/device
+It asks for the direct Hermes WebSocket endpoint, bearer token, and client/device
 names, session name. It writes editable connection
 defaults to `~/.hermes-relay-tui/config.yaml` and keeps the token in the
-private `~/.hermes-relay-tui/.env`. Use `hermes-relay setup` again to change
-them. See [`docs/packaging/jensen-trial.md`](docs/packaging/jensen-trial.md)
+private `~/.hermes-relay-tui/.env`. Those credentials are for the direct
+legacy/Standard path only; they are not the Home Device-credential flow. Use
+`hermes-relay setup` again to change them. See [`docs/packaging/jensen-trial.md`](docs/packaging/jensen-trial.md)
 for the server-side setup and smoke-test steps.
 
 ### Python package

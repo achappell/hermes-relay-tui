@@ -359,6 +359,16 @@ def test_normalize_endpoint_switches_between_known_transport_paths():
     ) == "wss://hermes.example/voice-session"
 
 
+def test_normalize_endpoint_rejects_home_bridge_path_for_direct_gateway():
+    from setup_wizard import normalize_endpoint
+
+    with pytest.raises(ValueError, match="Home bridge routes"):
+        normalize_endpoint(
+            "wss://home.example/api/v1/bridge/ws",
+            transport="gateway",
+        )
+
+
 def test_run_setup_can_select_standard_transport_without_token_in_config(tmp_path):
     answers = iter(["https://hermes.example", "amanda-laptop", "kitchen"])
     secrets = iter(["gateway-secret"])

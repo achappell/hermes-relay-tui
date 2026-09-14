@@ -80,6 +80,11 @@ def normalize_endpoint(value: str, *, transport: str = "voice-session") -> str:
     # will pass parsing but can never complete the selected handshake.
     if transport == "gateway" and path == "/voice-session":
         path = default_path
+    elif transport == "gateway" and path not in {"", "/api/ws"}:
+        raise ValueError(
+            "gateway transport requires the Standard /api/ws endpoint; "
+            "Home bridge routes are not direct gateway endpoints"
+        )
     elif transport != "gateway" and path == "/api/ws":
         path = default_path
     return urlunsplit((parsed.scheme, parsed.netloc, path or default_path, parsed.query, ""))
@@ -366,7 +371,9 @@ async def probe_connection(
                 gateway.request("session.create", params),
                 timeout=timeout,
             )
-            runtime_id = result.get("session_id") if isinstance(result, dict) else None
+            runtime_id = None
+            if isinstance(result, dict):
+                runtime_id = result.get("session_id") or result.get("runtime_session_id")
             if not runtime_id:
                 return False, "Connection failed: gateway session has no runtime identity"
             return True, "Connection verified: Standard gateway ready"
