@@ -1948,7 +1948,11 @@ async def test_submitting_input_sends_a_turn_and_clears_input():
         composer.text = "hello hermes\nsecond paragraph"
         composer.move_cursor((1, len("second paragraph")))
         await pilot.press("enter")
-        await pilot.pause()
+        await wait_until(
+            lambda: session.sent_turns == [
+                ("hello hermes\nsecond paragraph", "local")
+            ]
+        )
         assert session.sent_turns == [("hello hermes\nsecond paragraph", "local")]
         assert composer.text == ""
         assert "you> hello hermes\nsecond paragraph" in transcript_of(app)
@@ -2905,12 +2909,12 @@ async def test_composer_remains_submitable_while_a_turn_is_responding():
         composer = app.query_one("#composer", Composer)
         composer.text = "first"
         first_press = asyncio.create_task(pilot.press("enter"))
-        await pilot.pause()
-        assert app._turn_in_flight
+        await wait_until(lambda: app._turn_in_flight)
 
         composer.text = "second"
         second_press = asyncio.create_task(pilot.press("enter"))
-        await pilot.pause()
+        await wait_until(lambda: app._queued_prompts == ["second"])
+        await asyncio.wait_for(second_press, 1)
 
         assert composer.text == ""
         assert app._queued_prompts == ["second"]
