@@ -40,30 +40,39 @@ ESPHome reference
 ([`formatBCE/Respeaker-Lite-ESPHome-integration`](https://github.com/formatBCE/Respeaker-Lite-ESPHome-integration),
 credited from Seeed's own wiki tutorial for this board,
 [wiki.seeedstudio.com/respeaker_lite_ha/](https://wiki.seeedstudio.com/respeaker_lite_ha/)).
-Story 3 (this one) adds the I2S audio path (`i2s_audio:`, `microphone:`) and
-an on-device `micro_wake_word:` block on top of that base, following the
-same reference. Identity/credential logic and audio-streaming-to-host logic
-still aren't included — those land in stories 4 and 5.
+Story 3 (this one) added the I2S audio path (`i2s_audio:`, `microphone:`) and
+an on-device `micro_wake_word:` block on top of that base, following the same
+reference. Identity/credential logic and audio-streaming-to-host logic are
+later story boundaries; follow-on Puck slices now also live in the YAML, but
+are documented and owned separately.
 
 ---
 
-## Wake Phrase (Story 3)
+## Wake Models (Story 3)
 
-This build answers to **`hey_jarvis`** — a pretrained community model
-bundled with ESPHome's `micro_wake_word` component, requiring zero
-training. **It does not answer to "hey hermes."** The previous
+The current production build listens for the locally trained candidates
+**`hey_missy`**, **`hey_bestie`**, and **`hey_skippy`**. `hey_missy` is listed
+first and is the default; the other two are explicitly enabled for live A/B
+testing because ESPHome enables only the first model by default. The internal
+`stop` model remains a helper for the Puck's local flow, not a household
+Profile mapping, and `vad` supports endpointing.
+
+The initial proving build used **`hey_jarvis`**, a pretrained community model
+bundled with ESPHome's `micro_wake_word` component. The reference-matched
+hardware test verified it after the XMOS firmware was updated to 1.1.0 and the
+reference's unfiltered decimation was restored; the production configuration
+then moved to the three local candidates above. The dated investigation in
+the Story 3 artifact preserves both stages.
+
+The current build does not answer to **"hey hermes."** The previous
 openWakeWord-style `wakewords/hey_hermes.onnx` asset does not carry over:
 `micro_wake_word` uses its own model format (the `OHF-Voice/micro-wake-word`
-TensorFlow pipeline), so retraining "hey hermes" for this engine is real,
-separate follow-on work — Piper TTS synthesis plus hours of
-training-with-iteration, per Story 1's findings — not a config change. It is
-tracked separately and intentionally not folded into this story, whose goal
-was proving the on-device audio + wake-word pipeline works on this hardware
-at all.
+TensorFlow pipeline), so training "hey hermes" for this engine is real,
+separate follow-on work — not a config change. Wake-word-to-Profile routing
+is also later work; detection and profile selection are separate concerns.
 
-The bundled internal `stop` model is also enabled (kept `internal: true` so
-it isn't independently exposed as a toggleable Home Assistant entity), per
-Seeed's own reference integration.
+The `stop` model stays `internal: true`, so it is not independently exposed
+as a toggleable Home Assistant entity.
 
 ---
 
@@ -172,15 +181,25 @@ audio is too loud and a browser is not already open.
    credentials, the device should join WiFi and become visible to Home
    Assistant/ESPHome via mDNS (`respeaker-lite.local`) and the `api:`
    component.
-5. **Wake-word check (Story 3):** with `esphome logs` attached, speak
-   "hey jarvis" clearly near the physical device. A `micro_wake_word`
-   detection log line (wake word id `hey_jarvis`) should appear shortly
-   after — this is the actual on-hardware proof that the I2S audio path and
-   wake engine work, not just that the firmware compiles. **This step is
-   now verified working** (session 17) — see Known Limitation below for
-   the full resolution.
+5. **Wake-word check (Story 3):** with `esphome logs` attached, speak one
+   configured candidate (`hey_missy`, `hey_bestie`, or `hey_skippy`) clearly
+   near the physical device. A `micro_wake_word` detection log line with the
+   corresponding model id should appear shortly after — this is the actual
+   on-hardware proof that the I2S audio path and wake engine work, not just
+   that the firmware compiles. The initial `hey_jarvis` proving result is
+   historical evidence recorded in the Story 3 artifact.
 
 ## Known Limitation
+
+The on-device wake pipeline is verified on the physical Puck. The current
+production candidates are `hey_missy`, `hey_bestie`, and `hey_skippy`, using
+XMOS firmware 1.1.0 and the reference unfiltered decimation. The remaining
+installation limitation is that the flashed device currently uses placeholder
+WiFi credentials (`placeholder-ssid`); it will not join the household network
+or appear on the ESPHome API until real credentials are provisioned and the
+device is reflashed. Final household Profile routing, revocable device
+credentials, wake arbitration, and post-wake audio transport are later story
+boundaries.
 
 This story's `secrets.yaml` on the flashed device currently ships with
 placeholder WiFi credentials (`placeholder-ssid`), since the actual household
@@ -191,6 +210,13 @@ network or come up on the ESPHome API until `secrets.yaml` is updated with
 real credentials and the device is reflashed (or the WiFi credentials are
 changed via ESPHome's Improv/BLE provisioning if enabled in a future
 iteration).
+
+### Historical investigation
+
+The remainder of this section is an append-only investigation record. Its
+earlier unresolved observations are historical evidence, not current status or
+open Story 3 work items; the later resolution and the current candidate list
+above supersede them.
 
 **Two build-time issues were found and resolved while bringing up
 `micro_wake_word` (Story 3), both documented in full in the story file's
@@ -210,7 +236,7 @@ Implementation Notes:**
    where a TLS handshake touches `Security.framework`/`trustd` in a way
    that doesn't survive `fork()`. Not a Python-version issue (reproduced
    identically under both 3.14 and 3.12). Fixed by vendoring both wake-word
-   models locally (`wake_models/{hey_jarvis,stop}.{json,tflite}`) instead of
+   initial proving models locally (`wake_models/{hey_jarvis,stop}.{json,tflite}`) instead of
    referencing them by shorthand name/URL — local paths skip the
    update-check HTTPS call entirely.
 
@@ -408,17 +434,14 @@ internally against this project's own pipeline. Two real findings:
    confirmed by spectrogram) was correct; the fix for it was the actual
    bug.
 
-**Wake-word detection works on this hardware with the pretrained
-`hey_jarvis` model, using formatBCE's stock XMOS firmware (1.1.0) and
-formatBCE's stock (unfiltered) decimation.** The custom-training work
-from steps 1-3 (data collection pipeline, 30-clip dataset, first trained
-model) remains fully working and banked, but is no longer the only path
-to on-device detection — it's now optional future work for improving
-robustness/vocabulary, not a requirement. See the story file's session 17
-entries for the complete investigation, including the real environment
-bugs found and fixed along the way (an ESP-IDF toolchain segfault from a
-redundant `requests` HTTP round-trip, and a null-pointer crash in the DFU
-version-check code).
+**The reference-matched build verified wake detection on this hardware with
+the pretrained `hey_jarvis` model, using formatBCE's stock XMOS firmware
+(1.1.0) and stock (unfiltered) decimation.** The production configuration
+later moved to the locally trained candidates described in **Wake Models**
+above. See the story file's session 17 entries for the complete investigation,
+including the real environment bugs found and fixed along the way (an ESP-IDF
+toolchain segfault from a redundant `requests` HTTP round-trip, and a
+null-pointer crash in the DFU version-check code).
 
 **If you raise `logger: level:` above `DEBUG` while debugging this:**
 `VERY_VERBOSE` logs the configured WiFi password in cleartext (found and

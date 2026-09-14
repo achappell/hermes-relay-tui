@@ -1,0 +1,21 @@
+# Project policy for the unattended stories-mode build workflow.
+
+[gates]
+mode = "none"
+
+[stories]
+source = "stories"
+spec_folder = "_bmad-output/specs/spec-hermes-relay-tui"
+
+[adapter]
+name = "codex"
+# The project hook is reviewed and tracked with the loop configuration. These
+# flags make the already-authorized unattended run independent of first-run
+# approval and hook-trust prompts.
+extra_args = [
+  "--dangerously-bypass-approvals-and-sandbox",
+  "--dangerously-bypass-hook-trust",
+]
+
+[scm]
+isolation = "worktree"

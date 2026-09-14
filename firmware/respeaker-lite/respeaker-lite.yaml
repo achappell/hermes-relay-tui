@@ -3,11 +3,12 @@
 #
 # Story 2 (SPEC.md / firmware/respeaker-lite) established WiFi, API, and
 # board/platform sections only, proving the build target and hardware are
-# real. Story 3 adds the I2S audio path and an on-device `micro_wake_word:`
-# wake engine on top of that base. No identity/credential logic and no
-# audio-streaming-to-host logic yet — those land in stories 4 and 5. The
-# wake phrase here is the pretrained community model `hey_jarvis`, not
-# "hey hermes" — see README.md's "Wake Phrase" section for why.
+# real. Story 3 added the I2S audio path and an on-device `micro_wake_word:`
+# wake engine on top of that base. Identity/credential logic and
+# audio-streaming-to-host logic are later story boundaries; follow-on Puck
+# slices now also appear below but are not Story 3 ownership. The current wake
+# candidates are `hey_missy`, `hey_bestie`, and `hey_skippy`, not "hey hermes";
+# see README.md's "Wake Models" section for the model history and boundaries.
 #
 # Adapted from Seeed's own reSpeaker Lite ESPHome reference config
 # (formatBCE/Respeaker-Lite-ESPHome-integration, credited from Seeed's wiki
@@ -98,14 +99,11 @@ esp32:
     type: esp-idf
     version: recommended
 
-# TEMPORARY, isolation step 1 of the safer PCM-capture redesign (story 3
-# follow-up): enable PSRAM alone, with no capture/buffer logic yet, to
-# test in isolation whether PSRAM enablement itself was the cause of the
-# prior session's crash-loop (that attempt combined psram: + a resized
-# fixed buffer in on_boot and crashed within ~1s -- ambiguous which of the
-# two caused it). If this boots clean, PSRAM itself is not the trigger and
-# a raw heap_caps_malloc-based capture buffer (no vector, no resize) is
-# safe to add next.
+# PSRAM is enabled for the current Puck capture buffers used by the follow-on
+# host-transport path. Historical note: the first isolation test enabled PSRAM
+# alone after a resized fixed buffer had crash-looped within ~1s; the current
+# capture implementation uses a separately allocated bounded buffer and is
+# documented by its owning story.
 psram:
   mode: octal
 
@@ -314,9 +312,9 @@ microphone:
     bits_per_sample: 32bit
     i2s_mode: secondary
     channel: stereo
-    # TEMPORARY diagnostic for the "zero audio pipeline activity" mystery --
-    # logs raw amplitude every ~1s, independent of micro_wake_word, to prove
-    # whether any signal reaches the ESP32 at all. Remove once resolved.
+    # Retained lightweight diagnostic from Story 3's hardware investigation:
+    # logs raw amplitude every ~1s, independent of micro_wake_word, so future
+    # bring-up can distinguish an audio-path failure from a model failure.
     #
     # Split per channel (ch0/ch1), not combined: micro_wake_word's
     # `channels: 1` selects channel index 1 only (matching this board's
@@ -608,12 +606,11 @@ micro_wake_word:
                 - delay: 150ms
                 - lambda: pcm_capture::wake_capture::start_pending();
 
-# TEMPORARY diagnostic: mww's on_boot state-transition log (STOPPED ->
-# STARTING -> DETECTING_WAKE_WORD) only fires once, right at boot, and is
-# easy to miss if `esphome logs` attaches even a second late. This makes
-# the same fact (is_running(), plus vad_state_ so we can see VAD react to
-# speech even if wake-word inference itself never fires) pollable at any
-# time without needing to catch a fresh boot. Remove once resolved.
+# Lightweight health telemetry retained after Story 3: the boot state
+# transition (STOPPED -> STARTING -> DETECTING_WAKE_WORD) is easy to miss,
+# while this poll makes `is_running()` and VAD state observable at any time.
+# The same interval also contains the self-heal used by the later Puck path
+# when marginal WiFi/API conditions stop the wake task.
 interval:
   - interval: 2s
     then:
