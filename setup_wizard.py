@@ -16,6 +16,7 @@ from urllib.parse import urlsplit, urlunsplit
 import yaml
 
 import config
+import config as config_module
 from voice import DEFAULT_STT_MODEL
 
 
@@ -60,8 +61,8 @@ def _existing_config(path: Path) -> dict[str, Any]:
     return value
 
 
-def normalize_endpoint(value: str) -> str:
-    """Normalize a pasted HTTP(S) or WebSocket voice-session endpoint."""
+def normalize_endpoint(value: str, *, transport: str = "voice-session") -> str:
+    """Normalize a pasted endpoint for the selected transport."""
     raw = str(value or "").strip()
     if raw.startswith("http://"):
         raw = "ws://" + raw[len("http://") :]
@@ -73,7 +74,15 @@ def normalize_endpoint(value: str) -> str:
     path = parsed.path.rstrip("/")
     if path.endswith("/health"):
         path = path[: -len("/health")].rstrip("/")
-    return urlunsplit((parsed.scheme, parsed.netloc, path or "/voice-session", parsed.query, ""))
+    default_path = "/api/ws" if transport == "gateway" else "/voice-session"
+    # A transport switch commonly reuses the saved endpoint. Replace the
+    # known route from the other transport instead of preserving a URL that
+    # will pass parsing but can never complete the selected handshake.
+    if transport == "gateway" and path == "/voice-session":
+        path = default_path
+    elif transport != "gateway" and path == "/api/ws":
+        path = default_path
+    return urlunsplit((parsed.scheme, parsed.netloc, path or default_path, parsed.query, ""))
 
 
 def _write_private_env(path: Path, token: str) -> None:
@@ -120,6 +129,8 @@ def save_setup_files(
     session_id: str,
     display_name: str,
     stt_model: str | None = None,
+    transport: str | None = None,
+    hermes_profile: str | None = None,
 ) -> None:
     """Persist setup answers without placing the bearer token in YAML."""
     if config_path.exists():
@@ -145,6 +156,17 @@ def save_setup_files(
     )
     if stt_model:
         config["stt_model"] = stt_model
+    if transport is not None:
+        selected_transport = str(transport).strip().lower()
+        if selected_transport not in config_module.TRANSPORTS:
+            raise ValueError(f"unsupported transport: {transport}")
+        config["transport"] = selected_transport
+    if hermes_profile is not None:
+        selected_hermes_profile = str(hermes_profile).strip()
+        if selected_hermes_profile:
+            config["hermes_profile"] = selected_hermes_profile
+        else:
+            config.pop("hermes_profile", None)
 
     config_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     config_path.write_text(
@@ -186,6 +208,17 @@ def run_setup(
         default=None,
         help=f"local Faster-Whisper model to prepare (default: {DEFAULT_STT_MODEL})",
     )
+    parser.add_argument(
+        "--transport",
+        choices=config.TRANSPORTS,
+        default=None,
+        help="connection transport; gateway expects a Standard /api/ws endpoint",
+    )
+    parser.add_argument(
+        "--hermes-profile",
+        default=None,
+        help="Hermes server profile when --transport gateway is selected",
+    )
     parser.add_argument("--no-check", action="store_true", help="save without testing the relay")
     args = parser.parse_args([] if argv is None else argv)
     config_path = args.config.expanduser()
@@ -210,12 +243,24 @@ def run_setup(
     output_fn("The bearer token is stored separately in a private .env file.")
     output_fn("Copy the WebSocket endpoint and token from the Hermes server setup.")
 
+    transport = str(args.transport or existing.get("transport") or "voice-session").strip().lower()
+    if transport not in config.TRANSPORTS:
+        output_fn(f"Setup cancelled: unsupported transport '{transport}'.")
+        return 1
+    hermes_profile = (
+        args.hermes_profile
+        if args.hermes_profile is not None
+        else str(existing.get("hermes_profile") or "").strip()
+    ) or None
+    if transport == "gateway":
+        output_fn("Transport: gateway (Standard Hermes /api/ws; fork remains the rollback path).")
+
     url = _ask(input_fn, "Hermes WebSocket URL", default=str(existing.get("url") or ""))
     if not url:
         output_fn("Setup cancelled: a WebSocket URL is required.")
         return 1
     try:
-        url = normalize_endpoint(url)
+        url = normalize_endpoint(url, transport=transport)
     except ValueError as exc:
         output_fn(f"Setup cancelled: {exc}.")
         return 1
@@ -258,6 +303,12 @@ def run_setup(
             session_id=session_id,
             display_name=display_name,
             stt_model=stt_model,
+            transport=(transport if args.transport is not None or "transport" in existing else None),
+            hermes_profile=(
+                hermes_profile
+                if args.hermes_profile is not None or "hermes_profile" in existing
+                else None
+            ),
         )
     except (OSError, UnicodeDecodeError, ValueError, yaml.YAMLError) as exc:
         output_fn(f"Setup failed: {exc}")
@@ -268,7 +319,18 @@ def run_setup(
     )
     output_fn(f"Setup complete. Edit {config_path} to change these defaults.")
     if check_connection and not args.no_check and connection_check_fn is not None:
-        result = connection_check_fn(url, token, client_id, device_id, session_id)
+        if transport == "gateway":
+            result = connection_check_fn(
+                url,
+                token,
+                client_id,
+                device_id,
+                session_id,
+                transport=transport,
+                hermes_profile=hermes_profile,
+            )
+        else:
+            result = connection_check_fn(url, token, client_id, device_id, session_id)
         if inspect.isawaitable(result):
             result = asyncio.run(result)
         ok, message = result
@@ -284,11 +346,36 @@ async def probe_connection(
     device_id: str,
     session_id: str,
     *,
+    transport: str = "voice-session",
+    hermes_profile: str | None = None,
     connect_factory: Any = None,
     timeout: float = 10.0,
 ) -> tuple[bool, str]:
     """Verify credentials and protocol compatibility without sending a turn."""
     connect = connect_factory or config.connect_factory()
+    if transport == "gateway":
+        from gateway_client import GatewayClient
+
+        gateway = GatewayClient(url, token, connect_factory=connect)
+        try:
+            await asyncio.wait_for(gateway.connect(), timeout=timeout)
+            params: dict[str, Any] = {"source": "tui"}
+            if hermes_profile:
+                params["profile"] = hermes_profile
+            result = await asyncio.wait_for(
+                gateway.request("session.create", params),
+                timeout=timeout,
+            )
+            runtime_id = result.get("session_id") if isinstance(result, dict) else None
+            if not runtime_id:
+                return False, "Connection failed: gateway session has no runtime identity"
+            return True, "Connection verified: Standard gateway ready"
+        except Exception:
+            # Do not echo an exception containing an authenticated gateway URL.
+            return False, "Connection failed: Standard gateway handshake was not verified"
+        finally:
+            await gateway.close()
+
     try:
         async with connect(url, **config._connection_kwargs(connect, token)) as websocket:
             await websocket.send(

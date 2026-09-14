@@ -68,6 +68,60 @@ def test_profile_cli_can_configure_profile_wake_phrases(tmp_path):
     assert saved["profiles"]["jensen"]["wake_phrases"] == ["hey skippy", "skippy"]
 
 
+def test_profile_cli_can_select_standard_gateway_per_profile(tmp_path):
+    config_path = tmp_path / "config.yaml"
+    env_path = tmp_path / ".env"
+    args = _create_args("amanda", "wss://hermes.example/api/ws", env_path)
+    args.extend(["--transport", "gateway", "--hermes-profile", "server-amanda"])
+
+    assert run_profile_command(
+        ["--config", str(config_path), *args],
+        secret_fn=lambda prompt: "gateway-secret",
+        output_fn=lambda message: None,
+    ) == 0
+
+    saved = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    assert saved["profiles"]["amanda"]["transport"] == "gateway"
+    assert saved["profiles"]["amanda"]["hermes_profile"] == "server-amanda"
+    assert "gateway-secret" not in config_path.read_text(encoding="utf-8")
+
+
+def test_profile_cli_transport_edit_migrates_existing_endpoint_path(tmp_path):
+    config_path = tmp_path / "config.yaml"
+    env_path = tmp_path / ".env"
+    args = _create_args("amanda", "wss://hermes.example/voice-session", env_path)
+
+    assert run_profile_command(
+        ["--config", str(config_path), *args],
+        secret_fn=lambda prompt: "gateway-secret",
+        output_fn=lambda message: None,
+    ) == 0
+    assert run_profile_command(
+        ["--config", str(config_path), "edit", "amanda", "--transport", "gateway"],
+        secret_fn=lambda prompt: "",
+        output_fn=lambda message: None,
+    ) == 0
+
+    saved = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    assert saved["profiles"]["amanda"]["url"] == "wss://hermes.example/api/ws"
+
+
+def test_profile_cli_gateway_create_normalizes_a_bare_host(tmp_path):
+    config_path = tmp_path / "config.yaml"
+    env_path = tmp_path / ".env"
+    args = _create_args("amanda", "wss://hermes.example", env_path)
+    args.extend(["--transport", "gateway"])
+
+    assert run_profile_command(
+        ["--config", str(config_path), *args],
+        secret_fn=lambda prompt: "gateway-secret",
+        output_fn=lambda message: None,
+    ) == 0
+
+    saved = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    assert saved["profiles"]["amanda"]["url"] == "wss://hermes.example/api/ws"
+
+
 def test_profile_cli_edit_select_and_delete(tmp_path):
     config_path = tmp_path / "config.yaml"
     env_path = tmp_path / ".env"

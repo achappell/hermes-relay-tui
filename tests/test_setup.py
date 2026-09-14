@@ -231,6 +231,75 @@ def test_probe_connection_verifies_the_voice_session_handshake():
     ]
 
 
+@pytest.mark.parametrize("session_result", [{"session_id": "runtime-1"}, {}])
+def test_probe_connection_verifies_the_standard_gateway_handshake(session_result):
+    class FakeWebSocket:
+        def __init__(self):
+            self.incoming = asyncio.Queue()
+            self.sent = []
+            self.closed = asyncio.Event()
+            self.incoming.put_nowait(
+                json.dumps(
+                    {
+                        "jsonrpc": "2.0",
+                        "method": "event",
+                        "params": {
+                            "type": "gateway.ready",
+                            "payload": {"heartbeat": True},
+                        },
+                    }
+                )
+            )
+
+        async def send(self, frame):
+            payload = json.loads(frame)
+            self.sent.append(payload)
+            if payload.get("method") == "session.create":
+                self.incoming.put_nowait(
+                    json.dumps(
+                        {
+                            "jsonrpc": "2.0",
+                            "id": payload["id"],
+                            "result": session_result,
+                        }
+                    )
+                )
+
+        async def recv(self):
+            return await self.incoming.get()
+
+    websocket = FakeWebSocket()
+
+    class Connection:
+        def __init__(self, url, **kwargs):
+            self.url = url
+            self.kwargs = kwargs
+
+        async def __aenter__(self):
+            return websocket
+
+        async def __aexit__(self, *exc_info):
+            websocket.closed.set()
+            return False
+
+    ok, message = asyncio.run(
+        probe_connection(
+            "wss://hermes.example/api/ws",
+            "secret-token",
+            "jensen-laptop",
+            "jensen-mac",
+            "kitchen",
+            transport="gateway",
+            hermes_profile="server-amanda",
+            connect_factory=Connection,
+        )
+    )
+
+    assert ok is ("session_id" in session_result)
+    assert ("Standard gateway ready" in message) is ok
+    assert [frame["method"] for frame in websocket.sent] == ["session.create"]
+
+
 def test_run_setup_checks_the_saved_connection_when_requested(tmp_path):
     answers = iter(["wss://hermes.example/voice-session", "jensen-laptop", "kitchen"])
     secrets = iter(["secret-token"])
@@ -269,6 +338,47 @@ def test_normalize_endpoint_accepts_http_urls_pasted_from_server_docs():
     assert normalize_endpoint("https://hermes.example/voice-session/") == (
         "wss://hermes.example/voice-session"
     )
+
+
+def test_normalize_endpoint_defaults_to_standard_gateway_path_when_selected():
+    from setup_wizard import normalize_endpoint
+
+    assert normalize_endpoint("https://hermes.example", transport="gateway") == (
+        "wss://hermes.example/api/ws"
+    )
+
+
+def test_normalize_endpoint_switches_between_known_transport_paths():
+    from setup_wizard import normalize_endpoint
+
+    assert normalize_endpoint(
+        "wss://hermes.example/voice-session", transport="gateway"
+    ) == "wss://hermes.example/api/ws"
+    assert normalize_endpoint(
+        "wss://hermes.example/api/ws", transport="voice-session"
+    ) == "wss://hermes.example/voice-session"
+
+
+def test_run_setup_can_select_standard_transport_without_token_in_config(tmp_path):
+    answers = iter(["https://hermes.example", "amanda-laptop", "kitchen"])
+    secrets = iter(["gateway-secret"])
+
+    result = run_setup(
+        ["--transport", "gateway", "--hermes-profile", "server-amanda", "--no-check"],
+        config_path=tmp_path / "config.yaml",
+        token_path=tmp_path / ".env",
+        input_fn=lambda prompt: next(answers),
+        secret_fn=lambda prompt: next(secrets),
+        output_fn=lambda message: None,
+        check_connection=False,
+    )
+
+    assert result == 0
+    saved = yaml.safe_load((tmp_path / "config.yaml").read_text(encoding="utf-8"))
+    assert saved["transport"] == "gateway"
+    assert saved["hermes_profile"] == "server-amanda"
+    assert saved["url"] == "wss://hermes.example/api/ws"
+    assert "gateway-secret" not in (tmp_path / "config.yaml").read_text(encoding="utf-8")
 
 
 def test_run_setup_accepts_async_connection_checker(tmp_path):

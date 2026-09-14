@@ -25,6 +25,15 @@ def _add_config_argument(parser: argparse.ArgumentParser) -> None:
 
 def _add_profile_fields(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--url", help="WebSocket endpoint")
+    parser.add_argument(
+        "--transport",
+        choices=config.TRANSPORTS,
+        help="transport for this profile; gateway expects Standard /api/ws",
+    )
+    parser.add_argument(
+        "--hermes-profile",
+        help="Hermes server profile when this profile uses the gateway transport",
+    )
     parser.add_argument("--display-name", help="human-readable profile label")
     parser.add_argument("--client-id", help="Hermes client identity")
     parser.add_argument("--device-id", help="machine/device identity")
@@ -127,6 +136,7 @@ def _render_profiles(profiles: list[config.RelayProfile], active: str | None) ->
         endpoint = profile.url.split("?", 1)[0]
         lines.append(
             f"{marker} {profile.name} — {profile.display_name} · {endpoint} · "
+            f"transport {profile.transport} · "
             f"client {profile.client_id} · device {profile.device_id} · "
             f"session {profile.session_id} · {token_state}"
         )
@@ -149,6 +159,7 @@ def _required_create_value(
 def _profile_fields_for_create(args: argparse.Namespace, *, input_fn: Any) -> dict[str, str]:
     name = config.validate_profile_name(args.name)
     url = _required_create_value(args.url, "WebSocket endpoint", input_fn=input_fn)
+    transport = args.transport or "voice-session"
     display_name = _required_create_value(
         args.display_name,
         "Display name",
@@ -177,7 +188,9 @@ def _profile_fields_for_create(args: argparse.Namespace, *, input_fn: Any) -> di
         raise ValueError("endpoint, display name, client ID, device ID, and session ID are required")
     return {
         "name": name,
-        "url": normalize_endpoint(url),
+        "url": normalize_endpoint(url, transport=transport),
+        "transport": transport,
+        "hermes_profile": str(args.hermes_profile or "").strip(),
         "display_name": display_name,
         "client_id": client_id,
         "device_id": device_id,
@@ -189,10 +202,21 @@ def _profile_fields_for_edit(
     args: argparse.Namespace,
     existing: config.RelayProfile,
 ) -> dict[str, str]:
-    url = normalize_endpoint(args.url) if args.url else existing.url
+    transport = args.transport or existing.transport
+    url = normalize_endpoint(
+        args.url or existing.url,
+        transport=transport,
+    )
+    hermes_profile = (
+        str(args.hermes_profile).strip()
+        if args.hermes_profile is not None
+        else (existing.hermes_profile or "")
+    )
     return {
         "name": existing.name,
         "url": url,
+        "transport": transport,
+        "hermes_profile": hermes_profile,
         "display_name": str(args.display_name or existing.display_name),
         "client_id": str(args.client_id or existing.client_id),
         "device_id": str(args.device_id or existing.device_id),

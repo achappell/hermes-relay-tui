@@ -26,6 +26,7 @@ DEFAULT_PROFILE_ENV = Path.home() / ".hermes-relay-tui" / ".env"
 LEGACY_PROFILE_ENV = Path.home() / ".hermes" / "profiles" / "amanda" / ".env"
 DEFAULT_CONFIG_PATH = Path.home() / ".hermes-relay-tui" / "config.yaml"
 BUSY_MODES = ("queue", "steer", "interrupt")
+TRANSPORTS = ("voice-session", "gateway")
 WAKE_ENGINES = ("openwakeword", "sherpa")
 # Keepalive is deliberately a code-level transport policy.  It bounds silent
 # idle loss without adding another user-facing setting to the profile surface.
@@ -67,6 +68,14 @@ def _env_bool(name: str, default: bool = False) -> bool:
     if value is None:
         return default
     return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+class _SessionIdAction(argparse.Action):
+    """Remember when --session-id was explicitly supplied for gateway resume."""
+
+    def __call__(self, parser, namespace, values, option_string=None):
+        setattr(namespace, self.dest, values)
+        setattr(namespace, "session_id_explicit", True)
 
 
 def _device_selector(value: Optional[str | int]) -> int | str | None:
@@ -177,6 +186,19 @@ def _cfg_choice(cfg: dict[str, Any], key: str, choices: tuple[str, ...], hardcod
     return hardcoded
 
 
+def _cfg_transport(cfg: dict[str, Any], key: str = "transport") -> str:
+    """Read transport strictly; silently falling back would select the fork."""
+
+    value = cfg.get(key)
+    if value is None:
+        return "voice-session"
+    if isinstance(value, str) and value.strip().lower() in TRANSPORTS:
+        return value.strip().lower()
+    raise ValueError(
+        f"unsupported {key} {value!r}; choose one of {', '.join(TRANSPORTS)}"
+    )
+
+
 @dataclass(frozen=True)
 class HouseholdProfile:
     name: str
@@ -219,6 +241,8 @@ class RelayProfile:
     model: Optional[str] = None
     legacy: bool = False
     wake_phrases: tuple[str, ...] = ()
+    transport: str = "voice-session"
+    hermes_profile: Optional[str] = None
 
     @property
     def token_configured(self) -> bool:
@@ -230,7 +254,8 @@ class RelayProfile:
             f"url={self.url!r}, token='***', token_env={self.token_env!r}, "
             f"client_id={self.client_id!r}, device_id={self.device_id!r}, "
             f"session_id={self.session_id!r}, model={self.model!r}, "
-            f"legacy={self.legacy!r}, wake_phrases={self.wake_phrases!r})"
+            f"legacy={self.legacy!r}, wake_phrases={self.wake_phrases!r}, "
+            f"transport={self.transport!r}, hermes_profile={self.hermes_profile!r})"
         )
 
 
@@ -483,6 +508,13 @@ def load_relay_profiles(cfg: dict[str, Any], args: Any = None) -> list[RelayProf
                     session_id=str(entry.get("session_id") or f"{name}-session").strip(),
                     model=str(entry["model"]).strip() if entry.get("model") is not None else None,
                     wake_phrases=wake_phrases,
+                    transport=_cfg_transport(entry),
+                    hermes_profile=(
+                        str(entry["hermes_profile"]).strip()
+                        if entry.get("hermes_profile") is not None
+                        and str(entry["hermes_profile"]).strip()
+                        else None
+                    ),
                 )
             )
         return profiles
@@ -527,6 +559,13 @@ def load_relay_profiles(cfg: dict[str, Any], args: Any = None) -> list[RelayProf
             model=str(model).strip() if model is not None else None,
             legacy=True,
             wake_phrases=wake_phrases,
+            transport=_cfg_transport(cfg),
+            hermes_profile=(
+                str(cfg["hermes_profile"]).strip()
+                if cfg.get("hermes_profile") is not None
+                and str(cfg["hermes_profile"]).strip()
+                else None
+            ),
         )
     ]
 
@@ -626,6 +665,8 @@ def _legacy_config_has_connection(document: dict[str, Any]) -> bool:
             "model",
             "wake_phrase",
             "wake_phrases",
+            "transport",
+            "hermes_profile",
         )
     )
 
@@ -654,6 +695,12 @@ def _migrate_document(document: dict[str, Any], profile_env: Path | None = None)
     for key in ("model", "wake_phrase", "wake_phrases"):
         if key in document:
             entry[key] = document[key]
+    if "transport" in document:
+        entry["transport"] = _cfg_transport(document)
+    if document.get("hermes_profile") is not None:
+        hermes_profile = str(document["hermes_profile"]).strip()
+        if hermes_profile:
+            entry["hermes_profile"] = hermes_profile
 
     document.pop("token", None)
     document["profiles"] = {"default": entry}
@@ -719,6 +766,8 @@ def save_relay_profile(
     wake_phrases: str | None = None,
     token_env: str | None = None,
     profile_env: Path | None = None,
+    transport: str | None = None,
+    hermes_profile: str | None = None,
 ) -> RelayProfile:
     """Create or update one profile, keeping its bearer token private."""
     canonical = validate_profile_name(name)
@@ -757,8 +806,17 @@ def save_relay_profile(
             "client_id": str(client_id).strip(),
             "device_id": str(device_id).strip(),
             "session_id": str(session_id).strip(),
+            "transport": _cfg_transport(
+                {"transport": transport if transport is not None else old_entry.get("transport")}
+            ),
         }
     )
+    if hermes_profile is not None:
+        selected_hermes_profile = str(hermes_profile).strip()
+        if selected_hermes_profile:
+            entry["hermes_profile"] = selected_hermes_profile
+        else:
+            entry.pop("hermes_profile", None)
     if model is not None and str(model).strip():
         entry["model"] = str(model).strip()
     elif not old_entry:
@@ -935,6 +993,8 @@ def make_profile_args(base_args: Any, profile: HouseholdProfile) -> Any:
         "profile_token_env": getattr(profile, "token_env", None),
         "profile_legacy": getattr(profile, "legacy", False),
         "profiles_configured": not getattr(profile, "legacy", False),
+        "transport": getattr(profile, "transport", data.get("transport", "voice-session")),
+        "hermes_profile": getattr(profile, "hermes_profile", data.get("hermes_profile")),
     })
     return argparse.Namespace(**data)
 
@@ -1065,6 +1125,7 @@ def build_arg_parser(argv: Optional[list[str]] = None) -> argparse.ArgumentParse
         profile_legacy=selected_profile.legacy,
         profiles_configured=profiles_configured,
         profile_names=configured_profile_names,
+        session_id_explicit=_option_value(raw_argv, "--session-id") is not None,
     )
     selected_url = selected_profile.url
     selected_client_id = selected_profile.client_id
@@ -1074,8 +1135,20 @@ def build_arg_parser(argv: Optional[list[str]] = None) -> argparse.ArgumentParse
     selected_model = selected_profile.model
     selected_token = selected_profile.token
     selected_wake_phrases = ", ".join(selected_profile.wake_phrases) or None
+    selected_transport = selected_profile.transport
+    selected_hermes_profile = selected_profile.hermes_profile
     parser.add_argument(
         "--url", default=os.getenv("HERMES_VOICE_SESSION_URL", selected_url)
+    )
+    parser.add_argument(
+        "--transport",
+        choices=TRANSPORTS,
+        default=_env_choice(
+            "HERMES_RELAY_TUI_TRANSPORT",
+            TRANSPORTS,
+            selected_transport,
+        ),
+        help="transport to use (gateway is opt-in; default: voice-session)",
     )
     parser.add_argument(
         "--token",
@@ -1083,6 +1156,11 @@ def build_arg_parser(argv: Optional[list[str]] = None) -> argparse.ArgumentParse
         help="Bearer token; prefer VOICE_SESSION_TOKEN or the profile .env",
     )
     parser.add_argument("--profile-env", type=Path, default=_cfg_path(cfg, "profile_env", DEFAULT_PROFILE_ENV))
+    parser.add_argument(
+        "--hermes-profile",
+        default=os.getenv("HERMES_PROFILE") or selected_hermes_profile,
+        help="Hermes server profile for --transport gateway (not the local relay profile)",
+    )
     parser.add_argument(
         "--client-id",
         default=os.getenv("VOICE_SESSION_CLIENT_ID", selected_client_id),
@@ -1092,7 +1170,9 @@ def build_arg_parser(argv: Optional[list[str]] = None) -> argparse.ArgumentParse
         default=os.getenv("VOICE_SESSION_DEVICE_ID", selected_device_id),
     )
     parser.add_argument(
-        "--session-id", default=os.getenv("VOICE_SESSION_ID", selected_session_id)
+        "--session-id",
+        action=_SessionIdAction,
+        default=os.getenv("VOICE_SESSION_ID", selected_session_id),
     )
     parser.add_argument("--display-name", default=selected_display_name)
     parser.add_argument(
@@ -1325,6 +1405,7 @@ def build_arg_parser(argv: Optional[list[str]] = None) -> argparse.ArgumentParse
 
 __all__ = [
     "BUSY_MODES",
+    "TRANSPORTS",
     "DEFAULT_CONFIG_PATH",
     "DEFAULT_PROFILE_ENV",
     "LEGACY_PROFILE_ENV",

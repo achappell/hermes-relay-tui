@@ -260,6 +260,58 @@ def make_args(**overrides):
     return args
 
 
+def test_gateway_transport_selects_the_gateway_session_without_changing_default():
+    app = HermesStreamingApp(args=make_args(transport="gateway"))
+
+    session_args = app._doorway_session_args(app.args)
+    session = app._new_session(session_args)
+
+    assert isinstance(session, app_module.GatewaySession)
+    assert session_args.session_id != "s1"
+
+
+def test_default_transport_keeps_the_fork_session_at_the_real_session_seam():
+    app = HermesStreamingApp(args=make_args())
+
+    session = app._new_session(app._doorway_session_args(app.args))
+
+    assert isinstance(session, HermesSession)
+    assert not isinstance(session, app_module.GatewaySession)
+
+
+def test_gateway_transport_preserves_an_explicit_resume_key():
+    app = HermesStreamingApp(
+        args=make_args(
+            transport="gateway",
+            session_id="stored-session",
+            session_id_explicit=True,
+        )
+    )
+
+    session_args = app._doorway_session_args(app.args)
+
+    assert session_args.session_id == "stored-session"
+
+
+def test_gateway_target_identity_includes_transport_and_server_profile():
+    current = make_args(
+        transport="gateway",
+        hermes_profile="server-amanda",
+        url="wss://hermes.example/api/ws",
+        profiles_configured=False,
+    )
+    changed = make_args(
+        transport="gateway",
+        hermes_profile="server-jensen",
+        url="wss://hermes.example/api/ws",
+        profiles_configured=False,
+    )
+
+    assert HermesStreamingApp._profile_target_tuple(current) != (
+        HermesStreamingApp._profile_target_tuple(changed)
+    )
+
+
 async def wait_until(predicate, *, timeout=1.0):
     deadline = asyncio.get_running_loop().time() + timeout
     while not predicate():
@@ -3692,6 +3744,42 @@ async def test_reload_command_picks_up_untouched_config_changes(tmp_path):
         assert "config reloaded from" in transcript_of(app)
 
 
+async def test_reload_command_switches_transport_and_replaces_the_session(tmp_path):
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        "url: wss://hermes.example/api/ws\ntransport: gateway\n"
+        "hermes_profile: server-amanda\n",
+        encoding="utf-8",
+    )
+    created = []
+
+    def factory(args):
+        session = FakeSession()
+        created.append((args, session))
+        return session
+
+    app = HermesStreamingApp(
+        args=make_args(),
+        session_factory=factory,
+        argv=["--config", str(config_path)],
+    )
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        old_session = app.session
+        composer = app.query_one("#composer", Composer)
+        composer.text = "/reload"
+        await pilot.press("enter")
+        for _ in range(20):
+            await pilot.pause()
+            if len(created) >= 2:
+                break
+
+        assert len(created) >= 2
+        assert created[-1][0].transport == "gateway"
+        assert app.session is created[-1][1]
+        assert old_session.closed is True
+
+
 async def test_reload_command_reports_malformed_config_without_crashing(tmp_path):
     config_path = tmp_path / "config.yaml"
     config_path.write_text(":\n  - not: [valid\n")
@@ -4073,6 +4161,7 @@ async def test_turn_audio_is_written_to_a_wav_when_playback_is_off(tmp_path):
             {"type": "turn_end", "turn_id": "t3"},
         ]
     )
+    session._gateway_audio_enabled = True
     app = HermesStreamingApp(
         args=make_args(output=output), session_factory=lambda: session
     )
@@ -4513,6 +4602,120 @@ async def test_audio_unavailable_state_clears_for_a_later_successful_turn():
 
         assert voice_status_of(app) == "● ready"
         assert "audio unavailable" not in voice_status_of(app)
+
+
+async def test_gateway_audio_sidecar_failure_keeps_response_text_readable():
+    session = FakeSession(
+        events=[
+            {"type": "audio_unavailable", "reason": "server fallback"},
+            {"type": "text_delta", "text": "Readable without sound."},
+            {"type": "turn_end", "turn_id": "audio-sidecar"},
+        ]
+    )
+    app = HermesStreamingApp(args=make_args(), session_factory=lambda: session)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await app._run_turn("hi")
+
+        assert "Readable without sound." in transcript_of(app)
+        assert voice_status_of(app) == "● ready · audio unavailable"
+
+
+async def test_gateway_audio_keeps_text_ahead_of_playback_until_audio_starts():
+    class GatewayAudioSession(FakeSession):
+        def __init__(self):
+            super().__init__(events=[])
+            self._gateway_audio_enabled = True
+            self.text_ready = asyncio.Event()
+            self.audio_gate = asyncio.Event()
+
+        def send_turn(self, text, *, stt_source="local"):
+            self.sent_turns.append((text, stt_source))
+
+            async def stream():
+                self.text_ready.set()
+                yield {"type": "text_delta", "text": "Hermes answer remains behind playback."}
+                await self.audio_gate.wait()
+                yield {
+                    "type": "audio_start",
+                    "sample_rate": 24000,
+                    "channels": 1,
+                    "sample_width": 2,
+                }
+                yield {"type": "audio_chunk", "data": b"\x00\x01"}
+                yield {"type": "audio_end"}
+                yield {"type": "turn_end", "turn_id": "paced-gateway"}
+
+            return stream()
+
+    class RecordingPlayer:
+        enabled = True
+        active = False
+        failure = None
+        playback_position = 0.0
+
+        def start(self, audio_format):  # noqa: ARG002 - mirrors PCMPlayer
+            self.active = True
+
+        def write(self, chunk):  # noqa: ARG002 - mirrors PCMPlayer
+            pass
+
+        def close(self):
+            self.active = False
+
+    session = GatewayAudioSession()
+    app = HermesStreamingApp(
+        args=make_args(no_play=False), session_factory=lambda: session
+    )
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.player = RecordingPlayer()
+        task = asyncio.create_task(app._run_turn("hi"))
+        await asyncio.wait_for(session.text_ready.wait(), 1)
+        await pilot.pause()
+
+        assert "Hermes answer remains behind playback." not in transcript_of(app)
+        assert "Hermes" in transcript_of(app)
+
+        session.audio_gate.set()
+        await task
+        assert "Hermes answer remains behind playback." in transcript_of(app)
+
+
+async def test_gateway_audio_failure_releases_the_text_pacing_gate():
+    class FailingGatewayAudioSession(FakeSession):
+        _gateway_audio_enabled = True
+
+        def __init__(self):
+            super().__init__(events=[])
+            self.failure_seen = asyncio.Event()
+            self.release = asyncio.Event()
+
+        def send_turn(self, text, *, stt_source="local"):
+            self.sent_turns.append((text, stt_source))
+
+            async def stream():
+                yield {"type": "text_delta", "text": "Hermes answer remains hidden."}
+                yield {"type": "audio_unavailable", "reason": "sidecar failed"}
+                self.failure_seen.set()
+                await self.release.wait()
+                yield {"type": "text_delta", "text": " More text."}
+                yield {"type": "turn_end", "turn_id": "failed-gateway-audio"}
+
+            return stream()
+
+    session = FailingGatewayAudioSession()
+    app = HermesStreamingApp(args=make_args(no_play=False), session_factory=lambda: session)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        task = asyncio.create_task(app._run_turn("hi"))
+        await asyncio.wait_for(session.failure_seen.wait(), 1)
+        await pilot.pause()
+
+        assert "Hermes answer remains hidden." in transcript_of(app)
+
+        session.release.set()
+        await task
 
 
 async def test_a_turn_that_ends_without_audio_end_still_closes_the_speaker():

@@ -24,6 +24,11 @@
 # your laptop's local Hermes agent, or anywhere else reachable.
 # url: wss://media-server.local:8792/voice-session
 
+# Keep the fork's voice-session transport as the default. Set this to gateway
+# only when --url points at Hermes' standard /api/ws endpoint.
+# transport: voice-session
+# hermes_profile: amanda       # server profile; separate from local --profile
+
 # Bearer token. Prefer VOICE_SESSION_TOKEN in your shell env or the
 # profile .env below instead of writing a real token in this file.
 # token: ""
@@ -83,6 +88,8 @@
 # profiles:
 #   amanda:
 #     display_name: "Amanda"
+#     transport: voice-session  # or gateway for Standard Hermes /api/ws
+#     hermes_profile: amanda    # only used by the Standard gateway
 #     wake_phrase: "hey missy"
 #     url: ws://localhost:8792/voice-session
 #     token_env: VOICE_SESSION_TOKEN_AMANDA
