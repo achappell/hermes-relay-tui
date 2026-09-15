@@ -460,12 +460,26 @@ def resolve_profile_token_source(profile_env: Path, token_env: str) -> str:
 # literal in source. Replace this with Story 4's real credential once it
 # exists -- do not treat this as adequate for a real household deployment.
 PUCK_DEVICE_TOKEN_ENV = "PUCK_DEVICE_TOKEN"
+HOME_DEVICE_CREDENTIAL_ENV = "HOME_DEVICE_CREDENTIAL"
+HOME_CONVERSATION_HANDLE_ENV = "HOME_CONVERSATION_HANDLE"
 
 
 def resolve_puck_device_token(profile_env: Path | None = None) -> str:
     """Resolve the standalone Puck-bridge device token."""
     env_path = Path(profile_env or DEFAULT_PROFILE_ENV).expanduser()
     return _private_env_value(env_path, PUCK_DEVICE_TOKEN_ENV)
+
+
+def resolve_home_device_credential(profile_env: Path | None = None) -> str:
+    """Resolve the paired Home Device credential without exposing its value."""
+    env_path = Path(profile_env or DEFAULT_PROFILE_ENV).expanduser()
+    return _private_env_value(env_path, HOME_DEVICE_CREDENTIAL_ENV)
+
+
+def resolve_home_conversation_handle(profile_env: Path | None = None) -> str:
+    """Resolve the opaque Home conversation binding from private config."""
+    env_path = Path(profile_env or DEFAULT_PROFILE_ENV).expanduser()
+    return _private_env_value(env_path, HOME_CONVERSATION_HANDLE_ENV)
 
 
 def _profile_env_path(cfg: dict[str, Any], args: Any = None) -> Path:
@@ -1431,7 +1445,11 @@ __all__ = [
     "delete_relay_profile",
     "migrate_legacy_profile_config",
     "profile_token_env",
+    "HOME_CONVERSATION_HANDLE_ENV",
+    "HOME_DEVICE_CREDENTIAL_ENV",
     "PUCK_DEVICE_TOKEN_ENV",
+    "resolve_home_conversation_handle",
+    "resolve_home_device_credential",
     "resolve_profile_token",
     "resolve_profile_token_source",
     "resolve_puck_device_token",

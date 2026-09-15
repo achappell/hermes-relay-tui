@@ -797,10 +797,170 @@ def test_bridge_refuses_missing_selected_identity_before_starting_a_session(monk
     assert "no PUCK_DEVICE_TOKEN configured" in capsys.readouterr().err
 
 
+def test_home_transport_requires_explicit_pairing_configuration(
+    monkeypatch, tmp_path, capsys
+):
+    from types import SimpleNamespace
+
+    from puck_bridge import server
+
+    selected_profile_env = tmp_path / "guest.env"
+
+    class _BridgeParser:
+        def parse_known_args(self, _argv):
+            return (
+                SimpleNamespace(
+                    host="127.0.0.1",
+                    port=8766,
+                    play_on_device=False,
+                    transport="home",
+                    home_url="",
+                    home_conversation_handle="",
+                    home_device_credential_file=None,
+                ),
+                [],
+            )
+
+    monkeypatch.setattr(server, "build_arg_parser", lambda: _BridgeParser())
+    monkeypatch.setattr(
+        server,
+        "build_session_args",
+        lambda _argv: SimpleNamespace(
+            profile_name="guest",
+            profile_env=selected_profile_env,
+            session_id="guest-puck-bridge",
+        ),
+    )
+    monkeypatch.setattr(server.config, "resolve_puck_device_token", lambda _path: "local")
+    monkeypatch.setattr(server.config, "resolve_home_device_credential", lambda _path: "")
+    monkeypatch.setattr(server.config, "resolve_home_conversation_handle", lambda _path: "")
+    monkeypatch.setattr(
+        server,
+        "HomePuckSession",
+        lambda *_args, **_kwargs: pytest.fail("missing Home pairing must fail closed"),
+    )
+
+    assert server.main([]) == 1
+    assert "Home transport requires" in capsys.readouterr().err
+
+
+def test_home_transport_wires_home_session_without_resolving_hermes_profile(
+    monkeypatch, tmp_path
+):
+    from types import SimpleNamespace
+
+    from puck_bridge import server
+
+    captured = {}
+
+    class _BridgeParser:
+        def parse_known_args(self, _argv):
+            return (
+                SimpleNamespace(
+                    host="127.0.0.1",
+                    port=8766,
+                    play_on_device=False,
+                    transport="home",
+                    home_url="wss://home.example/api/v1/bridge/ws",
+                    home_conversation_handle="opaque",
+                    home_device_credential_file=None,
+                ),
+                [],
+            )
+
+    class _Runner:
+        def __init__(self, session, **_kwargs):
+            captured["session"] = session
+
+        def start(self):
+            captured["started"] = True
+
+        def stop(self):
+            captured["stopped"] = True
+
+        def set_response_seq(self, _seq):
+            pass
+
+        def submit_transcript(self, _text):
+            return True
+
+    class _HTTPServer:
+        def __init__(self, address, handler):
+            captured["address"] = address
+            captured["handler"] = handler
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def serve_forever(self):
+            raise KeyboardInterrupt
+
+    class _HomeSession:
+        def __init__(self, url, credential, handle):
+            captured["home_args"] = (url, credential, handle)
+
+        async def connect(self):
+            return {}
+
+        async def close(self):
+            pass
+
+        def is_connected(self):
+            return True
+
+    monkeypatch.setattr(server, "build_arg_parser", lambda: _BridgeParser())
+    monkeypatch.setattr(
+        server,
+        "_home_profile_context",
+        lambda _argv: (tmp_path / "profile.env", "guest"),
+    )
+    monkeypatch.setattr(
+        server,
+        "build_session_args",
+        lambda _argv: pytest.fail("Home mode must not resolve a Hermes profile"),
+    )
+    monkeypatch.setattr(server.config, "resolve_puck_device_token", lambda _path: "local")
+    monkeypatch.setattr(
+        server.config,
+        "resolve_home_device_credential",
+        lambda _path: "device-secret",
+    )
+    monkeypatch.setattr(server, "HomePuckSession", _HomeSession)
+    monkeypatch.setattr(server, "TurnRunner", _Runner)
+    monkeypatch.setattr(server, "ThreadingHTTPServer", _HTTPServer)
+    monkeypatch.setattr(server, "make_handler", lambda **kwargs: kwargs)
+
+    assert server.main([]) == 0
+    assert captured["home_args"] == (
+        "wss://home.example/api/v1/bridge/ws",
+        "device-secret",
+        "opaque",
+    )
+    assert captured["started"] is True
+    assert captured["stopped"] is True
+
+
 def test_bridge_defaults_to_device_playback_and_keeps_host_as_explicit_fallback():
     from puck_bridge.server import build_arg_parser
 
     parser = build_arg_parser()
+    assert parser.parse_args([]).transport == "legacy"
+    home_args = parser.parse_args(
+        [
+            "--transport",
+            "home",
+            "--home-url",
+            "wss://home.example/api/v1/bridge/ws",
+            "--home-conversation-handle",
+            "opaque",
+        ]
+    )
+    assert home_args.transport == "home"
+    assert home_args.home_url.endswith("/api/v1/bridge/ws")
+    assert home_args.home_conversation_handle == "opaque"
     assert parser.parse_args([]).play_on_device is True
     assert parser.parse_args(["--play-on-device"]).play_on_device is True
     assert parser.parse_args(["--host-playback"]).play_on_device is False

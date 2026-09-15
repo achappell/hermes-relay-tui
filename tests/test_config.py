@@ -5,6 +5,8 @@ import pytest
 from config import (
     DEFAULT_URL,
     DEFAULT_PROFILE_ENV,
+    HOME_CONVERSATION_HANDLE_ENV,
+    HOME_DEVICE_CREDENTIAL_ENV,
     PUCK_DEVICE_TOKEN_ENV,
     _env_choice,
     _env_float,
@@ -14,6 +16,8 @@ from config import (
     build_arg_parser,
     ensure_default_config_file,
     load_config_file,
+    resolve_home_conversation_handle,
+    resolve_home_device_credential,
     resolve_puck_device_token,
 )
 
@@ -542,3 +546,33 @@ def test_resolve_puck_device_token_falls_back_to_the_profile_env_file(
 def test_resolve_puck_device_token_defaults_to_the_default_profile_env(monkeypatch):
     monkeypatch.setenv(PUCK_DEVICE_TOKEN_ENV, "from-env-default-path")
     assert resolve_puck_device_token(None) == "from-env-default-path"
+
+
+@pytest.mark.parametrize(
+    ("resolver", "key", "value"),
+    [
+        (resolve_home_device_credential, HOME_DEVICE_CREDENTIAL_ENV, "device-secret"),
+        (
+            resolve_home_conversation_handle,
+            HOME_CONVERSATION_HANDLE_ENV,
+            "opaque-handle",
+        ),
+    ],
+)
+def test_resolve_home_pairing_values_read_environment(monkeypatch, tmp_path, resolver, key, value):
+    monkeypatch.setenv(key, value)
+    assert resolver(tmp_path / ".env") == value
+
+
+def test_resolve_home_pairing_values_read_profile_env_file(tmp_path, monkeypatch):
+    monkeypatch.delenv(HOME_DEVICE_CREDENTIAL_ENV, raising=False)
+    monkeypatch.delenv(HOME_CONVERSATION_HANDLE_ENV, raising=False)
+    env_path = tmp_path / ".env"
+    env_path.write_text(
+        f'{HOME_DEVICE_CREDENTIAL_ENV}="device-from-file"\n'
+        f'{HOME_CONVERSATION_HANDLE_ENV}="handle-from-file"\n',
+        encoding="utf-8",
+    )
+
+    assert resolve_home_device_credential(env_path) == "device-from-file"
+    assert resolve_home_conversation_handle(env_path) == "handle-from-file"
