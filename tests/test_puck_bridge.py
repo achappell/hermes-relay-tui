@@ -859,7 +859,7 @@ def test_home_transport_wires_home_session_without_resolving_hermes_profile(
                 SimpleNamespace(
                     host="127.0.0.1",
                     port=8766,
-                    play_on_device=False,
+                    play_on_device=True,
                     transport="home",
                     home_url="wss://home.example/api/v1/bridge/ws",
                     home_conversation_handle="opaque",
@@ -869,8 +869,9 @@ def test_home_transport_wires_home_session_without_resolving_hermes_profile(
             )
 
     class _Runner:
-        def __init__(self, session, **_kwargs):
+        def __init__(self, session, **kwargs):
             captured["session"] = session
+            captured["runner_response_stream"] = kwargs.get("response_stream")
 
         def start(self):
             captured["started"] = True
@@ -941,6 +942,11 @@ def test_home_transport_wires_home_session_without_resolving_hermes_profile(
     )
     assert captured["started"] is True
     assert captured["stopped"] is True
+    assert captured["runner_response_stream"] is not None
+    assert (
+        captured["handler"]["response_stream"]
+        is captured["runner_response_stream"]
+    )
 
 
 def test_bridge_defaults_to_device_playback_and_keeps_host_as_explicit_fallback():

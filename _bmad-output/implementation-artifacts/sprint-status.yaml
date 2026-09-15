@@ -29,7 +29,7 @@
 # - Dev moves story to 'review', then runs code-review (fresh context, different LLM recommended)
 # - Retrospective appends its action items to action_items; the status view surfaces open ones
 generated: 09-08-2026 00:00
-last_updated: 09-14-2026 20:46
+last_updated: 09-14-2026 22:39
 project: hermes-relay-tui
 project_key: NOKEY
 tracking_system: file-system
@@ -108,6 +108,6 @@ development_status:
 
   next-wave: in-progress
   standard-3-tui-migrate-the-terminal-client: review
-  standard-6-puck-migrate-respeaker-puck-path: review
+  standard-6-puck-migrate-respeaker-puck-path: in-progress
   standard-7-esp32-add-touch-display-audio-session-adapter: ready-for-dev
   standard-8-wk-migrate-browser-and-ipad-routes: ready-for-dev

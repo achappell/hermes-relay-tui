@@ -3,7 +3,7 @@ id: STANDARD-6-PUCK
 title: Migrate the ReSpeaker Puck path to the Standard Home boundary
 type: feature
 created: 2026-09-14
-status: done
+status: in-progress
 baseline_commit: ea54552dc65e327fb264e161f2d25bff8d3feb90
 github_issue: https://github.com/achappell/hermes-relay-tui/issues/183
 context:
@@ -110,8 +110,8 @@ Home or hardware evidence from fake fixtures.
 
 ## Verification Record
 
-- `venv/bin/pytest` — **1,325 passed**, 6 warnings.
-- `venv/bin/pytest -q tests/test_puck_home_session.py` — **25 passed**.
+- `venv/bin/pytest -q` — **1,371 passed**, 6 warnings.
+- `venv/bin/pytest -q tests/test_puck_home_session.py tests/test_puck_bridge.py` — **164 passed**.
 - `venv/bin/python -m compileall -q puck_bridge config.py tests/test_puck_home_session.py` — passed.
 - `git diff --check` — passed.
 - Live Home route, production credential, and physical Puck evidence — **deferred**; no approved endpoint is available in this checkout.
@@ -160,3 +160,54 @@ record is auditable.
 | VG-04 | Foreign/stale event behavior lacked coverage. | **Patched and tested:** foreign-turn and global events are ignored; the active turn alone controls completion. |
 | VG-05 | Audio metadata and ordering lacked coverage. | **Patched and tested:** endianness, channels, width, rate bound, duplicate start, end ordering, post-end PCM, split samples, and foreign binding are covered. |
 | AR-01 | The adapter was said to conflict with AD-22’s transparent Standard boundary. | **Rejected as false:** the Home bridge contract explicitly defines its versioned JSON-RPC envelope while preserving Standard event type/payload semantics; this adapter implements that planned Home endpoint, not a second Hermes wire parser. |
+
+### Review Findings
+
+- [x] [Review][Patch] Fail closed on missing or unknown RPC delivery metadata [puck_bridge/home_session.py:391-405,660-672] — missing or unrecognized delivery metadata now invalidates the binding instead of treating the prompt as known non-delivery.
+- [x] [Review][Patch] Classify every Standard terminal status before returning [puck_bridge/home_session.py:1107-1153] — completion, failure, timeout, and interruption statuses are normalized before terminal ownership is applied.
+- [x] [Review][Patch] Preserve `text_delta.delta` when `text` is absent [puck_bridge/home_session.py:1154-1175] — the adapter now accepts the pinned delta-only text shape.
+- [x] [Review][Patch] Reject unsupported structured prompts instead of waiting [puck_bridge/home_session.py:530-534,859-860,1268-1326] — Puck emits a typed error and closes the turn when Home asks for unsupported structured input.
+- [x] [Review][Patch] Reconnect an unavailable binding when Home requests it [puck_bridge/home_session.py:568-572,923-926] — an unavailable binding with `reconnect_required` now selects `conversation.reconnect` on the next attempt.
+- [x] [Review][Patch] Require capabilities in a ready result [puck_bridge/home_session.py:936-951] — readiness now requires a capabilities object.
+- [x] [Review][Patch] Normalize connection-entry transport failures [puck_bridge/home_session.py:197-217] — supported WebSocket entry failures now surface as `HomeBridgeTransportError`.
+- [x] [Review][Patch] Close the Home binding when a submitted turn is cancelled [puck_bridge/home_session.py:650-680,694-804] — cancellation marks delivery uncertain and requires a reconnect without replay.
+- [x] [Review][Patch] Invalidate the binding after a malformed application ping [puck_bridge/home_session.py:841-857] — malformed ping results now close the session.
+- [x] [Review][Patch] Validate Home schema types strictly [puck_bridge/home_session.py:366-370,1025-1027] — boolean schema values are rejected rather than accepted as integer `1`.
+- [x] [Review][Patch] Reject empty or hostless Home authorities [puck_bridge/home_session.py:105-118] — URL preflight now requires a real hostname and rejects userinfo authorities.
+- [x] [Review][Patch] Exercise default Home device playback wiring [tests/test_puck_bridge.py:847-943] — the startup fixture now verifies the default `ResponseStream` reaches both runner and HTTP handler.
+- [x] [Review][Patch] Test same-turn foreign-handle event rejection [puck_bridge/home_session.py:746-761; tests/test_puck_home_session.py:377-413] — a foreign terminal event carrying the active turn ID is ignored.
+- [x] [Review][Patch] Prove terminal ownership after `audio_end` [puck_bridge/home_session.py:717-793; tests/test_puck_home_session.py:192-227] — the stream is held open until the matching terminal event arrives.
+- [x] [Review][Patch] Test interrupt acknowledgement against a live turn stream [puck_bridge/home_session.py:806-839; tests/test_puck_home_session.py:552-580] — the acknowledgement leaves the stream live until its matching interruption event.
+- [x] [Review][Patch] Retain close ownership when a Home reader outlives its timeout [puck_bridge/home_session.py:299-337,559-612] — deferred reader cleanup remains owned and blocks replacement connections until it finishes.
+
+- [x] [Review][Defer] Complete the live Home-route and physical-Puck acceptance gate [spec-standard-6-puck-migrate-respeaker-puck-path.md:106-117] — deferred: HOME-NW-01/02/03 and an approved paired production route are not present; fake fixtures cannot prove wake, capture, playback, identity, interruption, reconnect, follow-up, or shutdown.
+- [x] [Review][Defer] Wire the advertised Home interrupt into the Puck production path [puck_bridge/home_session.py:806-839; puck_bridge/server.py:240-245] — deferred: no receiver or firmware ingress currently invokes `interrupt_active_turn`; choosing the Puck stop-to-remote-interrupt path is part of the deferred hardware/Puck integration gate.
+- [x] [Review][Defer] Resolve the `audio_abort` drain contract between Home and `TurnRunner` [puck_bridge/home_session.py:717-793; puck_bridge/turn.py:383-392] — deferred: Home continues toward text and terminal frames after fallback, while the audio-only Puck runner returns immediately; the correct drain/reset policy needs an integration decision and live evidence.
+
+- [x] [Review][Patch] Validate `reconnect_required` before selecting `conversation.reconnect` [puck_bridge/home_session.py:1056-1065; tests/test_puck_home_session.py:522-551] — missing flags now mean a fresh `conversation.open`; present values must be booleans, with malformed values rejected without poisoning the fresh-open path.
+- [x] [Review][Patch] Require the Home RPC error envelope before classifying delivery [puck_bridge/home_session.py:478-507; tests/test_puck_home_session.py:554-576] — `error.data.schema`, string `code`, and `known`/`uncertain` `delivery` are required; malformed envelopes close the binding, while valid known errors retain typed handling.
+- [x] [Review][Patch] Close an unsupported structured-prompt binding before yielding its error [puck_bridge/home_session.py:890-917; tests/test_puck_home_session.py:346-363] — all five structured-prompt event types are covered through an early consumer, and the binding closes before the error is yielded.
+- [x] [Review][Patch] Reject unknown or non-terminal statuses on terminal-looking events [puck_bridge/home_session.py:1246-1252,1282-1298; tests/test_puck_home_session.py:283-343,974-999] — terminal-looking events now require an absent or recognized terminal status; failed and interrupted statuses remain normalized before completion ownership.
+- [x] [Review][Patch] Cover cancellation while `prompt.submit` is still awaiting its reply [puck_bridge/home_session.py:766-788; tests/test_puck_home_session.py:944-971] — a delayed-submit fixture proves cancellation closes the binding and reconnect does not replay the prompt.
+- [x] [Review][Patch] Assert deferred Home context closure after the reader is released [puck_bridge/home_session.py:395-410; tests/test_puck_home_session.py:1027-1080] — the ownership test now asserts the original WebSocket context eventually exits after the reader releases.
+
+#### Rejected
+
+- [Review][Rejected] Stale correlation IDs on malformed prompt events — not actionable in this Puck path: structured prompts are unsupported and the Home contract requires correlation on prompt events.
+- [Review][Rejected] Nested prompt payload turn ID is not cross-checked — no active Puck consumer uses the emitted prompt, and the envelope turn ID still controls completion and filtering.
+- [Review][Rejected] Interrupt acknowledgements must echo handle and turn ID — false: the contract requires those values on the request; the acknowledgement is matched by its JSON-RPC request ID and may contain only status.
+- [Review][Rejected] Interrupt requests need local deduplication — no production caller or contract requirement demonstrates duplicate requests; adding state would be speculative.
+- [Review][Rejected] `unresolved_turn` is discarded — false: the complete readiness result is returned unchanged and no old prompt is replayed.
+- [Review][Rejected] The adapter must emit a normalized terminal event — false: it consumes the matching terminal frame and only then ends the iterator; the Puck runner uses iterator completion as its boundary.
+- [Review][Rejected] Generic audio-unavailable text loses a useful reason — not worth fixing in this audio/status-only surface; the typed `audio_abort` outcome is preserved and the reason is safe, not user-facing content.
+- [Review][Rejected] `rendered: null` append-only text corruption — false for the pinned source: the Home Standard bridge rejects a non-string rendered field before it becomes an endpoint event.
+- [Review][Rejected] Ping results must echo the conversation handle — false: the contract binds the request with the opaque handle and defines the response as the Standard liveness result.
+- [Review][Rejected] Contradictory interrupt `accepted: false` plus `status: accepted` — malformed acknowledgement with no current production caller; not worth adding a second speculative guard before the live contract exists.
+- [Review][Rejected] Home interrupt capabilities are advertised only as `commands` — false: `_capability_names()` already maps `session.interrupt` to `interrupt`, and `supports_interrupt` reads that normalized set.
+- [Review][Rejected] Preserve a generic `prompt.request` structured event — false for this Home boundary: the contract fixes `approval.request`, `clarify.request`, `secret.request`, and `sudo.request`; the Puck adapter already rejects the listed types.
+- [Review][Rejected] Add `message.interim` normalization for the Puck turn — false for this surface: Home uses the event to drive its audio sidecar, while the Puck consumer ignores text and the adapter preserves an unknown event payload rather than completing or retargeting a turn.
+- [Review][Rejected] Reject non-string or `text: null` delta payloads in the Puck adapter — false for the pinned producer: Home's Standard bridge validates text updates before emitting them, and the Puck has no text presentation consumer.
+- [Review][Rejected] Close the socket immediately on reader transport loss — false: the reader has already observed socket closure, while lifecycle owners close the adapter on reconnect or shutdown; `wait_for_disconnect()` is intentionally observation-only.
+- [Review][Rejected] Surface `unresolved_turn` from `TurnRunner.start()` — false: `HomePuckSession.connect()` returns the complete readiness result, but `SessionProtocol` startup does not require a presentation for an unresolved old turn and never replays it.
+- [Review][Rejected] Recover an outer RPC error code when `error.data` omits `code` — false: the current code deliberately reads the nested Home code when `data` is an object; malformed nested data is covered by the new envelope-validation patch instead.
+- [Review][Rejected] Correct stale review line references — rejected by workflow: the proposed fix edits the spec under review rather than a product or test defect.

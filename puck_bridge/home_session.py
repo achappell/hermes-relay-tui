@@ -63,7 +63,30 @@ _ERROR_EVENT_TYPES = frozenset(
     }
 )
 _COMPLETED_STATUSES = frozenset({"complete", "completed", "done", "success"})
-_FAILED_STATUSES = frozenset({"error", "failed", "failure", "unavailable"})
+_FAILED_STATUSES = frozenset(
+    {
+        "error",
+        "failed",
+        "failure",
+        "unavailable",
+        "timeout",
+        "timed_out",
+        "timed-out",
+    }
+)
+_INTERRUPTED_STATUSES = frozenset(
+    {"interrupted", "cancelled", "canceled", "aborted", "stopped"}
+)
+_TERMINAL_STATUSES = _COMPLETED_STATUSES | _FAILED_STATUSES | _INTERRUPTED_STATUSES
+_STRUCTURED_PROMPT_EVENT_TYPES = frozenset(
+    {
+        "prompt_request",
+        "approval.request",
+        "clarify.request",
+        "secret.request",
+        "sudo.request",
+    }
+)
 
 
 class HomeBridgeProtocolError(ProtocolError):
@@ -81,11 +104,16 @@ class HomeBridgeRPCError(HomeBridgeProtocolError):
         self,
         operation: str,
         code: Any = "unknown",
-        delivery: Any = "known",
+        delivery: Any = "unknown",
     ) -> None:
         self.operation = operation
         self.code = str(code or "unknown")
-        self.delivery = str(delivery or "known")
+        normalized_delivery = str(delivery or "unknown").strip().lower()
+        self.delivery = (
+            normalized_delivery
+            if normalized_delivery in {"known", "uncertain"}
+            else "unknown"
+        )
         super().__init__(f"home bridge {operation} rejected ({self.code})")
 
 
@@ -107,7 +135,12 @@ def require_home_bridge_url(url: str) -> str:
 
     parsed = urlsplit(str(url).strip())
     path = parsed.path.rstrip("/") or "/"
-    if parsed.scheme != "wss" or not parsed.netloc:
+    if (
+        parsed.scheme != "wss"
+        or not parsed.netloc
+        or not parsed.hostname
+        or "@" in parsed.netloc
+    ):
         raise ValueError("Home bridge requires a wss:// URL")
     if path != HOME_BRIDGE_PATH:
         raise ValueError(
@@ -165,6 +198,7 @@ class HomeBridgeClient:
         self._connect_cm: Any = None
         self.ws: Any = None
         self._reader_task: asyncio.Task[None] | None = None
+        self._cleanup_task: asyncio.Task[None] | None = None
         self._pending: dict[str, tuple[asyncio.Future[Any], str]] = {}
         self._events: asyncio.Queue[Any] = asyncio.Queue(
             maxsize=HOME_BRIDGE_QUEUE_MAX
@@ -180,9 +214,30 @@ class HomeBridgeClient:
     def is_connected(self) -> bool:
         return self._connected and not self._closed.is_set()
 
+    @property
+    def cleanup_pending(self) -> bool:
+        task = self._cleanup_task
+        return task is not None and not task.done()
+
+    async def wait_for_cleanup(self) -> None:
+        task = self._cleanup_task
+        if task is None:
+            return
+        with contextlib.suppress(BaseException):
+            await task
+        if self._cleanup_task is task:
+            self._cleanup_task = None
+
     async def connect(self) -> None:
         """Open the socket; readiness is established by ``HomePuckSession``."""
 
+        if self._cleanup_task is not None:
+            if self.cleanup_pending:
+                raise HomeBridgeTransportError(
+                    "home bridge connect",
+                    RuntimeError("previous Home bridge cleanup is still pending"),
+                )
+            await self.wait_for_cleanup()
         if self._connect_cm is not None or self.ws is not None:
             await self.close()
         if self._reader_task is not None and not self._reader_task.done():
@@ -212,7 +267,11 @@ class HomeBridgeClient:
             )
             await self.close()
             raise error from exc
-        except BaseException:
+        except BaseException as exc:
+            error = self._as_transport_error("home bridge connect", exc)
+            if error is not None:
+                await self.close()
+                raise error from exc
             await self.close()
             raise
 
@@ -315,12 +374,43 @@ class HomeBridgeClient:
         ):
             reader.cancel()
             try:
-                await asyncio.wait_for(reader, HOME_BRIDGE_CLOSE_TIMEOUT)
-            except (asyncio.TimeoutError, asyncio.CancelledError):
+                await asyncio.wait_for(
+                    asyncio.shield(reader), HOME_BRIDGE_CLOSE_TIMEOUT
+                )
+            except asyncio.TimeoutError:
                 logger.debug("home bridge reader close pending")
+                self._retain_close_ownership(reader)
+                return
+            except asyncio.CancelledError:
+                logger.debug("home bridge reader close cancelled")
+                if not reader.done():
+                    self._retain_close_ownership(reader)
+                    return
         if reader is None or reader.done():
             self._reader_task = None
 
+        await self._close_context()
+        self._closing = False
+
+    def _retain_close_ownership(self, reader: asyncio.Task[None]) -> None:
+        if self._cleanup_task is not None and not self._cleanup_task.done():
+            return
+        self._cleanup_task = asyncio.create_task(
+            self._finish_deferred_close(reader),
+            name="puck Home bridge deferred close",
+        )
+
+    async def _finish_deferred_close(self, reader: asyncio.Task[None]) -> None:
+        try:
+            with contextlib.suppress(BaseException):
+                await reader
+            if self._reader_task is reader:
+                self._reader_task = None
+            await self._close_context()
+        finally:
+            self._closing = False
+
+    async def _close_context(self) -> None:
         context = self._connect_cm
         self._connect_cm = None
         self.ws = None
@@ -334,7 +424,6 @@ class HomeBridgeClient:
                 logger.debug("home bridge context close pending")
             except Exception:
                 logger.debug("home bridge context close failed", exc_info=True)
-        self._closing = False
 
     async def _read_frames(self) -> None:
         try:
@@ -366,7 +455,7 @@ class HomeBridgeClient:
     def _dispatch_frame(self, payload: dict[str, Any]) -> None:
         if payload.get("jsonrpc") != "2.0":
             raise HomeBridgeProtocolError("Home bridge frame is not JSON-RPC 2.0")
-        if payload.get("schema") != HOME_BRIDGE_SCHEMA:
+        if type(payload.get("schema")) is not int or payload.get("schema") != HOME_BRIDGE_SCHEMA:
             raise HomeBridgeProtocolError("Home bridge frame has an unsupported schema")
         if "id" in payload and type(payload.get("id")) not in {str, int}:
             raise HomeBridgeProtocolError("Home bridge request ID is invalid")
@@ -388,23 +477,29 @@ class HomeBridgeClient:
                 return
             if has_error:
                 error_payload = payload.get("error")
-                if isinstance(error_payload, dict):
-                    data = error_payload.get("data")
-                    if not isinstance(data, dict):
-                        data = {}
-                    elif data.get("schema") != HOME_BRIDGE_SCHEMA:
-                        raise HomeBridgeProtocolError(
-                            "Home bridge error has an unsupported schema"
-                        )
-                    future.set_exception(
-                        HomeBridgeRPCError(
-                            method,
-                            data.get("code") or error_payload.get("code"),
-                            data.get("delivery", "known"),
-                        )
+                if not isinstance(error_payload, dict):
+                    raise HomeBridgeProtocolError(
+                        "Home bridge error is not an object"
                     )
-                else:
-                    future.set_exception(HomeBridgeRPCError(method))
+                data = error_payload.get("data")
+                if not isinstance(data, dict):
+                    raise HomeBridgeProtocolError(
+                        "Home bridge error has no data envelope"
+                    )
+                _require_schema(data, "Home bridge error")
+                code = _require_string(
+                    data.get("code"),
+                    "Home bridge error has no code",
+                )
+                delivery = _require_string(
+                    data.get("delivery"),
+                    "Home bridge error has no delivery classification",
+                ).lower()
+                if delivery not in {"known", "uncertain"}:
+                    raise HomeBridgeProtocolError(
+                        "Home bridge error has an unknown delivery classification"
+                    )
+                future.set_exception(HomeBridgeRPCError(method, code, delivery))
             else:
                 future.set_result(payload.get("result"))
             return
@@ -509,6 +604,7 @@ class HomePuckSession:
         self._connect_factory = connect_factory
         self._request_timeout = request_timeout
         self._client: HomeBridgeClient | None = None
+        self._retired_client: HomeBridgeClient | None = None
         self._opened = False
         self._reconnect_required = False
         self._connected = False
@@ -556,8 +652,10 @@ class HomePuckSession:
     async def connect(self) -> dict[str, Any]:
         """Authenticate and open or reconnect the opaque Home conversation."""
 
+        await self._reap_retired_client()
         if self._client is not None or self._connected:
             await self.close()
+        await self._reap_retired_client()
         client = HomeBridgeClient(
             self.url,
             self.device_credential,
@@ -565,11 +663,7 @@ class HomePuckSession:
             request_timeout=self._request_timeout,
         )
         self._client = client
-        method = (
-            "conversation.reconnect"
-            if self._opened and self._reconnect_required
-            else "conversation.open"
-        )
+        method = "conversation.reconnect" if self._reconnect_required else "conversation.open"
         try:
             await client.connect()
             result = await client.request(
@@ -579,6 +673,8 @@ class HomePuckSession:
             ready = self._validate_ready_result(result)
         except BaseException:
             await client.close()
+            if client.cleanup_pending:
+                self._retired_client = client
             self._client = None
             self._connected = False
             raise
@@ -610,6 +706,21 @@ class HomePuckSession:
             self._reconnect_required = True
         if client is not None:
             await client.close()
+            if client.cleanup_pending:
+                self._retired_client = client
+
+    async def _reap_retired_client(self) -> None:
+        client = self._retired_client
+        if client is None:
+            return
+        if client.cleanup_pending:
+            raise HomeBridgeTransportError(
+                "home bridge connect",
+                RuntimeError("previous Home bridge cleanup is still pending"),
+            )
+        await client.wait_for_cleanup()
+        if self._retired_client is client:
+            self._retired_client = None
 
     def send_turn(
         self,
@@ -654,14 +765,14 @@ class HomePuckSession:
                     "text": text,
                 },
             )
+        except asyncio.CancelledError:
+            await self._close_after_uncertain_prompt()
+            raise
         except HomeBridgeTransportError:
             self._note_uncertain_transport()
             raise
         except HomeBridgeRPCError as exc:
-            if exc.delivery == "uncertain" or exc.code in {
-                "transport_unavailable",
-                "transport_timeout",
-            }:
+            if exc.delivery != "known" or exc.code != "request_rejected":
                 await self._close_after_uncertain_prompt()
                 raise HomeBridgeTransportError(
                     "home bridge prompt.submit",
@@ -771,7 +882,17 @@ class HomePuckSession:
                         "Home bridge event payload is not an object"
                     )
 
-                normalized = _normalize_event(event_type, payload, text_state)
+                if (
+                    event_type in _STRUCTURED_PROMPT_EVENT_TYPES
+                    and not self.supports_structured_prompts
+                ):
+                    normalized = {
+                        "type": "error",
+                        "error": "Home Puck does not support structured prompts",
+                    }
+                    await self._close_after_protocol_failure()
+                else:
+                    normalized = _normalize_event(event_type, payload, text_state)
                 normalized_events = (
                     [normalized]
                     if isinstance(normalized, dict)
@@ -791,6 +912,9 @@ class HomePuckSession:
                             "Home bridge turn ended before audio.end"
                         )
                     return
+        except asyncio.CancelledError:
+            await self._close_after_uncertain_prompt()
+            raise
         except HomeBridgeTransportError:
             self._note_uncertain_transport()
             raise
@@ -847,14 +971,20 @@ class HomePuckSession:
                 "home bridge ping",
                 ConnectionError("Home bridge is not ready"),
             )
-        result = await client.request(
-            "bridge.ping",
-            {"conversation_handle": self._conversation_handle},
-        )
-        if not isinstance(result, dict):
-            raise HomeBridgeProtocolError("Home bridge ping result is not an object")
-        _require_schema(result, "Home bridge ping result")
-        return result
+        try:
+            result = await client.request(
+                "bridge.ping",
+                {"conversation_handle": self._conversation_handle},
+            )
+            if not isinstance(result, dict):
+                raise HomeBridgeProtocolError(
+                    "Home bridge ping result is not an object"
+                )
+            _require_schema(result, "Home bridge ping result")
+            return result
+        except HomeBridgeProtocolError:
+            await self._close_after_protocol_failure()
+            raise
 
     async def send_prompt_response(self, **_kwargs: Any) -> bool:
         return False
@@ -922,7 +1052,12 @@ class HomePuckSession:
         _require_schema(result, "Home bridge readiness result")
         status = result.get("status")
         if status != "ready":
-            self._reconnect_required = bool(result.get("reconnect_required", True))
+            reconnect_required = result.get("reconnect_required", False)
+            if type(reconnect_required) is not bool:
+                raise HomeBridgeProtocolError(
+                    "Home bridge unavailable result has an invalid reconnect_required flag"
+                )
+            self._reconnect_required = reconnect_required
             raise HomeBridgeUnavailableError(status, result.get("reason"))
         handle = result.get("conversation_handle")
         if not isinstance(handle, str) or not handle.strip():
@@ -944,7 +1079,7 @@ class HomePuckSession:
             raise HomeBridgeProtocolError(
                 "Home bridge readiness result has no approved route"
             )
-        if not isinstance(result.get("capabilities", {}), dict):
+        if "capabilities" not in result or not isinstance(result["capabilities"], dict):
             raise HomeBridgeProtocolError(
                 "Home bridge readiness capabilities are not an object"
             )
@@ -1023,7 +1158,7 @@ class HomePuckSession:
 
 
 def _require_schema(params: dict[str, Any], what: str) -> None:
-    if params.get("schema") != HOME_BRIDGE_SCHEMA:
+    if type(params.get("schema")) is not int or params.get("schema") != HOME_BRIDGE_SCHEMA:
         raise HomeBridgeProtocolError(f"{what} has an unsupported schema")
 
 
@@ -1105,11 +1240,22 @@ def _accepted_result(result: Any) -> bool:
 
 
 def _is_terminal_event(event_type: str, payload: dict[str, Any]) -> bool:
-    if event_type in _TERMINAL_EVENT_TYPES:
+    if event_type in _TERMINAL_EVENT_TYPES or event_type == "message.complete":
+        if "status" not in payload:
+            return True
+        raw_status = payload.get("status")
+        if not isinstance(raw_status, str) or not raw_status.strip():
+            raise HomeBridgeProtocolError(
+                f"Home bridge {event_type} has an invalid terminal status"
+            )
+        status = raw_status.strip().lower()
+        if status not in _TERMINAL_STATUSES:
+            raise HomeBridgeProtocolError(
+                f"Home bridge {event_type} has a non-terminal status"
+            )
         return True
-    if event_type == "message.complete":
-        return str(payload.get("status") or "").strip().lower() in _COMPLETED_STATUSES
-    return str(payload.get("status") or "").strip().lower() in _COMPLETED_STATUSES and event_type.startswith("turn.")
+    status = str(payload.get("status") or "").strip().lower()
+    return status in _TERMINAL_STATUSES and event_type.startswith("turn.")
 
 
 def _joined_text(committed: str, preview: str) -> str:
@@ -1145,12 +1291,17 @@ def _normalize_event(
     state: dict[str, Any],
 ) -> dict[str, Any] | list[dict[str, Any]] | None:
     status = str(payload.get("status") or "").strip().lower()
-    if event_type != "message.complete" and _is_terminal_event(event_type, payload):
-        return None
-    if event_type in _INTERRUPTED_EVENT_TYPES or status in {"interrupted", "cancelled", "canceled"}:
+    if event_type in _INTERRUPTED_EVENT_TYPES or status in _INTERRUPTED_STATUSES:
         return {"type": "turn_interrupted"}
     if event_type in _ERROR_EVENT_TYPES or status in _FAILED_STATUSES:
         return {"type": "error", "error": "Home bridge turn failed"}
+    if _is_terminal_event(event_type, payload):
+        if event_type == "message.complete":
+            pass
+        else:
+            return None
+    elif event_type == "message.complete":
+        return None
     if event_type == "message.start":
         return {"type": "message_start"}
     if event_type in {"text.delta", "text_delta", "message.delta"}:
@@ -1167,7 +1318,12 @@ def _normalize_event(
                 state["rendered_preview"] = ""
             state["draft_id"] = draft_id
         if event_type in {"message.delta", "text.delta", "text_delta"} and "rendered" not in payload:
-            delta = str(payload.get("text") or "")
+            delta_value = (
+                payload.get("text")
+                if "text" in payload
+                else payload.get("delta")
+            )
+            delta = str(delta_value or "")
             state["rendered_preview"] = (
                 str(state["rendered_preview"]) + delta
             )
