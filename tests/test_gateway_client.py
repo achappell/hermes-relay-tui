@@ -232,6 +232,29 @@ async def test_gateway_rejects_conflicting_event_session_identities():
 
 
 @pytest.mark.asyncio
+async def test_gateway_preserves_durable_identity_on_session_title_event():
+    client, socket, _calls, _ready = await connect_client()
+    socket.feed(
+        {
+            "jsonrpc": "2.0",
+            "method": "event",
+            "params": {
+                "type": "session.title",
+                "session_id": "runtime-1",
+                "payload": {"session_id": "stored-1", "title": "A live title"},
+            },
+        }
+    )
+
+    event = await client.next_event()
+
+    assert event["session_id"] == "runtime-1"
+    assert event["stored_session_id"] == "stored-1"
+    assert event["payload"] == {"title": "A live title"}
+    await client.close()
+
+
+@pytest.mark.asyncio
 async def test_raw_standard_event_preserves_identity_and_correlation_fields():
     client, socket, _calls, _ready = await connect_client()
     socket.feed(
