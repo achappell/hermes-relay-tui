@@ -142,8 +142,8 @@ acceptance.
 
 Run `bmad-testarch-test-review` for a second quality pass over the expanded
 boundary tests. Keep the live gate as an explicit deployment check rather
-than converting it into local fake tests. The next workflow is review and
-merge of the parser compatibility fix, followed by tracker closure.
+than converting it into local fake tests. The next workflow is selecting the
+next ready story; the STD-3 tracker is now closed.
 
 ## Execution commands
 
@@ -151,9 +151,13 @@ From this worktree, run `../../venv/bin/pytest -q tests/test_gateway_boundary_fa
 
 ## Validation record — 2026-09-15
 
-Validation was run from a clean worktree at current `origin/main`:
+Validation was run from a clean worktree at the pre-merge branch revision;
+that revision is merged into `origin/main` as PR #190:
 
-- Revision: `a38e033ec36612236c3ceddd92445b6ef01202e4` (`feat(puck): migrate ReSpeaker path to Standard Home boundary (#189)`). The merged STD-3 implementation commit `6f0759c3882720e0efcb48b4d2b770ca008f8ea7` is an ancestor of this revision.
+- Revision: `d1f071c64da4e9126bd90b82b3c5f5340a7904dd`; merge commit:
+  `40bf97e3bd0c9a37fce17074a23bb4d383fc2bab`. The merged STD-3
+  implementation commit `6f0759c3882720e0efcb48b4d2b770ca008f8ea7` is in
+  its history.
 - Focused command: `venv/bin/pytest -q tests/test_gateway_client.py tests/test_gateway_audio.py tests/test_gateway_session.py tests/test_gateway_boundary_failures.py tests/test_config.py tests/test_setup.py tests/test_profile_cli.py tests/test_history.py tests/test_app.py tests/test_timing.py tests/test_session.py tests/test_audio.py` — **465 passed in 50.62s**.
 - Full command: `venv/bin/pytest -q` — **1,371 passed, 1 skipped, 6 warnings in 205.09s (3:25.09)**.
 - Full-suite warnings were the existing `websockets.legacy` and deprecated `ConnectionClosed.code`/`ConnectionClosed.reason` warnings; no test failure occurred.
@@ -182,7 +186,7 @@ Validation was run from a clean worktree at current `origin/main`:
   credential, prompt, transcript, audio content, or session identifier is
   recorded here.
 
-Disposition: the direct Standard live gate is green. Issue #182 is ready to
-move from **Verify** after review/merge of the parser compatibility fix. The
-Home bridge remains a separate adapter boundary. No prompts, transcripts,
-audio content, credentials, or invented live results are recorded.
+Disposition: the direct Standard live gate is green and issue #182 is closed
+as completed by PR #190. The Home bridge remains a separate adapter boundary.
+No prompts, transcripts, audio content, credentials, or invented live results
+are recorded.

@@ -1,7 +1,7 @@
 ---
 id: STANDARD-3-TUI
 title: Close the TUI migration to the Standard Hermes boundary
-status: in-review
+status: done
 github_issue: https://github.com/achappell/hermes-relay-tui/issues/182
 ---
 
@@ -22,11 +22,12 @@ until the cross-surface retirement gate.
   capture and survives reconnect without replay.
 - Content-safe diagnostics identify route, version, phase, timing, and typed
   failure without recording conversation content.
-- The branch is reviewed and ready to merge.
+- The migration is reviewed and merged.
 
 ## Evidence
 
-The implementation is merged in PR #186. Local validation and the complete
+The implementation is merged in PR #186, and the live-closure fix is merged in
+PR #190. Local validation and the complete
 suite are recorded in the [TUI validation record](../test-artifacts/automation-summary.md).
 The direct Standard endpoint is now live through the deployed Hermes Home
 pilot boundary. The live closure below covers the TUI's direct Standard
@@ -34,8 +35,8 @@ adapter; it does not claim that the TUI uses the Home bridge route.
 
 ## Validation record — 2026-09-15 (live closure)
 
-- Current main: `a38e033ec36612236c3ceddd92445b6ef01202e4`; PR #186 merge
-  `6f0759c3882720e0efcb48b4d2b770ca008f8ea7` is present in its history.
+- Merged main: `40bf97e3bd0c9a37fce17074a23bb4d383fc2bab` (PR #190); PR #186
+  merge `6f0759c3882720e0efcb48b4d2b770ca008f8ea7` remains in its history.
 - A live parser defect was found and fixed on this branch: Hermes' legitimate
   `session.title` event carries the runtime session ID in its envelope and the
   durable session ID in its payload. The client now preserves those as separate
@@ -60,6 +61,7 @@ adapter; it does not claim that the TUI uses the Home bridge route.
   `turn_end`.
 - Standard client pin remains `0.21.1` at commit
   `2237be355906fbe6065ce1815711eee52b2d646e`.
+- Issue #182 is closed as completed.
 
 ## Dependencies
 
