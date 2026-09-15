@@ -16,6 +16,20 @@ inputDocuments:
 > surfaces registered in `bmad-surface.yaml`; iOS, Android, and Home status live
 > in their owning repositories. Do not use this file to infer sibling closure.
 
+### Next-wave Standard Home delivery map — decision 2026-09-14
+
+The following records are TUI-owned delivery slices for the Standard Home
+boundary. Their local specifications and tracker statuses live in
+`_bmad-output/implementation-artifacts/`; the stable codes below are the
+cross-repository story identities.
+
+| Surface story key | Surface | Scope |
+|---|---|---|
+| `STD-3` | TUI | Migrate the terminal client to the Standard Home boundary. |
+| `STD-6` | ReSpeaker Puck | Migrate the Puck path to the Standard Home boundary. |
+| `STD-7` | ESP32 Touch Display | Add the Touch Display audio/session adapter on the Standard Home boundary. |
+| `STD-8` | W/K browser and iPad | Migrate browser and iPad routes to the Standard Home boundary. |
+
 ## Overview
 
 This document provides the complete epic and story breakdown for hermes-relay-tui, decomposing the requirements from the PRD, the canonical product spec, UX design contract, and Architecture requirements into implementable stories.

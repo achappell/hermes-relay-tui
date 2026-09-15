@@ -29,7 +29,7 @@
 # - Dev moves story to 'review', then runs code-review (fresh context, different LLM recommended)
 # - Retrospective appends its action items to action_items; the status view surfaces open ones
 generated: 09-08-2026 00:00
-last_updated: 09-14-2026 15:20
+last_updated: 09-14-2026 19:13
 project: hermes-relay-tui
 project_key: NOKEY
 tracking_system: file-system
@@ -101,7 +101,12 @@ development_status:
   4-wk-2-recompute-and-clear-the-browser-departure-card-while-preserv: backlog
   epic-4-retrospective: optional
 
-  epic-5: in-progress
-  5-a-3-night-console-visual-design-pass: in-progress
+  epic-5: done
+  # Android owns 5-A-3; its authoritative status lives in hermes-relay-android.
   5-t-1-use-the-tui-as-an-independent-direct-voice-chat-gateway-with: done
   epic-5-retrospective: optional
+
+  next-wave: in-progress
+  standard-6-puck-migrate-respeaker-puck-path: ready-for-dev
+  standard-7-esp32-add-touch-display-audio-session-adapter: ready-for-dev
+  standard-8-wk-migrate-browser-and-ipad-routes: ready-for-dev
