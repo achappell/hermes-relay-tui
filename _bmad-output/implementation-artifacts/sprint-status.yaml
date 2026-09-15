@@ -107,6 +107,7 @@ development_status:
   epic-5-retrospective: optional
 
   next-wave: in-progress
+  standard-3-tui-migrate-the-terminal-client: review
   standard-6-puck-migrate-respeaker-puck-path: ready-for-dev
   standard-7-esp32-add-touch-display-audio-session-adapter: ready-for-dev
   standard-8-wk-migrate-browser-and-ipad-routes: ready-for-dev

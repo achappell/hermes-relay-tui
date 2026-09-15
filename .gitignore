@@ -18,3 +18,4 @@ _bmad-output/implementation-artifacts/surface-status-report.md
 .pytest_cache/
 .bmad-loop/runs/
 .bmad-loop/cache/
+/uv.lock
