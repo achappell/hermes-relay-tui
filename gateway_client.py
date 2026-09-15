@@ -482,9 +482,17 @@ class GatewayClient:
             and payload_session_id not in (None, "")
             and str(outer_session_id) != str(payload_session_id)
         ):
-            raise GatewayProtocolError(
-                "gateway event has conflicting session identities"
-            )
+            if event_type == "session.title":
+                # Hermes uses the outer identity for the live runtime session
+                # and the title payload's identity for its durable record.
+                # Keep both identities explicit, but do not let the durable
+                # key masquerade as a second runtime-session identity.
+                event["stored_session_id"] = str(payload_session_id)
+                event_payload.pop("session_id", None)
+            else:
+                raise GatewayProtocolError(
+                    "gateway event has conflicting session identities"
+                )
         session_id = outer_session_id or payload_session_id
         if session_id not in (None, "") and not isinstance(session_id, str):
             raise GatewayProtocolError("gateway event session identity is not a string")

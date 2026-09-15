@@ -29,7 +29,7 @@
 # - Dev moves story to 'review', then runs code-review (fresh context, different LLM recommended)
 # - Retrospective appends its action items to action_items; the status view surfaces open ones
 generated: 09-08-2026 00:00
-last_updated: 09-15-2026 10:37
+last_updated: 09-15-2026 15:15
 project: hermes-relay-tui
 project_key: NOKEY
 tracking_system: file-system
@@ -37,7 +37,8 @@ status_authority: local
 story_location: _bmad-output/implementation-artifacts
 development_status:
   # Upstream next-wave Story 3; distinct from the historical Puck Story 3 keys below.
-  # Implementation is merged; live direct-Standard evidence remains in Verify.
+  # Implementation and live direct-Standard gate are complete; review/merge is
+  # still required before the story moves to done.
   standard-3-tui-migrate-the-terminal-client: review
   epic-1: in-progress
   1-1-start-an-authorized-hermes-turn: done

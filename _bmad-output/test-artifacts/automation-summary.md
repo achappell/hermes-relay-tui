@@ -1,7 +1,7 @@
 ---
 stepsCompleted: ['step-01-preflight-and-context', 'step-02-identify-targets', 'step-03c-aggregate', 'step-04-validate-and-summarize']
 lastStep: 'step-04-validate-and-summarize'
-lastSaved: '2026-09-14'
+lastSaved: '2026-09-15'
 inputDocuments:
   - '_bmad/tea/config.yaml'
   - 'AGENTS.md'
@@ -69,7 +69,12 @@ The implementation already has broad happy-path coverage. The automation expansi
 | Integration | P1 | Gateway session create/resume/list/new/switch and invalid response shapes; reload/profile routing already covered as regression guards | Profile and durable-session mistakes can cross conversation boundaries. |
 | Unit | P2 | Rare unknown gateway/audio frames, optional metadata, no-op send/finish/stop paths, bounded list limits and local search parameter behavior | Useful defensive coverage with lower user impact and easy local recovery. |
 
-No E2E or live contract tests are planned: the approved Standard endpoint is unavailable, the story explicitly requires fake sockets for local validation, and no provider source/OpenAPI/Pact boundary is accessible in this repository. Live text, voice, interruption, and profile-ownership evidence remain manual follow-up rather than invented automation.
+At artifact-generation time no E2E or live contract tests were planned: the
+approved Standard endpoint was unavailable, the story explicitly required
+fake sockets for local validation, and no provider source/OpenAPI/Pact
+boundary was accessible in this repository. The endpoint later became
+available; the manual live closure is recorded below rather than being
+invented as a hermetic test.
 
 Baseline before expansion: focused Story 3 and regression files passed, `387 passed in 50.32s`.
 
@@ -118,15 +123,27 @@ The exact worker payload was aggregated into the worktree.
 - `tests/test_gateway_boundary_failures.py` — malformed gateway/audio frames, pending-request disconnects, sidecar write/no-op behavior, typed session validation, and interim-text sealing.
 - `_bmad-output/test-artifacts/automation-summary.md` — this BMad automation record.
 
-No fixtures, factories, package scripts, README, browser sessions, or live endpoint artifacts were created. The existing fake-socket helpers are reused; the Standard endpoint remains unavailable for live text, voice, interrupt, reconnect, and profile-ownership evidence.
+No fixtures, factories, package scripts, README, or browser sessions were
+created. The existing fake-socket helpers are reused; the live Standard gate
+below records the separate deployed verification.
 
 ## Acceptance and residual risk
 
-The local acceptance matrix is covered across the existing Story 3 suite and this expansion: opt-in gateway readiness and session setup, normalized text/audio behavior, readable audio degradation, no-replay recovery, terminal interruption, and transport/profile routing. The direct Standard adapter is not the Home bridge and does not close Home route, Device-credential, opaque-handle, endpoint-envelope, or live-route acceptance. The remaining deferred item is live evidence that a Standard session cannot resume under a different requested Hermes profile; the story already records that boundary.
+The local acceptance matrix is covered across the existing Story 3 suite and
+this expansion: opt-in gateway readiness and session setup, normalized
+text/audio behavior, readable audio degradation, no-replay recovery, terminal
+interruption, and transport/profile routing. The live closure below adds
+direct Standard text, PCM, interruption, reconnect, and Profile evidence. The
+direct Standard adapter is not the Home bridge and does not close Home route,
+Device-credential, opaque-handle, endpoint-envelope, or Home live-route
+acceptance.
 
 ## Recommended next workflow
 
-Run `bmad-testarch-test-review` for a second quality pass over the expanded boundary tests. When an approved Standard endpoint exists, perform the story’s live text, voice, confirmed-interrupt, disconnect/reconnect, and profile-ownership checks; do not convert those observations into local fake tests.
+Run `bmad-testarch-test-review` for a second quality pass over the expanded
+boundary tests. Keep the live gate as an explicit deployment check rather
+than converting it into local fake tests. The next workflow is review and
+merge of the parser compatibility fix, followed by tracker closure.
 
 ## Execution commands
 
@@ -137,15 +154,35 @@ From this worktree, run `../../venv/bin/pytest -q tests/test_gateway_boundary_fa
 Validation was run from a clean worktree at current `origin/main`:
 
 - Revision: `a38e033ec36612236c3ceddd92445b6ef01202e4` (`feat(puck): migrate ReSpeaker path to Standard Home boundary (#189)`). The merged STD-3 implementation commit `6f0759c3882720e0efcb48b4d2b770ca008f8ea7` is an ancestor of this revision.
-- Focused command: `venv/bin/pytest -q tests/test_gateway_client.py tests/test_gateway_audio.py tests/test_gateway_session.py tests/test_gateway_boundary_failures.py tests/test_config.py tests/test_setup.py tests/test_profile_cli.py tests/test_history.py tests/test_app.py tests/test_timing.py tests/test_session.py tests/test_audio.py` — **464 passed in 53.88s**.
-- Full command: `venv/bin/pytest -q` — **1,370 passed, 1 skipped, 6 warnings in 220.85s (3:40.85)**.
+- Focused command: `venv/bin/pytest -q tests/test_gateway_client.py tests/test_gateway_audio.py tests/test_gateway_session.py tests/test_gateway_boundary_failures.py tests/test_config.py tests/test_setup.py tests/test_profile_cli.py tests/test_history.py tests/test_app.py tests/test_timing.py tests/test_session.py tests/test_audio.py` — **465 passed in 50.62s**.
+- Full command: `venv/bin/pytest -q` — **1,371 passed, 1 skipped, 6 warnings in 205.09s (3:25.09)**.
 - Full-suite warnings were the existing `websockets.legacy` and deprecated `ConnectionClosed.code`/`ConnectionClosed.reason` warnings; no test failure occurred.
 
-### Live Standard gate
+### Live Standard gate — 2026-09-15 (deployed route)
 
-- Endpoint type required: approved direct Standard Hermes WebSocket `/api/ws` with the separate `/api/audio/speak-stream` sidecar.
-- Endpoint type available: **legacy `/voice-session` WebSockets only** in the private local profile configuration. No approved direct Standard `/api/ws` URL or Hermes `Profile` routing value is configured.
-- Live calls made: **none**. The configured bearer-token presence was not treated as proof of Standard-route approval or Profile ownership, and its value is not recorded here.
-- Not evidenced because the endpoint/configuration gate is missing: live text, voice/audio, confirmed interrupt, disconnect/reconnect without replay, timing-capability absence, audio-failure behavior, and Profile stability across create/resume/reconnect.
+- Route: direct Standard Hermes `/api/ws`; audio sidecar
+  `/api/audio/speak-stream`; selected Profile `amanda`.
+- Text: the TUI `GatewaySession` received streamed text and a terminal
+  `turn_end`.
+- Audio: the TUI received `audio_start`, five PCM chunks totaling **29,696
+  bytes**, and `audio_end`. No `speech_timing` event was emitted, which is the
+  expected explicit absence for this direct Standard route.
+- Interruption: a long-running live turn accepted `session.interrupt` and
+  emitted one terminal `turn_interrupted` event.
+- Profile ownership: create, resume, and reconnect each reported `amanda`.
+- Reconnect/no replay: after deliberately dropping an in-flight turn, resume
+  reused the durable session, reported the in-flight state, and emitted no
+  automatic replay; an explicit post-resume turn completed.
+- Audio failure: an injected sidecar-open failure emitted one typed
+  `audio_unavailable` event while the real text turn still reached `turn_end`.
+- A live `session.title` payload used its durable ID while its envelope used
+  the runtime ID. The client now keeps those identities distinct, and the
+  regression test preserves strict rejection for other conflicting events.
+- Live calls were run with bearer credentials held in process memory only; no
+  credential, prompt, transcript, audio content, or session identifier is
+  recorded here.
 
-Disposition: local implementation and fake-boundary coverage remain green, but issue #182 stays open in **Verify** pending an approved direct Standard endpoint and matching Profile-authorized credentials. No prompts, transcripts, audio, credentials, or invented live results are recorded.
+Disposition: the direct Standard live gate is green. Issue #182 is ready to
+move from **Verify** after review/merge of the parser compatibility fix. The
+Home bridge remains a separate adapter boundary. No prompts, transcripts,
+audio content, credentials, or invented live results are recorded.
