@@ -248,3 +248,17 @@
 - source_spec: `_bmad-output/implementation-artifacts/spec-wk-profile-catalog.md`
   summary: Complete the physical three-phrase/two-tab verification against the corrected Ops release.
   evidence: The catalog was deployed to Ops, the service is active, Caddy serves the origin, and the redacted public page/action/state probe verifies `browser_hands_free` plus `hey missy`, `hey skippy`, and `hey spark`. Real browser speech, wake-only capture followed by a live Hermes turn, two simultaneous tabs, and cancellation of an in-flight route still require the supported browser/device gate.
+
+## Deferred from: code review of spec-standard-6-puck-migrate-respeaker-puck-path (2026-09-14)
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-standard-6-puck-migrate-respeaker-puck-path.md`
+  summary: OPEN -- complete the live Home-route and physical-Puck acceptance gate before formal closure.
+  evidence: HOME-NW-01/02/03, an approved `wss://.../api/v1/bridge/ws` route, and a paired production credential are not present in this checkout. The implementation has only deterministic fake-bridge evidence, while the story's external gate names wake, capture, playback, failed-closed identity, interruption, reconnect, exact `stop`, bounded follow-up, and clean shutdown.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-standard-6-puck-migrate-respeaker-puck-path.md`
+  summary: OPEN -- wire the Home interrupt method into the Puck production stop path.
+  evidence: `HomePuckSession.interrupt_active_turn()` has no caller in `puck_bridge/` or the firmware bridge path. The current receiver accepts uploads and response reads only; the firmware's stop behavior is local playback control, so the transport method is not yet an end-to-end interruption feature.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-standard-6-puck-migrate-respeaker-puck-path.md`
+  summary: OPEN -- settle and validate audio-fallback draining for the audio-only Puck.
+  evidence: Home emits `audio_abort` and continues consuming toward text and terminal frames, while `TurnRunner._run_turn()` returns immediately on `audio_abort` and closes the generator. No live or integration fixture proves whether the binding is drained, reset, or safely reused on the next fresh capture.

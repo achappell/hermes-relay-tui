@@ -4,8 +4,9 @@ Wires `receiver.py`'s chunked-upload HTTP server to `turn.py`'s
 directly-constructed `HandsFreeCoordinator`, against a real
 `session.HermesSession` built from this project's existing relay-profile
 configuration (`config.py`) -- same profiles the TUI and household
-appliance already use, plus the hardcoded `PUCK_DEVICE_TOKEN` stand-in this
-story adds alongside them.
+appliance already use. The legacy upload path retains its local
+`PUCK_DEVICE_TOKEN`; the opt-in Home path uses a separate paired Device
+credential and opaque conversation handle.
 
 Deliberately a separate process, not imported by `app.py` or
 `home_display/appliance.py` (see the spec's Boundaries & Constraints).
@@ -13,18 +14,23 @@ Deliberately a separate process, not imported by `app.py` or
 Usage:
     python -m puck_bridge [--host 0.0.0.0] [--port 8766] [--profile NAME]
     python -m puck_bridge --host-playback  # explicit local-speaker fallback
+    python -m puck_bridge --transport home \
+        --home-url wss://home.example/api/v1/bridge/ws
 """
 
 from __future__ import annotations
 
 import argparse
 import logging
+import os
 import sys
+from pathlib import Path
 from typing import Sequence
 
 import config
 from session import HermesSession
 
+from .home_session import HomePuckSession
 from .receiver import ThreadingHTTPServer, make_handler
 from .response import ResponseStream
 from .turn import TurnRunner
@@ -48,6 +54,28 @@ def build_arg_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--port", type=int, default=DEFAULT_PORT, help=f"listen port (default: {DEFAULT_PORT})"
+    )
+    parser.add_argument(
+        "--transport",
+        choices=("legacy", "home"),
+        default="legacy",
+        help="Puck session boundary (default: legacy; home is opt-in)",
+    )
+    parser.add_argument(
+        "--home-url",
+        default=os.getenv("HOME_BRIDGE_WS_URL", ""),
+        help="paired Home bridge URL, ending in /api/v1/bridge/ws",
+    )
+    parser.add_argument(
+        "--home-conversation-handle",
+        default="",
+        help="opaque Home conversation handle; prefer HOME_CONVERSATION_HANDLE",
+    )
+    parser.add_argument(
+        "--home-device-credential-file",
+        type=Path,
+        default=None,
+        help="private file containing the Home Device credential",
     )
     playback = parser.add_mutually_exclusive_group()
     playback.add_argument(
@@ -92,13 +120,45 @@ def build_session_args(remaining_argv: Sequence[str]) -> argparse.Namespace:
     return session_args
 
 
+def _read_home_device_credential(path: Path | None) -> str:
+    """Read a paired Device credential without exposing file contents."""
+
+    if path is None:
+        return ""
+    try:
+        return path.expanduser().read_text(encoding="utf-8").strip()
+    except (OSError, UnicodeError):
+        return ""
+
+
+def _home_profile_context(remaining_argv: Sequence[str]) -> tuple[Path, str]:
+    """Find private pairing config without resolving a Hermes bearer token."""
+
+    argv = list(remaining_argv)
+    config_path = config.config_path_from_argv(argv)
+    cfg = config.load_config_file(config_path)
+    explicit_env = config._option_value(argv, "--profile-env")
+    profile_env = Path(
+        explicit_env or cfg.get("profile_env") or config.DEFAULT_PROFILE_ENV
+    ).expanduser()
+    profile_name = config._profile_selection(argv, cfg)
+    return profile_env, profile_name
+
+
 def main(argv: list[str] | None = None) -> int:
     logging.basicConfig(level=logging.INFO)
     raw_argv = list(sys.argv[1:] if argv is None else argv)
     args, remaining = build_arg_parser().parse_known_args(raw_argv)
+    transport = getattr(args, "transport", "legacy")
 
-    session_args = build_session_args(remaining)
-    token = config.resolve_puck_device_token(session_args.profile_env)
+    if transport == "home":
+        profile_env, profile_name = _home_profile_context(remaining)
+        session_args = None
+    else:
+        session_args = build_session_args(remaining)
+        profile_env = session_args.profile_env
+        profile_name = session_args.profile_name
+    token = config.resolve_puck_device_token(profile_env)
     if not token:
         print(
             "error: no PUCK_DEVICE_TOKEN configured. Set it in the profile "
@@ -109,7 +169,46 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 1
 
-    session = HermesSession(session_args)
+    if transport == "home":
+        home_url = str(args.home_url or "").strip()
+        credential = _read_home_device_credential(args.home_device_credential_file)
+        if not credential:
+            credential = config.resolve_home_device_credential(profile_env)
+        conversation_handle = str(args.home_conversation_handle or "").strip()
+        if not conversation_handle:
+            conversation_handle = config.resolve_home_conversation_handle(
+                profile_env
+            )
+        missing = []
+        if not home_url:
+            missing.append("--home-url/HOME_BRIDGE_WS_URL")
+        if not credential:
+            missing.append(
+                "--home-device-credential-file/HOME_DEVICE_CREDENTIAL"
+            )
+        if not conversation_handle:
+            missing.append("--home-conversation-handle/HOME_CONVERSATION_HANDLE")
+        if missing:
+            print(
+                "error: Home transport requires " + ", ".join(missing) + ".",
+                file=sys.stderr,
+            )
+            return 1
+        try:
+            session = HomePuckSession(
+                home_url,
+                credential,
+                conversation_handle,
+            )
+        except ValueError as exc:
+            print(
+                f"error: invalid Home transport configuration: {exc}",
+                file=sys.stderr,
+            )
+            return 1
+    else:
+        assert session_args is not None
+        session = HermesSession(session_args)
     # Device playback is the normal Puck path. Host playback remains an
     # explicit diagnostic fallback for a firmware or response-stream outage.
     response_stream = (
@@ -124,11 +223,18 @@ def main(argv: list[str] | None = None) -> int:
             "this host stays silent",
             "/response",
         )
-    logger.info(
-        "puck bridge connecting Hermes session profile=%s session_id=%s",
-        session_args.profile_name,
-        session_args.session_id,
-    )
+    if transport == "home":
+        logger.info(
+            "puck bridge connecting through Home profile=%s",
+            profile_name,
+        )
+    else:
+        assert session_args is not None
+        logger.info(
+            "puck bridge connecting Hermes session profile=%s session_id=%s",
+            profile_name,
+            session_args.session_id,
+        )
     runner.start()
 
     handler_cls = make_handler(

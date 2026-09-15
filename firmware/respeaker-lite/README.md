@@ -523,6 +523,31 @@ venv/bin/python -m puck_bridge --port 8766
 Device playback is the default. To deliberately send the answer to the
 bridge host's speakers instead, use `--host-playback`.
 
+### Standard Home transport (STANDARD-6-PUCK)
+
+The bridge also has an explicit, opt-in Home boundary. It opens the planned
+`wss://.../api/v1/bridge/ws` route with `Authorization: Device <credential>`,
+then sends only the opaque conversation handle and the current prompt through
+Home's JSON-RPC contract. The Hermes bearer remains on the Home side; it is
+never copied into this process or the Puck firmware.
+
+Configure the paired values outside Git and start the adapter with:
+
+```bash
+export PUCK_DEVICE_TOKEN=local-upload-credential
+export HOME_BRIDGE_WS_URL=wss://home.example/api/v1/bridge/ws
+export HOME_DEVICE_CREDENTIAL=paired-device-credential
+export HOME_CONVERSATION_HANDLE=opaque-conversation-handle
+venv/bin/python -m puck_bridge --transport home --port 8766
+```
+
+`PUCK_DEVICE_TOKEN` remains the local firmware-to-bridge upload credential;
+the Home Device credential is a separate boundary credential. Home transport
+fails closed when any pairing value is absent and never falls back to the
+direct Hermes bearer path. The public Home route is not live in this checkout,
+so this slice is covered by fake-bridge tests; the live route and hardware
+round trip remain explicit integration gates.
+
 Raw Puck audio stays transient end-to-end (NFR3): the receiver's in-memory
 chunk buffer for a capture is discarded as soon as it is reassembled, and
 the WAV file is deleted immediately after transcription, success or
