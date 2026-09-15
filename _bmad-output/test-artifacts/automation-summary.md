@@ -131,3 +131,21 @@ Run `bmad-testarch-test-review` for a second quality pass over the expanded boun
 ## Execution commands
 
 From this worktree, run `../../venv/bin/pytest -q tests/test_gateway_boundary_failures.py` for the new cases or `../../venv/bin/pytest -q` for the complete regression suite. The generated suite is local-only and requires no token or external service.
+
+## Validation record — 2026-09-15
+
+Validation was run from a clean worktree at current `origin/main`:
+
+- Revision: `a38e033ec36612236c3ceddd92445b6ef01202e4` (`feat(puck): migrate ReSpeaker path to Standard Home boundary (#189)`). The merged STD-3 implementation commit `6f0759c3882720e0efcb48b4d2b770ca008f8ea7` is an ancestor of this revision.
+- Focused command: `venv/bin/pytest -q tests/test_gateway_client.py tests/test_gateway_audio.py tests/test_gateway_session.py tests/test_gateway_boundary_failures.py tests/test_config.py tests/test_setup.py tests/test_profile_cli.py tests/test_history.py tests/test_app.py tests/test_timing.py tests/test_session.py tests/test_audio.py` — **464 passed in 53.88s**.
+- Full command: `venv/bin/pytest -q` — **1,370 passed, 1 skipped, 6 warnings in 220.85s (3:40.85)**.
+- Full-suite warnings were the existing `websockets.legacy` and deprecated `ConnectionClosed.code`/`ConnectionClosed.reason` warnings; no test failure occurred.
+
+### Live Standard gate
+
+- Endpoint type required: approved direct Standard Hermes WebSocket `/api/ws` with the separate `/api/audio/speak-stream` sidecar.
+- Endpoint type available: **legacy `/voice-session` WebSockets only** in the private local profile configuration. No approved direct Standard `/api/ws` URL or Hermes `Profile` routing value is configured.
+- Live calls made: **none**. The configured bearer-token presence was not treated as proof of Standard-route approval or Profile ownership, and its value is not recorded here.
+- Not evidenced because the endpoint/configuration gate is missing: live text, voice/audio, confirmed interrupt, disconnect/reconnect without replay, timing-capability absence, audio-failure behavior, and Profile stability across create/resume/reconnect.
+
+Disposition: local implementation and fake-boundary coverage remain green, but issue #182 stays open in **Verify** pending an approved direct Standard endpoint and matching Profile-authorized credentials. No prompts, transcripts, audio, credentials, or invented live results are recorded.
