@@ -18,3 +18,7 @@ story_aliases:
   1-2-render-honest-turn-phases-and-response-delivery: T-2
   1-3-continue-with-bounded-follow-up-and-exact-stop: T-3
   1-4-recover-without-replaying-an-uncertain-turn: T-4
+  standard-3-tui-migrate-the-terminal-client: STD-3
+  standard-6-puck-migrate-respeaker-puck-path: STD-6
+  standard-7-esp32-add-touch-display-audio-session-adapter: STD-7
+  standard-8-wk-migrate-browser-and-ipad-routes: STD-8
