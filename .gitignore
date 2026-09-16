@@ -18,4 +18,6 @@ _bmad-output/implementation-artifacts/surface-status-report.md
 .pytest_cache/
 .bmad-loop/runs/
 .bmad-loop/cache/
+.bmad-loop/ci-status.sh
+.bmad-loop/plugins/close-trace-mr/
 /uv.lock
