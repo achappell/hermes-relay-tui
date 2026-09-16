@@ -82,6 +82,23 @@ describe("parseSnapshot", () => {
     });
   });
 
+  it("preserves the explicit Home timing contract", () => {
+    const parsed = parseSnapshot({
+      ...snapshot,
+      capabilities: {
+        actions: [],
+        features: ["browser_voice"],
+        timing: "absent",
+      },
+    });
+
+    expect(parsed?.capabilities?.timing).toBe("absent");
+    expect(parseSnapshot({
+      ...snapshot,
+      capabilities: { actions: [], features: [], timing: "arrival" },
+    })).toBeNull();
+  });
+
   it.each([
     { wake_phrases: [" "] },
     { wake_phrases: Array.from({ length: 9 }, (_unused, index) => `phrase ${index}`) },

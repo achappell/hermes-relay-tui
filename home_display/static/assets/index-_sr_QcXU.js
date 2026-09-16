@@ -4872,10 +4872,16 @@ function parseCapabilities(raw) {
   const wakeListenSeconds = parseSeconds(raw.wake_listen_seconds);
   const wakeFollowupSeconds = parseSeconds(raw.wake_followup_seconds);
   if (wakeListenSeconds === null || wakeFollowupSeconds === null) return null;
+  let timing;
+  if (raw.timing !== void 0) {
+    if (raw.timing !== "absent") return null;
+    timing = "absent";
+  }
   const capabilities = {
     actions: parsedActions,
     features: parsedFeatures
   };
+  if (timing !== void 0) capabilities.timing = timing;
   if (wakePhrases !== void 0) capabilities.wake_phrases = wakePhrases;
   if (wakeListenSeconds !== void 0) capabilities.wake_listen_seconds = wakeListenSeconds;
   if (wakeFollowupSeconds !== void 0) {

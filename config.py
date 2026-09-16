@@ -489,7 +489,12 @@ def _profile_env_path(cfg: dict[str, Any], args: Any = None) -> Path:
     return Path(value).expanduser() if value else DEFAULT_PROFILE_ENV
 
 
-def load_relay_profiles(cfg: dict[str, Any], args: Any = None) -> list[RelayProfile]:
+def load_relay_profiles(
+    cfg: dict[str, Any],
+    args: Any = None,
+    *,
+    resolve_tokens: bool = True,
+) -> list[RelayProfile]:
     """Resolve laptop relay profiles without importing a user-interface layer."""
     if not isinstance(cfg, dict):
         raise ValueError("config must contain a mapping of settings")
@@ -506,7 +511,11 @@ def load_relay_profiles(cfg: dict[str, Any], args: Any = None) -> list[RelayProf
             if name in seen:
                 raise ValueError(f"duplicate relay profile: {name}")
             seen.add(name)
-            token = _resolve_relay_profile_token(entry, name, profile_env)
+            token = (
+                _resolve_relay_profile_token(entry, name, profile_env)
+                if resolve_tokens
+                else ""
+            )
             wake_phrases = _parse_wake_phrases(
                 entry.get("wake_phrases") or entry.get("wake_phrase")
             )
@@ -516,7 +525,9 @@ def load_relay_profiles(cfg: dict[str, Any], args: Any = None) -> list[RelayProf
                     display_name=str(entry.get("display_name") or name.capitalize()).strip(),
                     url=str(entry.get("url") or DEFAULT_URL).strip(),
                     token=token,
-                    token_env=_profile_token_source(entry, name),
+                    token_env=(
+                        _profile_token_source(entry, name) if resolve_tokens else ""
+                    ),
                     client_id=str(entry.get("client_id") or f"{name}-relay").strip(),
                     device_id=str(entry.get("device_id") or default_device_id()).strip(),
                     session_id=str(entry.get("session_id") or f"{name}-session").strip(),
@@ -549,7 +560,7 @@ def load_relay_profiles(cfg: dict[str, Any], args: Any = None) -> list[RelayProf
     ) or _cfg_str(cfg, "session_id", "hybrid-tui") or "hybrid-tui"
     explicit_token = getattr(args, "token", None) if args is not None else None
     raw_token = explicit_token or cfg.get("token")
-    token = _resolve_token(raw_token, profile_env)
+    token = _resolve_token(raw_token, profile_env) if resolve_tokens else ""
     display_name = (
         getattr(args, "display_name", None) if args is not None else None
     ) or _cfg_str(cfg, "display_name", "Amanda streaming TUI") or "Amanda streaming TUI"
@@ -909,6 +920,15 @@ def load_household_profiles(
     args: Any = None,
 ) -> list[HouseholdProfile]:
     profile_env = getattr(args, "profile_env", None) or _cfg_path(cfg, "profile_env", DEFAULT_PROFILE_ENV)
+    home_browser = (
+        str(
+            getattr(args, "browser_transport", None)
+            or cfg.get("browser_transport", "")
+        )
+        .strip()
+        .lower()
+        == "home"
+    )
 
     raw_profiles = cfg.get("profiles")
     if raw_profiles and isinstance(raw_profiles, (dict, list)):
@@ -930,7 +950,7 @@ def load_household_profiles(
             raw_phrases = entry.get("wake_phrases") or entry.get("wake_phrase")
             wake_phrases = _parse_wake_phrases(raw_phrases)
             url = str(entry.get("url") or DEFAULT_URL).strip()
-            token = resolve_profile_token(
+            token = "" if home_browser else resolve_profile_token(
                 dict(entry, name=name),
                 profile_env,
                 allow_generic_fallback=False,
@@ -965,7 +985,14 @@ def load_household_profiles(
     fallback_client_id = getattr(args, "client_id", None) or _cfg_str(cfg, "client_id", "amanda-laptop")
     fallback_device_id = getattr(args, "device_id", None) or _cfg_str(cfg, "device_id", default_device_id())
     fallback_session_id = getattr(args, "session_id", None) or _cfg_str(cfg, "session_id", "hybrid-tui")
-    fallback_token = _resolve_token(getattr(args, "token", None) or _cfg_str(cfg, "token"), profile_env)
+    fallback_token = (
+        ""
+        if home_browser
+        else _resolve_token(
+            getattr(args, "token", None) or _cfg_str(cfg, "token"),
+            profile_env,
+        )
+    )
     fallback_model = getattr(args, "model", None) or _cfg_str(cfg, "model")
     display_name = getattr(args, "display_name", None) or _cfg_str(cfg, "display_name", "Home")
     raw_phrases = getattr(args, "wake_phrases", None) or _cfg_str(cfg, "wake_phrases") or _cfg_str(cfg, "wake_phrase")
@@ -996,7 +1023,11 @@ def make_profile_args(base_args: Any, profile: HouseholdProfile) -> Any:
         data = {}
     data.update({
         "url": profile.url,
-        "token": profile.token,
+        "token": (
+            ""
+            if str(getattr(base_args, "browser_transport", "")).strip().lower() == "home"
+            else profile.token
+        ),
         "client_id": profile.client_id,
         "device_id": profile.device_id,
         "session_id": profile.session_id,
@@ -1079,7 +1110,11 @@ def _profile_selection(argv: list[str], cfg: dict[str, Any]) -> str | None:
     return "default"
 
 
-def build_arg_parser(argv: Optional[list[str]] = None) -> argparse.ArgumentParser:
+def build_arg_parser(
+    argv: Optional[list[str]] = None,
+    *,
+    resolve_relay_profile_tokens: bool = True,
+) -> argparse.ArgumentParser:
     """Build the CLI parser, layering defaults as CLI flag > env var > YAML config > built-in.
 
     ``argv`` only affects finding ``--config`` before the full parser exists;
@@ -1096,7 +1131,11 @@ def build_arg_parser(argv: Optional[list[str]] = None) -> argparse.ArgumentParse
         else None
     )
     try:
-        relay_profiles = load_relay_profiles(cfg, profile_args)
+        relay_profiles = load_relay_profiles(
+            cfg,
+            profile_args,
+            resolve_tokens=resolve_relay_profile_tokens,
+        )
     except ValueError as exc:
         raise SystemExit(f"error: invalid relay profile configuration: {exc}") from exc
     configured_profile_names = tuple(profile.name for profile in relay_profiles)
@@ -1166,7 +1205,11 @@ def build_arg_parser(argv: Optional[list[str]] = None) -> argparse.ArgumentParse
     )
     parser.add_argument(
         "--token",
-        default=_cfg_str(cfg, "token") if selected_profile.legacy else selected_token,
+        default=(
+            (_cfg_str(cfg, "token") if selected_profile.legacy else selected_token)
+            if resolve_relay_profile_tokens
+            else ""
+        ),
         help="Bearer token; prefer VOICE_SESSION_TOKEN or the profile .env",
     )
     parser.add_argument("--profile-env", type=Path, default=_cfg_path(cfg, "profile_env", DEFAULT_PROFILE_ENV))

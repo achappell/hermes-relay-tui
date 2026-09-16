@@ -13,6 +13,7 @@ from puck_bridge.home_session import (
     HomeBridgeProtocolError,
     HomeBridgeRPCError,
     HomeBridgeTransportError,
+    HomeBrowserSession,
     HomePuckSession,
     require_home_bridge_url,
 )
@@ -119,6 +120,26 @@ class _FakeSocket:
             )
             for frame in self.prompt_frames:
                 self.incoming.put_nowait(frame)
+        elif method == "prompt.respond":
+            self.incoming.put_nowait(
+                _reply(
+                    payload["id"],
+                    {"conversation_handle": "opaque-home-handle", "status": "resolved"},
+                )
+            )
+            self.incoming.put_nowait(
+                _event(
+                    "prompt_resolved",
+                    "home-turn-1",
+                    {"request_id": "prompt-1", "status": "resolved"},
+                )
+            )
+            self.incoming.put_nowait(
+                _event("message.delta", "home-turn-1", {"rendered": "Confirmed."})
+            )
+            self.incoming.put_nowait(
+                _event("turn.complete", "home-turn-1", {"status": "completed"})
+            )
 
     async def recv(self) -> object:
         frame = await self.incoming.get()
@@ -203,6 +224,158 @@ async def test_home_connect_uses_device_header_and_opaque_handle_only():
         assert sent["schema"] == 1
         assert sent["params"] == {"conversation_handle": "opaque-home-handle"}
         assert "device-secret" not in json.dumps(sent)
+    finally:
+        await session.close()
+
+
+@pytest.mark.asyncio
+async def test_home_browser_session_resolves_a_correlated_choice_without_prompt_replay():
+    prompt = _notification(
+        "event",
+        {
+            "schema": 1,
+            "conversation_handle": "opaque-home-handle",
+            "turn_id": "home-turn-1",
+            "correlation_id": "corr-1",
+            "event": {
+                "type": "approval.request",
+                "payload": {
+                    "request_id": "prompt-1",
+                    "text": "Use the private browser session?",
+                    "options": [
+                        {"id": "yes", "label": "Approve"},
+                        {"id": "no", "label": "Deny"},
+                    ],
+                },
+            },
+        },
+    )
+    socket = _ready_socket(prompt)
+    session = HomeBrowserSession(
+        f"wss://home.example{HOME_BRIDGE_PATH}",
+        "device-secret",
+        "opaque-home-handle",
+        connect_factory=_FakeConnect([socket]),
+    )
+    await session.connect()
+    stream = session.send_turn("confirm")
+    try:
+        assert await stream.__anext__() == {
+            "type": "prompt_request",
+            "prompt_id": "prompt-1",
+            "prompt_kind": "choice",
+            "turn_id": "home-turn-1",
+            "text": "Use the private browser session?",
+            "options": [
+                {"id": "yes", "label": "Approve"},
+                {"id": "no", "label": "Deny"},
+            ],
+            "sensitive": False,
+            "timeout_s": 300,
+            "correlation_id": "corr-1",
+            "choice": None,
+        }
+        assert session.supports_structured_prompts
+        assert session.session_id == "home-browser"
+        assert session.timing_capability == "absent"
+
+        assert not await session.send_prompt_response(
+            prompt_id="prompt-1",
+            prompt_kind="choice",
+            option_id="not-an-option",
+        )
+        assert [frame["method"] for frame in socket.sent] == [
+            "conversation.open",
+            "prompt.submit",
+        ]
+
+        assert await session.send_prompt_response(
+            prompt_id="prompt-1",
+            prompt_kind="choice",
+            option_id="yes",
+        )
+        remaining = [event async for event in stream]
+        assert remaining == [
+            {"type": "prompt_resolved", "prompt_id": "prompt-1", "prompt_kind": "", "status": "resolved", "correlation_id": "corr-1"},
+            {"type": "text_delta", "text": "Confirmed."},
+            {"type": "turn_end"},
+        ]
+        sent_methods = [frame["method"] for frame in socket.sent]
+        assert sent_methods == ["conversation.open", "prompt.submit", "prompt.respond"]
+        response = socket.sent[-1]
+        assert response["params"] == {
+            "conversation_handle": "opaque-home-handle",
+            "turn_id": "home-turn-1",
+            "correlation_id": "corr-1",
+            "event_type": "approval.request",
+            "response": {"choice": "yes"},
+        }
+        assert "device-secret" not in json.dumps(socket.sent)
+    finally:
+        await stream.aclose()
+        await session.close()
+
+
+@pytest.mark.asyncio
+async def test_home_browser_prompt_response_rejects_stale_action_without_writing():
+    socket = _ready_socket(
+        _notification(
+            "event",
+            {
+                "schema": 1,
+                "conversation_handle": "opaque-home-handle",
+                "turn_id": "home-turn-1",
+                "correlation_id": "corr-1",
+                "event": {
+                    "type": "approval.request",
+                    "payload": {
+                        "prompt_id": "prompt-1",
+                        "prompt_kind": "choice",
+                    },
+                },
+            },
+        )
+    )
+    session = HomeBrowserSession(
+        f"wss://home.example{HOME_BRIDGE_PATH}",
+        "device-secret",
+        "opaque-home-handle",
+        connect_factory=_FakeConnect([socket]),
+    )
+    await session.connect()
+    stream = session.send_turn("confirm")
+    try:
+        await stream.__anext__()
+        assert not await session.send_prompt_response(
+            prompt_id="other-prompt",
+            prompt_kind="choice",
+            option_id="yes",
+        )
+        assert [frame["method"] for frame in socket.sent] == [
+            "conversation.open",
+            "prompt.submit",
+        ]
+    finally:
+        await stream.aclose()
+        await session.close()
+
+
+@pytest.mark.asyncio
+async def test_home_browser_session_emits_the_browser_terminal_event():
+    socket = _ready_socket(
+        _event("message.delta", "home-turn-1", {"rendered": "done"}),
+        _event("turn.complete", "home-turn-1", {"status": "completed"}),
+    )
+    session = HomeBrowserSession(
+        f"wss://home.example{HOME_BRIDGE_PATH}",
+        "device-secret",
+        "opaque-home-handle",
+        connect_factory=_FakeConnect([socket]),
+    )
+    await session.connect()
+    try:
+        events = [event async for event in session.send_turn("complete")]
+        assert events[-1] == {"type": "turn_end"}
     finally:
         await session.close()
 

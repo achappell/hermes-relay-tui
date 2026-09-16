@@ -593,6 +593,9 @@ class HomePuckSession:
         *,
         connect_factory: Any | None = None,
         request_timeout: float = HOME_BRIDGE_REQUEST_TIMEOUT,
+        supports_structured_prompts: bool = False,
+        session_id: str = "home-puck",
+        session_label: str = "Puck",
     ) -> None:
         self.url = require_home_bridge_url(url)
         self.device_credential = str(device_credential).strip()
@@ -603,14 +606,20 @@ class HomePuckSession:
             raise ValueError("Home conversation handle is required")
         self._connect_factory = connect_factory
         self._request_timeout = request_timeout
+        self._supports_structured_prompts = bool(supports_structured_prompts)
+        self._session_id = str(session_id).strip() or "home-puck"
+        self._session_label = str(session_label).strip() or "Home"
         self._client: HomeBridgeClient | None = None
         self._retired_client: HomeBridgeClient | None = None
         self._opened = False
         self._reconnect_required = False
         self._connected = False
         self._active_turn_id: str | None = None
+        self._pending_prompt: dict[str, Any] | None = None
         self._turn_lock = asyncio.Lock()
+        self._prompt_response_lock = asyncio.Lock()
         self._capabilities: frozenset[str] = frozenset()
+        self._timing_capability: str | None = None
         self.turn_index = 0
         self.confirmed_model: str | None = None
         self.confirmed_title: str | None = None
@@ -624,10 +633,12 @@ class HomePuckSession:
 
     @property
     def supports_structured_prompts(self) -> bool:
-        # The Puck is an audio/status doorway, not a structured-prompt
-        # control plane. Do not advertise a capability this adapter cannot
-        # answer through the firmware.
-        return False
+        return self._supports_structured_prompts
+
+    @property
+    def timing_capability(self) -> str | None:
+        """The timing contract confirmed by Home, if one exists."""
+        return self._timing_capability
 
     @property
     def supports_interrupt(self) -> bool:
@@ -636,7 +647,7 @@ class HomePuckSession:
     @property
     def session_id(self) -> str:
         # Home deliberately withholds the Hermes runtime/session identity.
-        return "home-puck"
+        return self._session_id
 
     @property
     def active_turn_id(self) -> str | None:
@@ -680,10 +691,11 @@ class HomePuckSession:
             raise
 
         self._capabilities = _capability_names(ready.get("capabilities"))
+        self._timing_capability = _timing_capability(ready["capabilities"])
         self._connected = True
         self._opened = True
         self._reconnect_required = False
-        logger.info("Puck Home bridge ready via %s", method)
+        logger.info("%s Home bridge ready via %s", self._session_label, method)
         return ready
 
     async def wait_for_disconnect(self) -> None:
@@ -702,6 +714,7 @@ class HomePuckSession:
         self._client = None
         self._connected = False
         self._active_turn_id = None
+        self._pending_prompt = None
         if self._opened:
             self._reconnect_required = True
         if client is not None:
@@ -861,12 +874,6 @@ class HomePuckSession:
                 if event_handle != self._conversation_handle:
                     continue
                 event = _event_from_params(params)
-                correlation_id = params.get("correlation_id")
-                if correlation_id not in (None, ""):
-                    text_state["correlation_id"] = _require_string(
-                        correlation_id,
-                        "Home bridge event correlation ID is invalid",
-                    )
                 event_turn_id = _frame_turn_id(params, event)
                 if event_turn_id is None or event_turn_id != turn_id:
                     continue
@@ -881,6 +888,35 @@ class HomePuckSession:
                     raise HomeBridgeProtocolError(
                         "Home bridge event payload is not an object"
                     )
+                correlation_candidates = [
+                    candidate
+                    for candidate in (
+                        params.get("correlation_id"),
+                        event.get("correlation_id"),
+                        payload.get("correlation_id"),
+                    )
+                    if candidate not in (None, "")
+                ]
+                for candidate in correlation_candidates:
+                    if not isinstance(candidate, str) or not candidate.strip():
+                        raise HomeBridgeProtocolError(
+                            "Home bridge event correlation ID is invalid"
+                        )
+                distinct_correlations = {
+                    candidate.strip() for candidate in correlation_candidates
+                }
+                if len(distinct_correlations) > 1:
+                    raise HomeBridgeProtocolError(
+                        "Home bridge event has conflicting correlation IDs"
+                    )
+                correlation_id = next(iter(distinct_correlations), None)
+                if correlation_id is None and event_type in _STRUCTURED_PROMPT_EVENT_TYPES:
+                    correlation_id = payload.get("request_id")
+                if correlation_id is not None:
+                    text_state["correlation_id"] = _require_string(
+                        correlation_id,
+                        "Home bridge event correlation ID is invalid",
+                    )
 
                 if (
                     event_type in _STRUCTURED_PROMPT_EVENT_TYPES
@@ -893,12 +929,22 @@ class HomePuckSession:
                     await self._close_after_protocol_failure()
                 else:
                     normalized = _normalize_event(event_type, payload, text_state)
+                    if (
+                        event_type in _STRUCTURED_PROMPT_EVENT_TYPES
+                        and isinstance(normalized, dict)
+                        and normalized.get("type") == "prompt_request"
+                    ):
+                        self._remember_pending_prompt(
+                            event_type, normalized, turn_id, text_state
+                        )
                 normalized_events = (
                     [normalized]
                     if isinstance(normalized, dict)
                     else (normalized or [])
                 )
                 for normalized_event in normalized_events:
+                    if normalized_event.get("type") == "prompt_resolved":
+                        self._clear_pending_prompt(normalized_event)
                     yield normalized_event
                     if normalized_event["type"] in {
                         "error",
@@ -926,6 +972,8 @@ class HomePuckSession:
         finally:
             if self._active_turn_id == turn_id:
                 self._active_turn_id = None
+            if self._pending_prompt is not None and self._pending_prompt["turn_id"] == turn_id:
+                self._pending_prompt = None
 
     async def interrupt_active_turn(self) -> bool:
         """Request interruption; terminal event remains the authority."""
@@ -986,8 +1034,95 @@ class HomePuckSession:
             await self._close_after_protocol_failure()
             raise
 
-    async def send_prompt_response(self, **_kwargs: Any) -> bool:
-        return False
+    async def send_prompt_response(
+        self,
+        *,
+        prompt_id: str,
+        prompt_kind: str,
+        option_id: str | None = None,
+        value: str | None = None,
+        reason: str | None = None,
+        operation: str | None = None,
+        object_id: str | None = None,
+        freshness: str | None = None,
+    ) -> bool:
+        """Resolve the current Home prompt without creating another turn.
+
+        The extra arguments belong to the older relay prompt API. Home owns
+        the Standard operation mapping, so only the validated response value
+        crosses this boundary; secret values are never logged.
+        """
+        del reason, operation, object_id, freshness
+        if (
+            not self.supports_structured_prompts
+            or not self.is_connected()
+            or self._client is None
+        ):
+            return False
+
+        async with self._prompt_response_lock:
+            pending = self._pending_prompt
+            if pending is None:
+                return False
+            requested_id = str(prompt_id or "").strip()
+            if requested_id not in {
+                pending["prompt_id"],
+                pending["correlation_id"],
+            }:
+                return False
+            if not _prompt_kind_matches(
+                pending["event_type"], pending["prompt_kind"], prompt_kind
+            ):
+                return False
+            if option_id is not None:
+                allowed_options = pending.get("option_ids")
+                if (
+                    isinstance(allowed_options, frozenset)
+                    and option_id not in allowed_options
+                ):
+                    return False
+            response = _prompt_response(
+                pending["event_type"],
+                pending["prompt_kind"],
+                option_id=option_id,
+                value=value,
+            )
+            if response is None:
+                return False
+            params = {
+                "conversation_handle": self._conversation_handle,
+                "turn_id": pending["turn_id"],
+                "correlation_id": pending["correlation_id"],
+                "event_type": pending["event_type"],
+                "response": response,
+            }
+            try:
+                result = await self._client.request("prompt.respond", params)
+            except asyncio.CancelledError:
+                await self._close_after_uncertain_prompt()
+                raise
+            except HomeBridgeRPCError as exc:
+                if exc.delivery == "known":
+                    return False
+                await self._close_after_uncertain_prompt()
+                raise HomeBridgeTransportError(
+                    "home bridge prompt.respond",
+                    ConnectionError("Home bridge prompt delivery is uncertain"),
+                ) from exc
+            except HomeBridgeTransportError:
+                await self._close_after_uncertain_prompt()
+                raise
+
+            try:
+                _validate_prompt_response_result(result)
+            except HomeBridgeRPCError:
+                return False
+            except HomeBridgeProtocolError:
+                await self._close_after_protocol_failure()
+                raise
+            if self._pending_prompt == pending:
+                self._pending_prompt = None
+            return True
 
     async def list_sessions(self, **_kwargs: Any) -> list[dict[str, Any]]:
         raise HomeBridgeProtocolError("Home Puck session does not expose sessions")
@@ -1083,7 +1218,53 @@ class HomePuckSession:
             raise HomeBridgeProtocolError(
                 "Home bridge readiness capabilities are not an object"
             )
+        _timing_capability(result["capabilities"])
         return result
+
+    def _remember_pending_prompt(
+        self,
+        event_type: str,
+        normalized: dict[str, Any],
+        turn_id: str,
+        state: dict[str, Any],
+    ) -> None:
+        prompt_id = str(normalized.get("prompt_id") or "").strip()
+        correlation_id = str(
+            normalized.get("correlation_id") or state.get("correlation_id") or ""
+        ).strip()
+        if not prompt_id:
+            prompt_id = correlation_id
+        if not correlation_id:
+            raise HomeBridgeProtocolError(
+                "Home bridge structured prompt has no correlation ID"
+            )
+        if not prompt_id:
+            raise HomeBridgeProtocolError(
+                "Home bridge structured prompt has no prompt ID"
+            )
+        self._pending_prompt = {
+            "prompt_id": prompt_id,
+            "correlation_id": correlation_id,
+            "event_type": event_type,
+            "prompt_kind": str(normalized.get("prompt_kind") or "").strip(),
+            "turn_id": turn_id,
+            "option_ids": frozenset(
+                str(option.get("id") or "").strip()
+                for option in normalized.get("options", [])
+                if isinstance(option, dict) and str(option.get("id") or "").strip()
+            ),
+        }
+
+    def _clear_pending_prompt(self, normalized: dict[str, Any]) -> None:
+        pending = self._pending_prompt
+        if pending is None:
+            return
+        identifiers = {
+            str(normalized.get("prompt_id") or "").strip(),
+            str(normalized.get("correlation_id") or "").strip(),
+        }
+        if identifiers & {pending["prompt_id"], pending["correlation_id"]}:
+            self._pending_prompt = None
 
     def _audio_event(
         self,
@@ -1230,6 +1411,18 @@ def _capability_names(raw: Any) -> frozenset[str]:
     return frozenset(values)
 
 
+def _timing_capability(raw: Any) -> str | None:
+    """Accept only the timing contract Home has actually defined."""
+    if not isinstance(raw, dict) or "timing" not in raw:
+        return None
+    timing = raw.get("timing")
+    if timing != "absent":
+        raise HomeBridgeProtocolError(
+            "Home bridge readiness has an unsupported timing capability"
+        )
+    return "absent"
+
+
 def _accepted_result(result: Any) -> bool:
     if not isinstance(result, dict):
         return False
@@ -1237,6 +1430,88 @@ def _accepted_result(result: Any) -> bool:
         return True
     status = str(result.get("status") or "").strip().lower()
     return status in {"accepted", "ok", "ready"}
+
+
+def _validate_prompt_response_result(result: Any) -> None:
+    """Require Home to prove that the structured prompt was resolved."""
+    if not isinstance(result, dict):
+        raise HomeBridgeProtocolError(
+            "Home bridge prompt response result is not an object"
+        )
+    _require_schema(result, "Home bridge prompt response result")
+    for name in ("accepted", "resolved"):
+        value = result.get(name)
+        if value is not None and type(value) is not bool:
+            raise HomeBridgeProtocolError(
+                f"Home bridge prompt response has invalid {name} flag"
+            )
+    status = result.get("status")
+    if status is not None and not isinstance(status, str):
+        raise HomeBridgeProtocolError(
+            "Home bridge prompt response has invalid status"
+        )
+    normalized_status = status.strip().lower() if isinstance(status, str) else ""
+    if result.get("accepted") is False or result.get("resolved") is False:
+        raise HomeBridgeRPCError("prompt.respond", "request_rejected", "known")
+    if normalized_status in {"rejected", "denied", "expired", "failed", "error"}:
+        raise HomeBridgeRPCError("prompt.respond", "request_rejected", "known")
+    if (
+        result.get("accepted") is True
+        or result.get("resolved") is True
+        or normalized_status in {"ok", "accepted", "resolved", "complete", "completed"}
+    ):
+        return
+    raise HomeBridgeProtocolError(
+        "Home bridge prompt response has no accepted terminal status"
+    )
+
+
+def _prompt_kind_matches(event_type: str, pending_kind: str, supplied: str) -> bool:
+    actual = str(supplied or "").strip().lower()
+    expected = str(pending_kind or "").strip().lower()
+    if event_type == "approval.request":
+        return actual in {"choice", "approval", "confirm"}
+    if event_type == "clarify.request":
+        return actual in {"clarify", "choice"}
+    if event_type == "secret.request":
+        return actual == "secret"
+    if event_type == "sudo.request":
+        return actual == "sudo"
+    if event_type == "prompt_request":
+        return actual == expected or (
+            expected in {"choice", "approval", "confirm"}
+            and actual in {"choice", "approval", "confirm"}
+        )
+    return False
+
+
+def _prompt_response(
+    event_type: str,
+    prompt_kind: str,
+    *,
+    option_id: str | None,
+    value: str | None,
+) -> dict[str, str] | None:
+    kind = str(prompt_kind or "").strip().lower()
+    if event_type == "approval.request" or (
+        event_type == "prompt_request" and kind in {"choice", "approval", "confirm"}
+    ):
+        selected = option_id if option_id is not None else value
+        return {"choice": selected} if isinstance(selected, str) and selected else None
+    if event_type == "clarify.request" or (
+        event_type == "prompt_request" and kind == "clarify"
+    ):
+        answer = value if value is not None else option_id
+        return {"answer": answer} if isinstance(answer, str) and answer else None
+    if event_type == "secret.request" or (
+        event_type == "prompt_request" and kind == "secret"
+    ):
+        return {"value": value} if isinstance(value, str) and value else None
+    if event_type == "sudo.request" or (
+        event_type == "prompt_request" and kind == "sudo"
+    ):
+        return {"password": value} if isinstance(value, str) and value else None
+    return None
 
 
 def _is_terminal_event(event_type: str, payload: dict[str, Any]) -> bool:
@@ -1462,7 +1737,13 @@ def _normalize_event(
             ]
         return {
             "type": "prompt_request",
-            "prompt_id": str(payload.get("prompt_id") or ""),
+            "prompt_id": str(
+                payload.get("prompt_id")
+                or payload.get("request_id")
+                or payload.get("id")
+                or state.get("correlation_id")
+                or ""
+            ),
             "prompt_kind": prompt_kind,
             "turn_id": str(prompt_turn_id or ""),
             "text": str(payload.get("text") or ""),
@@ -1483,7 +1764,13 @@ def _normalize_event(
     if event_type == "prompt_resolved":
         return {
             "type": "prompt_resolved",
-            "prompt_id": str(payload.get("prompt_id") or ""),
+            "prompt_id": str(
+                payload.get("prompt_id")
+                or payload.get("request_id")
+                or payload.get("id")
+                or state.get("correlation_id")
+                or ""
+            ),
             "prompt_kind": str(payload.get("prompt_kind") or ""),
             "status": str(payload.get("status") or ""),
             **(
@@ -1495,7 +1782,13 @@ def _normalize_event(
     if event_type == "prompt_response_rejected":
         return {
             "type": "prompt_response_rejected",
-            "prompt_id": str(payload.get("prompt_id") or ""),
+            "prompt_id": str(
+                payload.get("prompt_id")
+                or payload.get("request_id")
+                or payload.get("id")
+                or state.get("correlation_id")
+                or ""
+            ),
             "reason": str(payload.get("reason") or ""),
             **(
                 {"correlation_id": str(state["correlation_id"])}
@@ -1516,6 +1809,44 @@ def _normalize_event(
     }
 
 
+class HomeBrowserSession(HomePuckSession):
+    """Home bridge session for the browser's active control surface."""
+
+    def __init__(
+        self,
+        url: str,
+        device_credential: str,
+        conversation_handle: str,
+        *,
+        connect_factory: Any | None = None,
+        request_timeout: float = HOME_BRIDGE_REQUEST_TIMEOUT,
+    ) -> None:
+        super().__init__(
+            url,
+            device_credential,
+            conversation_handle,
+            connect_factory=connect_factory,
+            request_timeout=request_timeout,
+            supports_structured_prompts=True,
+            session_id="home-browser",
+            session_label="Browser",
+        )
+
+    async def _send_turn_locked(self, text: str) -> AsyncIterator[dict[str, Any]]:
+        """Expose the front-end terminal event after Home owns completion.
+
+        ``HomePuckSession`` deliberately ends its iterator at the validated
+        Home terminal frame because the Puck turn runner treats normal
+        exhaustion as completion. The browser appliance consumes the shared
+        ``SessionProtocol`` shape, where ``turn_end`` is the explicit
+        presentation boundary. Keep that distinction in this browser-only
+        subclass so Puck callers retain their existing event stream.
+        """
+        async for event in super()._send_turn_locked(text):
+            yield event
+        yield {"type": "turn_end"}
+
+
 __all__ = [
     "HOME_BRIDGE_PATH",
     "HomeBridgeAudioError",
@@ -1524,6 +1855,7 @@ __all__ = [
     "HomeBridgeRPCError",
     "HomeBridgeTransportError",
     "HomeBridgeUnavailableError",
+    "HomeBrowserSession",
     "HomePuckSession",
     "_home_connection_kwargs",
     "require_home_bridge_url",

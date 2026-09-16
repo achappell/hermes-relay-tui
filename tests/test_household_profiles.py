@@ -175,6 +175,33 @@ def test_load_household_profiles_dict_and_list_schemas(tmp_path: Path, monkeypat
     assert jensen.client_id == "jensen-home"
 
 
+def test_home_browser_profile_loading_does_not_resolve_legacy_bearers(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    def fail_if_resolved(*_args, **_kwargs):
+        raise AssertionError("Home browser mode must not resolve a bearer token")
+
+    monkeypatch.setattr(config, "resolve_profile_token", fail_if_resolved)
+    profiles = load_household_profiles(
+        {
+            "profiles": {
+                "amanda": {
+                    "display_name": "Amanda",
+                    "wake_phrase": "hey missy",
+                    "token_env": "VOICE_SESSION_TOKEN_AMANDA",
+                }
+            }
+        },
+        types.SimpleNamespace(
+            browser_transport="home",
+            profile_env=tmp_path / ".env",
+        ),
+    )
+
+    assert len(profiles) == 1
+    assert profiles[0].token == ""
+
+
 def test_household_profiles_do_not_inherit_root_connection_settings(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

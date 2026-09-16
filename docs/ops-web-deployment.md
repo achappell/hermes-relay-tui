@@ -9,6 +9,36 @@ The Python appliance listens only on `127.0.0.1:8765`. Caddy owns the public
 HTTPS hostname and forwards the page, `/state` WebSocket, and `/action` POST
 route. The browser never receives the Hermes bearer token.
 
+## STD-8 Home bridge transport (opt-in)
+
+The browser and iPad are one W/K surface. The managed deployment described in
+this runbook still starts the `legacy` direct-profile transport, which remains
+the rollback path. The migrated Home transport is selected explicitly only
+when the approved Home route is available:
+
+```bash
+hermes-relay-home --browser-voice \
+  --browser-transport home \
+  --home-bridge-url wss://home.example/api/v1/bridge/ws \
+  --home-device-credential-file ~/.hermes-relay-tui/home-device-credential \
+  --home-conversation-handle household-browser
+```
+
+The Device credential file is read by the appliance process and should be
+owned by its service user with mode `0600`. Alternatively, put
+`HOME_DEVICE_CREDENTIAL` and `HOME_CONVERSATION_HANDLE` in the private profile
+environment. Do not place the credential in the WebSocket URL, a query string,
+the browser bundle, or a display snapshot. Home mode requires the exact secure
+`/api/v1/bridge/ws` route and fails closed; it does not fall back to a direct
+bearer session.
+
+Home choice/clarify prompts use the bridge's `prompt.respond` request. The
+current browser UI cannot collect secret/sudo values, so those prompt types
+are reported as unavailable and the turn is interrupted. Home readiness
+advertises timing as `absent`; the browser must not invent arrival-time data.
+Physical Safari/iPad, secure-channel, audio, touch, kiosk, and concurrent live
+session validation remain deployment gates, not claims made by the unit tests.
+
 ## One-time ops preparation
 
 The SSH account used by the deployment command must be able to write the
@@ -100,6 +130,12 @@ commit into an isolated remote runtime, atomically advances `current`,
 restarts systemd, validates/reloads Caddy, and probes the public page, state
 WebSocket, action route, and the expected three-profile wake-word catalog. A
 failed post-activation probe attempts to restore the prior release automatically.
+
+The managed service's `ExecStart` intentionally remains on `legacy` until the
+Home route has passed its deployment gate. When that route is ready, make the
+transport change as a separately reviewed service/configuration rollout with
+the private Device pairing values; do not add a bearer-token fallback to Home
+mode. Rollback is the legacy release procedure below.
 
 Useful overrides:
 

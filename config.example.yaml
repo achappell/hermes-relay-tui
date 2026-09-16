@@ -83,10 +83,23 @@
 # connect_retries: 3
 # connect_retry_delay: 1.0
 
+# --- W/K Home browser bridge (STD-8) ---------------------------------------
+# The browser/iPad W/K surface remains on the direct-profile `legacy` transport
+# by default. Set `browser_transport: home` only after the approved Home route
+# is deployed; Home owns the opaque conversation's account routing.
+# browser_transport: legacy       # legacy | home
+# home_bridge_url: wss://home.example/api/v1/bridge/ws
+# home_conversation_handle: household-browser
+# home_device_credential_file: ~/.hermes-relay-tui/home-device-credential
+# The Device credential can instead live as HOME_DEVICE_CREDENTIAL in the
+# private profile_env file. Never put that secret in YAML, a URL, or a CLI arg.
+# Home mode fails closed when any route or pairing value is missing and never
+# falls back to a direct Hermes bearer session.
+
 # --- household profiles (HOME-13) -----------------------------------------
-# Multiple accounts routed by wake word. When defined, the home appliance
-# listens for all configured wake phrases; speaking one switches to that
-# profile's relay, session, and credentials before audio capture begins.
+# Multiple accounts routed by wake word. In the legacy appliance/browser path,
+# the unit listens for all configured wake phrases; speaking one switches to
+# that profile's relay, session, and credentials before audio capture begins.
 #
 # profiles:
 #   amanda:
@@ -112,5 +125,5 @@
 # The terminal client also uses this same mapping without wake phrases. Its
 # profile commands write direct-path token_env references and keep bearer
 # values in the private profile_env file; do not add a literal token to YAML.
-# The Home bridge's Device credential, route, and opaque conversation handle
-# are a separate adapter contract and are not configured by this file.
+# Home mode still accepts the catalog's local wake phrases as capture gates, but
+# does not switch these profiles or send a Profile ID over the Home bridge.

@@ -32,6 +32,7 @@ export type DisplayActionName = (typeof displayActionNames)[number];
 export interface DisplayCapabilities {
   actions: DisplayActionName[];
   features: string[];
+  timing?: "absent";
   wake_phrases?: string[];
   wake_listen_seconds?: number;
   wake_followup_seconds?: number;
@@ -187,10 +188,17 @@ function parseCapabilities(raw: unknown): DisplayCapabilities | null {
   const wakeFollowupSeconds = parseSeconds(raw.wake_followup_seconds);
   if (wakeListenSeconds === null || wakeFollowupSeconds === null) return null;
 
+  let timing: "absent" | undefined;
+  if (raw.timing !== undefined) {
+    if (raw.timing !== "absent") return null;
+    timing = "absent";
+  }
+
   const capabilities: DisplayCapabilities = {
     actions: parsedActions,
     features: parsedFeatures,
   };
+  if (timing !== undefined) capabilities.timing = timing;
   if (wakePhrases !== undefined) capabilities.wake_phrases = wakePhrases;
   if (wakeListenSeconds !== undefined) capabilities.wake_listen_seconds = wakeListenSeconds;
   if (wakeFollowupSeconds !== undefined) {

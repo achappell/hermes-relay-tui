@@ -714,20 +714,50 @@ is how the real loop gets validated — including
 `scripts/fake_relay.py`, a stand-in server that lets the whole appliance be
 tested with no Hermes at all.
 
-For an iPad Safari browser tab, pass `--browser-voice` with the remote display
-options. The served page owns microphone permission, browser speech recognition,
-and speaker playback; ops receives only the recognized turn text and does not
-open a local audio device. After the display is connected and idle, tap
-**Enable hands-free** to grant permission and listen for the complete profile
-catalog. A recognized phrase selects that profile; the browser discards
-ambient speech, sends a phrase-plus-question as one turn with its exact
-configured wake phrase, and routes a wake-only capture through an
-acknowledgement before it records the question. After each completed answer it
-opens an eight-second wake-free follow-up window and reopens that window after
-every non-empty follow-up. Exactly `stop` is a silent local cancel. A
-disconnect, server error, or recognition failure turns hands-free off; it
-never replays an uncertain transcript. The browser reconnects to the
-same-origin state channel after an ops/container restart:
+The browser and iPad tab are one W/K surface. Pass `--browser-voice` with the
+remote display options; the served page owns microphone permission, browser
+speech recognition, and speaker playback, while the appliance receives only
+recognized turn text and does not open a local audio device. The default
+`legacy` browser transport uses the configured per-profile bearer sessions and
+is the rollback path. A recognized wake phrase selects that profile, the
+browser discards ambient speech, and a phrase-plus-question is sent as one
+turn. After each completed answer it opens an eight-second wake-free follow-up
+window and reopens it after every non-empty follow-up. Exactly `stop` is a
+silent local cancel. A disconnect, server error, or recognition failure turns
+hands-free off; it never replays an uncertain transcript.
+
+STD-8 adds an explicit Home bridge transport for the same browser/iPad surface.
+It keeps the Device credential and opaque conversation handle on the appliance
+side of the same-origin proxy; neither is sent to the browser, put in a URL, or
+written into the display snapshot. Configure it only when the approved Home
+route is deployed:
+
+```bash
+hermes-relay-home --browser-voice \
+  --browser-transport home \
+  --home-bridge-url wss://home.example/api/v1/bridge/ws \
+  --home-device-credential-file ~/.hermes-relay-tui/home-device-credential \
+  --home-conversation-handle household-browser \
+  --display-host 192.168.1.20 --display-remote --display-port 8765 \
+  --display-tls-cert ~/.hermes-relay-tui/certs/display-cert.pem \
+  --display-tls-key ~/.hermes-relay-tui/certs/display-key.pem
+```
+
+The credential file must be private; `HOME_DEVICE_CREDENTIAL` and
+`HOME_CONVERSATION_HANDLE` in the private profile env are an alternative to
+the file and handle flags. Home mode accepts choice/clarify prompt buttons via
+`prompt.respond`, reports secret/sudo prompts as unavailable to this browser,
+and advertises timing as explicitly absent. It never falls back to a direct
+bearer session when the route or pairing is missing. The approved Home route is
+currently an opt-in deployment gate; the existing Caddy/systemd example below
+continues to describe the legacy rollback until that route is live.
+
+After the display is connected and idle in the legacy path, tap **Enable
+hands-free** to grant permission and listen for the configured profile catalog.
+For Home mode, the configured Home conversation owns account routing; local
+wake phrases only gate capture and no profile identifier crosses the bridge.
+The browser reconnects to the same-origin state channel after an ops/container
+restart:
 
 ```bash
 hermes-relay-home --browser-voice \
@@ -749,11 +779,13 @@ physical iPad gate.
 
 ### Ops deployment behind Caddy
 
-The repeatable W/K deployment targets the ops Linux box at
+The repeatable legacy W/K deployment targets the ops Linux box at
 `https://hermes-home.chappell-home.dev`. The appliance binds to loopback on
 the ops host; Caddy owns HTTPS and proxies the page, `/state` WebSocket, and
-`/action` route. The Hermes token stays in the ops systemd environment and is
-never sent to the browser.
+`/action` route. The per-profile Hermes bearer tokens stay in the ops systemd
+environment and are never sent to the browser. The Home bridge transport is
+not silently substituted here: it requires the approved `/api/v1/bridge/ws`
+route and its separate Device pairing.
 
 Run the one-time bootstrap after adding the documented Caddy import and creating
 `/etc/hermes-relay/home.env` on ops:
