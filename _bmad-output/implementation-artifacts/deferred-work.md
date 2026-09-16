@@ -262,3 +262,18 @@
 - source_spec: `_bmad-output/implementation-artifacts/spec-standard-6-puck-migrate-respeaker-puck-path.md`
   summary: OPEN -- settle and validate audio-fallback draining for the audio-only Puck.
   evidence: Home emits `audio_abort` and continues consuming toward text and terminal frames, while `TurnRunner._run_turn()` returns immediately on `audio_abort` and closes the generator. No live or integration fixture proves whether the binding is drained, reset, or safely reused on the next fresh capture.
+
+## Deferred from: code review of spec-standard-8-wk-migrate-browser-ipad-routes (2026-09-15)
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-standard-8-wk-migrate-browser-ipad-routes.md`
+  summary: Define whether independent Home browser bindings may reuse one opaque handle and durable Standard Session while preserving concurrent W/K session isolation.
+  evidence: `home_display/appliance.py` creates a fresh browser adapter per socket but passes the configured Home handle unchanged; the Home route adapter is not present in this checkout, so only an approved route contract and overlapping two-tab run can settle the binding semantics.
+- source_spec: `_bmad-output/implementation-artifacts/spec-standard-8-wk-migrate-browser-ipad-routes.md`
+  summary: Negotiate Home structured-prompt capability before advertising browser prompt support.
+  evidence: `HomeBrowserSession` currently sets `supports_structured_prompts=True`, while the current Home readiness contract exposes no prompt-capability vocabulary. Revisit when HOME-NW-01/02 publishes the negotiated capability contract.
+- source_spec: `_bmad-output/implementation-artifacts/spec-standard-8-wk-migrate-browser-ipad-routes.md`
+  summary: Add independent turn identity to raw Home PCM or otherwise settle late-frame association.
+  evidence: The adapter validates turn identity on JSON audio envelopes but accepts raw PCM only while its current audio state is open; the pinned Home contract carries no turn identifier on binary frames. This requires a Home transport contract change.
+- source_spec: `_bmad-output/implementation-artifacts/spec-standard-8-wk-migrate-browser-ipad-routes.md`
+  summary: OPEN -- complete the approved Home-route and physical Safari/iPad W/K acceptance gate.
+  evidence: No approved public route, paired production credential, or physical W/K environment is available in this checkout. Fake bridge evidence cannot prove secure-channel, audio, touch, kiosk, concurrency, or live reconnect behavior.

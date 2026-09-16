@@ -107,6 +107,17 @@ def test_hands_free_capabilities_serialize_only_non_secret_configuration():
     }
 
 
+def test_home_timing_capability_is_explicitly_absent():
+    capabilities = DisplayCapabilities(
+        features=("browser_voice",),
+        timing="absent",
+    )
+
+    assert capabilities.to_dict()["timing"] == "absent"
+    with pytest.raises(ValueError, match="timing"):
+        DisplayCapabilities(timing="arrival")  # type: ignore[arg-type]
+
+
 def test_capabilities_reject_more_than_the_browser_wake_phrase_bound():
     with pytest.raises(ValueError, match="at most 8"):
         DisplayCapabilities(wake_phrases=tuple(f"phrase {index}" for index in range(9)))

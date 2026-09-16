@@ -38,6 +38,11 @@ import config
 import diagnostics
 import earcons as earcons_module
 import handsfree
+from puck_bridge.home_session import (
+    HomeBridgeRPCError,
+    HomeBrowserSession,
+    require_home_bridge_url,
+)
 from session import HermesSession
 from timing import (
     SpeechTiming,
@@ -126,6 +131,10 @@ _NOTICE_MARKERS = (
     "\U0001f4ec",  # 📬
 )
 
+MAX_BROWSER_PROMPT_OPTIONS = 8
+MAX_BROWSER_PROMPT_TEXT_LENGTH = 4096
+MAX_BROWSER_PROMPT_FIELD_LENGTH = 256
+
 
 def _classify_gateway_notice(text: str) -> DisplayPrompt | None:
     """Return a DisplayPrompt if text is a known gateway notice, else None.
@@ -156,46 +165,91 @@ def _classify_prompt_request(event: dict) -> DisplayPrompt | None:
     The action_id is the gateway's prompt_id so the appliance can route the
     response back via send_prompt_response when that API is available.
     """
-    kind = str(event.get("kind") or "")
-    prompt_id = str(event.get("prompt_id") or event.get("id") or "prompt")
-    question = str(event.get("question") or event.get("text") or "")
+    home_prompt = "prompt_kind" in event or "correlation_id" in event
+    kind = str(event.get("prompt_kind") or event.get("kind") or "").strip().lower()
+    prompt_id = str(
+        (
+            event.get("correlation_id")
+            if home_prompt and event.get("correlation_id")
+            else event.get("prompt_id") or event.get("id") or "prompt"
+        )
+        or ""
+    ).strip()
+    question = str(event.get("question") or event.get("text") or "").strip()
+    if (
+        not prompt_id
+        or len(prompt_id) > MAX_BROWSER_PROMPT_FIELD_LENGTH
+        or len(question) > MAX_BROWSER_PROMPT_TEXT_LENGTH
+    ):
+        return None
 
-    if kind == "approval":
+    raw_options = event.get("options")
+    if not isinstance(raw_options, list):
+        raw_options = []
+    if len(raw_options) > MAX_BROWSER_PROMPT_OPTIONS:
+        return None
+
+    options: list[PromptOption] = []
+    for index, raw_option in enumerate(raw_options):
+        if not isinstance(raw_option, dict):
+            return None
+        option_id = raw_option.get("id", raw_option.get("option_id"))
+        label = raw_option.get("label", option_id)
+        if not isinstance(option_id, str) or not option_id.strip():
+            if home_prompt:
+                return None
+            option_id = str(option_id or index).strip()
+        if not isinstance(label, str) or not label.strip():
+            if home_prompt:
+                return None
+            return None
+        option_id = option_id.strip()
+        label = label.strip()
+        if (
+            len(option_id) > MAX_BROWSER_PROMPT_FIELD_LENGTH
+            or len(label) > MAX_BROWSER_PROMPT_FIELD_LENGTH
+        ):
+            return None
+        options.append(PromptOption(id=option_id, label=label))
+
+    if home_prompt and kind in {"choice", "approval", "confirm", "clarify"} and not options:
+        # Home choices are data-bearing responses. Never invent an option for
+        # a malformed or free-form request the browser cannot collect.
+        return None
+
+    if kind in {"approval", "choice"}:
+        display_options = tuple(options) or (
+            PromptOption(id="yes", label="Approve"),
+            PromptOption(id="no", label="Deny"),
+        )
         return DisplayPrompt(
             kind="approval",
             title="Permission needed",
             body=question or "Hermes is asking for your approval.",
-            options=(
-                PromptOption(id="yes", label="Approve"),
-                PromptOption(id="no", label="Deny"),
-            ),
+            options=display_options,
             action_id=prompt_id,
         )
     if kind == "confirm":
+        display_options = tuple(options) or (
+            PromptOption(id="yes", label="Yes"),
+            PromptOption(id="no", label="No"),
+        )
         return DisplayPrompt(
             kind="confirm",
             title="Confirm",
             body=question or "Are you sure?",
-            options=(
-                PromptOption(id="yes", label="Yes"),
-                PromptOption(id="no", label="No"),
-            ),
+            options=display_options,
             action_id=prompt_id,
         )
     if kind == "clarify":
-        raw_options = event.get("options") or []
-        options = tuple(
-            PromptOption(id=str(o.get("id", i)), label=str(o.get("label", o.get("id", i))))
-            for i, o in enumerate(raw_options)
-            if isinstance(o, dict)
-        )
-        if not options:
-            options = (PromptOption(id="ok", label="OK"),)
+        display_options = tuple(options)
+        if not display_options:
+            display_options = (PromptOption(id="ok", label="OK"),)
         return DisplayPrompt(
             kind="clarify",
             title="Clarification needed",
             body=question or "Please choose an option.",
-            options=options,
+            options=display_options,
             action_id=prompt_id,
         )
     return None
@@ -222,11 +276,23 @@ SHUTDOWN_TASK_TIMEOUT = 3.0
 # setup shorter so a stalled Hermes handshake cannot outlive that request and
 # commit a profile after the browser has resumed listening.
 PROFILE_CONNECT_TIMEOUT = 8.0
+HOME_BROWSER_TRANSPORTS = ("legacy", "home")
 
 
 def _normalise_wake_phrase(value: str) -> str:
     """Use one comparison form for catalog phrases across every front end."""
     return " ".join(value.strip().split()).casefold()
+
+
+def _read_home_device_credential(path: Path) -> str:
+    """Read a private Device credential without ever putting it in arguments."""
+    try:
+        credential = path.expanduser().read_text(encoding="utf-8").strip()
+    except (OSError, UnicodeError) as error:
+        raise RuntimeError("Home browser credential file is unavailable") from error
+    if not credential:
+        raise RuntimeError("Home browser credential file is empty")
+    return credential
 
 
 class _BrowserSessionContext:
@@ -299,6 +365,23 @@ class _BrowserSessionContext:
             self._child._set_listening()
             result = False
         if not self._child._connected and not self._closed:
+            if self._child._uses_home_browser_transport:
+                try:
+                    await asyncio.wait_for(
+                        self._child._session.connect(), PROFILE_CONNECT_TIMEOUT
+                    )
+                except Exception:
+                    close_transport = getattr(self._child._server, "close", None)
+                    if callable(close_transport):
+                        await asyncio.sleep(0)
+                        with contextlib.suppress(Exception):
+                            await close_transport(
+                                code=1011, reason="browser session unavailable"
+                            )
+                else:
+                    self._child._connected = True
+                    self._child._publish("idle", response_text="")
+                return bool(result)
             close_transport = getattr(self._child._server, "close", None)
             if callable(close_transport):
                 await asyncio.sleep(0)
@@ -529,7 +612,11 @@ class Appliance:
             and all(len(phrase) <= MAX_DISPLAY_WAKE_PHRASE_LENGTH for phrase in phrases)
         )
         if not valid_phrases:
-            return DisplayCapabilities(features=("browser_voice",))
+            return DisplayCapabilities(
+                actions=("prompt.choose",),
+                features=("browser_voice",),
+                timing="absent" if self._uses_home_browser_transport else None,
+            )
 
         def configured_seconds(name: str) -> float:
             try:
@@ -539,10 +626,12 @@ class Appliance:
             return seconds if math.isfinite(seconds) and seconds > 0 else 8.0
 
         return DisplayCapabilities(
+            actions=("prompt.choose",),
             features=("browser_voice", "browser_hands_free"),
             wake_phrases=phrases,
             wake_listen_seconds=configured_seconds("wake_listen_timeout"),
             wake_followup_seconds=configured_seconds("wake_followup_seconds"),
+            timing="absent" if self._uses_home_browser_transport else None,
         )
 
     def _publish(
@@ -742,7 +831,9 @@ class Appliance:
         file_format: tuple[int, int, int] | None = None
         file_audio_active = False
         completed = False
+        unsupported_prompt = False
         turn_id = "browser-turn"
+        events: Any = None
         self._publish("thinking", response_text="")
 
         def publish_response(state: DisplayState = "thinking") -> None:
@@ -798,8 +889,38 @@ class Appliance:
                         self._publish_prompt(prompt)
                     else:
                         logger.debug(
-                            "browser unrecognised prompt_request event=%r", event
+                            "browser unrecognised prompt_request kind=%s prompt_id=%s",
+                            event.get("prompt_kind") or event.get("kind") or "",
+                            event.get("prompt_id") or event.get("id") or "",
                         )
+                        unsupported_prompt = True
+                        self._publish(
+                            "error",
+                            response_text="",
+                            status_text="This prompt needs an input the browser cannot collect",
+                        )
+                        interrupt = getattr(self._session, "interrupt_active_turn", None)
+                        interrupted = False
+                        if callable(interrupt):
+                            with contextlib.suppress(Exception):
+                                interrupted = bool(await interrupt())
+                        if not interrupted:
+                            await abort_audio("unsupported prompt")
+                            publish_terminal_error(
+                                "This prompt needs an input the browser cannot collect"
+                            )
+                            return False
+                elif kind == "prompt_resolved":
+                    identifiers = {
+                        str(event.get("prompt_id") or "").strip(),
+                        str(event.get("correlation_id") or "").strip(),
+                    }
+                    if identifiers & {self._pending_prompt_action_id}:
+                        self._pending_prompt_action_id = None
+                elif kind == "prompt_response_rejected":
+                    current_prompt = self.publisher.snapshot.prompt
+                    if current_prompt is not None:
+                        self._publish_prompt(current_prompt)
                 elif kind == "audio_start":
                     incoming_format = (
                         int(event.get("sample_rate", 0)),
@@ -874,14 +995,35 @@ class Appliance:
                     await server.send_audio_chunk(decoded)
                 elif kind in ("audio_abort", "turn_interrupted"):
                     await abort_audio(str(event.get("error") or event.get("reason") or kind))
+                    if unsupported_prompt:
+                        self._publish(
+                            "error",
+                            response_text="",
+                            status_text="This prompt needs an input the browser cannot collect",
+                        )
+                        self._set_listening()
+                        return False
                     publish_terminal_error("Response interrupted")
                     return False
                 elif kind == "error":
                     error_text = str(event.get("error") or "Hermes error")
                     await abort_audio(error_text)
+                    if unsupported_prompt:
+                        self._publish("error", response_text="", status_text=error_text)
+                        self._set_listening()
+                        return False
                     publish_terminal_error(error_text)
                     return False
                 elif kind == "turn_end":
+                    if unsupported_prompt:
+                        await abort_audio("unsupported prompt")
+                        self._publish(
+                            "error",
+                            response_text="",
+                            status_text="This prompt needs an input the browser cannot collect",
+                        )
+                        self._set_listening()
+                        return False
                     had_audio = audio_active or streamed_audio or bool(file_audio)
                     if audio_active:
                         await server.send_audio_end(turn_id=turn_id)
@@ -905,6 +1047,26 @@ class Appliance:
         except asyncio.CancelledError:
             await abort_audio("turn cancelled")
             raise
+        except HomeBridgeRPCError as error:
+            if error.delivery == "known" and error.code == "request_rejected":
+                await abort_audio("request rejected")
+                self._publish(
+                    "error",
+                    response_text="",
+                    status_text="Home rejected that request; nothing was sent",
+                )
+                self._set_listening()
+                return False
+            logger.debug("browser Home bridge request failed", exc_info=True)
+            await abort_audio("connection lost")
+            self._connected = False
+            self._publish(
+                "disconnected",
+                response_text="",
+                status_text=STATUS_TEXT["disconnected"],
+            )
+            self._request_reconnect()
+            return False
         except Exception:
             logger.debug("browser voice turn failed", exc_info=True)
             await abort_audio("connection lost")
@@ -916,6 +1078,11 @@ class Appliance:
             )
             self._request_reconnect()
             return False
+        finally:
+            aclose = getattr(events, "aclose", None)
+            if callable(aclose):
+                with contextlib.suppress(Exception):
+                    await aclose()
 
     def _set_listening(self) -> None:
         """Listen only when idle and connected — never during a turn.
@@ -1505,11 +1672,58 @@ class Appliance:
 
     # ---- profiles & session switching ---------------------------------
 
+    @property
+    def _uses_home_browser_transport(self) -> bool:
+        return (
+            str(getattr(self.args, "browser_transport", "legacy") or "")
+            .strip()
+            .lower()
+            == "home"
+        )
+
+    def _home_browser_settings(self) -> tuple[str, str, str]:
+        """Resolve the Home route without falling back to a bearer profile."""
+        raw_url = str(getattr(self.args, "home_bridge_url", "") or "").strip()
+        if not raw_url:
+            raise RuntimeError(
+                "Home browser transport requires --home-bridge-url"
+            )
+        try:
+            url = require_home_bridge_url(raw_url)
+        except ValueError as error:
+            raise RuntimeError(str(error)) from error
+
+        credential_file = getattr(self.args, "home_device_credential_file", None)
+        if credential_file:
+            credential = _read_home_device_credential(Path(credential_file))
+        else:
+            credential = config.resolve_home_device_credential(
+                getattr(self.args, "profile_env", None)
+            )
+        if not credential:
+            raise RuntimeError(
+                "Home browser transport requires a Device credential"
+            )
+
+        handle = str(
+            getattr(self.args, "home_conversation_handle", "") or ""
+        ).strip() or config.resolve_home_conversation_handle(
+            getattr(self.args, "profile_env", None)
+        )
+        if not handle:
+            raise RuntimeError(
+                "Home browser transport requires a conversation handle"
+            )
+        return url, credential, handle
+
     def _create_session_for_profile(self, profile: config.HouseholdProfile) -> Any:
         if self._session_factory is not None:
             session = self._session_factory(profile)
             self._apply_browser_identity(session)
             return session
+        if self._uses_home_browser_transport:
+            url, credential, handle = self._home_browser_settings()
+            return HomeBrowserSession(url, credential, handle)
         if self._browser_connection_id is not None:
             profile_args = config.make_profile_args(self.args, profile)
             profile_args.device_id = self._browser_connection_id
@@ -1562,6 +1776,9 @@ class Appliance:
             # expose a writable session id or args object.
             self._apply_browser_identity(session, connection_id)
             return session, profile_args
+        if self._uses_home_browser_transport:
+            url, credential, handle = self._home_browser_settings()
+            return HomeBrowserSession(url, credential, handle), profile_args
         return HermesSession(profile_args), profile_args
 
     async def _create_browser_context(self, connection_id: str, audio_sender: Any) -> Any:
@@ -1570,7 +1787,9 @@ class Appliance:
         # catalog entry unreachable. A factory is an embedding/test boundary
         # and may resolve credentials itself, so it gets the full ordered list;
         # real Hermes sessions skip profiles with no resolved private token.
-        if self._session_factory is not None:
+        if self._uses_home_browser_transport:
+            candidates = [self._active_profile]
+        elif self._session_factory is not None:
             candidates = list(self._profiles)
         else:
             candidates = [profile for profile in self._profiles if profile.token]
@@ -1646,6 +1865,9 @@ class Appliance:
     ) -> bool:
         if self._active_profile == profile and self._connected:
             return True
+        if self._uses_home_browser_transport:
+            logger.debug("Home owns browser profile routing")
+            return False
 
         logger.info(
             "switching household profile: from=%s to=%s display_name=%s",
@@ -1704,6 +1926,37 @@ class Appliance:
     ) -> BrowserProfileRouteResult:
         if self._stopping.is_set() or not self._connected:
             return BrowserProfileRouteResult(False, reason="unavailable")
+
+        if self._uses_home_browser_transport:
+            # The configured opaque handle is Home's selected conversation.
+            # Keep local wake recognition as a gate, but never turn it into a
+            # client-side Profile switch or send a Profile ID over the bridge.
+            if phrase:
+                normalized = _normalise_wake_phrase(phrase)
+                if (
+                    normalized not in self._phrase_to_profile
+                    or self._phrase_to_profile.get(normalized) is None
+                ):
+                    reason = (
+                        "ambiguous"
+                        if normalized in self._ambiguous_phrases
+                        else "unknown_phrase"
+                    )
+                    return BrowserProfileRouteResult(False, reason=reason)
+            current_state = self._coordinator.state if self._coordinator else handsfree.IDLE
+            if (
+                current_state != handsfree.IDLE
+                or (
+                    self._browser_turn_task is not None
+                    and not self._browser_turn_task.done()
+                )
+            ):
+                return BrowserProfileRouteResult(False, reason="active_turn")
+            return BrowserProfileRouteResult(
+                True,
+                account=self._active_profile.display_name,
+            )
+
         if not phrase:
             if len(self._profiles) == 1:
                 profile = self._active_profile
@@ -1794,8 +2047,19 @@ class Appliance:
             raise RuntimeError(str(error)) from error
 
     def _build(self) -> None:
+        if self._uses_home_browser_transport and not getattr(
+            self.args, "browser_voice", False
+        ):
+            raise RuntimeError(
+                "Home browser transport requires --browser-voice"
+            )
         tls_context = self._display_tls_context()
         if getattr(self.args, "browser_voice", False):
+            if self._uses_home_browser_transport:
+                # Fail before binding a public browser listener. A Home route
+                # without its explicit device grant must never drift back to
+                # the direct bearer path.
+                self._home_browser_settings()
             if self._server is None:
                 try:
                     self._server = DisplayServer(
@@ -2242,7 +2506,33 @@ class Appliance:
 
 
 def build_arg_parser(argv: list[str] | None = None) -> argparse.ArgumentParser:
-    parser = config.build_arg_parser(argv)
+    settings = config.load_config_file(config.config_path_from_argv(argv))
+    raw_argv = list(sys.argv[1:] if argv is None else argv)
+    explicit_transport = config._option_value(raw_argv, "--browser-transport")
+    environment_transport = os.getenv("HERMES_RELAY_TUI_BROWSER_TRANSPORT")
+    browser_transport_default = str(
+        explicit_transport
+        if explicit_transport is not None
+        else (
+            environment_transport
+            if environment_transport is not None
+            else settings.get("browser_transport", "legacy")
+        )
+        or "legacy"
+    ).strip().lower()
+    if browser_transport_default not in HOME_BROWSER_TRANSPORTS:
+        raise SystemExit(
+            "error: browser transport must be one of: "
+            + ", ".join(HOME_BROWSER_TRANSPORTS)
+        )
+    parser = config.build_arg_parser(
+        argv,
+        resolve_relay_profile_tokens=browser_transport_default != "home",
+    )
+    credential_file_default = os.getenv(
+        "HOME_DEVICE_CREDENTIAL_FILE",
+        str(settings.get("home_device_credential_file", "")),
+    ).strip()
     parser.add_argument(
         "--display-host",
         default="127.0.0.1",
@@ -2279,6 +2569,44 @@ def build_arg_parser(argv: list[str] | None = None) -> argparse.ArgumentParser:
         help="let the browser own microphone capture and speaker playback",
     )
     parser.add_argument(
+        "--browser-transport",
+        choices=HOME_BROWSER_TRANSPORTS,
+        default=browser_transport_default,
+        help=(
+            "browser session boundary: legacy uses direct profile bearers; "
+            "home uses the approved Device-credential bridge"
+        ),
+    )
+    parser.add_argument(
+        "--home-bridge-url",
+        "--home-url",
+        dest="home_bridge_url",
+        default=os.getenv(
+            "HOME_BRIDGE_WS_URL",
+            str(settings.get("home_bridge_url", "")),
+        ),
+        metavar="WSS_URL",
+        help="approved Home bridge URL ending in /api/v1/bridge/ws",
+    )
+    parser.add_argument(
+        "--home-conversation-handle",
+        default=os.getenv(
+            "HOME_CONVERSATION_HANDLE",
+            str(settings.get("home_conversation_handle", "")),
+        ),
+        metavar="HANDLE",
+        help="opaque Home conversation handle; prefer the private profile .env",
+    )
+    parser.add_argument(
+        "--home-device-credential-file",
+        type=Path,
+        default=Path(credential_file_default).expanduser()
+        if credential_file_default
+        else None,
+        metavar="PATH",
+        help="private file containing the Home Device credential",
+    )
+    parser.add_argument(
         "--display-public-origin",
         default=None,
         metavar="URL",
@@ -2297,7 +2625,6 @@ def build_arg_parser(argv: list[str] | None = None) -> argparse.ArgumentParser:
 
     # Only substitute the hands-free default when nobody has said otherwise.
     # An explicit flag beats a default anyway; a configured value must too.
-    settings = config.load_config_file(config.config_path_from_argv(argv))
     configured = "mic_silence_duration" in settings or os.getenv(
         "VOICE_SESSION_MIC_SILENCE_DURATION"
     )

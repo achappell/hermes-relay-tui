@@ -104,6 +104,7 @@ class DisplayCapabilities:
 
     actions: tuple[DisplayActionName, ...] = ()
     features: tuple[str, ...] = ()
+    timing: str | None = None
     wake_phrases: tuple[str, ...] = ()
     wake_listen_seconds: float | None = None
     wake_followup_seconds: float | None = None
@@ -121,6 +122,8 @@ class DisplayCapabilities:
             raise ValueError("capabilities.features must contain non-empty strings")
         if len(set(self.features)) != len(self.features):
             raise ValueError("capabilities.features must be unique")
+        if self.timing is not None and self.timing != "absent":
+            raise ValueError("capabilities.timing must be 'absent' or None")
         if any(
             not isinstance(phrase, str)
             or not phrase.strip()
@@ -151,6 +154,8 @@ class DisplayCapabilities:
             "actions": list(self.actions),
             "features": list(self.features),
         }
+        if self.timing is not None:
+            data["timing"] = self.timing
         if self.wake_phrases:
             data["wake_phrases"] = list(self.wake_phrases)
         if self.wake_listen_seconds is not None:

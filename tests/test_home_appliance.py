@@ -2508,6 +2508,219 @@ def test_browser_session_limit_is_configurable():
     assert limited.display_max_browser_sessions == 3
 
 
+def test_home_browser_transport_is_explicit_and_uses_private_connection_inputs(tmp_path):
+    from home_display import appliance
+
+    credential_file = tmp_path / "home-device-credential"
+    credential_file.write_text("device-secret\n", encoding="utf-8")
+    args = appliance.build_arg_parser([]).parse_args(
+        [
+            "--browser-voice",
+            "--browser-transport",
+            "home",
+            "--home-bridge-url",
+            "wss://home.example/api/v1/bridge/ws",
+            "--home-conversation-handle",
+            "opaque-home-handle",
+            "--home-device-credential-file",
+            str(credential_file),
+        ]
+    )
+
+    assert args.browser_transport == "home"
+    assert args.home_bridge_url == "wss://home.example/api/v1/bridge/ws"
+    assert args.home_conversation_handle == "opaque-home-handle"
+    assert args.home_device_credential_file == credential_file
+
+    relay = Appliance(
+        args,
+        profiles=_catalog_profiles(),
+        publisher=RecordingPublisher(),
+    )
+    session, profile_args = relay._create_browser_session(
+        relay.active_profile, "browser-one"
+    )
+    try:
+        assert isinstance(session, appliance_module.HomeBrowserSession)
+        assert session.device_credential == "device-secret"
+        assert session.session_id == "home-browser"
+        assert profile_args.token == ""
+        relay._connected = True
+        relay._publish("idle")
+        capabilities = relay.publisher.capabilities[-1]
+        assert capabilities.timing == "absent"
+        serialized = capabilities.to_dict()
+        assert "device-secret" not in json.dumps(serialized)
+        assert "opaque-home-handle" not in json.dumps(serialized)
+    finally:
+        asyncio.run(session.close())
+
+
+def test_home_browser_parser_does_not_resolve_legacy_profile_tokens(tmp_path, monkeypatch):
+    config_path = tmp_path / "home.yaml"
+    config_path.write_text(
+        """
+browser_transport: home
+profiles:
+  amanda:
+    display_name: Amanda
+    wake_phrase: hey missy
+    token_env: 'not a valid environment variable'
+""",
+        encoding="utf-8",
+    )
+
+    def fail_if_resolved(*_args, **_kwargs):
+        raise AssertionError("Home parser resolved a legacy bearer token")
+
+    monkeypatch.setattr(config, "_private_env_value", fail_if_resolved)
+    argv = ["--config", str(config_path), "--browser-voice"]
+    args = appliance_module.build_arg_parser(argv).parse_args(argv)
+
+    assert args.browser_transport == "home"
+    assert args.token == ""
+
+
+def test_home_browser_prompt_classifier_uses_correlated_options():
+    prompt = appliance_module._classify_prompt_request(
+        {
+            "prompt_kind": "choice",
+            "prompt_id": "prompt-1",
+            "correlation_id": "corr-1",
+            "text": "Choose a route",
+            "options": [
+                {"id": "private", "label": "Private route"},
+                {"id": "public", "label": "Public route"},
+            ],
+        }
+    )
+
+    assert prompt is not None
+    assert prompt.kind == "approval"
+    assert prompt.action_id == "corr-1"
+    assert [(option.id, option.label) for option in prompt.options] == [
+        ("private", "Private route"),
+        ("public", "Public route"),
+    ]
+    assert appliance_module._classify_prompt_request(
+        {"prompt_kind": "clarify", "correlation_id": "corr-2", "text": "Explain"}
+    ) is None
+
+
+@pytest.mark.asyncio
+async def test_home_browser_turn_reaches_idle_after_home_terminal_event():
+    class FakeHomeClient:
+        is_connected = True
+
+        def __init__(self):
+            self.requests = []
+            self.frames = [
+                {
+                    "method": "event",
+                    "params": {
+                        "schema": 1,
+                        "conversation_handle": "opaque-home-handle",
+                        "turn_id": "home-turn-1",
+                        "event": {
+                            "type": "text.delta",
+                            "payload": {"text": "Home answer"},
+                        },
+                    },
+                },
+                {
+                    "method": "event",
+                    "params": {
+                        "schema": 1,
+                        "conversation_handle": "opaque-home-handle",
+                        "turn_id": "home-turn-1",
+                        "event": {
+                            "type": "turn.complete",
+                            "payload": {"status": "completed"},
+                        },
+                    },
+                },
+            ]
+
+        async def request(self, method, _params):
+            self.requests.append(method)
+            if method == "prompt.submit":
+                return {
+                    "schema": 1,
+                    "conversation_handle": "opaque-home-handle",
+                    "turn_id": "home-turn-1",
+                    "status": "submitted",
+                }
+            raise AssertionError(f"unexpected Home request: {method}")
+
+        async def next_frame(self):
+            return self.frames.pop(0)
+
+        async def close(self):
+            self.is_connected = False
+
+    session = appliance_module.HomeBrowserSession(
+        "wss://home.example/api/v1/bridge/ws",
+        "device-secret",
+        "opaque-home-handle",
+    )
+    session._client = FakeHomeClient()
+    session._connected = True
+    session._opened = True
+    publisher = RecordingPublisher()
+    relay = Appliance(
+        _args(browser_voice=True, browser_transport="home"),
+        session=session,
+        profiles=_catalog_profiles(),
+        publisher=publisher,
+        server=FakeServer(),
+    )
+    relay._connected = True
+
+    try:
+        assert await relay._run_browser_turn("hello") is True
+        assert publisher.history[-1][0] == "idle"
+        assert publisher.history[-1][1] == "Home answer"
+        assert session._client.requests == ["prompt.submit"]
+    finally:
+        await relay.aclose()
+
+
+def test_home_browser_transport_fails_closed_without_route_or_credential():
+    relay = Appliance(
+        _args(browser_voice=True, browser_transport="home"),
+        session=FakeSession(),
+    )
+
+    with pytest.raises(RuntimeError, match="requires --home-bridge-url"):
+        relay._build()
+
+
+def test_home_browser_transport_requires_browser_voice():
+    relay = Appliance(
+        _args(browser_transport="home"),
+        session=FakeSession(),
+    )
+
+    with pytest.raises(RuntimeError, match="requires --browser-voice"):
+        relay._build()
+
+
+@pytest.mark.asyncio
+async def test_home_browser_transport_rejects_an_ambiguous_local_wake_phrase():
+    profiles = _catalog_profiles()
+    profiles[1] = replace(profiles[1], wake_phrases=("hey missy",))
+    relay = Appliance(
+        _args(browser_voice=True, browser_transport="home"),
+        profiles=profiles,
+        session=FakeSession(),
+    )
+    relay._connected = True
+
+    result = await relay.route_profile("hey missy")
+
+    assert result == BrowserProfileRouteResult(False, reason="ambiguous")
+
+
 def test_display_tls_options_are_optional_paths():
     from home_display import appliance
 
