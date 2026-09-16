@@ -928,6 +928,13 @@ class HomePuckSession:
                     }
                     await self._close_after_protocol_failure()
                 else:
+                    if (
+                        event_type in _STRUCTURED_PROMPT_EVENT_TYPES
+                        and correlation_id is None
+                    ):
+                        raise HomeBridgeProtocolError(
+                            "Home bridge structured prompt has no correlation ID"
+                        )
                     normalized = _normalize_event(event_type, payload, text_state)
                     if (
                         event_type in _STRUCTURED_PROMPT_EVENT_TYPES
@@ -935,7 +942,7 @@ class HomePuckSession:
                         and normalized.get("type") == "prompt_request"
                     ):
                         self._remember_pending_prompt(
-                            event_type, normalized, turn_id, text_state
+                            event_type, normalized, turn_id
                         )
                 normalized_events = (
                     [normalized]
@@ -1074,7 +1081,16 @@ class HomePuckSession:
                 pending["event_type"], pending["prompt_kind"], prompt_kind
             ):
                 return False
-            if option_id is not None:
+            if _is_choice_prompt(pending["event_type"], pending["prompt_kind"]):
+                allowed_options = pending.get("option_ids")
+                if (
+                    not isinstance(option_id, str)
+                    or not option_id
+                    or not isinstance(allowed_options, frozenset)
+                    or option_id not in allowed_options
+                ):
+                    return False
+            elif option_id is not None:
                 allowed_options = pending.get("option_ids")
                 if (
                     isinstance(allowed_options, frozenset)
@@ -1226,12 +1242,9 @@ class HomePuckSession:
         event_type: str,
         normalized: dict[str, Any],
         turn_id: str,
-        state: dict[str, Any],
     ) -> None:
         prompt_id = str(normalized.get("prompt_id") or "").strip()
-        correlation_id = str(
-            normalized.get("correlation_id") or state.get("correlation_id") or ""
-        ).strip()
+        correlation_id = str(normalized.get("correlation_id") or "").strip()
         if not prompt_id:
             prompt_id = correlation_id
         if not correlation_id:
@@ -1485,6 +1498,14 @@ def _prompt_kind_matches(event_type: str, pending_kind: str, supplied: str) -> b
     return False
 
 
+def _is_choice_prompt(event_type: str, prompt_kind: str) -> bool:
+    kind = str(prompt_kind or "").strip().lower()
+    return event_type == "approval.request" or (
+        event_type == "prompt_request"
+        and kind in {"choice", "approval", "confirm"}
+    )
+
+
 def _prompt_response(
     event_type: str,
     prompt_kind: str,
@@ -1493,11 +1514,8 @@ def _prompt_response(
     value: str | None,
 ) -> dict[str, str] | None:
     kind = str(prompt_kind or "").strip().lower()
-    if event_type == "approval.request" or (
-        event_type == "prompt_request" and kind in {"choice", "approval", "confirm"}
-    ):
-        selected = option_id if option_id is not None else value
-        return {"choice": selected} if isinstance(selected, str) and selected else None
+    if _is_choice_prompt(event_type, kind):
+        return {"choice": option_id} if isinstance(option_id, str) and option_id else None
     if event_type == "clarify.request" or (
         event_type == "prompt_request" and kind == "clarify"
     ):

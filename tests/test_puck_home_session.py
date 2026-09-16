@@ -289,6 +289,16 @@ async def test_home_browser_session_resolves_a_correlated_choice_without_prompt_
             "prompt.submit",
         ]
 
+        assert not await session.send_prompt_response(
+            prompt_id="prompt-1",
+            prompt_kind="choice",
+            value="not-an-option",
+        )
+        assert [frame["method"] for frame in socket.sent] == [
+            "conversation.open",
+            "prompt.submit",
+        ]
+
         assert await session.send_prompt_response(
             prompt_id="prompt-1",
             prompt_kind="choice",
@@ -355,6 +365,57 @@ async def test_home_browser_prompt_response_rejects_stale_action_without_writing
             "conversation.open",
             "prompt.submit",
         ]
+    finally:
+        await stream.aclose()
+        await session.close()
+
+
+@pytest.mark.asyncio
+async def test_home_browser_session_rejects_prompt_without_fresh_correlation():
+    first_prompt = _notification(
+        "event",
+        {
+            "schema": 1,
+            "conversation_handle": "opaque-home-handle",
+            "turn_id": "home-turn-1",
+            "correlation_id": "corr-1",
+            "event": {
+                "type": "approval.request",
+                "payload": {
+                    "prompt_id": "prompt-1",
+                    "prompt_kind": "choice",
+                    "options": [{"id": "yes", "label": "Approve"}],
+                },
+            },
+        },
+    )
+    second_prompt_without_correlation = _event(
+        "approval.request",
+        "home-turn-1",
+        {
+            "prompt_id": "prompt-2",
+            "prompt_kind": "choice",
+            "options": [{"id": "no", "label": "Deny"}],
+        },
+    )
+    socket = _ready_socket(first_prompt, second_prompt_without_correlation)
+    session = HomeBrowserSession(
+        f"wss://home.example{HOME_BRIDGE_PATH}",
+        "device-secret",
+        "opaque-home-handle",
+        connect_factory=_FakeConnect([socket]),
+    )
+    await session.connect()
+    stream = session.send_turn("confirm twice")
+    try:
+        first = await stream.__anext__()
+        assert first["correlation_id"] == "corr-1"
+        with pytest.raises(
+            HomeBridgeProtocolError,
+            match="structured prompt has no correlation ID",
+        ):
+            await stream.__anext__()
+        assert not session.is_connected()
     finally:
         await stream.aclose()
         await session.close()
