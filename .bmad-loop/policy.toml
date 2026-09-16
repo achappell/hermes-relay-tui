@@ -3,6 +3,9 @@
 [gates]
 mode = "none"
 
+[verify]
+commands = ["bash .bmad-loop/ci-status.sh"]
+
 [stories]
 source = "stories"
 spec_folder = "_bmad-output/specs/spec-hermes-relay-tui"
@@ -19,3 +22,4 @@ extra_args = [
 
 [scm]
 isolation = "worktree"
+worktree_seed = [".bmad-loop/ci-status.sh", ".bmad-loop/plugins/close-trace-mr"]
