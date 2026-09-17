@@ -213,3 +213,39 @@ def test_app_entrypoint_accepts_bare_profile_before_options(tmp_path):
     assert result.returncode == 0
     assert "--profile" in result.stdout
     assert "amanda" in result.stdout
+
+
+def test_create_home_profile_does_not_request_or_store_a_bearer_token(tmp_path):
+    config_path = tmp_path / "config.yaml"
+    profile_env = tmp_path / "private.env"
+    output = []
+
+    def fail_if_token_is_requested(_prompt):
+        raise AssertionError("Home must use its paired Device credential")
+
+    result = run_profile_command(
+        [
+            "--config",
+            str(config_path),
+            "create",
+            "home",
+            "--url",
+            "wss://home.example/api/v1/bridge/ws",
+            "--transport",
+            "home",
+            "--profile-env",
+            str(profile_env),
+        ],
+        input_fn=lambda _prompt: "",
+        secret_fn=fail_if_token_is_requested,
+        output_fn=output.append,
+    )
+
+    assert result == 0
+    saved = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    profile = saved["profiles"]["home"]
+    assert profile["transport"] == "home"
+    assert profile["url"] == "wss://home.example/api/v1/bridge/ws"
+    assert "token" not in profile
+    assert "Home Device pairing" in output[-1]
+    assert not profile_env.exists()

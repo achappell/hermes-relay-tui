@@ -2685,6 +2685,143 @@ async def test_home_browser_turn_reaches_idle_after_home_terminal_event():
         await relay.aclose()
 
 
+@pytest.mark.asyncio
+async def test_home_browser_drop_ends_audio_while_resumed_text_finishes():
+    from puck_bridge.home_session import HomeBridgeTransportError
+
+    def event(event_type, payload=None):
+        return {
+            "method": "event",
+            "params": {
+                "schema": 1,
+                "conversation_handle": "opaque-home-handle",
+                "turn_id": "home-turn-1",
+                "event": {"type": event_type, "payload": payload or {}},
+            },
+        }
+
+    class FakeHomeClient:
+        def __init__(self, frames):
+            self.is_connected = True
+            self.requests = []
+            self.frames = list(frames)
+
+        async def request(self, method, _params):
+            self.requests.append(method)
+            if method == "prompt.submit":
+                return {
+                    "schema": 1,
+                    "conversation_handle": "opaque-home-handle",
+                    "turn_id": "home-turn-1",
+                    "status": "submitted",
+                }
+            if method == "conversation.reconnect":
+                return {
+                    "schema": 1,
+                    "status": "ready",
+                    "conversation_handle": "opaque-home-handle",
+                    "route": {"class": "home", "id": "approved-route"},
+                    "capabilities": {
+                        "commands": [],
+                        "heartbeat": True,
+                        "timing": "absent",
+                        "interrupt": True,
+                    },
+                    "unresolved_turn": {
+                        "schema": 1,
+                        "conversation_handle": "opaque-home-handle",
+                        "turn_id": "home-turn-1",
+                        "status": "submitted",
+                    },
+                }
+            raise AssertionError(f"unexpected Home request: {method}")
+
+        async def next_frame(self):
+            frame = self.frames.pop(0)
+            if isinstance(frame, BaseException):
+                self.is_connected = False
+                raise frame
+            return frame
+
+        async def close(self):
+            self.is_connected = False
+
+    class ResumingHomeBrowserSession(appliance_module.HomeBrowserSession):
+        def __init__(self):
+            super().__init__(
+                "wss://home.example/api/v1/bridge/ws",
+                "device-secret",
+                "opaque-home-handle",
+            )
+            self.first = FakeHomeClient(
+                [
+                    {
+                        "method": "audio.frame",
+                        "params": {
+                            "schema": 1,
+                            "conversation_handle": "opaque-home-handle",
+                            "turn_id": "home-turn-1",
+                            "frame": {
+                                "kind": "start",
+                                "sample_rate": 24_000,
+                                "channels": 1,
+                                "sample_width": 2,
+                                "byte_order": "little",
+                            },
+                        },
+                    },
+                    b"\x01\x00\x02\x00",
+                    HomeBridgeTransportError(
+                        "home bridge receive", ConnectionError("socket dropped")
+                    ),
+                ]
+            )
+            self.resumed = FakeHomeClient(
+                [
+                    event("message.delta", {"text": "continued text"}),
+                    event("turn.complete", {"status": "completed"}),
+                ]
+            )
+            self._client = self.first
+            self._connected = True
+            self._opened = True
+            self._capabilities = frozenset({"heartbeat", "interrupt"})
+
+        async def connect(self):
+            await self.first.close()
+            self._client = self.resumed
+            ready = await self.resumed.request(
+                "conversation.reconnect",
+                {"conversation_handle": "opaque-home-handle"},
+            )
+            self._validate_ready_result(ready)
+            self._connected = True
+            self._reconnect_required = False
+            return ready
+
+    session = ResumingHomeBrowserSession()
+    publisher = RecordingPublisher()
+    server = FakeServer()
+    relay = Appliance(
+        _args(browser_voice=True, browser_transport="home"),
+        session=session,
+        profiles=_catalog_profiles(),
+        publisher=publisher,
+        server=server,
+    )
+    relay._connected = True
+
+    try:
+        assert await relay._run_browser_turn("hello") is True
+        assert publisher.history[-1][0] == "idle"
+        assert publisher.history[-1][1] == "continued text"
+        assert [kind for kind, _ in server.audio] == ["start", "chunk", "end"]
+        assert session.first.requests == ["prompt.submit"]
+        assert session.resumed.requests == ["conversation.reconnect"]
+    finally:
+        await relay.aclose()
+
+
 def test_home_browser_transport_fails_closed_without_route_or_credential():
     relay = Appliance(
         _args(browser_voice=True, browser_transport="home"),

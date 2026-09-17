@@ -53,7 +53,12 @@ def history_path_for_url(
     # the fork when both endpoints share a host and port.
     selected_transport = str(transport or "").strip().lower()
     standard_path = (parsed.path.rstrip("/") if parsed else "").endswith("/api/ws")
-    if selected_transport == "gateway" or standard_path:
+    home_path = (parsed.path.rstrip("/") if parsed else "").endswith(
+        "/api/v1/bridge/ws"
+    )
+    if selected_transport == "home" or home_path:
+        slug += "_home"
+    elif selected_transport == "gateway" or standard_path:
         slug += "_gateway"
     return DEFAULT_HISTORY_DIR / f"{slug}.jsonl"
 
@@ -95,7 +100,12 @@ def history_path_for_profile(
         parsed = urlsplit(url) if url else None
         selected_transport = str(transport or "").strip().lower()
         standard_path = (parsed.path.rstrip("/") if parsed else "").endswith("/api/ws")
-        if selected_transport == "gateway" or standard_path:
+        home_path = (parsed.path.rstrip("/") if parsed else "").endswith(
+            "/api/v1/bridge/ws"
+        )
+        if selected_transport == "home" or home_path:
+            base = base.with_name(f"{base.stem}_home{base.suffix}")
+        elif selected_transport == "gateway" or standard_path:
             base = base.with_name(f"{base.stem}_gateway{base.suffix}")
     scoped = artifact_path_for_profile(base, profile_name, legacy=legacy)
     return Path(scoped) if scoped is not None else base

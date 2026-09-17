@@ -591,22 +591,99 @@ async def test_home_unsupported_structured_prompt_is_rejected_and_closes_turn(
 @pytest.mark.asyncio
 async def test_home_transport_failure_requires_reconnect_and_never_replays_prompt():
     first = _ready_socket(ConnectionError("socket closed"))
-    second = _FakeSocket()
-    factory = _FakeConnect([first, second])
-    session = _session(factory)
+
+    class _DropReconnect:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def __call__(self, _url: str, **_kwargs: object) -> _FakeContext | _FailingContext:
+            self.calls += 1
+            if self.calls == 1:
+                return _FakeContext(first)
+            return _FailingContext()
+
+    factory = _DropReconnect()
+    session = HomePuckSession(
+        f"wss://home.example{HOME_BRIDGE_PATH}",
+        "device-secret",
+        "opaque-home-handle",
+        connect_factory=factory,
+    )
     await session.connect()
     with pytest.raises(HomeBridgeTransportError):
         _ = [event async for event in session.send_turn("do not replay")]
 
+    assert factory.calls == 2  # the second call attempted reconnect
     assert not session.is_connected()
+    assert [frame["method"] for frame in first.sent].count("prompt.submit") == 1
+    await session.close()
+
+
+@pytest.mark.asyncio
+async def test_home_resumes_buffered_text_after_mid_turn_drop_and_closes_audio_locally():
+    first = _ready_socket(
+        _audio(
+            "start",
+            "home-turn-1",
+            sample_rate=24_000,
+            channels=1,
+            sample_width=2,
+            byte_order="little",
+        ),
+        b"\x01\x00\x02\x00",
+        ConnectionError("socket dropped after audio started"),
+    )
+
+    class _ResumedSocket(_FakeSocket):
+        async def send(self, raw: str) -> None:
+            payload = json.loads(raw)
+            if payload["method"] != "conversation.reconnect":
+                await super().send(raw)
+                return
+            self.sent.append(payload)
+            self.incoming.put_nowait(
+                _reply(
+                    payload["id"],
+                    {
+                        **READY,
+                        "unresolved_turn": {
+                            "schema": 1,
+                            "conversation_handle": "opaque-home-handle",
+                            "turn_id": "home-turn-1",
+                            "status": "submitted",
+                        },
+                    },
+                )
+            )
+            self.incoming.put_nowait(
+                _event("message.delta", "home-turn-1", {"text": "continued text"})
+            )
+            self.incoming.put_nowait(
+                _event("turn.complete", "home-turn-1", {"status": "completed"})
+            )
+
+    resumed = _ResumedSocket()
+    factory = _FakeConnect([first, resumed])
+    session = _session(factory)
     await session.connect()
-    try:
-        assert [frame["method"] for frame in second.sent] == [
-            "conversation.reconnect"
-        ]
-        assert all(frame["method"] != "prompt.submit" for frame in second.sent)
-    finally:
-        await session.close()
+
+    events = [event async for event in session.send_turn("submit once")]
+
+    assert [event["type"] for event in events] == [
+        "audio_start",
+        "audio_chunk",
+        "audio_end",
+        "text_delta",
+    ]
+    assert events[-1] == {"type": "text_delta", "text": "continued text"}
+    assert [frame["method"] for frame in first.sent] == [
+        "conversation.open",
+        "prompt.submit",
+    ]
+    assert [frame["method"] for frame in resumed.sent] == [
+        "conversation.reconnect",
+    ]
+    await session.close()
 
 
 @pytest.mark.asyncio

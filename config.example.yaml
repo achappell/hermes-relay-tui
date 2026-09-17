@@ -25,10 +25,12 @@
 # your laptop's local Hermes agent, or anywhere else reachable.
 # url: wss://media-server.local:8792/voice-session
 
-# Keep the fork's voice-session transport as the default. Set this to gateway
-# only when --url points at the direct Standard Hermes /api/ws endpoint. This
-# is not the planned Home /api/v1/bridge/ws route.
+# Keep the fork's voice-session transport as the default. Choose gateway for a
+# direct Standard /api/ws endpoint, or home for the approved Home bridge route.
 # transport: voice-session
+# url: wss://home.example/api/v1/bridge/ws   # required when transport: home
+# Home pairing stays in the private profile_env file, never in YAML or a URL.
+# HOME_DEVICE_CREDENTIAL=... and HOME_CONVERSATION_HANDLE=... are required.
 # hermes_profile: amanda       # direct Standard server profile; not Home routing
 
 # Direct legacy/Standard bearer token. Prefer VOICE_SESSION_TOKEN in your shell
@@ -104,7 +106,7 @@
 # profiles:
 #   amanda:
 #     display_name: "Amanda"
-#     transport: voice-session  # or gateway for direct Standard Hermes /api/ws
+#     transport: voice-session  # gateway for Standard /api/ws; home for Home bridge
 #     hermes_profile: amanda    # only used by the direct Standard gateway
 #     wake_phrase: "hey missy"
 #     url: ws://localhost:8792/voice-session

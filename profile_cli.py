@@ -129,9 +129,13 @@ def _render_profiles(profiles: list[config.RelayProfile], active: str | None) ->
     for profile in profiles:
         marker = "*" if profile.name == active else " "
         token_state = (
-            f"token configured via {profile.token_env}"
-            if profile.token_configured
-            else f"token missing ({profile.token_env})"
+            "Home pairing uses the private profile env"
+            if profile.transport == "home"
+            else (
+                f"token configured via {profile.token_env}"
+                if profile.token_configured
+                else f"token missing ({profile.token_env})"
+            )
         )
         endpoint = profile.url.split("?", 1)[0]
         lines.append(
@@ -266,29 +270,12 @@ def run_profile_command(
             if name in _configured_names(config_path):
                 raise ValueError(f"relay profile already exists: {name}")
             fields = _profile_fields_for_create(args, input_fn=input_fn)
-            token = str(secret_fn("Bearer token (hidden; leave blank to cancel): ") or "").strip()
-            if not token:
-                output_fn("Profile creation cancelled: a bearer token is required.")
-                return 1
-            profile = config.save_relay_profile(
-                config_path,
-                **fields,
-                token=token,
-                model=args.model,
-                wake_phrases=args.wake_phrases,
-                token_env=args.token_env,
-                profile_env=args.profile_env,
-            )
-            output_fn(
-                f"Created profile '{profile.name}'. "
-                f"Endpoint: {profile.url.split('?', 1)[0]}; token stored in private env."
-            )
-            return 0
-
-        if args.action == "edit":
-            existing = _profile_for_name(config_path, args.name)
-            fields = _profile_fields_for_edit(args, existing)
-            token = str(secret_fn("Bearer token (hidden; leave blank to keep it): ") or "").strip()
+            token = ""
+            if fields["transport"] != "home":
+                token = str(secret_fn("Bearer token (hidden; leave blank to cancel): ") or "").strip()
+                if not token:
+                    output_fn("Profile creation cancelled: a bearer token is required.")
+                    return 1
             profile = config.save_relay_profile(
                 config_path,
                 **fields,
@@ -298,9 +285,40 @@ def run_profile_command(
                 token_env=args.token_env,
                 profile_env=args.profile_env,
             )
+            auth_note = (
+                "Home Device pairing is read from the private profile env."
+                if profile.transport == "home"
+                else "Bearer token stored in private env."
+            )
+            output_fn(
+                f"Created profile '{profile.name}'. "
+                f"Endpoint: {profile.url.split('?', 1)[0]}; {auth_note}"
+            )
+            return 0
+
+        if args.action == "edit":
+            existing = _profile_for_name(config_path, args.name)
+            fields = _profile_fields_for_edit(args, existing)
+            token = ""
+            if fields["transport"] != "home":
+                token = str(secret_fn("Bearer token (hidden; leave blank to keep it): ") or "").strip()
+            profile = config.save_relay_profile(
+                config_path,
+                **fields,
+                token=token or None,
+                model=args.model,
+                wake_phrases=args.wake_phrases,
+                token_env=args.token_env,
+                profile_env=args.profile_env,
+            )
+            auth_note = (
+                "Home Device pairing is read from the private profile env."
+                if profile.transport == "home"
+                else "Bearer token stored in private env."
+            )
             output_fn(
                 f"Updated profile '{profile.name}'. "
-                f"Endpoint: {profile.url.split('?', 1)[0]}; token stored in private env."
+                f"Endpoint: {profile.url.split('?', 1)[0]}; {auth_note}"
             )
             return 0
 

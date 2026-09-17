@@ -73,6 +73,40 @@ def test_parser_reads_gateway_transport_from_environment(monkeypatch):
     assert build_arg_parser().parse_args([]).transport == "gateway"
 
 
+def test_parser_accepts_home_transport_and_uses_the_paired_bridge_url(tmp_path):
+    config_path = tmp_path / "home.yaml"
+    config_path.write_text(
+        "profiles:\n"
+        "  amanda-home:\n"
+        "    transport: home\n"
+        "    url: wss://home.example/api/v1/bridge/ws\n"
+        "    token_env: 'not a valid bearer-token source'\n",
+        encoding="utf-8",
+    )
+    argv = ["--config", str(config_path), "--profile", "amanda-home"]
+
+    args = build_arg_parser(argv).parse_args(argv)
+
+    assert args.transport == "home"
+    assert args.url == "wss://home.example/api/v1/bridge/ws"
+    assert args.token == ""
+
+
+def test_explicit_home_transport_uses_home_url_environment_without_a_bearer_token(
+    tmp_path, monkeypatch
+):
+    config_path = tmp_path / "legacy.yaml"
+    config_path.write_text("url: ws://relay.example/voice-session\n", encoding="utf-8")
+    monkeypatch.setenv("HOME_BRIDGE_URL", "wss://home.example/api/v1/bridge/ws")
+    argv = ["--config", str(config_path), "--transport", "home"]
+
+    args = build_arg_parser(argv).parse_args(argv)
+
+    assert args.transport == "home"
+    assert args.url == "wss://home.example/api/v1/bridge/ws"
+    assert args.token == ""
+
+
 def test_parser_marks_an_explicit_session_id_for_gateway_resume():
     args = build_arg_parser().parse_args(
         ["--transport", "gateway", "--session-id", "stored-1"]

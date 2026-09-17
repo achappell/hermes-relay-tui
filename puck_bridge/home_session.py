@@ -40,6 +40,7 @@ HOME_BRIDGE_MAX_SAMPLE_RATE = 384_000
 _CLOSE_SENTINEL = object()
 _TERMINAL_EVENT_TYPES = frozenset(
     {
+        "turn_complete",
         "turn.complete",
         "turn.completed",
         "turn.end",
@@ -50,7 +51,7 @@ _TERMINAL_EVENT_TYPES = frozenset(
     }
 )
 _INTERRUPTED_EVENT_TYPES = frozenset(
-    {"turn.interrupted", "turn.cancelled", "response.interrupted"}
+    {"turn_interrupted", "turn.interrupted", "turn.cancelled", "response.interrupted"}
 )
 _ERROR_EVENT_TYPES = frozenset(
     {
@@ -594,6 +595,7 @@ class HomePuckSession:
         connect_factory: Any | None = None,
         request_timeout: float = HOME_BRIDGE_REQUEST_TIMEOUT,
         supports_structured_prompts: bool = False,
+        reconnect_required: bool = False,
         session_id: str = "home-puck",
         session_label: str = "Puck",
     ) -> None:
@@ -612,7 +614,7 @@ class HomePuckSession:
         self._client: HomeBridgeClient | None = None
         self._retired_client: HomeBridgeClient | None = None
         self._opened = False
-        self._reconnect_required = False
+        self._reconnect_required = bool(reconnect_required)
         self._connected = False
         self._active_turn_id: str | None = None
         self._pending_prompt: dict[str, Any] | None = None
@@ -806,6 +808,8 @@ class HomePuckSession:
         audio_ended = False
         audio_failed = False
         pcm_remainder = b""
+        resume_attempts = 0
+        audio_lost = False
         text_state: dict[str, Any] = {
             "committed": "",
             "rendered_preview": "",
@@ -816,9 +820,38 @@ class HomePuckSession:
         }
         try:
             while True:
-                frame = await client.next_frame()
+                try:
+                    frame = await client.next_frame()
+                except HomeBridgeTransportError:
+                    if resume_attempts >= 3:
+                        raise
+                    resume_attempts += 1
+                    self._note_uncertain_transport()
+                    ready = await self.connect()
+                    resumed_turn_id = _reconnected_turn_id(
+                        ready,
+                        self._conversation_handle,
+                    )
+                    if resumed_turn_id != turn_id:
+                        await self._close_after_protocol_failure()
+                        raise HomeBridgeProtocolError(
+                            "Home did not restore the submitted unresolved turn"
+                        )
+                    client = self._client
+                    if client is None or not self.is_connected():
+                        raise HomeBridgeTransportError(
+                            "home bridge reconnect",
+                            ConnectionError("Home bridge did not remain connected"),
+                        )
+                    self._active_turn_id = turn_id
+                    if audio_started and not audio_ended and not audio_failed:
+                        audio_ended = True
+                        audio_lost = True
+                        pcm_remainder = b""
+                        yield {"type": "audio_end"}
+                    continue
                 if isinstance(frame, bytes):
-                    if audio_failed:
+                    if audio_failed or audio_lost:
                         continue
                     if not audio_started or audio_ended:
                         raise HomeBridgeAudioError(
@@ -839,6 +872,8 @@ class HomePuckSession:
                         "Home bridge notification params are not an object"
                     )
                 if method == "audio.frame":
+                    if audio_lost:
+                        continue
                     audio_event = self._audio_event(
                         params,
                         turn_id,
@@ -1351,6 +1386,45 @@ class HomePuckSession:
         raise HomeBridgeAudioError(f"Home bridge audio kind {kind!r} is unsupported")
 
 
+def _reconnected_turn_id(result: dict[str, Any], conversation_handle: str) -> str | None:
+    unresolved = result.get("unresolved_turn")
+    if isinstance(unresolved, dict):
+        _require_schema(unresolved, "Home bridge unresolved turn")
+        handle = _require_string(
+            unresolved.get("conversation_handle"),
+            "Home bridge unresolved turn has no conversation handle",
+        )
+        if handle != conversation_handle:
+            raise HomeBridgeProtocolError(
+                "Home bridge unresolved turn changed conversation handle"
+            )
+        status = _require_string(
+            unresolved.get("status"),
+            "Home bridge unresolved turn has no status",
+        )
+        del status
+        turn_id = _require_string(
+            unresolved.get("turn_id"),
+            "Home bridge unresolved turn has no turn ID",
+        )
+        top_level_turn_id = result.get("turn_id")
+        if top_level_turn_id is not None and top_level_turn_id != turn_id:
+            raise HomeBridgeProtocolError(
+                "Home bridge returned conflicting unresolved turn IDs"
+            )
+        return turn_id
+    if type(unresolved) is bool:
+        if not unresolved:
+            return None
+        return _require_string(
+            result.get("turn_id"),
+            "Home bridge omitted the unresolved turn ID",
+        )
+    raise HomeBridgeProtocolError(
+        "Home bridge reconnect omitted unresolved-turn state"
+    )
+
+
 def _require_schema(params: dict[str, Any], what: str) -> None:
     if type(params.get("schema")) is not int or params.get("schema") != HOME_BRIDGE_SCHEMA:
         raise HomeBridgeProtocolError(f"{what} has an unsupported schema")
@@ -1861,7 +1935,13 @@ class HomeBrowserSession(HomePuckSession):
         subclass so Puck callers retain their existing event stream.
         """
         async for event in super()._send_turn_locked(text):
-            yield event
+            if event.get("type") == "audio_end":
+                # Home has one bounded audio stream per turn. A local close
+                # after reconnect is final audio for this answer even while
+                # buffered text and the terminal event are still arriving.
+                yield {**event, "final": True}
+            else:
+                yield event
         yield {"type": "turn_end"}
 
 

@@ -391,6 +391,53 @@ def test_run_setup_can_select_standard_transport_without_token_in_config(tmp_pat
     assert "gateway-secret" not in (tmp_path / "config.yaml").read_text(encoding="utf-8")
 
 
+def test_home_endpoint_normalization_enforces_the_secure_bridge_route():
+    from setup_wizard import normalize_endpoint
+
+    assert normalize_endpoint("https://home.example", transport="home") == (
+        "wss://home.example/api/v1/bridge/ws"
+    )
+    assert normalize_endpoint(
+        "wss://home.example/voice-session", transport="home"
+    ) == "wss://home.example/api/v1/bridge/ws"
+    with pytest.raises(ValueError, match="secure wss://"):
+        normalize_endpoint("ws://home.example", transport="home")
+    with pytest.raises(ValueError, match="approved"):
+        normalize_endpoint("wss://home.example/other", transport="home")
+
+
+def test_home_setup_uses_paired_env_values_and_never_prompts_for_a_bearer_token(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("HOME_DEVICE_CREDENTIAL", "device-secret")
+    monkeypatch.setenv("HOME_CONVERSATION_HANDLE", "opaque-handle")
+    config_path = tmp_path / "config.yaml"
+    profile_env = tmp_path / "private.env"
+    answers = iter(["https://home.example", "home-tui", "home-local"])
+
+    def fail_if_token_is_requested(_prompt):
+        raise AssertionError("Home must not request a bearer token")
+
+    result = run_setup(
+        ["--transport", "home", "--no-check"],
+        config_path=config_path,
+        token_path=profile_env,
+        input_fn=lambda _prompt: next(answers),
+        secret_fn=fail_if_token_is_requested,
+        output_fn=lambda _message: None,
+        check_connection=False,
+    )
+
+    assert result == 0
+    saved = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    assert saved["transport"] == "home"
+    assert saved["url"] == "wss://home.example/api/v1/bridge/ws"
+    assert saved["profile_env"] == str(profile_env)
+    assert not profile_env.exists()
+    assert "device-secret" not in config_path.read_text(encoding="utf-8")
+    assert "opaque-handle" not in config_path.read_text(encoding="utf-8")
+
+
 def test_run_setup_accepts_async_connection_checker(tmp_path):
     answers = iter(["wss://hermes.example/voice-session", "jensen-laptop", "kitchen"])
     secrets = iter(["secret-token"])
