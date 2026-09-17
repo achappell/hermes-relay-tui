@@ -11,8 +11,9 @@ for the TUI, Puck, ESP32 Touch, and W/K surfaces registered in
 
 1. Read the Personal Vault hub and the linked upstream brief, PRD, epic,
    architecture, and UX notes relevant to the slice.
-2. While GitHub Project work is paused, do not inspect or mutate the board.
-   Use this repository's local story artifacts and tracker for TUI delivery.
+2. GitHub Project #3 is an active mechanical mirror. Use the coordinator
+   procedure for accepted TUI-owned items only; this repository's local story
+   artifacts and tracker remain authoritative for TUI delivery.
 3. Read this repository's `AGENTS.md` and the relevant local implementation
    notes.
 4. Use this repository's local BMAD runtime for delivery work. Do not copy

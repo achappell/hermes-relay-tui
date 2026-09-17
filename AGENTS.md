@@ -189,11 +189,19 @@ mechanical GitHub Project mirror procedure. This checkout supplies only its
 TUI, Puck, ESP32 Touch Display, and W/K local artifacts. iOS, Android, and Home
 status changes must be made in their owning repositories.
 
-GitHub Project work is paused unless Amanda explicitly reopens it. While it is
-paused, do not inspect, query, create, edit, move, delete, archive, or reconcile
-board items. When reopened, follow the coordinator's procedure and mirror only
-the accepted TUI-owned story rows from this repository's local tracker and story
-index.
+GitHub Project work is open as a mechanical mirror of accepted local BMad
+records. Follow the coordinator's procedure when a synchronization is needed.
+Mirror only accepted TUI-owned story rows from this repository's local tracker
+and story index, preserve existing card identity, and leave sibling records
+untouched. The local `sprint-status.yaml` remains authoritative; never infer
+local status from the Project.
+
+After refreshing BMAD, restore this repository's issue workflow overrides with
+`scripts/apply_repo_issue_tracking_overrides.sh`. The tracked source copies live
+under `_bmad/custom/repo-issue-tracking/workflows/common/`; use `--check` to
+verify the runtime copies. TUI issue identity uses the exact Sprint Key marker
+or the full story key in a title because this repository has no per-story issue
+URL index. See [`docs/issue-tracking.md`](docs/issue-tracking.md).
 
 ## Working agreement
 
