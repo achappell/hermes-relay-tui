@@ -196,6 +196,13 @@ and story index, preserve existing card identity, and leave sibling records
 untouched. The local `sprint-status.yaml` remains authoritative; never infer
 local status from the Project.
 
+After refreshing BMAD, restore this repository's issue workflow overrides with
+`scripts/apply_repo_issue_tracking_overrides.sh`. The tracked source copies live
+under `_bmad/custom/repo-issue-tracking/workflows/common/`; use `--check` to
+verify the runtime copies. TUI issue identity uses the exact Sprint Key marker
+or the full story key in a title because this repository has no per-story issue
+URL index. See [`docs/issue-tracking.md`](docs/issue-tracking.md).
+
 ## Working agreement
 
 - Keep the code modular and direct. Avoid abstractions that do not remove real duplication.
