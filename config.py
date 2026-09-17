@@ -26,7 +26,7 @@ DEFAULT_PROFILE_ENV = Path.home() / ".hermes-relay-tui" / ".env"
 LEGACY_PROFILE_ENV = Path.home() / ".hermes" / "profiles" / "amanda" / ".env"
 DEFAULT_CONFIG_PATH = Path.home() / ".hermes-relay-tui" / "config.yaml"
 BUSY_MODES = ("queue", "steer", "interrupt")
-TRANSPORTS = ("voice-session", "gateway")
+TRANSPORTS = ("voice-session", "gateway", "home")
 WAKE_ENGINES = ("openwakeword", "sherpa")
 # Keepalive is deliberately a code-level transport policy.  It bounds silent
 # idle loss without adding another user-facing setting to the profile surface.
@@ -461,6 +461,8 @@ def resolve_profile_token_source(profile_env: Path, token_env: str) -> str:
 # exists -- do not treat this as adequate for a real household deployment.
 PUCK_DEVICE_TOKEN_ENV = "PUCK_DEVICE_TOKEN"
 HOME_DEVICE_CREDENTIAL_ENV = "HOME_DEVICE_CREDENTIAL"
+HOME_BRIDGE_URL_ENV = "HOME_BRIDGE_URL"
+HOME_BRIDGE_PATH = "/api/v1/bridge/ws"
 HOME_CONVERSATION_HANDLE_ENV = "HOME_CONVERSATION_HANDLE"
 
 
@@ -511,9 +513,10 @@ def load_relay_profiles(
             if name in seen:
                 raise ValueError(f"duplicate relay profile: {name}")
             seen.add(name)
+            transport = _cfg_transport(entry)
             token = (
                 _resolve_relay_profile_token(entry, name, profile_env)
-                if resolve_tokens
+                if resolve_tokens and transport != "home"
                 else ""
             )
             wake_phrases = _parse_wake_phrases(
@@ -526,14 +529,16 @@ def load_relay_profiles(
                     url=str(entry.get("url") or DEFAULT_URL).strip(),
                     token=token,
                     token_env=(
-                        _profile_token_source(entry, name) if resolve_tokens else ""
+                        _profile_token_source(entry, name)
+                        if resolve_tokens and transport != "home"
+                        else ""
                     ),
                     client_id=str(entry.get("client_id") or f"{name}-relay").strip(),
                     device_id=str(entry.get("device_id") or default_device_id()).strip(),
                     session_id=str(entry.get("session_id") or f"{name}-session").strip(),
                     model=str(entry["model"]).strip() if entry.get("model") is not None else None,
                     wake_phrases=wake_phrases,
-                    transport=_cfg_transport(entry),
+                    transport=transport,
                     hermes_profile=(
                         str(entry["hermes_profile"]).strip()
                         if entry.get("hermes_profile") is not None
@@ -546,9 +551,13 @@ def load_relay_profiles(
 
     # A legacy root config is a real, usable one-profile catalog. It becomes
     # persistent only when a profile command writes the config.
+    fallback_transport = _cfg_transport(cfg)
+    configured_home_url = (
+        _cfg_str(cfg, "home_bridge_url") if fallback_transport == "home" else None
+    )
     fallback_url = (
         getattr(args, "url", None) if args is not None else None
-    ) or _cfg_str(cfg, "url", DEFAULT_URL) or DEFAULT_URL
+    ) or configured_home_url or _cfg_str(cfg, "url", DEFAULT_URL) or DEFAULT_URL
     fallback_client_id = (
         getattr(args, "client_id", None) if args is not None else None
     ) or _cfg_str(cfg, "client_id", "amanda-laptop") or "amanda-laptop"
@@ -560,7 +569,11 @@ def load_relay_profiles(
     ) or _cfg_str(cfg, "session_id", "hybrid-tui") or "hybrid-tui"
     explicit_token = getattr(args, "token", None) if args is not None else None
     raw_token = explicit_token or cfg.get("token")
-    token = _resolve_token(raw_token, profile_env) if resolve_tokens else ""
+    token = (
+        _resolve_token(raw_token, profile_env)
+        if resolve_tokens and fallback_transport != "home"
+        else ""
+    )
     display_name = (
         getattr(args, "display_name", None) if args is not None else None
     ) or _cfg_str(cfg, "display_name", "Amanda streaming TUI") or "Amanda streaming TUI"
@@ -577,14 +590,14 @@ def load_relay_profiles(
             display_name=display_name,
             url=str(fallback_url).strip(),
             token=token,
-            token_env="VOICE_SESSION_TOKEN",
+            token_env=("" if fallback_transport == "home" else "VOICE_SESSION_TOKEN"),
             client_id=str(fallback_client_id).strip(),
             device_id=str(fallback_device_id).strip(),
             session_id=str(fallback_session_id).strip(),
             model=str(model).strip() if model is not None else None,
             legacy=True,
             wake_phrases=wake_phrases,
-            transport=_cfg_transport(cfg),
+            transport=fallback_transport,
             hermes_profile=(
                 str(cfg["hermes_profile"]).strip()
                 if cfg.get("hermes_profile") is not None
@@ -681,6 +694,7 @@ def _legacy_config_has_connection(document: dict[str, Any]) -> bool:
         key in document
         for key in (
             "url",
+            "home_bridge_url",
             "token",
             "profile_env",
             "client_id",
@@ -699,29 +713,36 @@ def _legacy_config_has_connection(document: dict[str, Any]) -> bool:
 def _migrate_document(document: dict[str, Any], profile_env: Path | None = None) -> RelayProfile:
     """Convert legacy root connection keys in a mutable document."""
     env_path = Path(profile_env or _profile_env_path(document)).expanduser()
+    transport = _cfg_transport(document)
     raw_token = document.get("token")
-    token_data: dict[str, Any]
-    if raw_token:
-        token_data = {"token": raw_token, "name": "default"}
-    else:
-        token_data = {"token_env": "VOICE_SESSION_TOKEN", "name": "default"}
-    token = resolve_profile_token(token_data, env_path)
-    if token:
-        write_private_env_value(env_path, "VOICE_SESSION_TOKEN", token)
+    if transport != "home":
+        token_data: dict[str, Any]
+        if raw_token:
+            token_data = {"token": raw_token, "name": "default"}
+        else:
+            token_data = {"token_env": "VOICE_SESSION_TOKEN", "name": "default"}
+        token = resolve_profile_token(token_data, env_path)
+        if token:
+            write_private_env_value(env_path, "VOICE_SESSION_TOKEN", token)
 
     entry: dict[str, Any] = {
         "display_name": str(document.get("display_name") or "Amanda streaming TUI"),
-        "url": str(document.get("url") or DEFAULT_URL),
-        "token_env": "VOICE_SESSION_TOKEN",
+        "url": str(
+            document.get("url")
+            or (document.get("home_bridge_url") if transport == "home" else None)
+            or DEFAULT_URL
+        ),
         "client_id": str(document.get("client_id") or "amanda-laptop"),
         "device_id": str(document.get("device_id") or default_device_id()),
         "session_id": str(document.get("session_id") or "hybrid-tui"),
     }
+    if transport != "home":
+        entry["token_env"] = "VOICE_SESSION_TOKEN"
     for key in ("model", "wake_phrase", "wake_phrases"):
         if key in document:
             entry[key] = document[key]
     if "transport" in document:
-        entry["transport"] = _cfg_transport(document)
+        entry["transport"] = transport
     if document.get("hermes_profile") is not None:
         hermes_profile = str(document["hermes_profile"]).strip()
         if hermes_profile:
@@ -1025,7 +1046,11 @@ def make_profile_args(base_args: Any, profile: HouseholdProfile) -> Any:
         "url": profile.url,
         "token": (
             ""
-            if str(getattr(base_args, "browser_transport", "")).strip().lower() == "home"
+            if (
+                str(getattr(base_args, "browser_transport", "")).strip().lower()
+                == "home"
+                or getattr(profile, "transport", data.get("transport")) == "home"
+            )
             else profile.token
         ),
         "client_id": profile.client_id,
@@ -1188,27 +1213,41 @@ def build_arg_parser(
     selected_model = selected_profile.model
     selected_token = selected_profile.token
     selected_wake_phrases = ", ".join(selected_profile.wake_phrases) or None
-    selected_transport = selected_profile.transport
+    selected_transport = _env_choice(
+        "HERMES_RELAY_TUI_TRANSPORT", TRANSPORTS, selected_profile.transport
+    )
+    transport_override = _option_value(raw_argv, "--transport")
+    connection_transport = transport_override or selected_transport
     selected_hermes_profile = selected_profile.hermes_profile
+    if connection_transport == "home":
+        default_url = (
+            os.getenv(HOME_BRIDGE_URL_ENV)
+            or _cfg_str(cfg, "home_bridge_url")
+            or selected_url
+        )
+    else:
+        default_url = os.getenv("HERMES_VOICE_SESSION_URL", selected_url)
     parser.add_argument(
-        "--url", default=os.getenv("HERMES_VOICE_SESSION_URL", selected_url)
+        "--url",
+        default=default_url,
+        help="WebSocket endpoint; Home requires the approved /api/v1/bridge/ws route",
     )
     parser.add_argument(
         "--transport",
         choices=TRANSPORTS,
-        default=_env_choice(
-            "HERMES_RELAY_TUI_TRANSPORT",
-            TRANSPORTS,
-            selected_transport,
-        ),
-        help="transport to use (gateway is opt-in; default: voice-session)",
+        default=selected_transport,
+        help="transport to use: voice-session, gateway, or paired Home bridge",
     )
     parser.add_argument(
         "--token",
         default=(
-            (_cfg_str(cfg, "token") if selected_profile.legacy else selected_token)
-            if resolve_relay_profile_tokens
-            else ""
+            ""
+            if connection_transport == "home"
+            else (
+                (_cfg_str(cfg, "token") if selected_profile.legacy else selected_token)
+                if resolve_relay_profile_tokens
+                else ""
+            )
         ),
         help="Bearer token; prefer VOICE_SESSION_TOKEN or the profile .env",
     )

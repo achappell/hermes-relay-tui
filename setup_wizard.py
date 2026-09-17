@@ -74,6 +74,18 @@ def normalize_endpoint(value: str, *, transport: str = "voice-session") -> str:
     path = parsed.path.rstrip("/")
     if path.endswith("/health"):
         path = path[: -len("/health")].rstrip("/")
+    if transport == "home":
+        if parsed.scheme != "wss":
+            raise ValueError("Home bridge requires a secure wss:// endpoint")
+        if parsed.username or parsed.password or parsed.query or parsed.fragment:
+            raise ValueError("Home bridge URL must not contain credentials or query data")
+        if path not in {"", "/voice-session", "/api/ws", config.HOME_BRIDGE_PATH}:
+            raise ValueError(
+                f"Home transport requires the approved {config.HOME_BRIDGE_PATH} route"
+            )
+        return urlunsplit(
+            (parsed.scheme, parsed.netloc, config.HOME_BRIDGE_PATH, "", "")
+        )
     default_path = "/api/ws" if transport == "gateway" else "/voice-session"
     # A transport switch commonly reuses the saved endpoint. Replace the
     # known route from the other transport instead of preserving a URL that
@@ -180,7 +192,10 @@ def save_setup_files(
         encoding="utf-8",
     )
     os.chmod(config_path, 0o600)
-    _write_private_env(token_path, token)
+    if token:
+        _write_private_env(token_path, token)
+    elif transport != "home":
+        raise ValueError("a bearer token is required outside Home transport")
 
 
 def run_setup(
@@ -245,9 +260,6 @@ def run_setup(
 
     output_fn("Hermes Relay setup")
     output_fn(f"Config file: {config_path}")
-    output_fn("The bearer token is stored separately in a private .env file.")
-    output_fn("Copy the WebSocket endpoint and token from the Hermes server setup.")
-
     transport = str(args.transport or existing.get("transport") or "voice-session").strip().lower()
     if transport not in config.TRANSPORTS:
         output_fn(f"Setup cancelled: unsupported transport '{transport}'.")
@@ -257,10 +269,33 @@ def run_setup(
         if args.hermes_profile is not None
         else str(existing.get("hermes_profile") or "").strip()
     ) or None
-    if transport == "gateway":
-        output_fn("Transport: gateway (Standard Hermes /api/ws; fork remains the rollback path).")
+    if transport == "home":
+        output_fn(
+            "Transport: paired Home bridge. Its Device credential and opaque "
+            "conversation handle stay in the private profile env."
+        )
+        if not config.resolve_home_device_credential(token_path):
+            output_fn(
+                f"Setup cancelled: set {config.HOME_DEVICE_CREDENTIAL_ENV} in {token_path}."
+            )
+            return 1
+        if not config.resolve_home_conversation_handle(token_path):
+            output_fn(
+                f"Setup cancelled: set {config.HOME_CONVERSATION_HANDLE_ENV} in {token_path}."
+            )
+            return 1
+    else:
+        output_fn("The bearer token is stored separately in a private .env file.")
+        output_fn("Copy the WebSocket endpoint and token from the Hermes server setup.")
+        if transport == "gateway":
+            output_fn("Transport: gateway (Standard Hermes /api/ws; fork remains the rollback path).")
 
-    url = _ask(input_fn, "Hermes WebSocket URL", default=str(existing.get("url") or ""))
+    default_url = (
+        existing.get("home_bridge_url") or existing.get("url") or ""
+        if transport == "home"
+        else existing.get("url") or ""
+    )
+    url = _ask(input_fn, "Hermes WebSocket URL", default=str(default_url))
     if not url:
         output_fn("Setup cancelled: a WebSocket URL is required.")
         return 1
@@ -270,15 +305,17 @@ def run_setup(
         output_fn(f"Setup cancelled: {exc}.")
         return 1
 
-    token = str(secret_fn("Bearer token (hidden; leave blank to keep the current token): ") or "").strip()
-    if not token:
-        try:
-            token = config._resolve_token(None, token_path)
-        except (OSError, UnicodeDecodeError):
-            token = ""
-    if not token:
-        output_fn("Setup cancelled: a bearer token is required.")
-        return 1
+    token = ""
+    if transport != "home":
+        token = str(secret_fn("Bearer token (hidden; leave blank to keep the current token): ") or "").strip()
+        if not token:
+            try:
+                token = config._resolve_token(None, token_path)
+            except (OSError, UnicodeDecodeError):
+                token = ""
+        if not token:
+            output_fn("Setup cancelled: a bearer token is required.")
+            return 1
 
     client_id = _ask(input_fn, "Client ID", default=str(existing.get("client_id") or "hermes-relay"))
     device_id = str(existing.get("device_id") or config.default_device_id())
@@ -334,6 +371,16 @@ def run_setup(
                 transport=transport,
                 hermes_profile=hermes_profile,
             )
+        elif transport == "home":
+            result = connection_check_fn(
+                url,
+                token,
+                client_id,
+                device_id,
+                session_id,
+                transport=transport,
+                profile_env=token_path,
+            )
         else:
             result = connection_check_fn(url, token, client_id, device_id, session_id)
         if inspect.isawaitable(result):
@@ -353,11 +400,33 @@ async def probe_connection(
     *,
     transport: str = "voice-session",
     hermes_profile: str | None = None,
+    profile_env: Path | None = None,
     connect_factory: Any = None,
     timeout: float = 10.0,
 ) -> tuple[bool, str]:
     """Verify credentials and protocol compatibility without sending a turn."""
     connect = connect_factory or config.connect_factory()
+    if transport == "home":
+        from puck_bridge.home_session import HomePuckSession
+
+        session = None
+        try:
+            credential = config.resolve_home_device_credential(profile_env)
+            handle = config.resolve_home_conversation_handle(profile_env)
+            session = HomePuckSession(
+                url,
+                credential,
+                handle,
+                connect_factory=connect,
+                session_label="Setup",
+            )
+            await asyncio.wait_for(session.connect(), timeout=timeout)
+            return True, "Connection verified: Home bridge ready"
+        except Exception:
+            return False, "Connection failed: Home pairing or bridge readiness was not verified"
+        finally:
+            if session is not None:
+                await session.close()
     if transport == "gateway":
         from gateway_client import GatewayClient
 

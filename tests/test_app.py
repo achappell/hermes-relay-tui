@@ -270,6 +270,25 @@ def test_gateway_transport_selects_the_gateway_session_without_changing_default(
     assert session_args.session_id != "s1"
 
 
+def test_home_transport_selects_local_capture_adapter_without_a_hermes_session_id():
+    app = HermesStreamingApp(
+        args=make_args(
+            transport="home",
+            profile_name="amanda",
+            url="wss://home.example/api/v1/bridge/ws",
+            session_id="stale-hermes-session",
+        )
+    )
+
+    session_args = app._doorway_session_args(app.args)
+    session = app._new_session(session_args)
+
+    assert isinstance(session, app_module.HomeTextualSession)
+    assert session_args.session_id == "home-amanda"
+    assert session.session_id == "home-amanda"
+    assert session_args.home_reconnect_required is False
+
+
 def test_default_transport_keeps_the_fork_session_at_the_real_session_seam():
     app = HermesStreamingApp(args=make_args())
 

@@ -943,10 +943,16 @@ class Appliance:
                             streamed_audio = True
                         await server.send_audio_chunk(data)
                 elif kind == "audio_end":
-                    # Hermes closes each paragraph's stream here. Keep the
-                    # browser stream open until turn_end so the next segment
-                    # cannot restart playback or cut the previous source.
-                    continue
+                    if event.get("final") is True:
+                        if audio_active:
+                            await server.send_audio_end(turn_id=turn_id)
+                            audio_active = False
+                        publish_response("thinking")
+                    else:
+                        # Hermes closes each paragraph's stream here. Keep the
+                        # browser stream open until turn_end so the next segment
+                        # cannot restart playback or cut the previous source.
+                        continue
                 elif kind == "audio_file_start":
                     file_audio.clear()
                     metadata = tuple(

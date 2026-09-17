@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import hashlib
 import inspect
 import math
 import os
@@ -79,6 +80,7 @@ from diagnostics import (
 )
 from domain import TuiDomain, TurnPhase, decide_busy
 from gateway_session import GatewaySession
+from puck_bridge.home_textual_session import HomeTextualSession
 from history import (
     PromptHistory,
     artifact_path_for_profile,
@@ -969,6 +971,20 @@ class HermesStreamingApp(App):
         """Return connection identity without ever rendering its token."""
         configured = bool(getattr(args, "profiles_configured", False))
         transport = getattr(args, "transport", "voice-session")
+        if not configured and transport == "home":
+            profile_env = getattr(args, "profile_env", None)
+            credential = config.resolve_home_device_credential(profile_env)
+            credential_fingerprint = hashlib.sha256(
+                credential.encode("utf-8")
+            ).hexdigest() if credential else ""
+            return (
+                False,
+                transport,
+                getattr(args, "profile_name", None) or getattr(args, "profile", None),
+                getattr(args, "url", None),
+                config.resolve_home_conversation_handle(profile_env),
+                credential_fingerprint,
+            )
         if not configured and transport != "gateway":
             # Legacy reload deliberately retains its existing in-memory
             # session behavior; TUI-02 reconnects only when a named catalog is
@@ -1035,6 +1051,19 @@ class HermesStreamingApp(App):
         if args is None:
             return args
         session_args = copy.copy(args)
+        if getattr(args, "transport", "voice-session") == "home":
+            # This is a local display key only. Home never receives a Hermes
+            # session ID from the Textual client.
+            profile = str(
+                getattr(args, "profile_name", None)
+                or getattr(args, "profile", None)
+                or "default"
+            ).strip().lower()
+            session_args.session_id = f"home-{profile}"
+            session_args.home_reconnect_required = bool(
+                getattr(args, "home_reconnect_required", False)
+            )
+            return session_args
         if (
             getattr(args, "transport", "voice-session") == "gateway"
             and getattr(args, "session_id_explicit", False)
@@ -1070,8 +1099,11 @@ class HermesStreamingApp(App):
     def _new_session(self, args: Any) -> SessionProtocol:
         """Build a session while retaining the repository's zero-arg test seam."""
         if self._session_factory is None:
-            if getattr(args, "transport", "voice-session") == "gateway":
+            transport = getattr(args, "transport", "voice-session")
+            if transport == "gateway":
                 return GatewaySession(args)
+            if transport == "home":
+                return HomeTextualSession(args)
             return HermesSession(args)
         factory = self._session_factory
         try:
@@ -1470,6 +1502,8 @@ class HermesStreamingApp(App):
 
         try:
             recovery_args = self._doorway_session_args(self.args)
+            if getattr(recovery_args, "transport", "voice-session") == "home":
+                recovery_args.home_reconnect_required = True
             fresh_session = self._new_session(recovery_args)
         except Exception as exc:
             diagnostic_logger.debug(
