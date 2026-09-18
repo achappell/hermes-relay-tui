@@ -4358,21 +4358,30 @@ if (typeof window !== "undefined") {
 enable_legacy_mode_flag();
 var root$2 = /* @__PURE__ */ from_html(`<div class="prompt-account svelte-glm292"> </div>`);
 var root_1$2 = /* @__PURE__ */ from_html(`<p class="prompt-error svelte-glm292" data-action-error="" role="alert"> </p>`);
-var root_2$2 = /* @__PURE__ */ from_html(`<button> </button>`);
-var root_3$2 = /* @__PURE__ */ from_html(`<div class="prompt-overlay svelte-glm292" role="dialog" aria-modal="true" aria-labelledby="prompt-title"><div class="ambient-canvas svelte-glm292" aria-hidden="true"></div> <div class="prompt-card svelte-glm292"><!> <h1 class="prompt-title svelte-glm292" id="prompt-title"> </h1> <p class="prompt-body svelte-glm292"> </p> <!> <div class="prompt-actions svelte-glm292"></div></div></div>`);
+var root_2$2 = /* @__PURE__ */ from_html(`<p class="prompt-pending" data-prompt-pending="" role="status" aria-live="polite">Waiting for Home to update this choice.</p>`);
+var root_3$2 = /* @__PURE__ */ from_html(`<button> </button>`);
+var root_4$2 = /* @__PURE__ */ from_html(`<div class="prompt-actions prompt-actions--typed svelte-glm292"><button class="prompt-btn prompt-btn--choose svelte-glm292">Choose</button> <button class="prompt-btn prompt-btn--explore svelte-glm292">Explore</button></div>`);
+var root_5$2 = /* @__PURE__ */ from_html(`<div class="prompt-overlay svelte-glm292" role="dialog" aria-modal="true" aria-labelledby="prompt-title"><div class="ambient-canvas svelte-glm292" aria-hidden="true"></div> <div class="prompt-card svelte-glm292"><!> <h1 class="prompt-title svelte-glm292" id="prompt-title"> </h1> <p class="prompt-body svelte-glm292"> </p> <!> <!> <div></div> <!></div></div>`);
 function PromptOverlay($$anchor, $$props) {
   push($$props, false);
+  const canChooseTyped = /* @__PURE__ */ mutable_source();
+  const canExploreTyped = /* @__PURE__ */ mutable_source();
   let prompt = prop($$props, "prompt", 8);
   let account = prop($$props, "account", 8, null);
+  let canChoose = prop($$props, "canChoose", 8, true);
+  let canExplore = prop($$props, "canExplore", 8, false);
   let onAction = prop($$props, "onAction", 8, null);
   let errorMessage = prop($$props, "errorMessage", 8, null);
   const ACTION_TIMEOUT_MS = 1e4;
   const MAX_PROMPT_TIMEOUT_SECONDS = 2147483647e-3;
   let dismissed = /* @__PURE__ */ mutable_source(false);
   let submitting = /* @__PURE__ */ mutable_source(false);
+  let typedActionSubmitted = /* @__PURE__ */ mutable_source(false);
   let localError = /* @__PURE__ */ mutable_source(null);
   let timeoutId = /* @__PURE__ */ mutable_source(null);
   let timeoutKey = /* @__PURE__ */ mutable_source(null);
+  let selectedOptionId = /* @__PURE__ */ mutable_source(null);
+  let choiceContextKey = /* @__PURE__ */ mutable_source(null);
   onDestroy(() => {
     if (get(timeoutId) !== null) clearTimeout(get(timeoutId));
   });
@@ -4391,16 +4400,24 @@ function PromptOverlay($$anchor, $$props) {
       );
     });
   }
-  async function sendAction(actionId, choice) {
-    if (get(dismissed) || get(submitting)) return;
+  async function sendAction(action) {
+    if (get(dismissed) || get(submitting) || get(typedActionSubmitted)) return;
     set(submitting, true);
-    const action = { type: "action", schema: 1, action_id: actionId, choice };
     let accepted = true;
     try {
       if (onAction() !== null) {
         accepted = await withTimeout(onAction()(action)) !== false;
       } else {
-        const url = `/action?action_id=${encodeURIComponent(actionId)}&choice=${encodeURIComponent(choice)}`;
+        const query = new URLSearchParams({ action_id: action.action_id });
+        if ("choice" in action) {
+          query.set("choice", action.choice);
+        } else {
+          query.set("operation", action.operation);
+          query.set("option_id", action.option_id);
+          query.set("object_id", action.object_id);
+          query.set("freshness", action.freshness);
+        }
+        const url = `/action?${query.toString()}`;
         const controller = new AbortController();
         const requestTimeoutId = setTimeout(() => controller.abort(), ACTION_TIMEOUT_MS);
         try {
@@ -4418,17 +4435,60 @@ function PromptOverlay($$anchor, $$props) {
       set(localError, "Display action could not be sent");
       return;
     }
-    set(dismissed, true);
     set(localError, null);
     set(submitting, false);
+    if (prompt().choice !== void 0) {
+      set(typedActionSubmitted, true);
+      return;
+    }
+    set(dismissed, true);
     if (get(timeoutId) !== null) {
       clearTimeout(get(timeoutId));
       set(timeoutId, null);
     }
   }
   function handleOption(option) {
-    void sendAction(prompt().action_id, option.id);
+    if (prompt().choice !== void 0) {
+      set(selectedOptionId, option.id);
+      set(localError, null);
+      return;
+    }
+    void sendAction({
+      type: "action",
+      schema: 1,
+      action_id: prompt().action_id,
+      choice: option.id
+    });
   }
+  function sendTypedAction(operation) {
+    const choice = prompt().choice;
+    if (choice === void 0 || get(selectedOptionId) === null) return;
+    void sendAction({
+      type: "action",
+      schema: 1,
+      action_id: prompt().action_id,
+      operation,
+      option_id: get(selectedOptionId),
+      object_id: choice.object_id,
+      freshness: choice.freshness
+    });
+  }
+  legacy_pre_effect(() => (deep_read_state(canChoose()), deep_read_state(prompt())), () => {
+    var _a2;
+    set(canChooseTyped, canChoose() && (((_a2 = prompt().choice) == null ? void 0 : _a2.operations.includes("choose")) ?? false));
+  });
+  legacy_pre_effect(() => (deep_read_state(canExplore()), deep_read_state(prompt())), () => {
+    var _a2;
+    set(canExploreTyped, canExplore() && (((_a2 = prompt().choice) == null ? void 0 : _a2.operations.includes("explore")) ?? false));
+  });
+  legacy_pre_effect(() => (deep_read_state(prompt()), get(choiceContextKey)), () => {
+    const nextChoiceContextKey = prompt().choice === void 0 ? null : `${prompt().action_id}:${prompt().choice.object_id}:${prompt().choice.freshness}`;
+    if (nextChoiceContextKey !== get(choiceContextKey)) {
+      set(choiceContextKey, nextChoiceContextKey);
+      set(selectedOptionId, null);
+      set(typedActionSubmitted, false);
+    }
+  });
   legacy_pre_effect(
     () => (deep_read_state(prompt()), get(timeoutKey), get(timeoutId), get(dismissed)),
     () => {
@@ -4436,7 +4496,8 @@ function PromptOverlay($$anchor, $$props) {
       const nextTimeoutKey = JSON.stringify({
         action_id: prompt().action_id,
         timeout_seconds: prompt().timeout_seconds,
-        default_choice: ((_a2 = prompt().options[0]) == null ? void 0 : _a2.id) ?? "no"
+        default_choice: ((_a2 = prompt().options[0]) == null ? void 0 : _a2.id) ?? "no",
+        typed_choice: prompt().choice !== void 0
       });
       if (nextTimeoutKey !== get(timeoutKey)) {
         set(timeoutKey, nextTimeoutKey);
@@ -4444,11 +4505,16 @@ function PromptOverlay($$anchor, $$props) {
           clearTimeout(get(timeoutId));
           set(timeoutId, null);
         }
-        if (prompt().timeout_seconds !== null && prompt().timeout_seconds > 0 && !get(dismissed)) {
+        if (prompt().choice === void 0 && prompt().timeout_seconds !== null && prompt().timeout_seconds > 0 && !get(dismissed)) {
           const defaultChoice = ((_b2 = prompt().options[0]) == null ? void 0 : _b2.id) ?? "no";
           set(timeoutId, setTimeout(
             () => {
-              void sendAction(prompt().action_id, defaultChoice);
+              void sendAction({
+                type: "action",
+                schema: 1,
+                action_id: prompt().action_id,
+                choice: defaultChoice
+              });
             },
             Math.min(prompt().timeout_seconds, MAX_PROMPT_TIMEOUT_SECONDS) * 1e3
           ));
@@ -4461,8 +4527,8 @@ function PromptOverlay($$anchor, $$props) {
   var fragment = comment();
   var node = first_child(fragment);
   {
-    var consequent_2 = ($$anchor2) => {
-      var div = root_3$2();
+    var consequent_4 = ($$anchor2) => {
+      var div = root_5$2();
       var div_1 = sibling(child(div), 2);
       var node_1 = child(div_1);
       {
@@ -4492,32 +4558,66 @@ function PromptOverlay($$anchor, $$props) {
           if (errorMessage() ?? get(localError)) $$render(consequent_1);
         });
       }
-      var div_3 = sibling(node_2, 2);
+      var node_3 = sibling(node_2, 2);
+      {
+        var consequent_2 = ($$anchor3) => {
+          var p_2 = root_2$2();
+          append($$anchor3, p_2);
+        };
+        if_block(node_3, ($$render) => {
+          if (get(typedActionSubmitted)) $$render(consequent_2);
+        });
+      }
+      var div_3 = sibling(node_3, 2);
+      let classes;
       each(
         div_3,
         5,
         () => (deep_read_state(prompt()), untrack(() => prompt().options)),
         (option) => option.id,
         ($$anchor3, option) => {
-          var button = root_2$2();
+          var button = root_3$2();
           var text_4 = only_child(button, true);
           template_effect(() => {
             set_class(button, 1, `prompt-btn prompt-btn--${(get(option), untrack(() => get(option).id)) ?? ""}`, "svelte-glm292");
-            button.disabled = get(submitting);
+            button.disabled = get(submitting) || get(typedActionSubmitted);
+            set_attribute(button, "aria-pressed", (deep_read_state(prompt()), get(selectedOptionId), get(option), untrack(() => prompt().choice ? get(selectedOptionId) === get(option).id : void 0)));
+            set_attribute(button, "data-selected", (deep_read_state(prompt()), get(selectedOptionId), get(option), untrack(() => prompt().choice && get(selectedOptionId) === get(option).id ? "true" : void 0)));
             set_text(text_4, (get(option), untrack(() => get(option).label)));
           });
           event("click", button, () => handleOption(get(option)));
           append($$anchor3, button);
         }
       );
+      var node_4 = sibling(div_3, 2);
+      {
+        var consequent_3 = ($$anchor3) => {
+          var div_4 = root_4$2();
+          var button_1 = child(div_4);
+          var button_2 = sibling(button_1, 2);
+          template_effect(() => {
+            button_1.disabled = get(submitting) || get(typedActionSubmitted) || get(selectedOptionId) === null || !get(canChooseTyped);
+            button_2.disabled = get(submitting) || get(typedActionSubmitted) || get(selectedOptionId) === null || !get(canExploreTyped);
+          });
+          event("click", button_1, () => sendTypedAction("choose"));
+          event("click", button_2, () => sendTypedAction("explore"));
+          append($$anchor3, div_4);
+        };
+        if_block(node_4, ($$render) => {
+          if (deep_read_state(prompt()), untrack(() => prompt().choice)) $$render(consequent_3);
+        });
+      }
       template_effect(() => {
         set_text(text_1, (deep_read_state(prompt()), untrack(() => prompt().title)));
         set_text(text_2, (deep_read_state(prompt()), untrack(() => prompt().body)));
+        classes = set_class(div_3, 1, "prompt-actions svelte-glm292", null, classes, { "prompt-actions--typed": prompt().choice !== void 0 });
+        set_attribute(div_3, "role", (deep_read_state(prompt()), untrack(() => prompt().choice ? "group" : void 0)));
+        set_attribute(div_3, "aria-label", (deep_read_state(prompt()), untrack(() => prompt().choice ? "Choices" : void 0)));
       });
       append($$anchor2, div);
     };
     if_block(node, ($$render) => {
-      if (!get(dismissed)) $$render(consequent_2);
+      if (!get(dismissed)) $$render(consequent_4);
     });
   }
   append($$anchor, fragment);
@@ -4797,14 +4897,14 @@ const displayStates = [
   "disconnected",
   "prompt"
 ];
-const displayActionNames = ["prompt.choose", "prompt.dismiss"];
+const displayActionNames = ["prompt.choose", "prompt.explore", "prompt.dismiss"];
 const isRecord = (value) => typeof value === "object" && value !== null && !Array.isArray(value);
-function parsePromptOption(raw) {
+function parsePromptOption(raw, idLimit, labelLimit) {
   if (!isRecord(raw)) return null;
   const { id, label } = raw;
   if (typeof id !== "string" || !id) return null;
-  if (id.length > 32) return null;
-  if (typeof label !== "string" || !label || label.length > 48) return null;
+  if (id.length > idLimit) return null;
+  if (typeof label !== "string" || !label || label.length > labelLimit) return null;
   return { id, label };
 }
 function parseDisplayPrompt(raw) {
@@ -4812,12 +4912,18 @@ function parseDisplayPrompt(raw) {
   const { kind, title, body, options, action_id, timeout_seconds } = raw;
   if (typeof kind !== "string" || !kind || kind.length > 24) return null;
   if (typeof title !== "string" || !title || title.length > 64) return null;
-  if (typeof body !== "string" || body.length > 192) return null;
-  if (!Array.isArray(options) || options.length === 0 || options.length > 4) return null;
+  const typedChoice = raw.choice !== void 0;
+  if (typedChoice && kind !== "choice") return null;
+  if (typeof body !== "string" || body.length > (typedChoice ? 1024 : 192)) return null;
+  const optionLimit = typedChoice ? 32 : 4;
+  if (!Array.isArray(options) || options.length === 0 || options.length > optionLimit) return null;
+  const idLimit = typedChoice ? 64 : 32;
+  const labelLimit = typedChoice ? 256 : 48;
   const parsedOptions = [];
   for (const opt of options) {
-    const parsed = parsePromptOption(opt);
+    const parsed = parsePromptOption(opt, idLimit, labelLimit);
     if (!parsed) return null;
+    if (parsedOptions.some((existing) => existing.id === parsed.id)) return null;
     parsedOptions.push(parsed);
   }
   if (parsedOptions.length === 0) return null;
@@ -4826,7 +4932,25 @@ function parseDisplayPrompt(raw) {
   if (timeout_seconds !== null && (typeof timeout_seconds !== "number" || !Number.isSafeInteger(timeout_seconds) || timeout_seconds <= 0)) {
     return null;
   }
-  return {
+  let choice;
+  if (typedChoice) {
+    if (kind !== "choice" || !isRecord(raw.choice)) return null;
+    const objectId = raw.choice.object_id;
+    const freshness = raw.choice.freshness;
+    const operations = raw.choice.operations;
+    if (typeof objectId !== "string" || !objectId || objectId.length > 64 || typeof freshness !== "string" || !freshness || freshness.length > 64 || !Array.isArray(operations) || operations.length === 0 || operations.length > 2) {
+      return null;
+    }
+    const parsedOperations = [];
+    for (const operation of operations) {
+      if (operation !== "choose" && operation !== "explore" || parsedOperations.includes(operation)) {
+        return null;
+      }
+      parsedOperations.push(operation);
+    }
+    choice = { object_id: objectId, operations: parsedOperations, freshness };
+  }
+  const prompt = {
     kind,
     title,
     body,
@@ -4834,6 +4958,8 @@ function parseDisplayPrompt(raw) {
     action_id,
     timeout_seconds
   };
+  if (choice !== void 0) prompt.choice = choice;
+  return prompt;
 }
 function parseCapabilities(raw) {
   if (!isRecord(raw)) return null;
@@ -5266,11 +5392,16 @@ function canPerformAction(snapshot, actionName) {
   return ((_a2 = snapshot.capabilities) == null ? void 0 : _a2.actions.includes(actionName)) ?? false;
 }
 function toView(snapshot) {
+  var _a2;
+  const choice = (_a2 = snapshot.prompt) == null ? void 0 : _a2.choice;
+  const canChoose = snapshot.prompt !== null && canPerformAction(snapshot, "prompt.choose") && (choice === void 0 || choice.operations.includes("choose"));
+  const canExplore = choice !== void 0 && choice.operations.includes("explore") && canPerformAction(snapshot, "prompt.explore");
   return {
     ...snapshot,
     is_busy: busyStates.has(snapshot.state),
     connection_healthy: connectionHealthy(snapshot.state),
-    can_choose: snapshot.prompt !== null && canPerformAction(snapshot, "prompt.choose"),
+    can_choose: canChoose,
+    can_explore: canExplore,
     can_dismiss: snapshot.prompt !== null && canPerformAction(snapshot, "prompt.dismiss")
   };
 }
@@ -5293,18 +5424,27 @@ class SnapshotReducer {
     return { kind: "accepted", view };
   }
   validateAction(action) {
-    if (action.type !== "action" || action.schema !== 1 || typeof action.action_id !== "string" || action.action_id.length === 0 || action.action_id.length > 64 || typeof action.choice !== "string" || action.choice.length === 0 || action.choice.length > 32) {
+    if (action.type !== "action" || action.schema !== 1 || typeof action.action_id !== "string" || action.action_id.length === 0 || action.action_id.length > 64 || "choice" in action && (typeof action.choice !== "string" || action.choice.length === 0 || action.choice.length > 32) || "operation" in action && (action.option_id.length === 0 || action.option_id.length > 64 || action.object_id.length === 0 || action.object_id.length > 64 || action.freshness.length === 0 || action.freshness.length > 64)) {
       return "invalid_argument";
     }
     if (this.current === null || this.current.state !== "prompt" || this.current.prompt === null) {
       return "prompt_not_active";
     }
-    if (!this.current.can_choose) {
-      return "action_not_allowed";
-    }
     if (this.current.prompt.action_id !== action.action_id) {
       return "action_id_mismatch";
     }
+    const choice = this.current.prompt.choice;
+    if (choice !== void 0) {
+      if (!("operation" in action) || action.object_id !== choice.object_id || action.freshness !== choice.freshness) {
+        return "choice_context_mismatch";
+      }
+      if (!choice.operations.includes(action.operation) || action.operation === "choose" && !this.current.can_choose || action.operation === "explore" && !this.current.can_explore) {
+        return "action_not_allowed";
+      }
+      return this.current.prompt.options.some((option) => option.id === action.option_id) ? "accepted" : "unknown_choice";
+    }
+    if (!this.current.can_choose) return "action_not_allowed";
+    if (!("choice" in action)) return "action_not_allowed";
     return this.current.prompt.options.some((option) => option.id === action.choice) ? "accepted" : "unknown_choice";
   }
 }
@@ -6545,7 +6685,11 @@ function App($$anchor, $$props) {
       }
     });
     set(dispatchAction, (action) => {
-      if (get(connectionState) !== "connected" || get(displayView).state !== "prompt" || !get(displayView).can_choose) {
+      let actionAllowed = get(displayView).can_choose;
+      if ("operation" in action) {
+        actionAllowed = action.operation === "choose" ? get(displayView).can_choose : get(displayView).can_explore;
+      }
+      if (get(connectionState) !== "connected" || get(displayView).state !== "prompt" || !actionAllowed) {
         return Promise.resolve(false);
       }
       return (bridge == null ? void 0 : bridge.dispatchAction(action)) ?? Promise.resolve(false);
@@ -6675,7 +6819,7 @@ function App($$anchor, $$props) {
   legacy_pre_effect(
     () => (get(protocolError), get(connectionState), get(displayView)),
     () => {
-      set(promptVisible, get(protocolError) === null && get(connectionState) === "connected" && get(displayView).state === "prompt" && get(displayView).prompt !== null && get(displayView).can_choose);
+      set(promptVisible, get(protocolError) === null && get(connectionState) === "connected" && get(displayView).state === "prompt" && get(displayView).prompt !== null && (get(displayView).can_choose || get(displayView).can_explore));
     }
   );
   legacy_pre_effect(() => get(displayView), () => {
@@ -6730,6 +6874,12 @@ function App($$anchor, $$props) {
             },
             get account() {
               return get($0);
+            },
+            get canChoose() {
+              return get(displayView), untrack(() => get(displayView).can_choose);
+            },
+            get canExplore() {
+              return get(displayView), untrack(() => get(displayView).can_explore);
             },
             get onAction() {
               return get(dispatchAction);

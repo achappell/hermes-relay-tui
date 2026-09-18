@@ -84,8 +84,12 @@ bool ui_snapshot_to_rules(const ui_snapshot_t *snapshot, display_rules_snapshot_
     rules_snapshot->sequence = snapshot->sequence;
     rules_snapshot->state = snapshot->state;
     rules_snapshot->prompt.present = snapshot->prompt.present;
+    rules_snapshot->prompt.typed_choice = snapshot->prompt.typed_choice;
     rules_snapshot->prompt.can_choose = snapshot->prompt.can_choose;
+    rules_snapshot->prompt.can_explore = snapshot->prompt.can_explore;
     rules_snapshot->prompt.can_dismiss = snapshot->prompt.can_dismiss;
+    rules_snapshot->prompt.allows_choose = snapshot->prompt.allows_choose;
+    rules_snapshot->prompt.allows_explore = snapshot->prompt.allows_explore;
 
     if (!snapshot->prompt.present) return true;
 
@@ -93,6 +97,14 @@ bool ui_snapshot_to_rules(const ui_snapshot_t *snapshot, display_rules_snapshot_
         rules_snapshot->prompt.action_id,
         sizeof(rules_snapshot->prompt.action_id),
         snapshot->prompt.action_id);
+    copy_bounded(
+        rules_snapshot->prompt.object_id,
+        sizeof(rules_snapshot->prompt.object_id),
+        snapshot->prompt.object_id);
+    copy_bounded(
+        rules_snapshot->prompt.freshness,
+        sizeof(rules_snapshot->prompt.freshness),
+        snapshot->prompt.freshness);
     rules_snapshot->prompt.option_count = snapshot->prompt.option_count;
     for (uint8_t index = 0; index < snapshot->prompt.option_count; index++) {
         copy_bounded(

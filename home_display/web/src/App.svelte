@@ -53,7 +53,8 @@
     && displayView.state === "idle" && displayView.connection_healthy && !displayView.is_busy;
   $: wakePhraseLabel = displayView.capabilities?.wake_phrases?.join(" or ") ?? "the wake phrase";
   $: promptVisible = protocolError === null && connectionState === "connected"
-    && displayView.state === "prompt" && displayView.prompt !== null && displayView.can_choose;
+    && displayView.state === "prompt" && displayView.prompt !== null
+    && (displayView.can_choose || displayView.can_explore);
   $: promptKey = displayView.prompt === null ? "" : JSON.stringify(displayView.prompt);
 
   function isDisplayReady(): boolean {
@@ -248,10 +249,16 @@
       },
     });
     dispatchAction = (action) => {
+      let actionAllowed = displayView.can_choose;
+      if ("operation" in action) {
+        actionAllowed = action.operation === "choose"
+          ? displayView.can_choose
+          : displayView.can_explore;
+      }
       if (
         connectionState !== "connected" ||
         displayView.state !== "prompt" ||
-        !displayView.can_choose
+        !actionAllowed
       ) {
         return Promise.resolve(false);
       }
@@ -394,6 +401,8 @@
     <PromptOverlay
       prompt={displayView.prompt}
       account={displayView.account ?? null}
+      canChoose={displayView.can_choose}
+      canExplore={displayView.can_explore}
       onAction={dispatchAction}
     />
   {/key}

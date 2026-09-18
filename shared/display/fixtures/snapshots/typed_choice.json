@@ -1,0 +1,30 @@
+{
+  "type": "snapshot",
+  "schema": 1,
+  "sequence": 3,
+  "state": "prompt",
+  "response_text": "",
+  "status_text": "Choose or explore",
+  "media": null,
+  "account": "Peyton",
+  "prompt": {
+    "kind": "choice",
+    "title": "Hermes choice",
+    "body": "Which inspection step should I explain or take?",
+    "options": [
+      { "id": "inspect", "label": "Inspect the device" },
+      { "id": "compare", "label": "Compare the readings" }
+    ],
+    "action_id": "home-correlation-1",
+    "timeout_seconds": null,
+    "choice": {
+      "object_id": "home-choice-1",
+      "operations": ["choose", "explore"],
+      "freshness": "home-freshness-1"
+    }
+  },
+  "capabilities": {
+    "actions": ["prompt.choose", "prompt.explore"],
+    "features": ["prompt_overlay"]
+  }
+}

@@ -430,16 +430,26 @@ body {
   }
 
   /* The first button (primary action) gets a filled style */
-  .prompt-btn.svelte-glm292:first-child {
+  .prompt-actions.svelte-glm292:not(.prompt-actions--typed) .prompt-btn:where(.svelte-glm292):first-child {
     background: var(--signal-heard);
     border-color: var(--signal-heard);
     color: var(--canvas-night);
   }
 
-  .prompt-btn.svelte-glm292:first-child:hover,
-  .prompt-btn.svelte-glm292:first-child:focus-visible {
+  .prompt-actions.svelte-glm292:not(.prompt-actions--typed) .prompt-btn:where(.svelte-glm292):first-child:hover,
+  .prompt-actions.svelte-glm292:not(.prompt-actions--typed) .prompt-btn:where(.svelte-glm292):first-child:focus-visible {
     background: var(--ink-primary);
     border-color: var(--ink-primary);
+  }
+
+  .prompt-btn[data-selected="true"].svelte-glm292 {
+    background: var(--signal-heard);
+    border-color: var(--signal-heard);
+    color: var(--canvas-night);
+  }
+
+  .prompt-actions--typed.svelte-glm292 {
+    margin-top: 0;
   }
 
   .prompt-btn.svelte-glm292:not(:first-child):hover,

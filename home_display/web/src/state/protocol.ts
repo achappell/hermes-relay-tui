@@ -24,9 +24,16 @@ export interface DisplayPrompt {
   options: PromptOption[];
   action_id: string;
   timeout_seconds: number | null;
+  choice?: DisplayChoice;
 }
 
-export const displayActionNames = ["prompt.choose", "prompt.dismiss"] as const;
+export interface DisplayChoice {
+  object_id: string;
+  operations: Array<"choose" | "explore">;
+  freshness: string;
+}
+
+export const displayActionNames = ["prompt.choose", "prompt.explore", "prompt.dismiss"] as const;
 export type DisplayActionName = (typeof displayActionNames)[number];
 
 export interface DisplayCapabilities {
@@ -38,12 +45,22 @@ export interface DisplayCapabilities {
   wake_followup_seconds?: number;
 }
 
-export interface DisplayAction {
-  type: "action";
-  schema: 1;
-  action_id: string;
-  choice: string;
-}
+export type DisplayAction =
+  | {
+      type: "action";
+      schema: 1;
+      action_id: string;
+      choice: string;
+    }
+  | {
+      type: "action";
+      schema: 1;
+      action_id: string;
+      operation: "choose" | "explore";
+      option_id: string;
+      object_id: string;
+      freshness: string;
+    };
 
 export interface DisplayAudioStart {
   type: "audio_start";
@@ -94,12 +111,16 @@ export interface DisplaySnapshot {
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
 
-function parsePromptOption(raw: unknown): PromptOption | null {
+function parsePromptOption(
+  raw: unknown,
+  idLimit: number,
+  labelLimit: number,
+): PromptOption | null {
   if (!isRecord(raw)) return null;
   const { id, label } = raw;
   if (typeof id !== "string" || !id) return null;
-  if (id.length > 32) return null;
-  if (typeof label !== "string" || !label || label.length > 48) return null;
+  if (id.length > idLimit) return null;
+  if (typeof label !== "string" || !label || label.length > labelLimit) return null;
   return { id, label };
 }
 
@@ -108,12 +129,18 @@ function parseDisplayPrompt(raw: unknown): DisplayPrompt | null {
   const { kind, title, body, options, action_id, timeout_seconds } = raw;
   if (typeof kind !== "string" || !kind || kind.length > 24) return null;
   if (typeof title !== "string" || !title || title.length > 64) return null;
-  if (typeof body !== "string" || body.length > 192) return null;
-  if (!Array.isArray(options) || options.length === 0 || options.length > 4) return null;
+  const typedChoice = raw.choice !== undefined;
+  if (typedChoice && kind !== "choice") return null;
+  if (typeof body !== "string" || body.length > (typedChoice ? 1024 : 192)) return null;
+  const optionLimit = typedChoice ? 32 : 4;
+  if (!Array.isArray(options) || options.length === 0 || options.length > optionLimit) return null;
+  const idLimit = typedChoice ? 64 : 32;
+  const labelLimit = typedChoice ? 256 : 48;
   const parsedOptions: PromptOption[] = [];
   for (const opt of options) {
-    const parsed = parsePromptOption(opt);
+    const parsed = parsePromptOption(opt, idLimit, labelLimit);
     if (!parsed) return null;
+    if (parsedOptions.some((existing) => existing.id === parsed.id)) return null;
     parsedOptions.push(parsed);
   }
   if (parsedOptions.length === 0) return null;
@@ -127,7 +154,38 @@ function parseDisplayPrompt(raw: unknown): DisplayPrompt | null {
   ) {
     return null;
   }
-  return {
+  let choice: DisplayChoice | undefined;
+  if (typedChoice) {
+    if (kind !== "choice" || !isRecord(raw.choice)) return null;
+    const objectId = raw.choice.object_id;
+    const freshness = raw.choice.freshness;
+    const operations = raw.choice.operations;
+    if (
+      typeof objectId !== "string" ||
+      !objectId ||
+      objectId.length > 64 ||
+      typeof freshness !== "string" ||
+      !freshness ||
+      freshness.length > 64 ||
+      !Array.isArray(operations) ||
+      operations.length === 0 ||
+      operations.length > 2
+    ) {
+      return null;
+    }
+    const parsedOperations: Array<"choose" | "explore"> = [];
+    for (const operation of operations) {
+      if (
+        (operation !== "choose" && operation !== "explore") ||
+        parsedOperations.includes(operation)
+      ) {
+        return null;
+      }
+      parsedOperations.push(operation);
+    }
+    choice = { object_id: objectId, operations: parsedOperations, freshness };
+  }
+  const prompt: DisplayPrompt = {
     kind,
     title,
     body,
@@ -135,6 +193,8 @@ function parseDisplayPrompt(raw: unknown): DisplayPrompt | null {
     action_id,
     timeout_seconds: timeout_seconds as number | null,
   };
+  if (choice !== undefined) prompt.choice = choice;
+  return prompt;
 }
 
 function parseCapabilities(raw: unknown): DisplayCapabilities | null {
@@ -281,14 +341,41 @@ export function parseAction(raw: unknown): DisplayAction | null {
     schema !== 1 ||
     typeof action_id !== "string" ||
     action_id.length === 0 ||
-    action_id.length > 64 ||
-    typeof choice !== "string" ||
-    choice.length === 0 ||
-    choice.length > 32
+    action_id.length > 64
   ) {
     return null;
   }
-  return { type, schema, action_id, choice };
+  const typedNames = ["operation", "option_id", "object_id", "freshness"] as const;
+  const typedPresent = typedNames.filter((name) => name in raw);
+  if (typedPresent.length === 0) {
+    if (typeof choice !== "string" || choice.length === 0 || choice.length > 32) return null;
+    return { type, schema, action_id, choice };
+  }
+  if (
+    typedPresent.length !== typedNames.length ||
+    "choice" in raw ||
+    (raw.operation !== "choose" && raw.operation !== "explore") ||
+    typeof raw.option_id !== "string" ||
+    !raw.option_id ||
+    raw.option_id.length > 64 ||
+    typeof raw.object_id !== "string" ||
+    !raw.object_id ||
+    raw.object_id.length > 64 ||
+    typeof raw.freshness !== "string" ||
+    !raw.freshness ||
+    raw.freshness.length > 64
+  ) {
+    return null;
+  }
+  return {
+    type,
+    schema,
+    action_id,
+    operation: raw.operation,
+    option_id: raw.option_id,
+    object_id: raw.object_id,
+    freshness: raw.freshness,
+  };
 }
 
 export function parseProfileRouteAck(raw: unknown): DisplayProfileRouteAck | null {
