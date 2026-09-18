@@ -5,6 +5,8 @@
   export let prompt: DisplayPrompt;
   /** The account name shown at the top, passed through from the snapshot. */
   export let account: string | null = null;
+  export let canChoose = true;
+  export let canExplore = false;
   /** The bridge-owned domain action handler. Standalone use keeps HTTP compatibility. */
   export let onAction: ((action: DisplayAction) => Promise<boolean> | boolean | void) | null = null;
   /** Safe action failure text supplied by the owning bridge, when available. */
@@ -14,9 +16,24 @@
   const MAX_PROMPT_TIMEOUT_SECONDS = 2_147_483.647;
   let dismissed = false;
   let submitting = false;
+  let typedActionSubmitted = false;
   let localError: string | null = null;
   let timeoutId: ReturnType<typeof setTimeout> | null = null;
   let timeoutKey: string | null = null;
+  let selectedOptionId: string | null = null;
+  let choiceContextKey: string | null = null;
+  $: canChooseTyped = canChoose && (prompt.choice?.operations.includes("choose") ?? false);
+  $: canExploreTyped = canExplore && (prompt.choice?.operations.includes("explore") ?? false);
+  $: {
+    const nextChoiceContextKey = prompt.choice === undefined
+      ? null
+      : `${prompt.action_id}:${prompt.choice.object_id}:${prompt.choice.freshness}`;
+    if (nextChoiceContextKey !== choiceContextKey) {
+      choiceContextKey = nextChoiceContextKey;
+      selectedOptionId = null;
+      typedActionSubmitted = false;
+    }
+  }
 
   // Auto-dismiss: choose the first option after timeout_seconds.
   $: {
@@ -24,6 +41,7 @@
       action_id: prompt.action_id,
       timeout_seconds: prompt.timeout_seconds,
       default_choice: prompt.options[0]?.id ?? "no",
+      typed_choice: prompt.choice !== undefined,
     });
     if (nextTimeoutKey !== timeoutKey) {
       timeoutKey = nextTimeoutKey;
@@ -31,10 +49,20 @@
         clearTimeout(timeoutId);
         timeoutId = null;
       }
-      if (prompt.timeout_seconds !== null && prompt.timeout_seconds > 0 && !dismissed) {
+      if (
+        prompt.choice === undefined &&
+        prompt.timeout_seconds !== null &&
+        prompt.timeout_seconds > 0 &&
+        !dismissed
+      ) {
         const defaultChoice = prompt.options[0]?.id ?? "no";
         timeoutId = setTimeout(() => {
-          void sendAction(prompt.action_id, defaultChoice);
+          void sendAction({
+            type: "action",
+            schema: 1,
+            action_id: prompt.action_id,
+            choice: defaultChoice,
+          });
         }, Math.min(prompt.timeout_seconds, MAX_PROMPT_TIMEOUT_SECONDS) * 1000);
       }
     }
@@ -60,23 +88,25 @@
     });
   }
 
-  async function sendAction(actionId: string, choice: string): Promise<void> {
-    if (dismissed || submitting) return;
+  async function sendAction(action: DisplayAction): Promise<void> {
+    if (dismissed || submitting || typedActionSubmitted) return;
     submitting = true;
 
-    const action: DisplayAction = {
-      type: "action",
-      schema: 1,
-      action_id: actionId,
-      choice,
-    };
     let accepted = true;
     try {
       if (onAction !== null) {
         accepted = (await withTimeout(onAction(action))) !== false;
       } else {
-        const url =
-          `/action?action_id=${encodeURIComponent(actionId)}&choice=${encodeURIComponent(choice)}`;
+        const query = new URLSearchParams({ action_id: action.action_id });
+        if ("choice" in action) {
+          query.set("choice", action.choice);
+        } else {
+          query.set("operation", action.operation);
+          query.set("option_id", action.option_id);
+          query.set("object_id", action.object_id);
+          query.set("freshness", action.freshness);
+        }
+        const url = `/action?${query.toString()}`;
         const controller = new AbortController();
         const requestTimeoutId = setTimeout(() => controller.abort(), ACTION_TIMEOUT_MS);
         try {
@@ -96,9 +126,13 @@
       return;
     }
 
-    dismissed = true;
     localError = null;
     submitting = false;
+    if (prompt.choice !== undefined) {
+      typedActionSubmitted = true;
+      return;
+    }
+    dismissed = true;
     if (timeoutId !== null) {
       clearTimeout(timeoutId);
       timeoutId = null;
@@ -106,7 +140,31 @@
   }
 
   function handleOption(option: PromptOption) {
-    void sendAction(prompt.action_id, option.id);
+    if (prompt.choice !== undefined) {
+      selectedOptionId = option.id;
+      localError = null;
+      return;
+    }
+    void sendAction({
+      type: "action",
+      schema: 1,
+      action_id: prompt.action_id,
+      choice: option.id,
+    });
+  }
+
+  function sendTypedAction(operation: "choose" | "explore") {
+    const choice = prompt.choice;
+    if (choice === undefined || selectedOptionId === null) return;
+    void sendAction({
+      type: "action",
+      schema: 1,
+      action_id: prompt.action_id,
+      operation,
+      option_id: selectedOptionId,
+      object_id: choice.object_id,
+      freshness: choice.freshness,
+    });
   }
 </script>
 
@@ -124,18 +182,44 @@
       {#if errorMessage ?? localError}
         <p class="prompt-error" data-action-error role="alert">{errorMessage ?? localError}</p>
       {/if}
+      {#if typedActionSubmitted}
+        <p class="prompt-pending" data-prompt-pending role="status" aria-live="polite">
+          Waiting for Home to update this choice.
+        </p>
+      {/if}
 
-      <div class="prompt-actions">
+      <div
+        class="prompt-actions"
+        class:prompt-actions--typed={prompt.choice !== undefined}
+        role={prompt.choice ? "group" : undefined}
+        aria-label={prompt.choice ? "Choices" : undefined}
+      >
         {#each prompt.options as option (option.id)}
           <button
             class="prompt-btn prompt-btn--{option.id}"
-            disabled={submitting}
+            disabled={submitting || typedActionSubmitted}
+            aria-pressed={prompt.choice ? selectedOptionId === option.id : undefined}
+            data-selected={prompt.choice && selectedOptionId === option.id ? "true" : undefined}
             on:click={() => handleOption(option)}
           >
             {option.label}
           </button>
         {/each}
       </div>
+      {#if prompt.choice}
+        <div class="prompt-actions prompt-actions--typed">
+          <button
+            class="prompt-btn prompt-btn--choose"
+            disabled={submitting || typedActionSubmitted || selectedOptionId === null || !canChooseTyped}
+            on:click={() => sendTypedAction("choose")}
+          >Choose</button>
+          <button
+            class="prompt-btn prompt-btn--explore"
+            disabled={submitting || typedActionSubmitted || selectedOptionId === null || !canExploreTyped}
+            on:click={() => sendTypedAction("explore")}
+          >Explore</button>
+        </div>
+      {/if}
     </div>
   </div>
 {/if}
@@ -227,16 +311,26 @@
   }
 
   /* The first button (primary action) gets a filled style */
-  .prompt-btn:first-child {
+  .prompt-actions:not(.prompt-actions--typed) .prompt-btn:first-child {
     background: var(--signal-heard);
     border-color: var(--signal-heard);
     color: var(--canvas-night);
   }
 
-  .prompt-btn:first-child:hover,
-  .prompt-btn:first-child:focus-visible {
+  .prompt-actions:not(.prompt-actions--typed) .prompt-btn:first-child:hover,
+  .prompt-actions:not(.prompt-actions--typed) .prompt-btn:first-child:focus-visible {
     background: var(--ink-primary);
     border-color: var(--ink-primary);
+  }
+
+  .prompt-btn[data-selected="true"] {
+    background: var(--signal-heard);
+    border-color: var(--signal-heard);
+    color: var(--canvas-night);
+  }
+
+  .prompt-actions--typed {
+    margin-top: 0;
   }
 
   .prompt-btn:not(:first-child):hover,

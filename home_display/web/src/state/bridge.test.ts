@@ -65,6 +65,7 @@ const view: DisplayView = {
   is_busy: false,
   connection_healthy: true,
   can_choose: true,
+  can_explore: false,
   can_dismiss: false,
 };
 

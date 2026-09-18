@@ -42,6 +42,73 @@ describe("parseSnapshot", () => {
     expect(parseSnapshot(promptSnapshot)).toEqual(promptSnapshot);
   });
 
+  it("accepts a freshness-bound Home choice with large option text and identifiers", () => {
+    const typedChoice = {
+      type: "snapshot",
+      schema: 1,
+      sequence: 4,
+      state: "prompt",
+      response_text: "",
+      status_text: null,
+      media: null,
+      prompt: {
+        kind: "choice",
+        title: "Hermes choice",
+        body: "x".repeat(1024),
+        options: Array.from({ length: 32 }, (_unused, index) => ({
+          id: `option-${index}-` + "i".repeat(54),
+          label: "L".repeat(256),
+        })),
+        action_id: "correlation",
+        timeout_seconds: null,
+        choice: {
+          object_id: "object-id",
+          operations: ["choose", "explore"],
+          freshness: "freshness-token",
+        },
+      },
+      capabilities: { actions: ["prompt.choose", "prompt.explore"], features: [] },
+    };
+
+    expect(parseSnapshot(typedChoice)?.prompt?.options).toHaveLength(32);
+    expect(parseSnapshot({
+      ...typedChoice,
+      prompt: { ...typedChoice.prompt, choice: { ...typedChoice.prompt.choice, operations: ["choose", "choose"] } },
+    })).toBeNull();
+  });
+
+  it("preserves compatibility with generic choice prompts that have no typed context", () => {
+    const legacyChoice = {
+      type: "snapshot",
+      schema: 1,
+      sequence: 3,
+      state: "prompt",
+      response_text: "",
+      status_text: null,
+      media: null,
+      prompt: {
+        kind: "choice",
+        title: "Choose a route",
+        body: "Which route should I use?",
+        options: [
+          { id: "private", label: "Private route" },
+          { id: "public", label: "Public route" },
+        ],
+        action_id: "legacy-choice-1",
+        timeout_seconds: null,
+      },
+    };
+
+    expect(parseSnapshot(legacyChoice)?.prompt).toMatchObject({
+      kind: "choice",
+      action_id: "legacy-choice-1",
+      options: [
+        { id: "private", label: "Private route" },
+        { id: "public", label: "Public route" },
+      ],
+    });
+  });
+
   it("preserves account and validates shared capability fields", () => {
     const parsed = parseSnapshot({
       ...snapshot,
@@ -180,6 +247,22 @@ describe("parseAction", () => {
       action_id: "sethome",
       choice: "yes",
     });
+  });
+
+  it("accepts typed choose and explore actions with freshness context", () => {
+    const raw = {
+      type: "action",
+      schema: 1,
+      action_id: "home-correlation-1",
+      operation: "explore",
+      option_id: "inspect",
+      object_id: "home-choice-1",
+      freshness: "home-freshness-1",
+    };
+
+    expect(parseAction(raw)).toEqual(raw);
+    expect(parseAction({ ...raw, choice: "inspect" })).toBeNull();
+    expect(parseAction({ ...raw, freshness: "" })).toBeNull();
   });
 
   it.each([

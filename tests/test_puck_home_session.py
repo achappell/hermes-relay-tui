@@ -327,6 +327,124 @@ async def test_home_browser_session_resolves_a_correlated_choice_without_prompt_
 
 
 @pytest.mark.asyncio
+async def test_home_browser_session_submits_typed_choice_with_current_freshness_context():
+    prompt = _notification(
+        "event",
+        {
+            "schema": 1,
+            "conversation_handle": "opaque-home-handle",
+            "turn_id": "home-turn-1",
+            "correlation_id": "corr-typed-1",
+            "event": {
+                "type": "prompt_request",
+                "payload": {
+                    "prompt_id": "prompt-typed-1",
+                    "prompt_kind": "choice",
+                    "text": "Inspect one of these items",
+                    "options": [{"id": "inspect", "label": "Inspect the device"}],
+                    "choice": {
+                        "object_id": "home-object-1",
+                        "operations": ["choose", "explore"],
+                        "freshness": "home-freshness-1",
+                    },
+                },
+            },
+        },
+    )
+    socket = _ready_socket(prompt)
+    session = HomeBrowserSession(
+        f"wss://home.example{HOME_BRIDGE_PATH}",
+        "device-secret",
+        "opaque-home-handle",
+        connect_factory=_FakeConnect([socket]),
+    )
+    await session.connect()
+    stream = session.send_turn("inspect")
+    try:
+        event = await stream.__anext__()
+        assert event["choice"] == {
+            "object_id": "home-object-1",
+            "operations": ["choose", "explore"],
+            "freshness": "home-freshness-1",
+        }
+        assert not await session.send_prompt_response(
+            prompt_id="prompt-typed-1",
+            prompt_kind="choice",
+            option_id="inspect",
+            operation="explore",
+            object_id="home-object-1",
+            freshness="stale",
+        )
+        assert not await session.send_prompt_response(
+            prompt_id="prompt-typed-1",
+            prompt_kind="choice",
+            option_id="inspect",
+        )
+        assert await session.send_prompt_response(
+            prompt_id="prompt-typed-1",
+            prompt_kind="choice",
+            option_id="inspect",
+            operation="explore",
+            object_id="home-object-1",
+            freshness="home-freshness-1",
+        )
+        assert socket.sent[-1]["params"]["response"] == {
+            "operation": "explore",
+            "option_id": "inspect",
+            "object_id": "home-object-1",
+            "freshness": "home-freshness-1",
+        }
+    finally:
+        await stream.aclose()
+        await session.close()
+
+
+@pytest.mark.asyncio
+async def test_home_browser_session_rejects_choice_without_home_freshness_context():
+    prompt = _notification(
+        "event",
+        {
+            "schema": 1,
+            "conversation_handle": "opaque-home-handle",
+            "turn_id": "home-turn-1",
+            "correlation_id": "corr-missing-choice-context",
+            "event": {
+                "type": "prompt_request",
+                "payload": {
+                    "prompt_id": "prompt-missing-choice-context",
+                    "prompt_kind": "choice",
+                    "text": "Inspect one of these items",
+                    "options": [{"id": "inspect", "label": "Inspect the device"}],
+                },
+            },
+        },
+    )
+    socket = _ready_socket(prompt)
+    session = HomeBrowserSession(
+        f"wss://home.example{HOME_BRIDGE_PATH}",
+        "device-secret",
+        "opaque-home-handle",
+        connect_factory=_FakeConnect([socket]),
+    )
+    await session.connect()
+    stream = session.send_turn("inspect")
+    try:
+        await stream.__anext__()
+        assert not await session.send_prompt_response(
+            prompt_id="prompt-missing-choice-context",
+            prompt_kind="choice",
+            option_id="inspect",
+        )
+        assert [frame["method"] for frame in socket.sent] == [
+            "conversation.open",
+            "prompt.submit",
+        ]
+    finally:
+        await stream.aclose()
+        await session.close()
+
+
+@pytest.mark.asyncio
 async def test_home_browser_prompt_response_rejects_stale_action_without_writing():
     socket = _ready_socket(
         _notification(

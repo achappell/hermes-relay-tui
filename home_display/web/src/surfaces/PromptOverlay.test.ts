@@ -95,6 +95,70 @@ describe("PromptOverlay", () => {
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 
+  it("requires an explicit Choose or Explore after selecting a typed Home option", async () => {
+    const onAction = vi.fn(async (_action: DisplayAction) => true);
+    const prompt: DisplayPrompt = {
+      kind: "choice",
+      title: "Hermes choice",
+      body: "Which inspection step should I use?",
+      options: [{ id: "inspect", label: "Inspect the device" }],
+      action_id: "home-correlation-1",
+      timeout_seconds: null,
+      choice: {
+        object_id: "home-choice-1",
+        operations: ["choose", "explore"],
+        freshness: "freshness-1",
+      },
+    };
+    render(PromptOverlay, {
+      props: { prompt, onAction, canChoose: true, canExplore: true },
+    });
+
+    await fireEvent.click(screen.getByText("Inspect the device"));
+    expect(onAction).not.toHaveBeenCalled();
+    await fireEvent.click(screen.getByRole("button", { name: "Explore" }));
+
+    expect(onAction).toHaveBeenCalledWith({
+      type: "action",
+      schema: 1,
+      action_id: "home-correlation-1",
+      operation: "explore",
+      option_id: "inspect",
+      object_id: "home-choice-1",
+      freshness: "freshness-1",
+    });
+  });
+
+  it("keeps an accepted typed choice visible with all controls disabled until Home updates it", async () => {
+    const onAction = vi.fn(async (_action: DisplayAction) => true);
+    const prompt: DisplayPrompt = {
+      kind: "choice",
+      title: "Hermes choice",
+      body: "Which inspection step should I use?",
+      options: [{ id: "inspect", label: "Inspect the device" }],
+      action_id: "home-correlation-1",
+      timeout_seconds: null,
+      choice: {
+        object_id: "home-choice-1",
+        operations: ["choose", "explore"],
+        freshness: "freshness-1",
+      },
+    };
+    render(PromptOverlay, {
+      props: { prompt, onAction, canChoose: true, canExplore: true },
+    });
+
+    await fireEvent.click(screen.getByText("Inspect the device"));
+    await fireEvent.click(screen.getByRole("button", { name: "Explore" }));
+
+    expect(screen.getByRole("dialog")).toBeInTheDocument();
+    expect(screen.getByRole("status")).toHaveTextContent("Waiting for Home to update this choice.");
+    expect(screen.getByText("Inspect the device")).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Choose" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Explore" })).toBeDisabled();
+    expect(onAction).toHaveBeenCalledOnce();
+  });
+
   it("dismisses only after the bridge accepts the action", async () => {
     const onAction = vi.fn(async (_action: DisplayAction) => true);
     const { container } = render(PromptOverlay, {

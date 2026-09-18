@@ -25,7 +25,13 @@ import handsfree
 from home_display import appliance as appliance_module
 from home_display.appliance import Appliance
 from home_display.server import BrowserProfileRouteResult
-from home_display.state import DisplayPrompt, PromptOption
+from home_display.state import (
+    DisplayCapabilities,
+    DisplayChoice,
+    DisplayPrompt,
+    DisplayStatePublisher,
+    PromptOption,
+)
 
 
 class FakeSession:
@@ -2581,8 +2587,8 @@ profiles:
     assert args.token == ""
 
 
-def test_home_browser_prompt_classifier_uses_correlated_options():
-    prompt = appliance_module._classify_prompt_request(
+def test_home_browser_prompt_classifier_rejects_choice_without_typed_context():
+    assert appliance_module._classify_prompt_request(
         {
             "prompt_kind": "choice",
             "prompt_id": "prompt-1",
@@ -2593,11 +2599,21 @@ def test_home_browser_prompt_classifier_uses_correlated_options():
                 {"id": "public", "label": "Public route"},
             ],
         }
-    )
+    ) is None
 
+    # A non-Home legacy choice remains an ordinary approval prompt.
+    prompt = appliance_module._classify_prompt_request({
+        "kind": "choice",
+        "id": "legacy-prompt-1",
+        "text": "Choose a route",
+        "options": [
+            {"id": "private", "label": "Private route"},
+            {"id": "public", "label": "Public route"},
+        ],
+    })
     assert prompt is not None
     assert prompt.kind == "approval"
-    assert prompt.action_id == "corr-1"
+    assert prompt.action_id == "legacy-prompt-1"
     assert [(option.id, option.label) for option in prompt.options] == [
         ("private", "Private route"),
         ("public", "Public route"),
@@ -2605,6 +2621,208 @@ def test_home_browser_prompt_classifier_uses_correlated_options():
     assert appliance_module._classify_prompt_request(
         {"prompt_kind": "clarify", "correlation_id": "corr-2", "text": "Explain"}
     ) is None
+
+
+def test_home_browser_prompt_classifier_preserves_freshness_bound_choice_context():
+    prompt = appliance_module._classify_prompt_request({
+        "prompt_kind": "choice",
+        "prompt_id": "prompt-1",
+        "correlation_id": "corr-1",
+        "text": "Choose a route",
+        "options": [{"id": "inspect", "label": "Inspect the device"}],
+        "choice": {
+            "object_id": "home-object-1",
+            "operations": ["choose", "explore"],
+            "freshness": "home-freshness-1",
+        },
+    })
+
+    assert prompt is not None
+    assert prompt.kind == "choice"
+    assert prompt.action_id == "corr-1"
+    assert prompt.choice == DisplayChoice(
+        "home-object-1", ("choose", "explore"), "home-freshness-1"
+    )
+    assert appliance_module._classify_prompt_request({
+        "prompt_kind": "choice",
+        "correlation_id": "corr-1",
+        "text": "Choose",
+        "options": [{"id": "inspect", "label": "Inspect"}],
+        "choice": {
+            "object_id": "home-object-1",
+            "operations": ["explore", "explore"],
+            "freshness": "home-freshness-1",
+        },
+    }) is None
+
+
+@pytest.mark.asyncio
+async def test_browser_typed_prompt_action_requires_current_home_context_and_disables_replay():
+    class TypedSession(FakeSession):
+        capabilities = ("prompt.explore",)
+        supports_structured_prompts = True
+
+        def __init__(self):
+            super().__init__()
+            self.responses = []
+
+        async def send_prompt_response(self, **payload):
+            self.responses.append(payload)
+            return True
+
+    session = TypedSession()
+    appliance = Appliance(
+        _args(browser_voice=True),
+        session_factory=lambda _profile: session,
+    )
+    context = await appliance._create_browser_context("typed-choice", FakeServer())
+    prompt = DisplayPrompt(
+        kind="choice",
+        title="Hermes choice",
+        body="Inspect this route",
+        options=(PromptOption("inspect", "Inspect the device"),),
+        action_id="corr-typed-1",
+        choice=DisplayChoice("home-object-1", ("choose", "explore"), "fresh-1"),
+    )
+    context._child._pending_prompt_action_id = prompt.action_id
+    context._child._publish_prompt(prompt)
+    try:
+        capabilities_before = context.publisher.snapshot.capabilities
+        assert capabilities_before is not None
+        await context.handle_action(
+            prompt.action_id,
+            "inspect",
+            "explore",
+            "home-object-1",
+            "stale",
+        )
+        assert session.responses == []
+
+        await context.handle_action(
+            prompt.action_id,
+            "inspect",
+            "explore",
+            "home-object-1",
+            "fresh-1",
+        )
+        assert session.responses == [{
+            "prompt_id": "corr-typed-1",
+            "prompt_kind": "choice",
+            "option_id": "inspect",
+            "operation": "explore",
+            "object_id": "home-object-1",
+            "freshness": "fresh-1",
+        }]
+        snapshot = context.publisher.snapshot
+        assert snapshot.state == "prompt"
+        assert snapshot.prompt == prompt
+        assert snapshot.capabilities == replace(capabilities_before, actions=())
+
+        await context.handle_action(
+            prompt.action_id,
+            "inspect",
+            "explore",
+            "home-object-1",
+            "fresh-1",
+        )
+        assert len(session.responses) == 1
+    finally:
+        await context.close()
+
+
+@pytest.mark.asyncio
+async def test_native_typed_choice_rejects_legacy_stale_and_unadvertised_actions():
+    class TypedSession(FakeSession):
+        supports_structured_prompts = True
+
+        def __init__(self):
+            super().__init__()
+            self.responses = []
+
+        async def send_prompt_response(self, **payload):
+            self.responses.append(payload)
+            return True
+
+    session = TypedSession()
+    publisher = DisplayStatePublisher()
+    appliance = Appliance(_args(browser_voice=True), publisher=publisher, session=session)
+    prompt = DisplayPrompt(
+        kind="choice",
+        title="Hermes choice",
+        body="Inspect this route",
+        options=(PromptOption("inspect", "Inspect the device"),),
+        action_id="corr-typed-2",
+        choice=DisplayChoice("home-object-2", ("choose", "explore"), "fresh-2"),
+    )
+    appliance._pending_prompt_action_id = prompt.action_id
+    publisher.publish(
+        state="prompt",
+        prompt=prompt,
+        capabilities=DisplayCapabilities(
+            actions=("prompt.choose",), features=("browser_voice",)
+        ),
+    )
+
+    # A legacy tap carries no freshness identity and cannot dismiss this object.
+    await appliance._on_action(prompt.action_id, "inspect")
+    # Explore is unsupported by the current session capability snapshot.
+    await appliance._on_action(
+        prompt.action_id,
+        "inspect",
+        operation="explore",
+        object_id="home-object-2",
+        freshness="fresh-2",
+    )
+    # A stale token is rejected without clearing the prompt or writing to Home.
+    await appliance._on_action(
+        prompt.action_id,
+        "inspect",
+        operation="choose",
+        object_id="home-object-2",
+        freshness="stale",
+    )
+    assert session.responses == []
+    assert publisher.snapshot.prompt == prompt
+    assert appliance._pending_prompt_action_id == prompt.action_id
+
+    publisher.publish(
+        state="prompt",
+        prompt=prompt,
+        capabilities=DisplayCapabilities(
+            actions=("prompt.choose", "prompt.explore"),
+            features=("browser_voice",),
+        ),
+    )
+    await appliance._on_action(
+        prompt.action_id,
+        "inspect",
+        operation="explore",
+        object_id="home-object-2",
+        freshness="fresh-2",
+    )
+    assert session.responses == [
+        {
+            "prompt_id": "corr-typed-2",
+            "prompt_kind": "choice",
+            "option_id": "inspect",
+            "operation": "explore",
+            "object_id": "home-object-2",
+            "freshness": "fresh-2",
+        }
+    ]
+    assert publisher.snapshot.state == "prompt"
+    assert publisher.snapshot.prompt == prompt
+    assert publisher.snapshot.capabilities is not None
+    assert publisher.snapshot.capabilities.actions == ()
+
+    await appliance._on_action(
+        prompt.action_id,
+        "inspect",
+        operation="explore",
+        object_id="home-object-2",
+        freshness="fresh-2",
+    )
+    assert len(session.responses) == 1
 
 
 @pytest.mark.asyncio

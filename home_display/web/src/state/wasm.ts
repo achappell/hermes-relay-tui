@@ -54,7 +54,7 @@ export interface DisplayFramebuffer {
   height: number;
 }
 
-const ABI_VERSION = 2;
+const ABI_VERSION = 3;
 const ACCEPTED = 0;
 const STALE = 1;
 const INVALID_ARGUMENT = 2;
@@ -64,6 +64,7 @@ const PROMPT_NOT_ACTIVE = 5;
 const ACTION_NOT_ALLOWED = 6;
 const ACTION_ID_MISMATCH = 7;
 const UNKNOWN_CHOICE = 8;
+const CHOICE_CONTEXT_MISMATCH = 9;
 
 const snapshotArguments: ReadonlyArray<WasmArgumentType> = [
   "number",
@@ -127,41 +128,58 @@ function actionValidation(result: number): ActionValidationResult {
       return "action_id_mismatch";
     case UNKNOWN_CHOICE:
       return "unknown_choice";
+    case CHOICE_CONTEXT_MISMATCH:
+      return "choice_context_mismatch";
     default:
       return "invalid_argument";
   }
 }
 
 function validActionShape(action: DisplayAction): boolean {
-  return (
+  if (
     action.type === "action" &&
     action.schema === 1 &&
     typeof action.action_id === "string" &&
     action.action_id.length > 0 &&
-    action.action_id.length <= 64 &&
-    typeof action.choice === "string" &&
-    action.choice.length > 0 &&
-    action.choice.length <= 32
-  );
+    action.action_id.length <= 64
+  ) {
+    if ("choice" in action) {
+      return typeof action.choice === "string" &&
+        action.choice.length > 0 && action.choice.length <= 32;
+    }
+    return (action.operation === "choose" || action.operation === "explore") &&
+      action.option_id.length > 0 && action.option_id.length <= 64 &&
+      action.object_id.length > 0 && action.object_id.length <= 64 &&
+      action.freshness.length > 0 && action.freshness.length <= 64;
+  }
+  return false;
 }
 
 export class WasmDisplayReducer implements DisplayReducer {
   private readonly module: DisplayWasmModule;
   private readonly resetC: WasmFunction;
   private readonly applySnapshotC: WasmFunction;
+  private readonly beginTypedChoiceC: WasmFunction;
+  private readonly setTypedChoiceOptionC: WasmFunction;
+  private readonly finishTypedChoiceC: WasmFunction;
   private readonly validateChoiceC: WasmFunction;
+  private readonly validateTypedChoiceC: WasmFunction;
   private readonly validateDismissC: WasmFunction;
   private readonly setConnectionStateC: WasmFunction;
   private readonly setPointerC: WasmFunction;
   private readonly actionPendingC: WasmFunction;
   private readonly actionIdC: WasmFunction<string>;
   private readonly actionChoiceC: WasmFunction<string>;
+  private readonly actionOperationC: WasmFunction<string>;
+  private readonly actionObjectIdC: WasmFunction<string>;
+  private readonly actionFreshnessC: WasmFunction<string>;
   private readonly actionClearC: WasmFunction;
   private readonly viewStateC: WasmFunction;
   private readonly viewSequenceC: WasmFunction;
   private readonly viewIsBusyC: WasmFunction;
   private readonly viewConnectionHealthyC: WasmFunction;
   private readonly viewCanChooseC: WasmFunction;
+  private readonly viewCanExploreC: WasmFunction;
   private readonly viewCanDismissC: WasmFunction;
   private readonly framebufferC: WasmFunction;
   private readonly framebufferWidthC: WasmFunction;
@@ -185,19 +203,34 @@ export class WasmDisplayReducer implements DisplayReducer {
 
     this.resetC = cwrap(module, "display_wasm_reset", []);
     this.applySnapshotC = cwrap(module, "display_wasm_apply_snapshot", snapshotArguments);
+    this.beginTypedChoiceC = cwrap(module, "display_wasm_begin_typed_choice_snapshot", [
+      "number", "string", "string", "string", "string", "string", "string", "string",
+      "string", "number", "number", "number", "number", "number",
+    ]);
+    this.setTypedChoiceOptionC = cwrap(module, "display_wasm_set_typed_choice_option", [
+      "number", "string", "string",
+    ]);
+    this.finishTypedChoiceC = cwrap(module, "display_wasm_finish_typed_choice_snapshot", []);
     this.validateChoiceC = cwrap(module, "display_wasm_validate_choice", ["string", "string"]);
+    this.validateTypedChoiceC = cwrap(module, "display_wasm_validate_typed_choice", [
+      "string", "string", "string", "string", "string",
+    ]);
     this.validateDismissC = cwrap(module, "display_wasm_validate_dismiss", []);
     this.setConnectionStateC = cwrap(module, "display_wasm_set_connection_state", ["number"]);
     this.setPointerC = cwrap(module, "display_wasm_set_pointer", ["number", "number", "number"]);
     this.actionPendingC = cwrap(module, "display_wasm_action_pending", []);
     this.actionIdC = cwrapString(module, "display_wasm_action_id", []);
     this.actionChoiceC = cwrapString(module, "display_wasm_action_choice", []);
+    this.actionOperationC = cwrapString(module, "display_wasm_action_operation", []);
+    this.actionObjectIdC = cwrapString(module, "display_wasm_action_object_id", []);
+    this.actionFreshnessC = cwrapString(module, "display_wasm_action_freshness", []);
     this.actionClearC = cwrap(module, "display_wasm_action_clear", []);
     this.viewStateC = cwrap(module, "display_wasm_view_state", []);
     this.viewSequenceC = cwrap(module, "display_wasm_view_sequence", []);
     this.viewIsBusyC = cwrap(module, "display_wasm_view_is_busy", []);
     this.viewConnectionHealthyC = cwrap(module, "display_wasm_view_connection_healthy", []);
     this.viewCanChooseC = cwrap(module, "display_wasm_view_can_choose", []);
+    this.viewCanExploreC = cwrap(module, "display_wasm_view_can_explore", []);
     this.viewCanDismissC = cwrap(module, "display_wasm_view_can_dismiss", []);
     this.framebufferC = cwrap(module, "display_wasm_framebuffer", []);
     this.framebufferWidthC = cwrap(module, "display_wasm_framebuffer_width", []);
@@ -214,26 +247,56 @@ export class WasmDisplayReducer implements DisplayReducer {
 
   applySnapshot(snapshot: DisplaySnapshot): SnapshotReduction {
     const prompt = snapshot.prompt;
-    const options = [0, 1, 2, 3].flatMap((index) => [
-      prompt?.options[index]?.id ?? "",
-      prompt?.options[index]?.label ?? "",
-    ]);
-    const result = this.applySnapshotC(
-      snapshot.sequence,
-      snapshot.state,
-      snapshot.response_text,
-      snapshot.status_text ?? "",
-      snapshot.account ?? "",
-      prompt?.kind ?? "",
-      prompt?.title ?? "",
-      prompt?.body ?? "",
-      prompt?.action_id ?? "",
-      prompt?.timeout_seconds ?? -1,
-      prompt !== null && snapshot.capabilities?.actions.includes("prompt.choose") ? 1 : 0,
-      prompt !== null && snapshot.capabilities?.actions.includes("prompt.dismiss") ? 1 : 0,
-      prompt?.options.length ?? 0,
-      ...options,
-    );
+    let result: number;
+    if (prompt?.choice !== undefined) {
+      const choice = prompt.choice;
+      result = this.beginTypedChoiceC(
+        snapshot.sequence,
+        snapshot.response_text,
+        snapshot.status_text ?? "",
+        snapshot.account ?? "",
+        prompt.action_id,
+        prompt.title,
+        prompt.body,
+        choice.object_id,
+        choice.freshness,
+        snapshot.capabilities?.actions.includes("prompt.choose") ? 1 : 0,
+        snapshot.capabilities?.actions.includes("prompt.explore") ? 1 : 0,
+        choice.operations.includes("choose") ? 1 : 0,
+        choice.operations.includes("explore") ? 1 : 0,
+        prompt.options.length,
+      );
+      if (result === ACCEPTED) {
+        for (let index = 0; index < prompt.options.length; index += 1) {
+          const option = prompt.options[index];
+          result = this.setTypedChoiceOptionC(index, option.id, option.label);
+          if (result !== ACCEPTED) break;
+        }
+        const finishResult = this.finishTypedChoiceC();
+        if (result === ACCEPTED) result = finishResult;
+      }
+    } else {
+      const options = [0, 1, 2, 3].flatMap((index) => [
+        prompt?.options[index]?.id ?? "",
+        prompt?.options[index]?.label ?? "",
+      ]);
+      result = this.applySnapshotC(
+        snapshot.sequence,
+        snapshot.state,
+        snapshot.response_text,
+        snapshot.status_text ?? "",
+        snapshot.account ?? "",
+        prompt?.kind ?? "",
+        prompt?.title ?? "",
+        prompt?.body ?? "",
+        prompt?.action_id ?? "",
+        prompt?.timeout_seconds ?? -1,
+        prompt !== null && snapshot.capabilities?.actions.includes("prompt.choose") ? 1 : 0,
+        prompt !== null && snapshot.capabilities?.actions.includes("prompt.dismiss") ? 1 : 0,
+        prompt?.options.length ?? 0,
+        ...options,
+      );
+    }
 
     switch (result) {
       case ACCEPTED: {
@@ -242,6 +305,7 @@ export class WasmDisplayReducer implements DisplayReducer {
           is_busy: this.viewIsBusyC() !== 0,
           connection_healthy: this.viewConnectionHealthyC() !== 0,
           can_choose: this.viewCanChooseC() !== 0,
+          can_explore: this.viewCanExploreC() !== 0,
           can_dismiss: this.viewCanDismissC() !== 0,
         };
         this.current = view;
@@ -260,7 +324,15 @@ export class WasmDisplayReducer implements DisplayReducer {
 
   validateAction(action: DisplayAction): ActionValidationResult {
     if (!validActionShape(action)) return "invalid_argument";
-    return actionValidation(this.validateChoiceC(action.action_id, action.choice));
+    return "choice" in action
+      ? actionValidation(this.validateChoiceC(action.action_id, action.choice))
+      : actionValidation(this.validateTypedChoiceC(
+          action.action_id,
+          action.operation,
+          action.option_id,
+          action.object_id,
+          action.freshness,
+        ));
   }
 
   validateDismiss(): ActionValidationResult {
@@ -285,10 +357,25 @@ export class WasmDisplayReducer implements DisplayReducer {
 
     const actionId = this.actionIdC();
     const choice = this.actionChoiceC();
+    const operation = this.actionOperationC();
+    const objectId = this.actionObjectIdC();
+    const freshness = this.actionFreshnessC();
     if (this.actionClearC() !== ACCEPTED) {
       throw new DisplayWasmError("Display WebAssembly failed to clear the pending action");
     }
     if (actionId.length === 0 || choice.length === 0) return null;
+    if (operation.length > 0) {
+      if (objectId.length === 0 || freshness.length === 0) return null;
+      return {
+        type: "action",
+        schema: 1,
+        action_id: actionId,
+        operation: operation as "choose" | "explore",
+        option_id: choice,
+        object_id: objectId,
+        freshness,
+      };
+    }
     return {
       type: "action",
       schema: 1,

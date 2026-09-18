@@ -1090,11 +1090,11 @@ class HomePuckSession:
     ) -> bool:
         """Resolve the current Home prompt without creating another turn.
 
-        The extra arguments belong to the older relay prompt API. Home owns
-        the Standard operation mapping, so only the validated response value
-        crosses this boundary; secret values are never logged.
+        Typed choices carry Home's current operation, object, and freshness
+        values back through the same correlated prompt response. Secret
+        values are never logged.
         """
-        del reason, operation, object_id, freshness
+        del reason
         if (
             not self.supports_structured_prompts
             or not self.is_connected()
@@ -1132,11 +1132,49 @@ class HomePuckSession:
                     and option_id not in allowed_options
                 ):
                     return False
+            choice_context = pending.get("choice")
+            typed_fields = (operation, object_id, freshness)
+            if pending.get("choice_invalid"):
+                return False
+            if any(field is not None for field in typed_fields):
+                operations = (
+                    choice_context.get("operations")
+                    if isinstance(choice_context, dict)
+                    else None
+                )
+                if (
+                    not isinstance(choice_context, dict)
+                    or not isinstance(operation, str)
+                    or operation not in {"choose", "explore"}
+                    or not isinstance(object_id, str)
+                    or not isinstance(freshness, str)
+                    or not isinstance(operations, list)
+                    or not 1 <= len(operations) <= 2
+                    or any(
+                        not isinstance(item, str) or item not in {"choose", "explore"}
+                        for item in operations
+                    )
+                    or len(set(operations)) != len(operations)
+                    or object_id != choice_context.get("object_id")
+                    or freshness != choice_context.get("freshness")
+                    or operation not in operations
+                ):
+                    return False
+            elif (
+                pending["event_type"] == "prompt_request"
+                and pending["prompt_kind"].strip().lower() == "choice"
+            ):
+                # Home choice prompts require typed object and freshness
+                # identity; missing metadata cannot fall back to a legacy tap.
+                return False
             response = _prompt_response(
                 pending["event_type"],
                 pending["prompt_kind"],
                 option_id=option_id,
                 value=value,
+                operation=operation,
+                object_id=object_id,
+                freshness=freshness,
             )
             if response is None:
                 return False
@@ -1290,6 +1328,7 @@ class HomePuckSession:
             raise HomeBridgeProtocolError(
                 "Home bridge structured prompt has no prompt ID"
             )
+        raw_choice = normalized.get("choice")
         self._pending_prompt = {
             "prompt_id": prompt_id,
             "correlation_id": correlation_id,
@@ -1301,6 +1340,12 @@ class HomePuckSession:
                 for option in normalized.get("options", [])
                 if isinstance(option, dict) and str(option.get("id") or "").strip()
             ),
+            "choice": (
+                dict(raw_choice)
+                if isinstance(raw_choice, dict)
+                else None
+            ),
+            "choice_invalid": raw_choice is not None and not isinstance(raw_choice, dict),
         }
 
     def _clear_pending_prompt(self, normalized: dict[str, Any]) -> None:
@@ -1586,9 +1631,32 @@ def _prompt_response(
     *,
     option_id: str | None,
     value: str | None,
+    operation: str | None = None,
+    object_id: str | None = None,
+    freshness: str | None = None,
 ) -> dict[str, str] | None:
     kind = str(prompt_kind or "").strip().lower()
     if _is_choice_prompt(event_type, kind):
+        if operation is not None:
+            if (
+                not isinstance(operation, str)
+                or operation not in {"choose", "explore"}
+                or not isinstance(option_id, str)
+                or not option_id
+                or not isinstance(object_id, str)
+                or not object_id
+                or not isinstance(freshness, str)
+                or not freshness
+            ):
+                return None
+            return {
+                "operation": operation,
+                "option_id": option_id,
+                "object_id": object_id,
+                "freshness": freshness,
+            }
+        if object_id is not None or freshness is not None:
+            return None
         return {"choice": option_id} if isinstance(option_id, str) and option_id else None
     if event_type == "clarify.request" or (
         event_type == "prompt_request" and kind == "clarify"

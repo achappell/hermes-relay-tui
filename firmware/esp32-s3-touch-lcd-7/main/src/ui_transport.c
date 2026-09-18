@@ -11,7 +11,6 @@
 
 #define UI_TRANSPORT_DEFAULT_RECONNECT_TIMEOUT_MS 5000
 #define UI_TRANSPORT_BUFFER_SIZE 4096
-#define UI_TRANSPORT_MESSAGE_MAX 4096
 
 static const char *TAG = "ui_transport";
 
@@ -27,6 +26,7 @@ typedef struct {
 } ui_transport_context_t;
 
 static ui_transport_context_t s_transport;
+static ui_snapshot_t s_parsed_snapshot;
 
 static void notify_state(ui_transport_state_t state)
 {
@@ -75,14 +75,13 @@ static void handle_text_frame(const esp_websocket_event_data_t *event)
     }
 
     s_transport.message[s_transport.received] = '\0';
-    ui_snapshot_t snapshot;
-    if (!ui_snapshot_from_json(s_transport.message, &snapshot)) {
+    if (!ui_snapshot_from_json(s_transport.message, &s_parsed_snapshot)) {
         ESP_LOGW(TAG, "Ignoring malformed display snapshot");
         reset_message();
         return;
     }
     if (s_transport.config.on_snapshot != NULL) {
-        s_transport.config.on_snapshot(&snapshot, s_transport.config.user_data);
+        s_transport.config.on_snapshot(&s_parsed_snapshot, s_transport.config.user_data);
     }
     reset_message();
 }
@@ -188,21 +187,42 @@ bool ui_transport_is_connected(void)
     return s_transport.connected;
 }
 
-esp_err_t ui_transport_send_action(const char *action_id, const char *choice)
+esp_err_t ui_transport_send_action(
+    const char *action_id,
+    const char *option_id,
+    const char *operation,
+    const char *object_id,
+    const char *freshness
+)
 {
-    if (action_id == NULL || action_id[0] == '\0' || choice == NULL || choice[0] == '\0') {
+    if (action_id == NULL || action_id[0] == '\0' || option_id == NULL || option_id[0] == '\0') {
         return ESP_ERR_INVALID_ARG;
     }
     if (s_transport.client == NULL || !s_transport.connected) return ESP_ERR_INVALID_STATE;
 
     cJSON *action = cJSON_CreateObject();
-    if (action == NULL ||
-        !cJSON_AddStringToObject(action, "type", "action") ||
-        !cJSON_AddNumberToObject(action, "schema", 1) ||
-        !cJSON_AddStringToObject(action, "action_id", action_id) ||
-        !cJSON_AddStringToObject(action, "choice", choice)) {
+    bool typed = operation != NULL;
+    bool valid = action != NULL &&
+        cJSON_AddStringToObject(action, "type", "action") != NULL &&
+        cJSON_AddNumberToObject(action, "schema", 1) != NULL &&
+        cJSON_AddStringToObject(action, "action_id", action_id) != NULL;
+    if (typed) {
+        valid = valid &&
+            (strcmp(operation, "choose") == 0 || strcmp(operation, "explore") == 0) &&
+            object_id != NULL && object_id[0] != '\0' &&
+            freshness != NULL && freshness[0] != '\0' &&
+            cJSON_AddStringToObject(action, "operation", operation) != NULL &&
+            cJSON_AddStringToObject(action, "option_id", option_id) != NULL &&
+            cJSON_AddStringToObject(action, "object_id", object_id) != NULL &&
+            cJSON_AddStringToObject(action, "freshness", freshness) != NULL;
+    } else {
+        valid = valid &&
+            object_id == NULL && freshness == NULL &&
+            cJSON_AddStringToObject(action, "choice", option_id) != NULL;
+    }
+    if (!valid) {
         cJSON_Delete(action);
-        return ESP_ERR_NO_MEM;
+        return typed ? ESP_ERR_INVALID_ARG : ESP_ERR_NO_MEM;
     }
 
     char *payload = cJSON_PrintUnformatted(action);

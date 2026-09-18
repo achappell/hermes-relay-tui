@@ -3,13 +3,35 @@
   "$id": "https://hermes-relay.dev/schemas/display-action-1.json",
   "title": "Hermes display action",
   "description": "A normalized action emitted by a display adapter after a prompt choice.",
-  "type": "object",
+  "oneOf": [
+    {
+      "type": "object",
+      "required": ["type", "schema", "action_id", "choice"],
+      "not": {
+        "anyOf": [
+          { "required": ["operation"] },
+          { "required": ["option_id"] },
+          { "required": ["object_id"] },
+          { "required": ["freshness"] }
+        ]
+      }
+    },
+    {
+      "type": "object",
+      "required": ["type", "schema", "action_id", "operation", "option_id", "object_id", "freshness"],
+      "not": { "required": ["choice"] }
+    }
+  ],
   "additionalProperties": true,
   "properties": {
     "type": { "const": "action" },
     "schema": { "const": 1 },
     "action_id": { "type": "string", "minLength": 1, "maxLength": 64 },
-    "choice": { "type": "string", "minLength": 1, "maxLength": 32 }
+      "choice": { "type": "string", "minLength": 1, "maxLength": 32 },
+    "operation": { "enum": ["choose", "explore"] },
+    "option_id": { "type": "string", "minLength": 1, "maxLength": 64 },
+    "object_id": { "type": "string", "minLength": 1, "maxLength": 64 },
+    "freshness": { "type": "string", "minLength": 1, "maxLength": 64 }
   },
-  "required": ["type", "schema", "action_id", "choice"]
+  "required": ["type", "schema", "action_id"]
 }

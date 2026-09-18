@@ -7,6 +7,7 @@ export type DisplayView = DisplaySnapshot & {
   is_busy: boolean;
   connection_healthy: boolean;
   can_choose: boolean;
+  can_explore: boolean;
   can_dismiss: boolean;
 };
 
@@ -22,6 +23,7 @@ export type ActionValidationResult =
   | "prompt_not_active"
   | "action_not_allowed"
   | "action_id_mismatch"
+  | "choice_context_mismatch"
   | "unknown_choice";
 
 export type DisplayConnectionState = "connected" | "disconnected" | "error";
@@ -56,17 +58,23 @@ function connectionHealthy(state: DisplaySnapshot["state"]): boolean {
 
 function canPerformAction(
   snapshot: DisplaySnapshot,
-  actionName: "prompt.choose" | "prompt.dismiss",
+  actionName: "prompt.choose" | "prompt.explore" | "prompt.dismiss",
 ): boolean {
   return snapshot.capabilities?.actions.includes(actionName) ?? false;
 }
 
 function toView(snapshot: DisplaySnapshot): DisplayView {
+  const choice = snapshot.prompt?.choice;
+  const canChoose = snapshot.prompt !== null && canPerformAction(snapshot, "prompt.choose") &&
+    (choice === undefined || choice.operations.includes("choose"));
+  const canExplore = choice !== undefined && choice.operations.includes("explore") &&
+    canPerformAction(snapshot, "prompt.explore");
   return {
     ...snapshot,
     is_busy: busyStates.has(snapshot.state),
     connection_healthy: connectionHealthy(snapshot.state),
-    can_choose: snapshot.prompt !== null && canPerformAction(snapshot, "prompt.choose"),
+    can_choose: canChoose,
+    can_explore: canExplore,
     can_dismiss: snapshot.prompt !== null && canPerformAction(snapshot, "prompt.dismiss"),
   };
 }
@@ -103,9 +111,17 @@ class SnapshotReducer implements DisplayReducer {
       typeof action.action_id !== "string" ||
       action.action_id.length === 0 ||
       action.action_id.length > 64 ||
-      typeof action.choice !== "string" ||
-      action.choice.length === 0 ||
-      action.choice.length > 32
+      ("choice" in action &&
+        (typeof action.choice !== "string" ||
+          action.choice.length === 0 ||
+          action.choice.length > 32)) ||
+      ("operation" in action &&
+        (action.option_id.length === 0 ||
+          action.option_id.length > 64 ||
+          action.object_id.length === 0 ||
+          action.object_id.length > 64 ||
+          action.freshness.length === 0 ||
+          action.freshness.length > 64))
     ) {
       return "invalid_argument";
     }
@@ -113,12 +129,31 @@ class SnapshotReducer implements DisplayReducer {
     if (this.current === null || this.current.state !== "prompt" || this.current.prompt === null) {
       return "prompt_not_active";
     }
-    if (!this.current.can_choose) {
-      return "action_not_allowed";
-    }
     if (this.current.prompt.action_id !== action.action_id) {
       return "action_id_mismatch";
     }
+    const choice = this.current.prompt.choice;
+    if (choice !== undefined) {
+      if (
+        !("operation" in action) ||
+        action.object_id !== choice.object_id ||
+        action.freshness !== choice.freshness
+      ) {
+        return "choice_context_mismatch";
+      }
+      if (
+        !choice.operations.includes(action.operation) ||
+        (action.operation === "choose" && !this.current.can_choose) ||
+        (action.operation === "explore" && !this.current.can_explore)
+      ) {
+        return "action_not_allowed";
+      }
+      return this.current.prompt.options.some((option) => option.id === action.option_id)
+        ? "accepted"
+        : "unknown_choice";
+    }
+    if (!this.current.can_choose) return "action_not_allowed";
+    if (!("choice" in action)) return "action_not_allowed";
     return this.current.prompt.options.some((option) => option.id === action.choice)
       ? "accepted"
       : "unknown_choice";

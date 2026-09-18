@@ -21,8 +21,12 @@ missing `capabilities` value means no advertised optional actions or features.
 
 The nine states are `idle`, `heard`, `listening`, `thinking`, `speaking`,
 `buffering`, `error`, `disconnected`, and `prompt`. A `prompt` state must carry
-a prompt; every other state must carry `prompt: null` or omit it. Prompt text
-and choices are bounded for the embedded target, with one to four options.
+a prompt; every other state must carry `prompt: null` or omit it. An ordinary
+prompt supports one to four options and short labels. Typed choices carry
+Home's opaque object and freshness IDs plus its advertised `choose`/`explore`
+operations; their explanation is bounded to 1,024 characters, with up to 32
+options, 64-character IDs, and 256-character labels. Legacy choice prompts
+without this typed context keep the ordinary prompt bounds.
 
 Unknown top-level and prompt fields are forward-compatible and must be ignored
 by adapters that do not understand them. Malformed known fields still reject
@@ -46,10 +50,11 @@ state WebSocket. The display server accepts those frames alongside the
 browser's HTTP action path, so a reducer-validated touch choice reaches the
 same appliance callback regardless of front end.
 
-Capability names are deliberately small and explicit. `prompt.choose` means a
-front end can submit a selected option; `prompt.dismiss` means it can close a
-prompt without choosing. A target must not emit an action it has not
-advertised or that the current snapshot does not permit.
+Capability names are deliberately small and explicit. `prompt.choose` and
+`prompt.explore` permit their matching typed-choice operations;
+`prompt.dismiss` means a front end can close a prompt without choosing. A
+missing action capability leaves a prompt read-only. A target must not emit an
+action it has not advertised or that the current snapshot does not permit.
 
 ## Fixtures
 
@@ -83,8 +88,10 @@ be compiled as native C or WebAssembly.
 - The reducer derives `is_busy`, `connection_healthy`, `can_choose`, and
   `can_dismiss` for renderers and adapters.
 - Prompt choices require an active prompt, the matching `action_id`, an
-  advertised choice capability, and an option present in the prompt. Dismiss
-  is independently capability-gated. Validation never mutates reducer state.
+  advertised capability, and an option present in the prompt. Typed choices
+  also require the advertised operation and exact Home object/freshness IDs.
+  Dismiss is independently capability-gated. Validation never mutates reducer
+  state.
 - Every failure is a typed result so a renderer cannot accidentally treat a
   stale snapshot or rejected action as accepted state.
 

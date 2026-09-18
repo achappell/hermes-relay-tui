@@ -46,6 +46,7 @@ static bool parse_capabilities(const cJSON *root, ui_snapshot_t *snapshot)
 {
     const cJSON *raw = object_item(root, "capabilities");
     snapshot->prompt.can_choose = false;
+    snapshot->prompt.can_explore = false;
     snapshot->prompt.can_dismiss = false;
     if (raw == NULL) return true;
     if (!cJSON_IsObject(raw)) return false;
@@ -58,8 +59,13 @@ static bool parse_capabilities(const cJSON *root, ui_snapshot_t *snapshot)
     cJSON_ArrayForEach(action, actions) {
         if (!cJSON_IsString(action)) return false;
         if (strcmp(action->valuestring, "prompt.choose") == 0) {
+            if (snapshot->prompt.can_choose) return false;
             snapshot->prompt.can_choose = true;
+        } else if (strcmp(action->valuestring, "prompt.explore") == 0) {
+            if (snapshot->prompt.can_explore) return false;
+            snapshot->prompt.can_explore = true;
         } else if (strcmp(action->valuestring, "prompt.dismiss") == 0) {
+            if (snapshot->prompt.can_dismiss) return false;
             snapshot->prompt.can_dismiss = true;
         } else {
             return false;
@@ -76,15 +82,24 @@ static bool parse_capabilities(const cJSON *root, ui_snapshot_t *snapshot)
 static bool parse_prompt(const cJSON *raw, ui_snapshot_prompt_t *prompt)
 {
     if (!cJSON_IsObject(raw)) return false;
-    const cJSON *options = object_item(raw, "options");
-    if (!cJSON_IsArray(options) || cJSON_GetArraySize(options) < 1 ||
-        cJSON_GetArraySize(options) > UI_SNAPSHOT_OPTION_COUNT_MAX) {
-        return false;
-    }
+    const cJSON *choice = object_item(raw, "choice");
+    prompt->typed_choice = choice != NULL;
+    if (prompt->typed_choice && !cJSON_IsObject(choice)) return false;
     if (!required_string(raw, "kind", prompt->kind, sizeof(prompt->kind)) ||
         !required_string(raw, "title", prompt->title, sizeof(prompt->title)) ||
         !required_text(raw, "body", prompt->body, sizeof(prompt->body)) ||
         !required_string(raw, "action_id", prompt->action_id, sizeof(prompt->action_id))) {
+        return false;
+    }
+    if (prompt->typed_choice && strcmp(prompt->kind, "choice") != 0) return false;
+    size_t body_length = strlen(prompt->body);
+    if (body_length > (prompt->typed_choice ? 1024 : 192)) return false;
+
+    const cJSON *options = object_item(raw, "options");
+    if (!cJSON_IsArray(options) || cJSON_GetArraySize(options) < 1 ||
+        cJSON_GetArraySize(options) > (prompt->typed_choice
+            ? UI_SNAPSHOT_OPTION_COUNT_MAX
+            : UI_SNAPSHOT_GENERIC_OPTION_COUNT_MAX)) {
         return false;
     }
     prompt->timeout_seconds = -1;
@@ -102,6 +117,41 @@ static bool parse_prompt(const cJSON *raw, ui_snapshot_prompt_t *prompt)
             !required_string(option, "id", prompt->options[index].id, sizeof(prompt->options[index].id)) ||
             !required_string(option, "label", prompt->options[index].label, sizeof(prompt->options[index].label))) {
             return false;
+        }
+        size_t id_length = strlen(prompt->options[index].id);
+        size_t label_length = strlen(prompt->options[index].label);
+        if (id_length > (prompt->typed_choice ? 64 : 32) ||
+            label_length > (prompt->typed_choice ? 256 : 48)) {
+            return false;
+        }
+        for (uint8_t previous = 0; previous < index; previous++) {
+            if (strcmp(prompt->options[index].id, prompt->options[previous].id) == 0) {
+                return false;
+            }
+        }
+    }
+    if (prompt->typed_choice) {
+        if (!required_string(choice, "object_id", prompt->object_id, sizeof(prompt->object_id)) ||
+            !required_string(choice, "freshness", prompt->freshness, sizeof(prompt->freshness))) {
+            return false;
+        }
+        const cJSON *operations = object_item(choice, "operations");
+        if (!cJSON_IsArray(operations) || cJSON_GetArraySize(operations) < 1 ||
+            cJSON_GetArraySize(operations) > 2) {
+            return false;
+        }
+        cJSON *operation = NULL;
+        cJSON_ArrayForEach(operation, operations) {
+            if (!cJSON_IsString(operation)) return false;
+            if (strcmp(operation->valuestring, "choose") == 0) {
+                if (prompt->allows_choose) return false;
+                prompt->allows_choose = true;
+            } else if (strcmp(operation->valuestring, "explore") == 0) {
+                if (prompt->allows_explore) return false;
+                prompt->allows_explore = true;
+            } else {
+                return false;
+            }
         }
     }
     prompt->present = true;
