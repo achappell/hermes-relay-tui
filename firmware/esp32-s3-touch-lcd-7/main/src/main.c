@@ -93,10 +93,18 @@ static void transport_state_cb(ui_transport_state_t state, void *user_data)
     }
 }
 
-static void transport_action_cb(const char *action_id, const char *choice, void *user_data)
+static void transport_action_cb(
+    const char *action_id,
+    const char *option_id,
+    const char *operation,
+    const char *object_id,
+    const char *freshness,
+    void *user_data
+)
 {
     (void)user_data;
-    esp_err_t err = ui_transport_send_action(action_id, choice);
+    esp_err_t err = ui_transport_send_action(
+        action_id, option_id, operation, object_id, freshness);
     if (err != ESP_OK) {
         ESP_LOGW(TAG, "Display action send failed: %s", esp_err_to_name(err));
     }

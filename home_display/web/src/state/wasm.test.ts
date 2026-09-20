@@ -41,23 +41,31 @@ function fakeModule(
   overrides: Record<string, (...args: any[]) => number | string> = {},
 ): DisplayWasmModule {
   const functions: Record<string, (...args: any[]) => number | string> = {
-    display_wasm_abi_version: () => 2,
+    display_wasm_abi_version: () => 3,
     display_wasm_init: () => 0,
     display_wasm_reset: () => 0,
     display_wasm_apply_snapshot: () => 0,
+    display_wasm_begin_typed_choice_snapshot: () => 0,
+    display_wasm_set_typed_choice_option: () => 0,
+    display_wasm_finish_typed_choice_snapshot: () => 0,
     display_wasm_validate_choice: () => 0,
+    display_wasm_validate_typed_choice: () => 0,
     display_wasm_validate_dismiss: () => 0,
     display_wasm_set_connection_state: () => 0,
     display_wasm_set_pointer: () => 0,
     display_wasm_action_pending: () => 0,
     display_wasm_action_id: () => "",
     display_wasm_action_choice: () => "",
+    display_wasm_action_operation: () => "",
+    display_wasm_action_object_id: () => "",
+    display_wasm_action_freshness: () => "",
     display_wasm_action_clear: () => 0,
     display_wasm_view_state: () => 9,
     display_wasm_view_sequence: () => 7,
     display_wasm_view_is_busy: () => 0,
     display_wasm_view_connection_healthy: () => 1,
     display_wasm_view_can_choose: () => 1,
+    display_wasm_view_can_explore: () => 0,
     display_wasm_view_can_dismiss: () => 0,
     display_wasm_framebuffer: () => 1,
     display_wasm_framebuffer_width: () => 1024,
@@ -87,6 +95,7 @@ describe("WasmDisplayReducer", () => {
         is_busy: false,
         connection_healthy: true,
         can_choose: true,
+        can_explore: false,
         can_dismiss: false,
       },
     });
@@ -114,6 +123,45 @@ describe("WasmDisplayReducer", () => {
       ],
     );
     expect(reducer.validateAction(action)).toBe("accepted");
+  });
+
+  it("stages typed Home choices with all options and submits fresh context", () => {
+    const module = fakeModule({
+      display_wasm_view_can_choose: () => 1,
+      display_wasm_view_can_explore: () => 1,
+    });
+    const reducer = new WasmDisplayReducer(module);
+    const typedSnapshot: DisplaySnapshot = {
+      ...promptSnapshot,
+      prompt: {
+        kind: "choice",
+        title: "Hermes choice",
+        body: "Choose one of these",
+        options: Array.from({ length: 6 }, (_unused, index) => ({
+          id: `option-${index}`,
+          label: `Option ${index}`,
+        })),
+        action_id: "home-correlation-1",
+        timeout_seconds: null,
+        choice: {
+          object_id: "home-choice-1",
+          operations: ["choose", "explore"],
+          freshness: "freshness-1",
+        },
+      },
+      capabilities: {
+        actions: ["prompt.choose", "prompt.explore"],
+        features: ["prompt_overlay"],
+      },
+    };
+
+    expect(reducer.applySnapshot(typedSnapshot)).toMatchObject({
+      kind: "accepted",
+      view: { can_choose: true, can_explore: true },
+    });
+    const optionCalls = (module.cwrap as unknown as ReturnType<typeof vi.fn>).mock.calls
+      .filter(([name]) => name === "display_wasm_set_typed_choice_option");
+    expect(optionCalls).toHaveLength(1);
   });
 
   it("maps stale and invalid transition results without replacing the last view", () => {

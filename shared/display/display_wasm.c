@@ -1,4 +1,7 @@
 #include "display_wasm.h"
+#if defined(DISPLAY_WASM_WITH_LVGL)
+#include "ui_snapshot.h"
+#endif
 
 #include <stddef.h>
 #include <string.h>
@@ -10,6 +13,15 @@
 
 static display_rules_reducer_t s_reducer;
 static bool s_initialized;
+#if defined(DISPLAY_WASM_WITH_LVGL)
+static ui_snapshot_t s_typed_choice_pending_snapshot;
+static ui_snapshot_t s_legacy_ui_snapshot;
+#else
+static display_rules_snapshot_t s_typed_choice_rules_snapshot;
+#endif
+static bool s_typed_choice_pending;
+static uint32_t s_typed_choice_option_mask;
+static display_rules_snapshot_t s_legacy_rules_snapshot;
 
 static bool copy_strict(char *destination, size_t capacity, const char *source);
 
@@ -25,19 +37,44 @@ static lv_timer_t *s_input_read_timer;
 static bool s_action_pending;
 static char s_action_id[UI_SNAPSHOT_ACTION_ID_MAX];
 static char s_action_choice[UI_SNAPSHOT_OPTION_ID_MAX];
+static char s_action_operation[8];
+static char s_action_object_id[UI_SNAPSHOT_CHOICE_CONTEXT_MAX];
+static char s_action_freshness[UI_SNAPSHOT_CHOICE_CONTEXT_MAX];
 
 static void clear_pending_action(void)
 {
     s_action_pending = false;
     s_action_id[0] = '\0';
     s_action_choice[0] = '\0';
+    s_action_operation[0] = '\0';
+    s_action_object_id[0] = '\0';
+    s_action_freshness[0] = '\0';
 }
 
-static void wasm_action_cb(const char *action_id, const char *choice, void *user_data)
+static void wasm_action_cb(
+    const char *action_id,
+    const char *option_id,
+    const char *operation,
+    const char *object_id,
+    const char *freshness,
+    void *user_data
+)
 {
     (void)user_data;
+    clear_pending_action();
     if (!copy_strict(s_action_id, sizeof(s_action_id), action_id) ||
-        !copy_strict(s_action_choice, sizeof(s_action_choice), choice)) {
+        !copy_strict(s_action_choice, sizeof(s_action_choice), option_id)) {
+        clear_pending_action();
+        return;
+    }
+    if (operation != NULL) {
+        if (!copy_strict(s_action_operation, sizeof(s_action_operation), operation) ||
+            !copy_strict(s_action_object_id, sizeof(s_action_object_id), object_id) ||
+            !copy_strict(s_action_freshness, sizeof(s_action_freshness), freshness)) {
+            clear_pending_action();
+            return;
+        }
+    } else if (object_id != NULL || freshness != NULL) {
         clear_pending_action();
         return;
     }
@@ -186,7 +223,7 @@ static bool build_rules_snapshot(
     if (snapshot == NULL || state == NULL || action_id == NULL ||
         (can_choose != 0 && can_choose != 1) ||
         (can_dismiss != 0 && can_dismiss != 1) ||
-        option_count > DISPLAY_RULES_OPTION_COUNT_MAX) {
+        option_count > DISPLAY_RULES_GENERIC_OPTION_COUNT_MAX) {
         return false;
     }
 
@@ -255,7 +292,8 @@ static bool build_ui_snapshot(
 {
     if (snapshot == NULL || response_text == NULL || status_text == NULL ||
         account == NULL || prompt_kind == NULL || prompt_title == NULL ||
-        prompt_body == NULL || timeout_seconds < -1 || timeout_seconds == 0) {
+        prompt_body == NULL || timeout_seconds < -1 || timeout_seconds == 0 ||
+        option_count > UI_SNAPSHOT_GENERIC_OPTION_COUNT_MAX) {
         return false;
     }
     if (!ui_snapshot_init(snapshot) ||
@@ -325,6 +363,8 @@ int display_wasm_init(void)
 int display_wasm_reset(void)
 {
     if (!s_initialized) return display_wasm_init();
+    s_typed_choice_pending = false;
+    s_typed_choice_option_mask = 0;
 #if defined(DISPLAY_WASM_WITH_LVGL)
     s_pointer_x = 0;
     s_pointer_y = 0;
@@ -374,7 +414,7 @@ int display_wasm_apply_snapshot(
         return DISPLAY_RULES_INVALID_SNAPSHOT;
     }
 
-    display_rules_snapshot_t rules_snapshot;
+    if (s_typed_choice_pending) return DISPLAY_RULES_INVALID_ARGUMENT;
     if (!build_rules_snapshot(
             sequence,
             state,
@@ -386,12 +426,11 @@ int display_wasm_apply_snapshot(
             option1_id,
             option2_id,
             option3_id,
-            &rules_snapshot)) {
+            &s_legacy_rules_snapshot)) {
         return DISPLAY_RULES_INVALID_SNAPSHOT;
     }
 
 #if defined(DISPLAY_WASM_WITH_LVGL)
-    ui_snapshot_t ui_snapshot;
     if (!build_ui_snapshot(
             sequence,
             state,
@@ -414,10 +453,10 @@ int display_wasm_apply_snapshot(
             option2_label,
             option3_id,
             option3_label,
-            &ui_snapshot)) {
+            &s_legacy_ui_snapshot)) {
         return DISPLAY_RULES_INVALID_SNAPSHOT;
     }
-    return ui_display_set_snapshot(&ui_snapshot);
+    return ui_display_set_snapshot(&s_legacy_ui_snapshot);
 #else
     (void)response_text;
     (void)status_text;
@@ -430,8 +469,179 @@ int display_wasm_apply_snapshot(
     (void)option1_label;
     (void)option2_label;
     (void)option3_label;
-    return display_rules_apply_snapshot(&s_reducer, &rules_snapshot);
+    return display_rules_apply_snapshot(&s_reducer, &s_legacy_rules_snapshot);
 #endif
+}
+
+int display_wasm_begin_typed_choice_snapshot(
+    uint32_t sequence,
+    const char *response_text,
+    const char *status_text,
+    const char *account,
+    const char *action_id,
+    const char *title,
+    const char *body,
+    const char *object_id,
+    const char *freshness,
+    int can_choose,
+    int can_explore,
+    int allows_choose,
+    int allows_explore,
+    uint32_t option_count
+)
+{
+    if (!s_initialized || s_typed_choice_pending || response_text == NULL ||
+        status_text == NULL || account == NULL || action_id == NULL || title == NULL ||
+        body == NULL || object_id == NULL || freshness == NULL ||
+        (can_choose != 0 && can_choose != 1) ||
+        (can_explore != 0 && can_explore != 1) ||
+        (allows_choose != 0 && allows_choose != 1) ||
+        (allows_explore != 0 && allows_explore != 1) ||
+        option_count == 0 || option_count > DISPLAY_RULES_OPTION_COUNT_MAX ||
+        (!allows_choose && !allows_explore)) {
+        return DISPLAY_RULES_INVALID_ARGUMENT;
+    }
+
+#if defined(DISPLAY_WASM_WITH_LVGL)
+    ui_snapshot_t *snapshot = &s_typed_choice_pending_snapshot;
+    if (!ui_snapshot_init(snapshot) ||
+        !ui_snapshot_set_state(snapshot, "prompt") ||
+        !ui_snapshot_set_text(snapshot, response_text, status_text[0] ? status_text : NULL) ||
+        !copy_strict(snapshot->account, sizeof(snapshot->account), account) ||
+        !copy_strict(snapshot->prompt.kind, sizeof(snapshot->prompt.kind), "choice") ||
+        !copy_strict(snapshot->prompt.title, sizeof(snapshot->prompt.title), title) ||
+        !copy_strict(snapshot->prompt.body, sizeof(snapshot->prompt.body), body) ||
+        !copy_strict(snapshot->prompt.action_id, sizeof(snapshot->prompt.action_id), action_id) ||
+        !copy_strict(snapshot->prompt.object_id, sizeof(snapshot->prompt.object_id), object_id) ||
+        !copy_strict(snapshot->prompt.freshness, sizeof(snapshot->prompt.freshness), freshness)) {
+        return DISPLAY_RULES_INVALID_SNAPSHOT;
+    }
+    snapshot->sequence = sequence;
+    snapshot->prompt.present = true;
+    snapshot->prompt.typed_choice = true;
+    snapshot->prompt.can_choose = can_choose != 0;
+    snapshot->prompt.can_explore = can_explore != 0;
+    snapshot->prompt.allows_choose = allows_choose != 0;
+    snapshot->prompt.allows_explore = allows_explore != 0;
+    snapshot->prompt.timeout_seconds = -1;
+    snapshot->prompt.option_count = (uint8_t)option_count;
+#else
+    display_rules_snapshot_t *snapshot = &s_typed_choice_rules_snapshot;
+    memset(snapshot, 0, sizeof(*snapshot));
+    snapshot->schema = 1;
+    snapshot->sequence = sequence;
+    snapshot->state = DISPLAY_RULES_PROMPT;
+    snapshot->prompt.present = true;
+    snapshot->prompt.typed_choice = true;
+    snapshot->prompt.can_choose = can_choose != 0;
+    snapshot->prompt.can_explore = can_explore != 0;
+    snapshot->prompt.allows_choose = allows_choose != 0;
+    snapshot->prompt.allows_explore = allows_explore != 0;
+    snapshot->prompt.option_count = (uint8_t)option_count;
+    if (!copy_strict(
+            snapshot->prompt.action_id,
+            sizeof(snapshot->prompt.action_id),
+            action_id) ||
+        !copy_strict(
+            snapshot->prompt.object_id,
+            sizeof(snapshot->prompt.object_id),
+            object_id) ||
+        !copy_strict(
+            snapshot->prompt.freshness,
+            sizeof(snapshot->prompt.freshness),
+            freshness)) {
+        return DISPLAY_RULES_INVALID_SNAPSHOT;
+    }
+#endif
+    s_typed_choice_option_mask = 0;
+    s_typed_choice_pending = true;
+    return DISPLAY_RULES_ACCEPTED;
+}
+
+int display_wasm_set_typed_choice_option(
+    uint32_t index,
+    const char *option_id,
+    const char *label
+)
+{
+    if (!s_initialized || !s_typed_choice_pending) {
+        return DISPLAY_RULES_INVALID_ARGUMENT;
+    }
+    uint32_t option_count;
+#if defined(DISPLAY_WASM_WITH_LVGL)
+    option_count = s_typed_choice_pending_snapshot.prompt.option_count;
+#else
+    option_count = s_typed_choice_rules_snapshot.prompt.option_count;
+#endif
+    if (option_id == NULL || label == NULL || index >= option_count ||
+        (s_typed_choice_option_mask & (1u << index)) != 0) {
+        s_typed_choice_pending = false;
+        s_typed_choice_option_mask = 0;
+        return DISPLAY_RULES_INVALID_ARGUMENT;
+    }
+
+#if defined(DISPLAY_WASM_WITH_LVGL)
+    ui_snapshot_option_t *option = &s_typed_choice_pending_snapshot.prompt.options[index];
+    if (!copy_strict(option->id, sizeof(option->id), option_id) ||
+        !copy_strict(option->label, sizeof(option->label), label)) {
+        s_typed_choice_pending = false;
+        s_typed_choice_option_mask = 0;
+        return DISPLAY_RULES_INVALID_SNAPSHOT;
+    }
+    for (uint32_t previous = 0; previous < index; previous++) {
+        if (strcmp(option->id,
+                s_typed_choice_pending_snapshot.prompt.options[previous].id) == 0) {
+            s_typed_choice_pending = false;
+            s_typed_choice_option_mask = 0;
+            return DISPLAY_RULES_INVALID_SNAPSHOT;
+        }
+    }
+#else
+    char label_buffer[257];
+    display_rules_option_t *option = &s_typed_choice_rules_snapshot.prompt.options[index];
+    if (!copy_strict(option->id, sizeof(option->id), option_id) ||
+        !copy_strict(label_buffer, sizeof(label_buffer), label)) {
+        s_typed_choice_pending = false;
+        s_typed_choice_option_mask = 0;
+        return DISPLAY_RULES_INVALID_SNAPSHOT;
+    }
+    for (uint32_t previous = 0; previous < option_count; previous++) {
+        if ((s_typed_choice_option_mask & (1u << previous)) != 0 &&
+            strcmp(option->id,
+                s_typed_choice_rules_snapshot.prompt.options[previous].id) == 0) {
+            s_typed_choice_pending = false;
+            s_typed_choice_option_mask = 0;
+            return DISPLAY_RULES_INVALID_SNAPSHOT;
+        }
+    }
+#endif
+    s_typed_choice_option_mask |= (1u << index);
+    return DISPLAY_RULES_ACCEPTED;
+}
+
+int display_wasm_finish_typed_choice_snapshot(void)
+{
+    if (!s_initialized || !s_typed_choice_pending) return DISPLAY_RULES_INVALID_ARGUMENT;
+    uint32_t count;
+#if defined(DISPLAY_WASM_WITH_LVGL)
+    count = s_typed_choice_pending_snapshot.prompt.option_count;
+#else
+    count = s_typed_choice_rules_snapshot.prompt.option_count;
+#endif
+    uint32_t expected = count == 32 ? UINT32_MAX : ((1u << count) - 1u);
+    if (s_typed_choice_option_mask != expected) {
+        s_typed_choice_pending = false;
+        s_typed_choice_option_mask = 0;
+        return DISPLAY_RULES_INVALID_SNAPSHOT;
+    }
+#if defined(DISPLAY_WASM_WITH_LVGL)
+    int result = ui_display_set_snapshot(&s_typed_choice_pending_snapshot);
+#else
+    int result = display_rules_apply_snapshot(&s_reducer, &s_typed_choice_rules_snapshot);
+#endif
+    s_typed_choice_pending = false;
+    s_typed_choice_option_mask = 0;
+    return result;
 }
 
 int display_wasm_validate_choice(const char *action_id, const char *choice)
@@ -441,6 +651,24 @@ int display_wasm_validate_choice(const char *action_id, const char *choice)
     return ui_display_validate_choice(action_id, choice);
 #else
     return display_rules_validate_choice(&s_reducer, action_id, choice);
+#endif
+}
+
+int display_wasm_validate_typed_choice(
+    const char *action_id,
+    const char *operation,
+    const char *option_id,
+    const char *object_id,
+    const char *freshness
+)
+{
+    if (!s_initialized) return DISPLAY_RULES_INVALID_ARGUMENT;
+#if defined(DISPLAY_WASM_WITH_LVGL)
+    return ui_display_validate_typed_choice(
+        action_id, operation, option_id, object_id, freshness);
+#else
+    return display_rules_validate_typed_choice(
+        &s_reducer, action_id, operation, option_id, object_id, freshness);
 #endif
 }
 
@@ -459,6 +687,8 @@ int display_wasm_set_connection_state(int state)
     if (!s_initialized || state < 0 || state > 2) {
         return DISPLAY_RULES_INVALID_ARGUMENT;
     }
+    s_typed_choice_pending = false;
+    s_typed_choice_option_mask = 0;
 #if defined(DISPLAY_WASM_WITH_LVGL)
     clear_pending_action();
     return ui_display_set_connection_state((ui_display_connection_state_t)state);
@@ -528,6 +758,33 @@ const char *display_wasm_action_choice(void)
 #endif
 }
 
+const char *display_wasm_action_operation(void)
+{
+#if defined(DISPLAY_WASM_WITH_LVGL)
+    return s_action_pending ? s_action_operation : "";
+#else
+    return "";
+#endif
+}
+
+const char *display_wasm_action_object_id(void)
+{
+#if defined(DISPLAY_WASM_WITH_LVGL)
+    return s_action_pending ? s_action_object_id : "";
+#else
+    return "";
+#endif
+}
+
+const char *display_wasm_action_freshness(void)
+{
+#if defined(DISPLAY_WASM_WITH_LVGL)
+    return s_action_pending ? s_action_freshness : "";
+#else
+    return "";
+#endif
+}
+
 int display_wasm_action_clear(void)
 {
 #if defined(DISPLAY_WASM_WITH_LVGL)
@@ -574,6 +831,12 @@ bool display_wasm_view_can_choose(void)
 {
     const display_rules_view_t *view = current_view();
     return view != NULL && view->initialized && view->can_choose;
+}
+
+bool display_wasm_view_can_explore(void)
+{
+    const display_rules_view_t *view = current_view();
+    return view != NULL && view->initialized && view->can_explore;
 }
 
 bool display_wasm_view_can_dismiss(void)

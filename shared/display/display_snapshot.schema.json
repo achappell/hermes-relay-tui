@@ -62,26 +62,81 @@
       "properties": {
         "kind": { "type": "string", "minLength": 1, "maxLength": 24 },
         "title": { "type": "string", "minLength": 1, "maxLength": 64 },
-        "body": { "type": "string", "maxLength": 192 },
+        "body": { "type": "string", "maxLength": 1024 },
         "options": {
           "type": "array",
           "minItems": 1,
-          "maxItems": 4,
+          "maxItems": 32,
           "items": { "$ref": "#/$defs/prompt_option" }
         },
         "action_id": { "type": "string", "minLength": 1, "maxLength": 64 },
-        "timeout_seconds": { "type": ["integer", "null"], "exclusiveMinimum": 0 }
+        "timeout_seconds": { "type": ["integer", "null"], "exclusiveMinimum": 0 },
+        "choice": { "$ref": "#/$defs/choice" }
       },
-      "required": ["kind", "title", "body", "options", "action_id", "timeout_seconds"]
+      "required": ["kind", "title", "body", "options", "action_id", "timeout_seconds"],
+      "allOf": [
+        {
+          "if": {
+            "properties": { "choice": { "type": "object" } },
+            "required": ["choice"]
+          },
+          "then": {
+            "properties": {
+              "kind": { "const": "choice" },
+              "body": { "maxLength": 1024 },
+              "options": {
+                "minItems": 1,
+                "maxItems": 32,
+                "items": {
+                  "properties": {
+                    "id": { "maxLength": 64 },
+                    "label": { "maxLength": 256 }
+                  }
+                }
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "body": { "maxLength": 192 },
+              "options": {
+                "maxItems": 4,
+                "items": {
+                  "properties": {
+                    "id": { "maxLength": 32 },
+                    "label": { "maxLength": 48 }
+                  }
+                }
+              }
+            }
+          }
+        }
+      ]
     },
     "prompt_option": {
       "type": "object",
       "additionalProperties": true,
       "properties": {
-        "id": { "type": "string", "minLength": 1, "maxLength": 32 },
-        "label": { "type": "string", "minLength": 1, "maxLength": 48 }
+        "id": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "label": { "type": "string", "minLength": 1, "maxLength": 256 }
       },
       "required": ["id", "label"]
+    },
+    "choice": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "object_id": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "operations": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 2,
+          "uniqueItems": true,
+          "items": { "enum": ["choose", "explore"] }
+        },
+        "freshness": { "type": "string", "minLength": 1, "maxLength": 64 }
+      },
+      "required": ["object_id", "operations", "freshness"]
     },
     "capabilities": {
       "type": "object",
@@ -90,7 +145,7 @@
         "actions": {
           "type": "array",
           "uniqueItems": true,
-          "items": { "enum": ["prompt.choose", "prompt.dismiss"] }
+          "items": { "enum": ["prompt.choose", "prompt.explore", "prompt.dismiss"] }
         },
         "features": {
           "type": "array",

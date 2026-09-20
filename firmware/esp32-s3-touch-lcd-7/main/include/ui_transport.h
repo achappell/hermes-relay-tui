@@ -7,6 +7,7 @@
 #include "ui_snapshot.h"
 
 #define UI_TRANSPORT_DISPLAY_PATH "/state"
+#define UI_TRANSPORT_MESSAGE_MAX 65536
 
 typedef enum {
     UI_TRANSPORT_STOPPED = 0,
@@ -29,5 +30,11 @@ typedef struct {
 
 esp_err_t ui_transport_start(const ui_transport_config_t *config);
 esp_err_t ui_transport_stop(void);
-esp_err_t ui_transport_send_action(const char *action_id, const char *choice);
+esp_err_t ui_transport_send_action(
+    const char *action_id,
+    const char *option_id,
+    const char *operation,
+    const char *object_id,
+    const char *freshness
+);
 bool ui_transport_is_connected(void);
