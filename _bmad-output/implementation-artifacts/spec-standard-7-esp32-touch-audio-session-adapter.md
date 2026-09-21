@@ -140,23 +140,36 @@ context:
 2. **C6 physical interface.** *Resolved 2026-09-21; see Personal Vault
    `projects/hermes/Hermes - Smart Display Hardware.md`.* The kitchen board is
    an ACEIRMC **ESP32-C6 Super Mini** (ESP32-C6FH4, 4MB flash), already on
-   hand. The S3/C6 link is **SPI with the S3 as master**, because the link
-   carries audio rather than commands alone: the C6 owns the microphone and
-   amplifier while the S3 owns Wi-Fi, so capture PCM runs C6 → S3 → network at
-   a sustained 256 kbps with response playback on top. Pin map — I²S BCLK
-   GPIO0, WS/LRCLK GPIO1, mic data-in GPIO2, amp data-out GPIO3; SPI SCLK
-   GPIO18, MOSI GPIO19, MISO GPIO20, CS GPIO21; DATA_READY interrupt GPIO22
-   (an SPI slave cannot initiate, so the C6 signals buffered capture on this
-   line); GPIO14 and GPIO23 spare. All avoid the C6's strapping/JTAG pins
-   (GPIO4–9, 15), USB pair (GPIO12–13), and UART (GPIO16–17). Verify against
-   the board silkscreen at bring-up. Still owned by this story: the SPI frame
-   format carrying `mic_start`/`mic_end`/`mic_abort` and status alongside PCM,
-   and its failure behavior — C6 unresponsive, buffer overrun, playback
-   failure. Do not reuse the voice-puck C6 plan.
+   hand. The S3/C6 link is the 7B's **UART2 header at 921600 baud**, because
+   the link carries audio rather than commands alone: the C6 owns the
+   microphone and amplifier while the S3 owns Wi-Fi, so capture PCM runs
+   C6 → S3 → network at a sustained 256 kbps with response playback on top.
+   UART is full-duplex on separate conductors, giving each direction roughly
+   92,000 bytes/sec against a 32,000 byte/sec capture load.
+
+   **SPI is not available on this board and must not be specified.** The 7B
+   breaks out only five GPIO in total — GPIO6, GPIO8/9 (the I²C header,
+   already carrying the touch controller and CH422G expander), and GPIO43/44
+   (the UART2 header). The RGB parallel LCD consumes the rest, and the RS-485
+   and CAN connectors expose transceiver lines rather than raw GPIO.
+
+   Pin map — I²S BCLK GPIO0, WS/LRCLK GPIO1, mic data-in GPIO2, amp data-out
+   GPIO3 on the C6; link S3 GPIO43 (TX) → C6 GPIO19 (RX) and S3 GPIO44 (RX) ←
+   C6 GPIO18 (TX), crossed; reset S3 GPIO6 → C6 RST; C6 GPIO14, 20, 21, 22 and
+   23 spare. The C6's UART is mapped to GPIO18/19 through the GPIO matrix
+   rather than its native GPIO16/17, keeping the C6's own console free. All
+   avoid the C6's strapping/JTAG pins (GPIO4–9, 15) and USB pair
+   (GPIO12–13). Because GPIO43/44 are the S3's console UART behind the
+   onboard slide switch, S3 debug logging moves to native USB-CDC. Verify
+   against the board silkscreen at bring-up. Still owned by this story: the
+   UART frame format carrying `mic_start`/`mic_end`/`mic_abort` and status
+   alongside PCM, and its failure behavior — C6 unresponsive, buffer overrun,
+   playback failure — for which the reset line is the recovery action. Do not
+   reuse the voice-puck C6 plan.
 3. **STD-7 implementation.** Both prerequisites above are now settled as
    selections and contracts; NW-16 must be *implemented* in Home before a live
    admitted capture can be demonstrated end to end, but the host adapter, S3
-   transport, and SPI framing can be built against the agreed contract in
+   transport, and UART framing can be built against the agreed contract in
    parallel. Follow with the local `1-E-1` through `1-E-5` doorway acceptance
    work. `2-E-2` remains the later live-transcription acceptance slice.
 
@@ -188,9 +201,9 @@ admitted capture cannot be demonstrated until it lands.
   `transcribing` state or separate user-transcript field. `ui_transport.c`
   handles text JSON only; `main.c` queues UI updates outside LVGL callbacks.
 - `board_config.h` covers only the S3; the SDL simulator excludes WebSocket,
-  C6 wiring, microphone capture, and speaker playback. Add the S3-side SPI
-  master and DATA_READY interrupt pins for the C6 link, and keep the simulator
-  honest about which of these it cannot exercise.
+  C6 wiring, microphone capture, and speaker playback. Add the S3-side UART2
+  and reset pins for the C6 link, and keep the simulator honest about which of
+  these it cannot exercise.
 
 ## Tasks & Acceptance
 
@@ -198,8 +211,9 @@ admitted capture cannot be demonstrated until it lands.
 - [ ] Add admitted per-connection PCM framing, bounds, teardown, and host tests.
 - [ ] Add in-memory STT, isolated final transcript state, one Home submit, and
       Home-owned no-replay/interruption handling.
-- [ ] Extend shared state and S3 binary transport; define the SPI frame format
-      and failure behavior for the S3/C6 link, then integrate the C6.
+- [ ] Extend shared state and S3 binary transport; define the UART frame format
+      and failure behavior for the S3/C6 link, including reset-line recovery,
+      then integrate the C6.
 - [ ] Verify bounds, authorization, connection isolation, stop races, uncertain
       submit, and audio failure; record simulator, build, and hardware evidence
       separately.
