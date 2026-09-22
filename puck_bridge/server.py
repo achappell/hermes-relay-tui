@@ -23,6 +23,9 @@ from __future__ import annotations
 import argparse
 import logging
 import os
+import signal
+import threading
+import time
 import sys
 from pathlib import Path
 from typing import Sequence
@@ -33,7 +36,7 @@ from session import HermesSession
 from .home_session import HomePuckSession
 from .receiver import ThreadingHTTPServer, make_handler
 from .response import ResponseStream
-from .turn import TurnRunner
+from .turn import SHUTDOWN_TIMEOUT_SECONDS, TurnRunner
 
 logger = logging.getLogger("hermes_relay_tui.puck_bridge.server")
 
@@ -235,23 +238,88 @@ def main(argv: list[str] | None = None) -> int:
             profile_name,
             session_args.session_id,
         )
-    runner.start()
+    stopping = threading.Event()
+    deadline = None
+    previous_handlers = {}
+    httpd = None
+    handler_cls = None
 
-    handler_cls = make_handler(
-        expected_token=token,
-        on_transcript=runner.submit_transcript,
-        set_response_seq=runner.set_response_seq,
-        response_stream=response_stream,
-    )
+    def signal_stop(signum, frame):
+        nonlocal deadline
+        if deadline is None:
+            deadline = time.monotonic() + SHUTDOWN_TIMEOUT_SECONDS
+        stopping.set()
+
+    # The handler only latches intent. This owner can stop startup and serving
+    # without calling HTTPServer.shutdown from its serving thread.
+    def coordinate_stop():
+        stopping.wait()
+        runner.request_stop(deadline)
+        if httpd is not None:
+            httpd.request_stop()
+        runner.stop(deadline)
+
+    coordinator = threading.Thread(target=coordinate_stop, name="puck-bridge-shutdown")
     try:
-        with ThreadingHTTPServer((args.host, args.port), handler_cls) as httpd:
-            logger.info("puck bridge listening on %s:%d", args.host, args.port)
-            try:
-                httpd.serve_forever()
-            except KeyboardInterrupt:
-                pass
+        if threading.current_thread() is threading.main_thread():
+            for sig in (signal.SIGINT, signal.SIGTERM):
+                previous_handlers[sig] = signal.signal(sig, signal_stop)
+        coordinator.start()
+        runner.start()
+        if not stopping.is_set():
+            handler_cls = make_handler(
+                expected_token=token,
+                on_transcript=runner.submit_transcript,
+                set_response_seq=runner.set_response_seq,
+                response_stream=response_stream,
+            )
+        if not stopping.is_set():
+            httpd = ThreadingHTTPServer(
+                (args.host, args.port), handler_cls, bind_and_activate=False
+            )
+            if not stopping.is_set():
+                httpd.server_bind()
+            if not stopping.is_set():
+                httpd.server_activate()
+            # A short timeout permits shutdown even if the stop request races
+            # listener construction, before a serving thread exists.
+            httpd.timeout = 0.1
+            if not stopping.is_set():
+                logger.info("puck bridge listening on %s:%d", args.host, args.port)
+            while not stopping.is_set():
+                httpd.handle_request()
+    except KeyboardInterrupt:
+        signal_stop(signal.SIGINT, None)
     finally:
-        runner.stop()
+        signal_stop(None, None)
+
+        def cleanup(operation, *values):
+            try:
+                return operation(*values)
+            except Exception as exc:
+                logger.warning("puck bridge cleanup failed (%s)", type(exc).__name__)
+                return False
+
+        try:
+            if httpd is not None:
+                cleanup(httpd.request_stop)
+                cleanup(httpd.server_close)
+            elif handler_cls is not None:
+                cleanup(handler_cls.cleanup)
+            cleanup(runner.stop, deadline)
+            if httpd is not None:
+                cleanup(httpd.wait_workers, deadline)
+            if coordinator.ident is not None:
+                coordinator.join()
+            # Budget expiry ends bounded waits, not resource ownership or
+            # process lifetime. Retained workers keep this process non-serving.
+            cleanup(runner.wait_closed)
+            if httpd is not None:
+                cleanup(httpd.wait_workers)
+        finally:
+            for sig, previous in previous_handlers.items():
+                signal.signal(sig, previous)
+
     return 0
 
 

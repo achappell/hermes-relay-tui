@@ -87,6 +87,60 @@ class TurnTimeout(Exception):
     """Raised inside `_run_turn` when Hermes stops producing events."""
 
 
+class _OwnedPCMPlayer(PCMPlayer):
+    """Bridge executor owns native teardown through actual completion."""
+
+    def _abort_native(self, stream) -> bool:
+        try:
+            getattr(stream, "abort", stream.stop)()
+            return True
+        except Exception:
+            self.failure = "audio stream abort failed"
+            return False
+
+    def _close_native(self, stream) -> None:
+        with self._lock:
+            if self._close_in_progress is stream:
+                return
+            self._close_in_progress = stream
+        try:
+            stream.close()
+        except Exception:
+            # A failed close is not a released stream. Retain it for the
+            # shutdown owner's retry without exposing backend exception text.
+            self.failure = "audio stream close failed"
+            raise RuntimeError(self.failure) from None
+        else:
+            with self._lock:
+                if self.stream is stream:
+                    self.stream = None
+        finally:
+            with self._lock:
+                self._close_in_progress = None
+
+    def abort(self) -> None:
+        with self._lock:
+            stream = self.stream
+            self._pending.clear()
+            self.playing = False
+            self._abort_requested.set()
+            attempted = getattr(self, "_abort_attempted_stream", None)
+            self._abort_attempted_stream = stream
+        if stream is None:
+            return
+        if attempted is not stream:
+            self._abort_native(stream)
+        # The bridge bounds callers, not native ownership. A backend may
+        # ignore abort; keep the final close behind its actual writer.
+        with self._write_lock:
+            with self._lock:
+                if self.stream is not stream:
+                    return
+            self._close_native(stream)
+            if self.active:
+                raise RuntimeError("audio stream cleanup pending")
+
+
 class TurnRunner:
     """Owns the background event loop that drives one Hermes session."""
 
@@ -98,7 +152,7 @@ class TurnRunner:
         response_stream: Any | None = None,
     ) -> None:
         self._session = session
-        self._player = player if player is not None else PCMPlayer(True)
+        self._player = player if player is not None else _OwnedPCMPlayer(True)
         # When set, the spoken answer is published here for the Puck to
         # fetch instead of being played on this host. Optional so the
         # host-playback path keeps working unchanged -- the device-playback
@@ -115,6 +169,14 @@ class TurnRunner:
         self._needs_reconnect = False
         self._reconnect_task: asyncio.Task | None = None
         self._shutdown_future = None
+        self._lifecycle_lock = threading.RLock()
+        self._stopping = threading.Event()
+        self._closed = threading.Event()
+        self._shutdown_deadline = None
+        self._connect_task = None
+        self._turn_task = None
+        self._abort_task = None
+        self._player_start_task = None
         # RLock, not Lock: `on_wake()` below synchronously calls back into
         # `_take_pending_transcript` on the same thread (via the
         # coordinator's `capture` callback), so the set+on_wake pair and the
@@ -131,65 +193,145 @@ class TurnRunner:
     def coordinator(self) -> HandsFreeCoordinator:
         return self._coordinator
 
-    def start(self) -> None:
-        """Start the background loop and connect the Hermes session."""
-        if self._loop_thread is not None:
-            return
-        ready = threading.Event()
+    def start(self, *, connect: bool = True) -> None:
+        """Start the owned loop; shutdown may interrupt initial connection."""
+        with self._lifecycle_lock:
+            if self._stopping.is_set() or self._loop_thread is not None:
+                return
+            ready = threading.Event()
 
-        def run() -> None:
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            self._loop = loop
-            ready.set()
-            loop.run_forever()
+            def run() -> None:
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                self._loop = loop
+                ready.set()
+                try:
+                    loop.run_forever()
+                    loop.run_until_complete(loop.shutdown_asyncgens())
+                    # Cancellation of a to_thread wrapper does not stop its
+                    # native operation. Retain this owner until workers finish.
+                    loop.run_until_complete(loop.shutdown_default_executor())
+                finally:
+                    loop.close()
+                    self._closed.set()
 
-        self._loop_thread = threading.Thread(
-            target=run, name="puck-bridge-loop", daemon=True
-        )
-        self._loop_thread.start()
-        ready.wait()
-        asyncio.run_coroutine_threadsafe(
-            self._session.connect(), self._loop
-        ).result()
-
-    def stop(self) -> None:
-        """Close the Hermes session and stop the background loop."""
-        loop = self._loop
-        if loop is None:
-            return
-        if self._shutdown_future is None:
-            self._shutdown_future = asyncio.run_coroutine_threadsafe(
-                self._close_after_reconnect(), loop
-            )
-            self._shutdown_future.add_done_callback(
-                lambda _: loop.call_soon_threadsafe(loop.stop)
-            )
+            self._loop_thread = threading.Thread(target=run, name="puck-bridge-loop")
+            self._loop_thread.start()
+            ready.wait()
+            if not connect:
+                return
+            future = asyncio.run_coroutine_threadsafe(self._connect_initial(), self._loop)
         try:
-            self._shutdown_future.result(timeout=SHUTDOWN_TIMEOUT_SECONDS)
-        except TimeoutError:
-            # Retain the loop and cleanup owner. Its completion callback
-            # stops the loop when it can safely release the session.
-            logger.warning("puck bridge shutdown cleanup pending")
-            return
-        except Exception:
-            logger.debug("puck bridge session close failed", exc_info=True)
-        thread = self._loop_thread
-        if thread is not None:
-            thread.join(timeout=5.0)
-        self._loop_thread = None
-        self._loop = None
+            future.result()
+        except BaseException:
+            if not self._stopping.is_set():
+                raise
 
-    async def _close_after_reconnect(self) -> None:
-        task = self._reconnect_task
-        if task is not None:
-            # A timeout already requested cancellation. Do not cancel a
-            # second time: that would interrupt the connection's cleanup.
+    async def _connect_initial(self) -> None:
+        if self._stopping.is_set():
+            return
+        self._connect_task = asyncio.current_task()
+        await self._session.connect()
+
+    def request_stop(self, deadline: float | None = None) -> None:
+        """Latch admission and schedule one cleanup owner without waiting."""
+        with self._lifecycle_lock:
+            if self._stopping.is_set():
+                return
+            self._stopping.set()
+            self._shutdown_deadline = deadline if deadline is not None else time.monotonic() + SHUTDOWN_TIMEOUT_SECONDS
+            if self._response_stream is not None:
+                self._response_stream.shutdown()
+            if self._loop is None:
+                # Even a never-started runner owns its session.
+                self._stopping.clear()
+                self.start(connect=False)
+                self._stopping.set()
+            self._shutdown_future = asyncio.run_coroutine_threadsafe(self._shutdown(), self._loop)
+            self._shutdown_future.add_done_callback(self._shutdown_finished)
+
+    def stop(self, deadline: float | None = None) -> bool:
+        self.request_stop(deadline)
+        remaining = max(0.0, self._shutdown_deadline - time.monotonic())
+        complete = self._closed.wait(remaining)
+        if not complete:
+            logger.warning("puck bridge shutdown cleanup pending")
+        return complete
+
+    def wait_closed(self) -> None:
+        """Standalone process policy: retain ownership after the wait budget."""
+        self._closed.wait()
+
+    @staticmethod
+    def _cancel_once(task) -> None:
+        if task is not None and not task.done() and not task.cancelling():
+            task.cancel()
+
+    def _shutdown_finished(self, future) -> None:
+        try:
+            future.result()
+        except BaseException as exc:
+            # An unexpected cleanup failure must not certify release. Keep
+            # the loop/resource owner alive and make the unresolved state plain.
+            logger.warning("puck bridge shutdown cleanup unresolved (%s)", type(exc).__name__)
+        else:
+            self._loop.call_soon_threadsafe(self._loop.stop)
+
+    async def _close_session(self) -> None:
+        warned = False
+        while True:
+            try:
+                await self._session.close()
+                return
+            except Exception as exc:
+                if not warned:
+                    logger.warning("puck bridge session cleanup pending (%s)", type(exc).__name__)
+                    warned = True
+                await asyncio.sleep(0.05)
+
+    async def _close_player(self) -> None:
+        abort = getattr(self._player, "abort", self._player.close)
+        warned = False
+        failed = False
+        try:
+            await asyncio.to_thread(abort)
+        except Exception as exc:
+            logger.warning("puck bridge playback cleanup pending (%s)", type(exc).__name__)
+            warned = True
+            failed = True
+        start_task = self._player_start_task
+        if start_task is not None:
+            try:
+                await start_task
+            except Exception as exc:
+                logger.warning("puck bridge playback startup failed (%s)", type(exc).__name__)
+        # Retry only unresolved release, including a resource opened after an
+        # earlier abort. Startup failure cannot skip this independent cleanup.
+        while failed or self._player.active:
+            try:
+                await asyncio.to_thread(abort)
+                failed = False
+            except Exception as exc:
+                failed = True
+                if not warned:
+                    logger.warning("puck bridge playback cleanup pending (%s)", type(exc).__name__)
+                    warned = True
+            if failed or self._player.active:
+                await asyncio.sleep(0.05)
+
+    async def _shutdown(self) -> None:
+        self._abort_task = asyncio.create_task(self._close_player())
+        owned = {task for task in (self._connect_task, self._turn_task, self._reconnect_task) if task is not None}
+        for task in owned:
+            self._cancel_once(task)
+        for task in owned:
             try:
                 await task
             except (asyncio.CancelledError, Exception):
                 pass
-        await self._session.close()
+        # Session and playback cleanup progress independently. Their owners
+        # remain pending after failures until actual release succeeds.
+        await asyncio.gather(self._close_session(), self._abort_task)
 
     def set_response_seq(self, seq: int | None) -> None:
         """Tell the next turn which capture it answers.
@@ -199,7 +341,9 @@ class TurnRunner:
         made -- without this the seq the firmware sends was never compared
         against anything.
         """
-        self._response_seq = seq
+        with self._lifecycle_lock:
+            if not self._stopping.is_set():
+                self._response_seq = seq
 
     def submit_transcript(self, transcript: str) -> bool:
         """Run exactly one Hermes turn for one already-transcribed utterance.
@@ -211,8 +355,10 @@ class TurnRunner:
         synthetic wake phrase so the coordinator's logging/last-wake-phrase
         bookkeeping stays meaningful without inventing new API surface.
         """
+        if self._stopping.is_set():
+            return False
         with self._pending_transcript_lock:
-            if self._shutdown_future is not None:
+            if self._stopping.is_set():
                 return False
             if self._needs_reconnect or not self._session.is_connected():
                 if self._loop is None:
@@ -239,6 +385,8 @@ class TurnRunner:
             return accepted and self._delivery_succeeded
 
     async def _reconnect(self) -> bool:
+        if self._stopping.is_set():
+            return False
         # A cancelled connect may still be closing its socket. Keep that
         # task as the owner until cleanup ends, so it cannot close a newer
         # connection behind the next question.
@@ -259,7 +407,7 @@ class TurnRunner:
             task.result()
             return True
         finally:
-            if not task.done():
+            if not task.done() and not task.cancelling():
                 task.cancel()
 
     def _take_pending_transcript(self) -> str:
@@ -280,7 +428,22 @@ class TurnRunner:
         loop = self._loop
         if loop is None:
             raise RuntimeError("turn runner is not started")
-        future = asyncio.run_coroutine_threadsafe(self._run_turn(text), loop)
+        owner = {"task": None, "cancel_requested": False}
+
+        async def run_owned():
+            if owner["cancel_requested"]:
+                return False
+            owner["task"] = asyncio.current_task()
+            return await self._run_turn(text)
+
+        def cancel_owned():
+            owner["cancel_requested"] = True
+            self._cancel_once(owner["task"])
+
+        with self._lifecycle_lock:
+            if self._stopping.is_set():
+                return False
+            future = asyncio.run_coroutine_threadsafe(run_owned(), loop)
         try:
             self._delivery_succeeded = bool(
                 future.result(timeout=TURN_BACKSTOP_SECONDS)
@@ -302,7 +465,7 @@ class TurnRunner:
             # background loop and can still write to the shared PCMPlayer
             # behind a later turn's back -- two responses interleaving into
             # one speaker.
-            future.cancel()
+            loop.call_soon_threadsafe(cancel_owned)
             logger.error(
                 "puck bridge turn hit the %.0fs backstop and was cancelled; "
                 "this indicates a wedge inside the turn loop, not a slow answer",
@@ -317,6 +480,41 @@ class TurnRunner:
             # credentials or conversation content.
             logger.error("puck bridge turn failed: %s; not replaying", type(exc).__name__)
             return False
+
+    async def _wait_owned(self, operation, timeout):
+        """Cancel a child once, retaining its cleanup even during shutdown."""
+        task = asyncio.ensure_future(operation)
+        try:
+            done, _ = await asyncio.wait({task}, timeout=timeout)
+            if done:
+                return task.result()
+            if not task.cancelling():
+                task.cancel()
+            try:
+                await asyncio.shield(task)
+            except asyncio.CancelledError:
+                # A child cancellation is expected. Parent cancellation is
+                # handled below and must not cancel the child a second time.
+                if asyncio.current_task().cancelling():
+                    raise
+            raise TimeoutError
+        except asyncio.CancelledError:
+            if not task.done() and not task.cancelling():
+                task.cancel()
+            try:
+                await asyncio.shield(task)
+            except (asyncio.CancelledError, Exception):
+                pass
+            raise
+
+    async def _start_player(self, audio_format):
+        if self._stopping.is_set():
+            return
+        self._player_start_task = asyncio.create_task(
+            asyncio.to_thread(self._player.start, audio_format)
+        )
+        # Cancellation stops the turn, not an in-progress native device open.
+        await asyncio.shield(self._player_start_task)
 
     async def _write_audio(self, data: bytes) -> None:
         """Hand one PCM chunk to the player, bounded.
@@ -346,6 +544,9 @@ class TurnRunner:
 
     async def _run_turn(self, text: str) -> bool:
         """Drive one `send_turn` to completion, speaking the response here."""
+        if self._stopping.is_set():
+            return False
+        self._turn_task = asyncio.current_task()
         file_audio = bytearray()
         spoke = False
         host_player_started = False
@@ -371,7 +572,7 @@ class TurnRunner:
                     else STALL_TIMEOUT_SECONDS
                 )
                 try:
-                    event = await asyncio.wait_for(stream.__anext__(), budget)
+                    event = await self._wait_owned(stream.__anext__(), budget)
                 except StopAsyncIteration:
                     break
                 except TimeoutError:
@@ -407,7 +608,7 @@ class TurnRunner:
                     else:
                         host_player_started = True
                         if not self._player.active:
-                            self._player.start(audio_format)
+                            await self._start_player(audio_format)
                 elif kind == "audio_chunk":
                     if event["data"]:
                         awaiting_first_audio = False
@@ -478,7 +679,7 @@ class TurnRunner:
                         else:
                             host_player_started = True
                             if not self._player.active:
-                                self._player.start(fmt)
+                                await self._start_player(fmt)
                             if self._player.active:
                                 await self._write_audio(decoded)
                                 spoke = True
@@ -521,7 +722,7 @@ class TurnRunner:
                     # "abandoned" into total silence, which is exactly what
                     # was observed on 2026-09-11: a turn that neither
                     # completed, timed out, nor logged anything for minutes.
-                    await asyncio.wait_for(aclose(), STREAM_CLOSE_TIMEOUT_SECONDS)
+                    await self._wait_owned(aclose(), STREAM_CLOSE_TIMEOUT_SECONDS)
                 except TimeoutError:
                     logger.warning(
                         "puck bridge: turn stream did not close within %.0fs; abandoning it",
@@ -529,7 +730,7 @@ class TurnRunner:
                     )
                 except Exception:  # pragma: no cover - best-effort cleanup
                     logger.debug("puck bridge: error closing turn stream", exc_info=True)
-            if self._player.active:
+            if not self._stopping.is_set() and self._player.active:
                 try:
                     await asyncio.wait_for(
                         asyncio.to_thread(self._player.close),

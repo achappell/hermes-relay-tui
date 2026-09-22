@@ -141,6 +141,7 @@ class ResponseStream:
         if stall_timeout <= 0:
             raise ValueError("stall_timeout must be positive")
         self._cv = threading.Condition()
+        self._shutdown = False
         self._clock = clock or time.monotonic
         self._chunks: deque[bytes] = deque()
         self._queued_bytes = 0
@@ -186,6 +187,13 @@ class ResponseStream:
 
     # -- producer side (the turn) -----------------------------------------
 
+    def shutdown(self) -> None:
+        """Permanently close admission and wake all delivery waiters."""
+        with self._cv:
+            self._shutdown = True
+            self._mark_unavailable_locked(reason="shutdown")
+            self._cv.notify_all()
+
     def expect(self, seq: int | None = None) -> bool:
         """Declare that a capture is being processed and audio may follow.
 
@@ -202,7 +210,8 @@ class ResponseStream:
         """
         with self._cv:
             if (
-                self._reader_active
+                self._shutdown
+                or self._reader_active
                 or self._expecting
                 or self._eof_pending
             ):
@@ -268,6 +277,8 @@ class ResponseStream:
         """
         audio_format = _validate_audio_format(audio_format)
         with self._cv:
+            if self._shutdown:
+                raise ResponseStreamError("response stream shut down")
             if self._seq is None:
                 self._seq = seq
                 self._expecting = True
