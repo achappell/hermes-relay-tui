@@ -125,7 +125,10 @@ class ResponseStream:
 
     Producer completion and delivery completion are deliberately separate.
     Hermes can finish while the Puck still has queued PCM; only the consumer
-    may then promote the response to public ``complete`` status.
+    may then promote the response to public ``complete`` status. A ``silent``
+    terminal is the honest no-audio result for an empty capture or local
+    exact-stop command; it is not an unavailable response and it carries no
+    body for the device to decode.
     """
 
     def __init__(
@@ -254,6 +257,40 @@ class ResponseStream:
             ):
                 return False
             return self._mark_unavailable_locked()
+
+    def silent(
+        self, seq: int | None = None, *, reason: str = "silent"
+    ) -> bool:
+        """Declare a successful local no-audio completion.
+
+        Empty captures and the exact local ``stop`` command deliberately do
+        not create a Hermes response. The Puck still fetches the admitted
+        sequence, so it needs a terminal result that wakes the request with
+        HTTP 204 instead of making silence look like a bridge failure.
+        """
+        with self._cv:
+            if (
+                not self._matches_locked(seq)
+                or self._reader_active
+                or self._eof_pending
+            ):
+                return False
+            if self._delivery_terminal == "complete":
+                return False
+            if self._delivery_terminal == "unavailable":
+                return False
+            if self._delivery_terminal == "silent":
+                return True
+            self._source_terminal = "silent"
+            self._delivery_terminal = "silent"
+            self._eof_pending = False
+            self._expecting = False
+            self._clear_queue_locked()
+            self._terminal_at = self._clock()
+            self._response_ended_at = self._terminal_at
+            self._terminal_reason = reason
+            self._cv.notify_all()
+            return True
 
     @property
     def expecting(self) -> bool:

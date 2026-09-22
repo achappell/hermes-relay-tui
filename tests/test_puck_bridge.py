@@ -275,6 +275,37 @@ def test_complete_capture_with_valid_token_transcribes_and_delivers(tmp_path):
     assert sink.transcripts == ["what's for dinner"]
 
 
+def test_receiver_preserves_the_production_accepted_string_outcome(tmp_path):
+    from puck_bridge.response import ResponseStream
+
+    stream = ResponseStream()
+    transcribe = _fake_transcribe(transcript="question")
+    handler_cls = make_handler(
+        expected_token="s3cret",
+        on_transcript=lambda _text: "accepted",
+        transcribe_fn=transcribe,
+        work_dir=tmp_path,
+        response_stream=stream,
+    )
+    server = _start_server(handler_cls)
+    try:
+        status = _post_chunk(
+            server.server_address[1],
+            seq=8,
+            chunk=0,
+            total=1,
+            body=struct.pack("<i", 0) + struct.pack("<i", 1 << 6),
+            token="s3cret",
+        )
+    finally:
+        server.shutdown()
+
+    assert status == 200
+    assert transcribe.calls
+    assert stream.status_for(8) == "active"
+    assert stream.terminal_status is None
+
+
 def test_completed_capture_passes_its_sequence_to_the_response_producer(tmp_path):
     from puck_bridge.response import ResponseStream
 
@@ -351,23 +382,131 @@ def test_failed_transcription_produces_no_turn(tmp_path):
 
 
 def test_empty_transcript_produces_no_turn(tmp_path):
+    from puck_bridge.response import ResponseStream
+
     sink = _RecordingSink()
     transcribe = _fake_transcribe(transcript="")
+    stream = ResponseStream()
     handler_cls = make_handler(
         expected_token="s3cret",
         on_transcript=sink,
         transcribe_fn=transcribe,
         work_dir=tmp_path,
+        response_stream=stream,
     )
     server = _start_server(handler_cls)
     try:
         frame = struct.pack("<i", 0) + struct.pack("<i", 100 << 6)
-        _post_chunk(server.server_address[1], seq=11, chunk=0, total=1, body=frame, token="s3cret")
-        threading.Event().wait(0.2)
+        status = _post_chunk(
+            server.server_address[1],
+            seq=11,
+            chunk=0,
+            total=1,
+            body=frame,
+            token="s3cret",
+        )
+        response_status, response_body = _get_response(
+            server.server_address[1], token="s3cret", seq=11
+        )
+        terminal_status, terminal_body = _get_response_status(
+            server.server_address[1], seq=11, token="s3cret"
+        )
     finally:
         server.shutdown()
 
+    assert status == 200
     assert sink.transcripts == []
+    assert response_status == 204
+    assert response_body == b""
+    assert terminal_status == 200
+    assert terminal_body == b'{"seq": 11, "status": "silent"}'
+
+
+def test_empty_capture_is_a_silent_terminal_and_does_not_call_transcription(tmp_path):
+    from puck_bridge.response import ResponseStream
+
+    sink = _RecordingSink()
+    silent_sequences: list[int] = []
+    transcribe = _fake_transcribe(transcript="must not run")
+    stream = ResponseStream()
+    handler_cls = make_handler(
+        expected_token="s3cret",
+        on_transcript=sink,
+        on_capture_silent=lambda seq: silent_sequences.append(seq) or "silent",
+        transcribe_fn=transcribe,
+        work_dir=tmp_path,
+        response_stream=stream,
+    )
+    server = _start_server(handler_cls)
+    try:
+        status = _post_chunk(
+            server.server_address[1],
+            seq=12,
+            chunk=0,
+            total=1,
+            body=b"",
+            token="s3cret",
+        )
+        for _ in range(100):
+            if stream.terminal_status == "silent":
+                break
+            threading.Event().wait(0.01)
+        response_status, response_body = _get_response(
+            server.server_address[1], token="s3cret", seq=12
+        )
+        terminal_status, terminal_body = _get_response_status(
+            server.server_address[1], seq=12, token="s3cret"
+        )
+    finally:
+        server.shutdown()
+
+    assert status == 200
+    assert transcribe.calls == []
+    assert sink.transcripts == []
+    assert silent_sequences == [12]
+    assert response_status == 204
+    assert response_body == b""
+    assert terminal_status == 200
+    assert terminal_body == b'{"seq": 12, "status": "silent"}'
+
+
+def test_exact_stop_capture_is_silent_without_a_hermes_turn(tmp_path):
+    from puck_bridge.response import ResponseStream
+
+    silent_sequences: list[int] = []
+    stream = ResponseStream()
+
+    def on_transcript(_text: str) -> str:
+        return "silent"
+
+    handler_cls = make_handler(
+        expected_token="s3cret",
+        on_transcript=on_transcript,
+        on_capture_silent=lambda seq: silent_sequences.append(seq) or "silent",
+        transcribe_fn=_fake_transcribe(transcript="stop."),
+        work_dir=tmp_path,
+        response_stream=stream,
+    )
+    server = _start_server(handler_cls)
+    try:
+        status = _post_chunk(
+            server.server_address[1],
+            seq=13,
+            chunk=0,
+            total=1,
+            body=struct.pack("<i", 0) + struct.pack("<i", 1 << 6),
+            token="s3cret",
+        )
+        for _ in range(100):
+            if stream.terminal_status == "silent":
+                break
+            threading.Event().wait(0.01)
+    finally:
+        server.shutdown()
+
+    assert status == 200
+    assert silent_sequences == []
+    assert stream.status_for(13) == "silent"
 
 
 # ---------------------------------------------------------------------------
@@ -447,6 +586,165 @@ def test_turn_runner_submits_exactly_one_turn_and_plays_the_response():
     assert player.started_with == (16000, 1, 2)
     assert player.written == [b"\x01\x02", b"\x03\x04"]
     assert player.closed is True
+
+
+def test_turn_runner_admits_a_followup_before_capture_waiter_arms():
+    session = FakeSession()
+    runner = TurnRunner(session, player=FakePlayer())
+    runner.start()
+    started = threading.Event()
+    release = threading.Event()
+    send_result: list[bool] = []
+
+    async def blocked_turn(_text: str) -> bool:
+        started.set()
+        await asyncio.to_thread(release.wait)
+        return True
+
+    runner._run_turn = blocked_turn  # type: ignore[method-assign]
+    sender = threading.Thread(
+        target=lambda: send_result.append(runner._send("first question"))
+    )
+    try:
+        sender.start()
+        assert started.wait(2.0)
+        for _ in range(100):
+            if runner._follow_up_admission:
+                break
+            threading.Event().wait(0.01)
+        assert runner._follow_up_admission is True
+        assert runner._follow_up_waiting is False
+        assert runner.submit_transcript_outcome("follow up", seq=2) == "accepted"
+        assert runner._take_follow_up_transcript() == "follow up"
+        release.set()
+        sender.join(timeout=2.0)
+        assert not sender.is_alive()
+    finally:
+        release.set()
+        if sender.is_alive():
+            sender.join(timeout=2.0)
+        runner.stop()
+
+    assert send_result == [True]
+
+
+def test_turn_runner_reuses_one_session_for_followups_and_stops_silently():
+    from puck_bridge.response import ResponseStream
+
+    session = FakeSession()
+    stream = ResponseStream()
+    runner = TurnRunner(session, player=FakePlayer(), response_stream=stream)
+    runner.start()
+    initial_result: list[bool] = []
+    silent_status: str | None = None
+    initial = threading.Thread(
+        target=lambda: initial_result.append(runner.submit_transcript("first question"))
+    )
+    try:
+        assert stream.expect(seq=1)
+        runner.set_response_seq(1)
+        initial.start()
+        for _ in range(100):
+            if runner.coordinator.state == "capturing":
+                break
+            threading.Event().wait(0.01)
+        assert runner.coordinator.state == "capturing"
+
+        assert stream.expect(seq=2)
+        runner.set_response_seq(2)
+        assert runner.submit_transcript_outcome("second question", seq=2) == "accepted"
+        for _ in range(100):
+            if session.turns == [
+                ("first question", "local"),
+                ("second question", "local"),
+            ]:
+                break
+            threading.Event().wait(0.01)
+        assert session.turns == [
+            ("first question", "local"),
+            ("second question", "local"),
+        ]
+
+        assert stream.expect(seq=3)
+        runner.set_response_seq(3)
+        assert runner.submit_transcript_outcome("stop.", seq=3) == "silent"
+        initial.join(timeout=2.0)
+        assert not initial.is_alive()
+        silent_status = stream.status_for(3)
+    finally:
+        if initial.is_alive():
+            runner.request_stop()
+            initial.join(timeout=2.0)
+        runner.stop()
+
+    assert initial_result == [True]
+    assert session.turns == [
+        ("first question", "local"),
+        ("second question", "local"),
+    ]
+    assert silent_status == "silent"
+
+
+def test_turn_runner_does_not_open_a_followup_after_a_failed_response(monkeypatch):
+    from puck_bridge.response import ResponseStream
+
+    import puck_bridge.turn as turn_module
+
+    monkeypatch.setattr(turn_module, "FIRST_EVENT_TIMEOUT_SECONDS", 0.2)
+    stream = ResponseStream()
+    session = FakeSession(
+        events=[
+            {"type": "audio_start", "sample_rate": 16000, "channels": 1, "sample_width": 2},
+            {"type": "error"},
+        ]
+    )
+    runner = TurnRunner(session, player=FakePlayer(), response_stream=stream)
+    runner.start()
+    try:
+        assert stream.expect(seq=4)
+        runner.set_response_seq(4)
+        assert runner.submit_transcript("failed question") is False
+    finally:
+        runner.stop()
+
+    assert session.turns == [("failed question", "local")]
+    assert stream.terminal_status == "unavailable"
+
+
+def test_turn_runner_ends_a_waiting_followup_on_capture_failure_without_replay():
+    from puck_bridge.response import ResponseStream
+
+    session = FakeSession()
+    stream = ResponseStream()
+    runner = TurnRunner(session, player=FakePlayer(), response_stream=stream)
+    runner.start()
+    initial_result: list[bool] = []
+    initial = threading.Thread(
+        target=lambda: initial_result.append(runner.submit_transcript("first question"))
+    )
+    try:
+        assert stream.expect(seq=20)
+        runner.set_response_seq(20)
+        initial.start()
+        for _ in range(100):
+            if runner.coordinator.state == "capturing":
+                break
+            threading.Event().wait(0.01)
+        assert runner.coordinator.state == "capturing"
+
+        assert stream.expect(seq=21)
+        runner.set_response_seq(21)
+        assert runner.submit_capture_failure(21) == "rejected"
+        initial.join(timeout=2.0)
+        assert not initial.is_alive()
+    finally:
+        if initial.is_alive():
+            runner.request_stop()
+            initial.join(timeout=2.0)
+        runner.stop()
+
+    assert initial_result == [True]
+    assert session.turns == [("first question", "local")]
 
 
 def test_turn_runner_keeps_audio_from_multiple_hermes_segments_in_one_response():

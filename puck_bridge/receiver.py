@@ -214,8 +214,10 @@ def _evict_stale_captures(captures: dict[int, _PendingCapture]) -> None:
 def make_handler(
     *,
     expected_token: str,
-    on_transcript: Callable[[str], bool | None],
+    on_transcript: Callable[[str], object],
     set_response_seq: Callable[[int], None] | None = None,
+    on_capture_silent: Callable[[int], object] | None = None,
+    on_capture_failure: Callable[[int], object] | None = None,
     transcribe_fn: Callable[[str], dict] | None = None,
     work_dir: str | os.PathLike[str] | None = None,
     response_stream: "ResponseStream | None" = None,
@@ -227,10 +229,13 @@ def make_handler(
     reaching into global state, and a real deployment can run several
     bridges (one per Puck, or one per test) without them sharing captures.
 
-    `set_response_seq` is called immediately before a transcript is handed
-    to the turn runner. The upload sequence is the only reliable identity
-    available at this boundary, so the response producer must receive it
-    before it can publish audio.
+    `set_response_seq` is called before any completed capture outcome is
+    handed to the turn runner. The upload sequence is the only reliable
+    identity available at this boundary, so the response producer must
+    receive it before it can publish audio, including silent and failed
+    outcomes. `on_capture_silent` and `on_capture_failure` let a continuous
+    Puck conversation wake its waiting follow-up mailbox without pretending
+    that an empty or failed capture was a transcript.
     """
     from voice import transcribe as _default_transcribe
 
@@ -393,15 +398,25 @@ def make_handler(
 
             # A terminal response is never replayed. The status endpoint is
             # the durable confirmation path for the device after playback.
-            if response_stream.status_for(requested_seq) in {
-                "complete",
-                "unavailable",
-            }:
+            response_status = response_stream.status_for(requested_seq)
+            if response_status == "silent":
+                # The Puck still fetches the sequence after an empty capture
+                # or local exact-stop command. 204 is an intentional,
+                # successful no-audio result; the subsequent status poll
+                # tells firmware to resume wake detection without refusal.
+                self._respond(204)
+                _log_response_trace(response_stream, framing="none")
+                return
+            if response_status in {"complete", "unavailable"}:
                 self._respond(409, b"response is terminal")
                 return
 
             audio_format = response_stream.wait_for_format()
             if audio_format is None:
+                if response_stream.terminal_status == "silent":
+                    self._respond(204)
+                    _log_response_trace(response_stream, framing="none")
+                    return
                 if (
                     was_expecting
                     and response_stream.source_terminal is None
@@ -679,11 +694,28 @@ def make_handler(
             accepted_stream = (
                 response_stream is None or response_stream.seq == seq
             )
+            if set_response_seq is not None:
+                set_response_seq(seq)
+
+            def notify_capture(callback: Callable[[int], object] | None) -> None:
+                if callback is None:
+                    return
+                try:
+                    callback(seq)
+                except Exception:
+                    logger.exception("puck bridge capture outcome callback failed")
+
             if stopping.is_set():
                 capture.chunks.clear()
                 return
             raw = capture.assemble()
             capture.chunks.clear()
+            if not raw:
+                logger.info("puck bridge capture was empty; no turn will be created")
+                notify_capture(on_capture_silent)
+                if response_stream is not None and accepted_stream:
+                    response_stream.silent(seq, reason="empty_capture")
+                return
             os.makedirs(resolved_work_dir, exist_ok=True)
             wav_path = os.path.join(resolved_work_dir, f"puck_{seq}.wav")
             try:
@@ -691,8 +723,9 @@ def make_handler(
                 result = transcribe(wav_path)
             except Exception:
                 logger.exception("puck bridge capture processing failed")
+                notify_capture(on_capture_failure)
                 if response_stream is not None and accepted_stream:
-                    response_stream.abandon()
+                    response_stream.unavailable(seq, reason="capture_processing")
                 return
             finally:
                 try:
@@ -706,20 +739,16 @@ def make_handler(
                 logger.warning(
                     "puck bridge transcription failed: %s", result.get("error")
                 )
-                # Same reason as the empty-transcript path: the device may
-                # already be waiting on /response for audio that will never
-                # be produced.
+                notify_capture(on_capture_failure)
                 if response_stream is not None and accepted_stream:
-                    response_stream.abandon()
+                    response_stream.unavailable(seq, reason="transcription_failure")
                 return
             transcript = str(result.get("transcript") or "").strip()
             if not transcript:
                 logger.info("puck bridge capture produced an empty transcript")
-                # The device may already be fetching /response on the back
-                # of a confirmed upload. Tell it at once that no audio is
-                # coming, rather than letting it wait out the format budget.
+                notify_capture(on_capture_silent)
                 if response_stream is not None and accepted_stream:
-                    response_stream.abandon()
+                    response_stream.silent(seq, reason="empty_transcript")
                 return
             try:
                 # The return value matters: the coordinator is single-flight,
@@ -728,21 +757,27 @@ def make_handler(
                 # wedged turn swallowed a following capture with nothing in
                 # the log to say a question had been thrown away. A dropped
                 # turn is a lost turn and should say so.
-                if set_response_seq is not None:
-                    set_response_seq(seq)
                 delivered = on_transcript(transcript)
             except Exception:
                 logger.exception("puck bridge turn callback failed")
+                notify_capture(on_capture_failure)
                 if response_stream is not None and accepted_stream:
-                    response_stream.abandon()
+                    response_stream.unavailable(seq, reason="turn_callback")
             else:
+                accepted = delivered is True or delivered == "accepted"
                 if (
-                    delivered is not True
+                    delivered == "silent"
                     and response_stream is not None
                     and accepted_stream
                 ):
-                    response_stream.abandon()
-                if delivered is not True:
+                    response_stream.silent(seq, reason="local_stop")
+                elif (
+                    not accepted
+                    and response_stream is not None
+                    and accepted_stream
+                ):
+                    response_stream.unavailable(seq, reason="turn_rejected")
+                if not accepted:
                     logger.warning(
                         "puck bridge dropped a capture or failed its delivery; "
                         "remote receipt may be uncertain. No automatic replay."

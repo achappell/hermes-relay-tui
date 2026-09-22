@@ -269,8 +269,12 @@ def main(argv: list[str] | None = None) -> int:
         if not stopping.is_set():
             handler_cls = make_handler(
                 expected_token=token,
-                on_transcript=runner.submit_transcript,
+                on_transcript=getattr(
+                    runner, "submit_transcript_outcome", runner.submit_transcript
+                ),
                 set_response_seq=runner.set_response_seq,
+                on_capture_silent=getattr(runner, "submit_capture_silent", None),
+                on_capture_failure=getattr(runner, "submit_capture_failure", None),
                 response_stream=response_stream,
             )
         if not stopping.is_set():

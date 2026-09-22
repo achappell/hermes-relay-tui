@@ -29,6 +29,8 @@ enum class State : uint8_t {
   IDLE,
   WAITING_FOR_MEDIA_IDLE,
   POLLING,
+  FOLLOW_UP_PENDING,
+  FOLLOW_UP_CAPTURING,
   REFUSAL_PENDING,
   REFUSAL_PLAYING,
   READY_TO_RESUME,
@@ -48,6 +50,10 @@ inline const char *state_name(State value) {
       return "WAITING_FOR_MEDIA_IDLE";
     case State::POLLING:
       return "POLLING";
+    case State::FOLLOW_UP_PENDING:
+      return "FOLLOW_UP_PENDING";
+    case State::FOLLOW_UP_CAPTURING:
+      return "FOLLOW_UP_CAPTURING";
     case State::REFUSAL_PENDING:
       return "REFUSAL_PENDING";
     case State::REFUSAL_PLAYING:
@@ -138,9 +144,16 @@ inline void note_status(int status, const std::string &body) {
 
   const uint32_t now = millis();
   if (status == 200 && body == terminal_body(response_seq, "complete")) {
-    state = State::READY_TO_RESUME;
-    ESP_LOGI(TAG, "response seq=%u confirmed complete (build=%s)",
+    state = State::FOLLOW_UP_PENDING;
+    ESP_LOGI(TAG, "response seq=%u confirmed complete (build=%s); follow-up window pending",
              (unsigned) response_seq, BUILD_IDENTITY);
+    return;
+  }
+
+  if (status == 200 && body == terminal_body(response_seq, "silent")) {
+    state = State::READY_TO_RESUME;
+    ESP_LOGI(TAG, "response seq=%u confirmed silent; wake may resume",
+             (unsigned) response_seq);
     return;
   }
 
@@ -172,6 +185,25 @@ inline void note_transport_failure() {
 }
 
 inline bool refusal_pending() { return state == State::REFUSAL_PENDING; }
+
+inline bool follow_up_pending() { return state == State::FOLLOW_UP_PENDING; }
+
+inline bool follow_up_capturing() { return state == State::FOLLOW_UP_CAPTURING; }
+
+inline void follow_up_started() {
+  if (state == State::FOLLOW_UP_PENDING) {
+    state = State::FOLLOW_UP_CAPTURING;
+    ESP_LOGI(TAG, "follow-up capture started for response seq=%u",
+             (unsigned) response_seq);
+  }
+}
+
+inline void follow_up_capture_failed() {
+  if (state == State::FOLLOW_UP_PENDING ||
+      state == State::FOLLOW_UP_CAPTURING) {
+    refuse("follow-up capture or upload failed");
+  }
+}
 
 inline void refusal_started() {
   if (state == State::REFUSAL_PENDING) {

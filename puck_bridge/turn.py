@@ -21,12 +21,17 @@ import asyncio
 import logging
 import threading
 import time
+from collections import deque
 from typing import Any
 
 from audio import PCMPlayer, read_wav
-from handsfree import HandsFreeCoordinator
+from handsfree import (
+    DEFAULT_LISTEN_TIMEOUT,
+    HandsFreeCoordinator,
+    is_local_stop_command,
+)
 
-from .response import ResponseStreamError
+from .response import MAX_QUEUED_PCM_BYTES, ResponseStreamError
 
 logger = logging.getLogger("hermes_relay_tui.puck_bridge.turn")
 
@@ -81,6 +86,27 @@ STREAM_CLOSE_TIMEOUT_SECONDS = 5.0
 PLAYBACK_WRITE_TIMEOUT_SECONDS = 60.0
 RECONNECT_TIMEOUT_SECONDS = 10.0
 SHUTDOWN_TIMEOUT_SECONDS = 10.0
+
+# The firmware bounds the actual microphone window to eight seconds. The
+# bridge-side wait also has to cover both bounded PCM buffers: the bridge can
+# hold 480 KB and the Puck's audio_http source can read ahead 300 KB. Use the
+# slowest supported response rate for a conservative playback-tail budget,
+# then add the status poll. This is a bridge backstop, not the user-facing
+# capture limit; the firmware still decides when the microphone window closes.
+MIN_RESPONSE_BYTES_PER_SECOND = 16000 * 2  # 16 kHz, 16-bit mono
+PUCK_AUDIO_HTTP_BUFFER_BYTES = 300_000
+FOLLOW_UP_PLAYBACK_GUARD_SECONDS = (
+    (MAX_QUEUED_PCM_BYTES + PUCK_AUDIO_HTTP_BUFFER_BYTES)
+    / MIN_RESPONSE_BYTES_PER_SECOND
+    + 2.0
+)
+FOLLOW_UP_CAPTURE_WAIT_SECONDS = (
+    DEFAULT_LISTEN_TIMEOUT + FOLLOW_UP_PLAYBACK_GUARD_SECONDS + 1.0
+)
+
+TRANSCRIPT_ACCEPTED = "accepted"
+TRANSCRIPT_SILENT = "silent"
+TRANSCRIPT_REJECTED = "rejected"
 
 
 class TurnTimeout(Exception):
@@ -166,6 +192,13 @@ class TurnRunner:
         self._loop_thread: threading.Thread | None = None
         self._pending_transcript: str | None = None
         self._delivery_succeeded = False
+        self._follow_up_queue: deque[tuple[str, str]] = deque()
+        self._follow_up_waiting = False
+        # Admit the next device capture as soon as a turn is in flight. The
+        # Puck cannot send that capture until its response playback/status
+        # hand-off is complete, but the bridge must retain the mailbox while
+        # the coordinator is still waiting for `_send()` to return.
+        self._follow_up_admission = False
         self._needs_reconnect = False
         self._reconnect_task: asyncio.Task | None = None
         self._shutdown_future = None
@@ -183,10 +216,18 @@ class TurnRunner:
         # take must be reentrant-safe for one thread while still
         # serializing two near-simultaneous callers on different threads.
         self._pending_transcript_lock = threading.RLock()
+        self._follow_up_condition = threading.Condition(self._pending_transcript_lock)
+        # Initial submission is serialized, but follow-up uploads must be
+        # able to wake the waiting capture callback while that initial call is
+        # still blocked inside the coordinator. It is deliberately separate
+        # from the condition lock so the mailbox cannot deadlock the owner.
+        self._submission_lock = threading.Lock()
         self._coordinator = HandsFreeCoordinator(
             session,
             capture=self._take_pending_transcript,
             send=self._send,
+            follow_up_capture=self._take_follow_up_transcript,
+            follow_up_listen_timeout=DEFAULT_LISTEN_TIMEOUT,
         )
 
     @property
@@ -239,6 +280,8 @@ class TurnRunner:
             if self._stopping.is_set():
                 return
             self._stopping.set()
+            with self._follow_up_condition:
+                self._follow_up_condition.notify_all()
             self._shutdown_deadline = deadline if deadline is not None else time.monotonic() + SHUTDOWN_TIMEOUT_SECONDS
             if self._response_stream is not None:
                 self._response_stream.shutdown()
@@ -345,44 +388,166 @@ class TurnRunner:
             if not self._stopping.is_set():
                 self._response_seq = seq
 
-    def submit_transcript(self, transcript: str) -> bool:
-        """Run exactly one Hermes turn for one already-transcribed utterance.
+    def _mark_silent(self, seq: int | None, *, reason: str) -> None:
+        if self._response_stream is None:
+            return
+        response_seq = seq if seq is not None else self._response_seq
+        self._response_stream.silent(response_seq, reason=reason)
 
-        Reuses `HandsFreeCoordinator.on_wake` unmodified: it is the same
-        capture -> deliver -> send state machine the wake-word appliance
-        drives, given a `capture` closure that returns text already in
-        hand instead of opening a microphone. `on_wake(True)` marks a
-        synthetic wake phrase so the coordinator's logging/last-wake-phrase
-        bookkeeping stays meaningful without inventing new API surface.
+    def _queue_follow_up_locked(
+        self,
+        disposition: str,
+        transcript: str,
+        seq: int | None,
+        *,
+        reason: str,
+    ) -> str:
+        if not (self._follow_up_waiting or self._follow_up_admission) or self._follow_up_queue:
+            return TRANSCRIPT_REJECTED
+        if disposition == TRANSCRIPT_SILENT:
+            self._mark_silent(seq, reason=reason)
+        elif disposition == TRANSCRIPT_REJECTED and self._response_stream is not None:
+            response_seq = seq if seq is not None else self._response_seq
+            self._response_stream.unavailable(response_seq, reason=reason)
+        self._follow_up_queue.append((disposition, transcript))
+        self._follow_up_condition.notify_all()
+        return disposition
+
+    def _disarm_follow_up_admission(self) -> None:
+        with self._follow_up_condition:
+            self._follow_up_admission = False
+            self._follow_up_queue.clear()
+            self._follow_up_condition.notify_all()
+
+    def submit_transcript_outcome(
+        self, transcript: str, *, seq: int | None = None
+    ) -> str:
+        """Admit one Puck transcript and return its transport disposition.
+
+        An initial transcript runs through ``HandsFreeCoordinator`` and waits
+        for the conversation to finish. Once that coordinator is parked in a
+        bounded follow-up capture, later Puck uploads only fill its mailbox;
+        the coordinator thread remains the sole owner that calls Hermes. This
+        preserves one session and one send per accepted phrase without
+        allowing an early or duplicate upload to become a replay.
         """
+        text = (transcript or "").strip()
         if self._stopping.is_set():
-            return False
-        with self._pending_transcript_lock:
-            if self._stopping.is_set():
-                return False
-            if self._needs_reconnect or not self._session.is_connected():
-                if self._loop is None:
-                    return False
-                self._needs_reconnect = True
-                future = asyncio.run_coroutine_threadsafe(
-                    self._reconnect(), self._loop,
-                )
-                try:
-                    if not future.result(timeout=RECONNECT_TIMEOUT_SECONDS + 1):
-                        return False
-                except Exception as exc:
-                    future.cancel()
-                    logger.error(
-                        "puck bridge reconnect failed: %s; question not sent",
-                        type(exc).__name__,
+            return TRANSCRIPT_REJECTED
+
+        # A legitimate follow-up arrives while the coordinator is blocked in
+        # `_take_follow_up_transcript`. Handle it before the initial-submission
+        # lock; waiting for that lock here would deadlock the coordinator.
+        with self._follow_up_condition:
+            if self._follow_up_waiting or self._follow_up_admission:
+                if not text or is_local_stop_command(text):
+                    return self._queue_follow_up_locked(
+                        TRANSCRIPT_SILENT,
+                        "",
+                        seq,
+                        reason="local_stop" if text else "empty_follow_up",
                     )
-                    return False
-                self._needs_reconnect = False
-                logger.info("puck bridge reconnected for a fresh question")
-            self._pending_transcript = transcript
-            self._delivery_succeeded = False
+                return self._queue_follow_up_locked(
+                    TRANSCRIPT_ACCEPTED,
+                    text,
+                    seq,
+                    reason="follow_up_accepted",
+                )
+            if self._coordinator.state != "idle":
+                return TRANSCRIPT_REJECTED
+
+        # A wake capture containing exact `stop` is local even if the session
+        # is disconnected. It must not reconnect merely to decline the turn.
+        if not text or is_local_stop_command(text):
+            self._mark_silent(
+                seq,
+                reason="local_stop" if text else "empty_capture",
+            )
+            return TRANSCRIPT_SILENT
+
+        # Do not queue a second initial submission. Non-blocking acquisition
+        # is intentional: a caller that races an in-flight turn is rejected,
+        # never held until its uncertain capture might be replayed later.
+        if not self._submission_lock.acquire(blocking=False):
+            return TRANSCRIPT_REJECTED
+        try:
+            with self._follow_up_condition:
+                if self._follow_up_waiting or self._follow_up_admission:
+                    return self._queue_follow_up_locked(
+                        TRANSCRIPT_ACCEPTED,
+                        text,
+                        seq,
+                        reason="follow_up_accepted",
+                    )
+                if self._coordinator.state != "idle":
+                    return TRANSCRIPT_REJECTED
+                if self._stopping.is_set():
+                    return TRANSCRIPT_REJECTED
+                if self._needs_reconnect or not self._session.is_connected():
+                    if self._loop is None:
+                        return TRANSCRIPT_REJECTED
+                    self._needs_reconnect = True
+                    future = asyncio.run_coroutine_threadsafe(
+                        self._reconnect(), self._loop,
+                    )
+                    try:
+                        if not future.result(timeout=RECONNECT_TIMEOUT_SECONDS + 1):
+                            return TRANSCRIPT_REJECTED
+                    except Exception as exc:
+                        future.cancel()
+                        logger.error(
+                            "puck bridge reconnect failed: %s; question not sent",
+                            type(exc).__name__,
+                        )
+                        return TRANSCRIPT_REJECTED
+                    self._needs_reconnect = False
+                    logger.info("puck bridge reconnected for a fresh question")
+                self._pending_transcript = text
+                self._delivery_succeeded = False
+
             accepted = self._coordinator.on_wake(True)
-            return accepted and self._delivery_succeeded
+            return (
+                TRANSCRIPT_ACCEPTED
+                if accepted and self._delivery_succeeded
+                else TRANSCRIPT_REJECTED
+            )
+        finally:
+            self._submission_lock.release()
+
+    def submit_transcript(self, transcript: str) -> bool:
+        """Compatibility wrapper for callers that only need a boolean."""
+        return self.submit_transcript_outcome(transcript) == TRANSCRIPT_ACCEPTED
+
+    def submit_capture_silent(self, seq: int) -> str:
+        """Complete an empty Puck capture without manufacturing a transcript."""
+        with self._follow_up_condition:
+            if self._follow_up_waiting or self._follow_up_admission:
+                return self._queue_follow_up_locked(
+                    TRANSCRIPT_SILENT,
+                    "",
+                    seq,
+                    reason="empty_capture",
+                )
+            if self._coordinator.state != "idle":
+                return TRANSCRIPT_REJECTED
+        self._mark_silent(seq, reason="empty_capture")
+        return TRANSCRIPT_SILENT
+
+    def submit_capture_failure(self, seq: int) -> str:
+        """End a failed Puck capture without replaying its uncertain audio."""
+        with self._follow_up_condition:
+            if self._follow_up_waiting or self._follow_up_admission:
+                return self._queue_follow_up_locked(
+                    TRANSCRIPT_REJECTED,
+                    "",
+                    seq,
+                    reason="capture_failure",
+                )
+            if self._coordinator.state != "idle":
+                return TRANSCRIPT_REJECTED
+        if self._response_stream is not None:
+            self._response_stream.unavailable(seq, reason="capture_failure")
+        return TRANSCRIPT_REJECTED
 
     async def _reconnect(self) -> bool:
         if self._stopping.is_set():
@@ -411,10 +576,35 @@ class TurnRunner:
                 task.cancel()
 
     def _take_pending_transcript(self) -> str:
-        with self._pending_transcript_lock:
+        with self._follow_up_condition:
             transcript = self._pending_transcript or ""
             self._pending_transcript = None
             return transcript
+
+    def _take_follow_up_transcript(self) -> str:
+        """Wait for one firmware-bounded follow-up capture outcome."""
+        deadline = time.monotonic() + FOLLOW_UP_CAPTURE_WAIT_SECONDS
+        with self._follow_up_condition:
+            self._follow_up_waiting = True
+            try:
+                while not self._follow_up_queue and not self._stopping.is_set():
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        logger.info(
+                            "puck bridge follow-up window expired without a capture"
+                        )
+                        self._follow_up_admission = False
+                        return ""
+                    self._follow_up_condition.wait(remaining)
+                if not self._follow_up_queue:
+                    self._follow_up_admission = False
+                    return ""
+                disposition, transcript = self._follow_up_queue.popleft()
+                if disposition != TRANSCRIPT_ACCEPTED:
+                    self._follow_up_admission = False
+                return transcript if disposition == TRANSCRIPT_ACCEPTED else ""
+            finally:
+                self._follow_up_waiting = False
 
     def _send(self, text: str) -> bool:
         """Run one turn on the background loop, blocking the caller thread.
@@ -443,20 +633,26 @@ class TurnRunner:
         with self._lifecycle_lock:
             if self._stopping.is_set():
                 return False
+            with self._follow_up_condition:
+                self._follow_up_admission = True
             future = asyncio.run_coroutine_threadsafe(run_owned(), loop)
         try:
             self._delivery_succeeded = bool(
                 future.result(timeout=TURN_BACKSTOP_SECONDS)
             )
+            if not self._delivery_succeeded:
+                self._disarm_follow_up_admission()
             return self._delivery_succeeded
         except TurnTimeout as exc:
             self._needs_reconnect = True
+            self._disarm_follow_up_admission()
             # Hermes stopped producing events. `_run_turn` has already
             # logged the specifics and closed the player.
             logger.error("puck bridge turn abandoned: %s", exc)
             return False
         except TimeoutError:
             self._needs_reconnect = True
+            self._disarm_follow_up_admission()
             # The backstop, not the normal path -- `_run_turn` bounds itself.
             #
             # Cancel rather than merely stop waiting (deferred-work #36):
@@ -475,6 +671,7 @@ class TurnRunner:
 
         except Exception as exc:
             self._needs_reconnect = True
+            self._disarm_follow_up_admission()
             # The coordinator catches callback exceptions at DEBUG. Report
             # the failure here without exception text, which can contain
             # credentials or conversation content.

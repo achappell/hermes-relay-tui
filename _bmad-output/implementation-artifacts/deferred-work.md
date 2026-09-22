@@ -285,3 +285,12 @@
 - source_spec: `_bmad-output/implementation-artifacts/spec-standard-7-esp32-touch-audio-session-adapter.md`
   summary: Settle whether an abandoned Home claim needs an explicit release call after a successful claim is followed by a failed session-open in `TouchDoorway._open_home_binding`.
   evidence: `home_display/touch.py`'s `_open_home_binding` never notifies Home when `claim_client.claim()` succeeds but `session_factory(handle)` then fails; whether this strands the claimed Room/Profile binding depends on HOME-NW-16's own claim-expiry/idle-tail behavior, which is implemented in the sibling `hermes-relay-home` repository and unverifiable from this checkout. Read that repository's claim-lifecycle code to settle it; add an explicit release call here only if Home does not already auto-expire an idle, unconfirmed claim.
+
+## Deferred from: code review of spec-1-p-3-bounded-follow-up-and-exact-stop (2026-09-22)
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-1-p-3-bounded-follow-up-and-exact-stop.md`
+  summary: Prove the silent HTTP 204 handoff releases Puck wake ownership.
+  evidence: The silent path enters `WAITING_FOR_MEDIA_IDLE`, starts a 204 media fetch, and relies on the ESPHome audio pipeline emitting the idle callback before status polling can resume wake. Static checks cannot settle that device behavior; a physical empty-capture/exact-stop run with response-state logs is required.
+- source_spec: `_bmad-output/implementation-artifacts/spec-1-p-3-bounded-follow-up-and-exact-stop.md`
+  summary: Synchronize capture state shared by the I2S task and interval loop.
+  evidence: `capturing`, `write_pos`, and the close/upload flags cross the microphone task and the main-loop intervals without an explicit synchronization boundary. The same shape predates P-3 for initial capture, so a task-timing or hardware check should settle the risk before changing this shared path.
