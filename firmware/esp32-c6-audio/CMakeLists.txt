@@ -1,0 +1,7 @@
+cmake_minimum_required(VERSION 3.16)
+include($ENV{IDF_PATH}/tools/cmake/project.cmake)
+project(hermes_touch_capture)
+idf_build_get_property(capture_idf_version IDF_VER)
+if(NOT capture_idf_version STREQUAL "v5.3.3")
+    message(FATAL_ERROR "C6 capture requires ESP-IDF 5.3.3")
+endif()

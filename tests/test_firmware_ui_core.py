@@ -180,29 +180,14 @@ def test_native_simulator_demo_keys_follow_legal_reducer_transitions() -> None:
 
 # ---- the snapshot JSON parser carries the voice doorway's fields -------
 #
-# `ui_snapshot_json.c` needs cJSON, which ships with ESP-IDF rather than this
-# checkout. When that source is not available the check is skipped rather
-# than silently dropped.
+# Pinned MIT-licensed source is available in every clean checkout.
 
-_CJSON_CANDIDATES = (
-    Path.home() / ".platformio" / "packages" / "framework-espidf"
-    / "components" / "json" / "cJSON",
-)
-
-
-def _cjson_dir() -> Path | None:
-    for candidate in _CJSON_CANDIDATES:
-        if (candidate / "cJSON.c").is_file() and (candidate / "cJSON.h").is_file():
-            return candidate
-    return None
+def _cjson_dir() -> Path:
+    return Path(__file__).parent / "vendor" / "cjson"
 
 
 def _compile_and_run_json(source: str) -> subprocess.CompletedProcess[str]:
-    import pytest
-
     cjson = _cjson_dir()
-    if cjson is None:
-        pytest.skip("cJSON sources are not available in this checkout")
     harness = Path(__file__).with_name("_firmware_ui_json_harness.c")
     binary = Path(__file__).with_name("_firmware_ui_json_harness")
     harness.write_text(source)
@@ -375,3 +360,24 @@ def test_snapshot_json_truncation_never_splits_a_utf8_codepoint() -> None:
     )
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip() == "ok"
+
+
+def test_snapshot_gaps_preserve_contiguous_validation_and_prompt_bounds():
+    result = _compile_and_run(r'''
+#include <assert.h>
+#include "ui_display.h"
+int main(void) {
+    ui_display_init(0,0);
+    ui_snapshot_t s;assert(ui_snapshot_init(&s));
+    s.sequence=1;s.state=UI_DISPLAY_ERROR;
+    assert(ui_display_set_snapshot(&s)==DISPLAY_RULES_ACCEPTED);
+    s.sequence=2;s.state=UI_DISPLAY_HEARD;
+    assert(ui_display_set_snapshot(&s)==DISPLAY_RULES_INVALID_TRANSITION);
+    s.sequence=3;
+    assert(ui_display_set_snapshot(&s)==DISPLAY_RULES_ACCEPTED);
+    s.sequence=2;
+    assert(ui_display_set_snapshot(&s)==DISPLAY_RULES_STALE);
+    return 0;
+}
+''')
+    assert result.returncode == 0, result.stderr

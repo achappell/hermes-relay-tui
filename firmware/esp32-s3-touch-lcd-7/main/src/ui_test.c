@@ -92,7 +92,7 @@ void ui_test_init(void)
     uint32_t sram_free = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
     uint32_t sram_total = heap_caps_get_total_size(MALLOC_CAP_INTERNAL);
 
-    char mem_buf[128];
+    char mem_buf[160];
     snprintf(mem_buf, sizeof(mem_buf),
              "Resolution: %dx%d (16-bit RGB565)\n"
              "Octal PSRAM: %u KB free / %u KB total\n"

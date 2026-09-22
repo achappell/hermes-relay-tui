@@ -34,3 +34,6 @@ display_rules_result_t ui_display_validate_typed_choice(
 display_rules_result_t ui_display_validate_dismiss(void);
 const display_rules_view_t *ui_display_rules_view(void);
 void ui_display_update_diagnostics(bool touch_active, uint16_t x, uint16_t y, uint8_t point_count, uint32_t fps);
+
+/* Capture ownership comes from the adapter, never display phase snapshots. */
+void ui_display_capture_update(int phase);

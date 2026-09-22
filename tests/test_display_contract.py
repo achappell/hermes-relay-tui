@@ -129,3 +129,55 @@ def test_invalid_display_actions_are_rejected() -> None:
     assert fixtures
     for fixture in fixtures:
         _assert_invalid(schema_path, _read_json(fixture))
+
+
+def test_coalesced_host_publisher_snapshots_reach_c_reducer(tmp_path):
+    """A real one-slot subscriber skips phases; its JSON must still paint."""
+    import asyncio
+    import subprocess
+    import pytest
+    from home_display.state import DisplayStatePublisher
+
+    async def collect():
+        publisher = DisplayStatePublisher()
+        stream = publisher.subscribe()
+        result = [await anext(stream)]
+        publisher.publish(state="error")
+        result.append(await anext(stream))
+        publisher.publish(state="idle")
+        publisher.publish(state="heard")
+        result.append(await anext(stream))
+        publisher.publish(state="listening")
+        result.append(await anext(stream))
+        publisher.publish(state="thinking")
+        publisher.publish(state="complete", response_text="Answer preserved")
+        result.append(await anext(stream))
+        await stream.aclose()
+        return result
+
+    snapshots = asyncio.run(collect())
+    root = CONTRACT_DIR.parents[1]
+    firmware = root/'firmware/esp32-s3-touch-lcd-7/main'
+    cjson = Path.home()/'.platformio/packages/framework-espidf/components/json/cJSON'
+    if not (cjson/'cJSON.c').exists():
+        pytest.skip('ESP-IDF cJSON unavailable')
+    source = '''#include <assert.h>
+#include "ui_snapshot.h"
+int main(void) {
+ display_rules_reducer_t reducer;display_rules_init(&reducer);
+ ui_snapshot_t snapshot;display_rules_snapshot_t rules;
+'''
+    for snapshot in snapshots:
+        wire = json.dumps(json.dumps(snapshot.to_dict()))
+        source += f'assert(ui_snapshot_from_json({wire}, &snapshot));\n'
+        source += 'assert(ui_snapshot_to_rules(&snapshot,&rules));assert(display_rules_apply_snapshot(&reducer,&rules)==DISPLAY_RULES_ACCEPTED);\n'
+    source += '''assert(display_rules_apply_snapshot(&reducer,&rules)==DISPLAY_RULES_STALE);
+return 0;}
+'''
+    harness, binary = tmp_path/'publisher.c', tmp_path/'publisher'
+    harness.write_text(source)
+    subprocess.run(['cc','-std=c11','-Wall','-Wextra','-Werror',
+                    '-I',str(firmware/'include'),'-I',str(CONTRACT_DIR),'-I',str(cjson),
+                    str(harness),str(firmware/'src/ui_snapshot.c'),str(firmware/'src/ui_snapshot_json.c'),
+                    str(CONTRACT_DIR/'display_rules.c'),str(cjson/'cJSON.c'),'-o',str(binary)],check=True)
+    subprocess.run([str(binary)],check=True)

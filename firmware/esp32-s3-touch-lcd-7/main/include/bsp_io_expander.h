@@ -25,7 +25,7 @@ esp_err_t bsp_io_expander_init(void);
 bsp_expander_type_t bsp_io_expander_get_type(void);
 
 /**
- * @brief Set the output level of a pin on the IO expander.
+ * @brief Set the output level of a pin on the IO expander. USB_SEL (EXIO5) stays low.
  * @param pin_num Pin number on expander (0..7)
  * @param level 0 for LOW, 1 for HIGH
  */
