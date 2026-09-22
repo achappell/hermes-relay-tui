@@ -2,7 +2,7 @@
 title: 'Bounded Puck follow-up and exact stop'
 type: 'feature'
 created: '2026-09-22'
-status: 'in-progress'
+status: 'done'
 route: 'dispatch'
 review_loop_iteration: 0
 baseline_commit: 'dcdb0a4'
