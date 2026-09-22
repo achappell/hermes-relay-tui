@@ -24,7 +24,7 @@ import config
 import handsfree
 from home_display import appliance as appliance_module
 from home_display.appliance import Appliance
-from home_display.server import BrowserProfileRouteResult
+from home_display.server import BrowserProfileRouteResult, TouchFrame
 from home_display.state import DisplayPrompt, PromptOption
 
 
@@ -3524,3 +3524,182 @@ async def test_bounded_to_thread_runs_daemon_thread_and_handles_timeout():
     await appliance._bounded_to_thread(slow_func, timeout=0.05)
     block_event.set()
     assert thread_daemon_status == [True]
+
+
+# ---- ESP32 Touch doorway wiring ----------------------------------------
+
+
+def _touch_args(tmp_path, **overrides):
+    credential = tmp_path / "touch.credential"
+    credential.write_text("device-credential", encoding="utf-8")
+    values = {
+        "touch_voice": True,
+        "touch_device_id": "touch-kitchen",
+        "touch_config_revision": "rev-7",
+        "touch_claim_url": "",
+        "home_bridge_url": "wss://home.example/api/v1/bridge/ws",
+        "home_device_credential_file": credential,
+        "home_conversation_handle": "",
+        "profile_env": None,
+        "browser_transport": "home",
+        "display_host": "127.0.0.1",
+        "display_port": 0,
+        "display_remote": False,
+        "display_tls_cert": None,
+        "display_tls_key": None,
+        "display_max_browser_sessions": 4,
+        "turn_timeout": 0,
+    }
+    values.update(overrides)
+    return _args(**values)
+
+
+def test_touch_mode_fails_closed_without_approved_credential_storage(tmp_path):
+    args = _touch_args(tmp_path, home_device_credential_file=tmp_path / "absent")
+    appliance = Appliance(args, profiles=_catalog_profiles(), session=FakeSession())
+
+    with pytest.raises(RuntimeError, match="credential storage"):
+        appliance._build()
+
+    assert appliance._server is None
+
+
+def test_touch_mode_fails_closed_without_a_configured_device_identity(tmp_path):
+    args = _touch_args(tmp_path, touch_device_id="")
+    appliance = Appliance(args, profiles=_catalog_profiles(), session=FakeSession())
+
+    with pytest.raises(RuntimeError, match="touch-device-id"):
+        appliance._build()
+
+
+def test_touch_mode_and_browser_voice_are_separate_doorways(tmp_path):
+    args = _touch_args(tmp_path, browser_voice=True)
+    appliance = Appliance(args, profiles=_catalog_profiles(), session=FakeSession())
+
+    with pytest.raises(RuntimeError, match="one at a time"):
+        appliance._build()
+
+
+def test_touch_mode_builds_a_touch_display_server(tmp_path):
+    args = _touch_args(tmp_path)
+    appliance = Appliance(args, profiles=_catalog_profiles(), session=FakeSession())
+
+    appliance._build()
+
+    assert appliance._server.touch_contexts_enabled is True
+    assert appliance._server.browser_contexts_enabled is True
+    # No wake listener, no recorder, no local speaker: the panel owns capture.
+    assert appliance._listener is None
+    assert appliance._recorder is None
+
+
+@pytest.mark.asyncio
+async def test_a_touch_context_is_private_and_opens_no_home_session_yet(tmp_path):
+    args = _touch_args(tmp_path)
+    appliance = Appliance(args, profiles=_catalog_profiles(), session=FakeSession())
+    appliance._build()
+
+    sender = types.SimpleNamespace()
+    first = await appliance._create_touch_context("touch-1", sender)
+    second = await appliance._create_touch_context("touch-2", sender)
+
+    assert first.publisher is not second.publisher
+    assert first._session is None and second._session is None
+    assert first.publisher.snapshot.state == "idle"
+    assert set(appliance._touch_contexts) == {"touch-1", "touch-2"}
+
+    await appliance._close_touch_contexts()
+    assert appliance._touch_contexts == {}
+
+
+@pytest.mark.asyncio
+async def test_closing_a_touch_context_forgets_it(tmp_path):
+    args = _touch_args(tmp_path)
+    appliance = Appliance(args, profiles=_catalog_profiles(), session=FakeSession())
+    appliance._build()
+
+    doorway = await appliance._create_touch_context("touch-1", types.SimpleNamespace())
+    await doorway.close()
+
+    assert appliance._touch_contexts == {}
+
+
+def test_the_touch_claim_route_is_derived_from_the_approved_bridge(tmp_path):
+    args = _touch_args(tmp_path)
+    appliance = Appliance(args, profiles=_catalog_profiles(), session=FakeSession())
+
+    device_config = appliance._load_touch_device_config()
+
+    assert device_config.claim_url == "https://home.example/api/v1/touch-claims"
+    assert device_config.bridge_url == "wss://home.example/api/v1/bridge/ws"
+    assert device_config.device_id == "touch-kitchen"
+
+
+@pytest.mark.asyncio
+async def test_mic_start_opens_a_home_browser_session_with_the_granted_handle(
+    tmp_path, monkeypatch
+):
+    """The only code path that turns a granted claim into a live session."""
+    args = _touch_args(tmp_path)
+    appliance = Appliance(args, profiles=_catalog_profiles(), session=FakeSession())
+    appliance._build()
+
+    created = {}
+
+    class RecordingHomeBrowserSession:
+        def __init__(self, bridge_url, credential, handle):
+            created["args"] = (bridge_url, credential, handle)
+            self.connected = False
+            self.active_turn_id = "turn-1"
+
+        async def connect(self):
+            self.connected = True
+            created["connected"] = True
+            return {"type": "hello_ack"}
+
+        def send_turn(self, text, **_kwargs):
+            async def _events():
+                yield {"type": "turn_end"}
+
+            return _events()
+
+        async def close(self):
+            pass
+
+    class RecordingClaimClient:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        async def claim(self, *, claim_id, observed_at):
+            return "granted-handle"
+
+    monkeypatch.setattr(
+        appliance_module, "HomeBrowserSession", RecordingHomeBrowserSession
+    )
+    monkeypatch.setattr(appliance_module, "HttpTouchClaimClient", RecordingClaimClient)
+
+    class RecordingSender:
+        def __init__(self):
+            self.controls = []
+
+        async def send_control(self, payload):
+            self.controls.append(payload)
+            return True
+
+    sender = RecordingSender()
+    doorway = await appliance._create_touch_context("touch-1", sender)
+
+    device_config = appliance._load_touch_device_config()
+    await doorway.handle_touch_frame(TouchFrame("mic_start", capture_id="c1"))
+
+    assert created["args"] == (
+        device_config.bridge_url,
+        device_config.credential,
+        "granted-handle",
+    )
+    assert created["connected"] is True
+    assert sender.controls == [
+        {"type": "mic_ready", "schema": 1, "capture_id": "c1"}
+    ]
+
+    await appliance._close_touch_contexts()

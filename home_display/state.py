@@ -8,6 +8,8 @@ from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from typing import Literal
 
+from voice import MAX_FINAL_TRANSCRIPT_CHARACTERS
+
 DisplayState = Literal[
     "idle",
     "heard",
@@ -18,11 +20,17 @@ DisplayState = Literal[
     "error",
     "disconnected",
     "prompt",
+    "transcribing",
+    "complete",
 ]
 _STATES = frozenset(DisplayState.__args__)
 DisplayActionName = Literal["prompt.choose", "prompt.dismiss"]
 MAX_DISPLAY_WAKE_PHRASES = 8
 MAX_DISPLAY_WAKE_PHRASE_LENGTH = 128
+# One final transcript, bounded, and never the same field as the answer: a
+# surface that renders both must never be able to show what the room said as
+# though Hermes had said it. Reuses voice.py's bound rather than redefining it.
+MAX_DISPLAY_TRANSCRIPT_LENGTH = MAX_FINAL_TRANSCRIPT_CHARACTERS
 
 
 @dataclass(frozen=True, slots=True)
@@ -171,6 +179,7 @@ class DisplaySnapshot:
     sequence: int = 0
     state: DisplayState = "idle"
     response_text: str = ""
+    transcript_text: str = ""
     status_text: str | None = None
     media: dict[str, object] | None = None
     account: str | None = None
@@ -186,6 +195,13 @@ class DisplaySnapshot:
             raise ValueError("state must be a known display state")
         if not isinstance(self.response_text, str):
             raise TypeError("response_text must be a string")
+        if not isinstance(self.transcript_text, str):
+            raise TypeError("transcript_text must be a string")
+        if len(self.transcript_text) > MAX_DISPLAY_TRANSCRIPT_LENGTH:
+            raise ValueError(
+                "transcript_text must be at most "
+                f"{MAX_DISPLAY_TRANSCRIPT_LENGTH} characters"
+            )
         if self.status_text is not None and not isinstance(self.status_text, str):
             raise TypeError("status_text must be a string or None")
         if self.account is not None and not isinstance(self.account, str):
@@ -221,6 +237,7 @@ class DisplaySnapshot:
             "sequence": self.sequence,
             "state": self.state,
             "response_text": self.response_text,
+            "transcript_text": self.transcript_text,
             "status_text": self.status_text,
             "media": self.media,
             "prompt": self.prompt.to_dict() if self.prompt is not None else None,
@@ -246,6 +263,7 @@ class DisplayStatePublisher:
         *,
         state: DisplayState,
         response_text: str = "",
+        transcript_text: str = "",
         status_text: str | None = None,
         media: dict[str, object] | None = None,
         account: str | None = None,
@@ -256,6 +274,7 @@ class DisplayStatePublisher:
             sequence=self._snapshot.sequence + 1,
             state=state,
             response_text=response_text,
+            transcript_text=transcript_text,
             status_text=status_text,
             media=media,
             account=account,

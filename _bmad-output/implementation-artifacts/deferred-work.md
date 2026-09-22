@@ -277,3 +277,11 @@
 - source_spec: `_bmad-output/implementation-artifacts/spec-standard-8-wk-migrate-browser-ipad-routes.md`
   summary: OPEN -- complete the approved Home-route and physical Safari/iPad W/K acceptance gate.
   evidence: No approved public route, paired production credential, or physical W/K environment is available in this checkout. Fake bridge evidence cannot prove secure-channel, audio, touch, kiosk, concurrency, or live reconnect behavior.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-standard-7-esp32-touch-audio-session-adapter.md`
+  summary: Defer the physical ESP32-S3/C6 UART audio transport and firmware integration until the host Touch admission/session adapter is delivered.
+  evidence: The host-side claim, bounded PCM, in-memory STT, Home turn, and private response-audio path can be reviewed and tested with WebSocket fakes independently; the UART frame contract, C6 firmware, reset recovery, and physical microphone/speaker acceptance require a separate hardware-facing change set and environment.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-standard-7-esp32-touch-audio-session-adapter.md`
+  summary: Settle whether an abandoned Home claim needs an explicit release call after a successful claim is followed by a failed session-open in `TouchDoorway._open_home_binding`.
+  evidence: `home_display/touch.py`'s `_open_home_binding` never notifies Home when `claim_client.claim()` succeeds but `session_factory(handle)` then fails; whether this strands the claimed Room/Profile binding depends on HOME-NW-16's own claim-expiry/idle-tail behavior, which is implemented in the sibling `hermes-relay-home` repository and unverifiable from this checkout. Read that repository's claim-lifecycle code to settle it; add an explicit release call here only if Home does not already auto-expire an idle, unconfirmed claim.

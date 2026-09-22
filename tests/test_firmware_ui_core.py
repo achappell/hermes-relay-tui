@@ -176,3 +176,202 @@ def test_native_simulator_demo_keys_follow_legal_reducer_transitions() -> None:
     assert "demo_snapshot(UI_DISPLAY_HEARD" in source
     assert "demo_snapshot(UI_DISPLAY_THINKING" in source
     assert "s_demo_snapshot.prompt.can_choose = true" in source
+
+
+# ---- the snapshot JSON parser carries the voice doorway's fields -------
+#
+# `ui_snapshot_json.c` needs cJSON, which ships with ESP-IDF rather than this
+# checkout. When that source is not available the check is skipped rather
+# than silently dropped.
+
+_CJSON_CANDIDATES = (
+    Path.home() / ".platformio" / "packages" / "framework-espidf"
+    / "components" / "json" / "cJSON",
+)
+
+
+def _cjson_dir() -> Path | None:
+    for candidate in _CJSON_CANDIDATES:
+        if (candidate / "cJSON.c").is_file() and (candidate / "cJSON.h").is_file():
+            return candidate
+    return None
+
+
+def _compile_and_run_json(source: str) -> subprocess.CompletedProcess[str]:
+    import pytest
+
+    cjson = _cjson_dir()
+    if cjson is None:
+        pytest.skip("cJSON sources are not available in this checkout")
+    harness = Path(__file__).with_name("_firmware_ui_json_harness.c")
+    binary = Path(__file__).with_name("_firmware_ui_json_harness")
+    harness.write_text(source)
+    try:
+        compile_result = subprocess.run(
+            [
+                "cc",
+                "-std=c11",
+                "-Wall",
+                "-Wextra",
+                "-Werror",
+                "-I",
+                str(FIRMWARE_DIR / "main" / "include"),
+                "-I",
+                str(SHARED_DISPLAY_DIR),
+                "-I",
+                str(cjson),
+                str(harness),
+                str(FIRMWARE_DIR / "main" / "src" / "ui_snapshot.c"),
+                str(FIRMWARE_DIR / "main" / "src" / "ui_snapshot_json.c"),
+                str(SHARED_DISPLAY_DIR / "display_rules.c"),
+                str(cjson / "cJSON.c"),
+                "-o",
+                str(binary),
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        assert compile_result.returncode == 0, compile_result.stderr
+        return subprocess.run([str(binary)], check=False, capture_output=True, text=True)
+    finally:
+        harness.unlink(missing_ok=True)
+        binary.unlink(missing_ok=True)
+
+
+def test_snapshot_json_carries_the_voice_phases_and_a_separate_transcript() -> None:
+    result = _compile_and_run_json(
+        r'''
+        #include <assert.h>
+        #include <stdio.h>
+        #include <string.h>
+        #include "ui_snapshot.h"
+
+        int main(void)
+        {
+            ui_snapshot_t snapshot;
+
+            const char *transcribing =
+                "{\"type\":\"snapshot\",\"schema\":1,\"sequence\":4,"
+                "\"state\":\"transcribing\",\"response_text\":\"\","
+                "\"transcript_text\":\"turn on the lights\","
+                "\"status_text\":null,\"prompt\":null}";
+            assert(ui_snapshot_from_json(transcribing, &snapshot));
+            assert(snapshot.state == UI_DISPLAY_TRANSCRIBING);
+            assert(strcmp(snapshot.transcript_text, "turn on the lights") == 0);
+            assert(strcmp(ui_display_state_name(snapshot.state), "transcribing") == 0);
+            /* The room's words never leak into the answer's field. */
+            assert(snapshot.response_text[0] == '\0');
+
+            const char *complete =
+                "{\"type\":\"snapshot\",\"schema\":1,\"sequence\":5,"
+                "\"state\":\"complete\",\"response_text\":\"Done\",\"prompt\":null}";
+            assert(ui_snapshot_from_json(complete, &snapshot));
+            assert(snapshot.state == UI_DISPLAY_COMPLETE);
+            assert(strcmp(ui_display_state_name(snapshot.state), "complete") == 0);
+            assert(snapshot.transcript_text[0] == '\0');
+
+            /* A host transcript longer than the panel's line truncates
+               instead of rejecting an otherwise valid snapshot. */
+            char big[UI_SNAPSHOT_TRANSCRIPT_TEXT_MAX + 600];
+            int written = snprintf(big, sizeof(big),
+                "{\"type\":\"snapshot\",\"schema\":1,\"sequence\":6,"
+                "\"state\":\"complete\",\"response_text\":\"\","
+                "\"transcript_text\":\"");
+            for (size_t i = 0; i < UI_SNAPSHOT_TRANSCRIPT_TEXT_MAX + 100; i++) {
+                big[written++] = 'a';
+            }
+            written += snprintf(big + written, sizeof(big) - (size_t)written,
+                                "\",\"prompt\":null}");
+            assert(ui_snapshot_from_json(big, &snapshot));
+            assert(strlen(snapshot.transcript_text) ==
+                   UI_SNAPSHOT_TRANSCRIPT_TEXT_MAX - 1);
+
+            /* A snapshot from before this field is still a valid snapshot. */
+            const char *legacy =
+                "{\"type\":\"snapshot\",\"schema\":1,\"sequence\":7,"
+                "\"state\":\"idle\",\"response_text\":\"\",\"prompt\":null}";
+            assert(ui_snapshot_from_json(legacy, &snapshot));
+            assert(snapshot.transcript_text[0] == '\0');
+
+            printf("ok\n");
+            return 0;
+        }
+        '''
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "ok"
+
+
+def test_snapshot_json_truncation_never_splits_a_utf8_codepoint() -> None:
+    result = _compile_and_run_json(
+        r'''
+        #include <assert.h>
+        #include <stdio.h>
+        #include <string.h>
+        #include "ui_snapshot.h"
+
+        int main(void)
+        {
+            ui_snapshot_t snapshot;
+            const char *euro = "\xE2\x82\xAC"; /* U+20AC, a 3-byte sequence */
+
+            /* A multi-byte codepoint straddling the 255-byte cutoff is
+               dropped whole, never split into an invalid trailing byte
+               sequence. 253 'a' bytes (indices 0..252) plus the euro sign
+               (253..255) plus one more byte put the cutoff mid-sequence. */
+            {
+                char json[UI_SNAPSHOT_TRANSCRIPT_TEXT_MAX + 700];
+                int written = snprintf(json, sizeof(json),
+                    "{\"type\":\"snapshot\",\"schema\":1,\"sequence\":8,"
+                    "\"state\":\"complete\",\"response_text\":\"\","
+                    "\"transcript_text\":\"");
+                for (size_t i = 0; i < 253; i++) {
+                    json[written++] = 'a';
+                }
+                memcpy(json + written, euro, 3);
+                written += 3;
+                json[written++] = 'b';
+                written += snprintf(json + written, sizeof(json) - (size_t)written,
+                                     "\",\"prompt\":null}");
+                assert(ui_snapshot_from_json(json, &snapshot));
+                assert(strlen(snapshot.transcript_text) == 253);
+                for (size_t i = 0; i < 253; i++) {
+                    assert(snapshot.transcript_text[i] == 'a');
+                }
+                /* No orphaned continuation byte left dangling at the end. */
+                assert((unsigned char)snapshot.transcript_text[252] < 0x80);
+            }
+
+            /* A multi-byte codepoint that ends exactly at the cutoff is kept
+               whole, not trimmed away unnecessarily. 252 'a' bytes
+               (0..251) plus the euro sign (252..254) fill the 255-byte
+               window exactly. */
+            {
+                char json[UI_SNAPSHOT_TRANSCRIPT_TEXT_MAX + 700];
+                int written = snprintf(json, sizeof(json),
+                    "{\"type\":\"snapshot\",\"schema\":1,\"sequence\":9,"
+                    "\"state\":\"complete\",\"response_text\":\"\","
+                    "\"transcript_text\":\"");
+                for (size_t i = 0; i < 252; i++) {
+                    json[written++] = 'a';
+                }
+                memcpy(json + written, euro, 3);
+                written += 3;
+                for (size_t i = 0; i < 5; i++) {
+                    json[written++] = 'a';
+                }
+                written += snprintf(json + written, sizeof(json) - (size_t)written,
+                                     "\",\"prompt\":null}");
+                assert(ui_snapshot_from_json(json, &snapshot));
+                assert(strlen(snapshot.transcript_text) == 255);
+                assert(memcmp(snapshot.transcript_text + 252, euro, 3) == 0);
+            }
+
+            printf("ok\n");
+            return 0;
+        }
+        '''
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "ok"

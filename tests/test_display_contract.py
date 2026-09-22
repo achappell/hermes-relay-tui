@@ -45,12 +45,20 @@ def test_display_snapshot_schema_declares_the_shared_state_contract() -> None:
         "error",
         "disconnected",
         "prompt",
+        # The voice doorway's own observed phases are appended, never
+        # inserted: every target pins the earlier positions.
+        "transcribing",
+        "complete",
     ]
     assert {"type", "schema", "sequence", "state", "response_text"} <= set(
         schema["required"]
     )
     assert schema["additionalProperties"] is True
     assert "capabilities" in schema["properties"]
+    # What the room said and what Hermes answered are separate fields, and a
+    # snapshot without a transcript is still a valid snapshot.
+    assert schema["properties"]["transcript_text"]["type"] == "string"
+    assert "transcript_text" not in schema["required"]
 
 
 def test_valid_snapshot_fixtures_match_the_schema() -> None:

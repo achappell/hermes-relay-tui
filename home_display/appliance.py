@@ -53,6 +53,12 @@ from timing import (
 )
 
 from .server import BrowserProfileRouteResult, DisplayServer, load_tls_context
+from .touch import (
+    HttpTouchClaimClient,
+    TouchConfigurationError,
+    TouchDeviceConfig,
+    TouchDoorway,
+)
 from .state import (
     DisplayCapabilities,
     DisplayPrompt,
@@ -580,6 +586,8 @@ class Appliance:
         self._sigint_count = 0
         self._pending_prompt_action_id: str | None = None
         self._browser_contexts: dict[str, _BrowserSessionContext] = {}
+        self._touch_contexts: dict[str, TouchDoorway] = {}
+        self._touch_device_config: TouchDeviceConfig | None = None
         self._browser_context_mode = False
         self._browser_stop: asyncio.Event | None = None
         self._browser_connection_id: str | None = None
@@ -1866,6 +1874,80 @@ class Appliance:
             raise RuntimeError("no household profile could connect") from last_error
         raise RuntimeError("no household profile is configured")
 
+    # ---- ESP32 Touch doorway -------------------------------------------
+
+    @property
+    def _touch_voice_enabled(self) -> bool:
+        return bool(getattr(self.args, "touch_voice", False))
+
+    def _load_touch_device_config(self) -> TouchDeviceConfig:
+        """Resolve the paired device identity, or refuse to open the doorway."""
+        from .touch import load_touch_device_config
+
+        if self._touch_device_config is None:
+            self._touch_device_config = load_touch_device_config(self.args)
+        return self._touch_device_config
+
+    async def _open_touch_home_session(self, handle: str) -> Any:
+        """Open the conversation Home granted, and nothing else."""
+        device_config = self._load_touch_device_config()
+        session = HomeBrowserSession(
+            device_config.bridge_url, device_config.credential, handle
+        )
+        await asyncio.wait_for(session.connect(), PROFILE_CONNECT_TIMEOUT)
+        return session
+
+    async def _create_touch_context(
+        self, connection_id: str, audio_sender: Any
+    ) -> TouchDoorway:
+        """Give one admitted Touch socket its own capture state and publisher.
+
+        No Home session exists yet. Admission is an explicit claim on the
+        first `mic_start`; until then this connection can see the room's
+        display state and nothing more.
+        """
+        device_config = self._load_touch_device_config()
+        doorway = TouchDoorway(
+            connection_id=connection_id,
+            publisher=DisplayStatePublisher(),
+            sender=audio_sender,
+            device_config=device_config,
+            claim_client=HttpTouchClaimClient(device_config),
+            session_factory=self._open_touch_home_session,
+            account=(
+                self._active_profile.display_name if self._active_profile else None
+            ),
+        )
+        self._touch_contexts[connection_id] = doorway
+
+        owner_close = doorway.close
+
+        async def close_and_forget() -> None:
+            try:
+                await owner_close()
+            finally:
+                self._touch_contexts.pop(connection_id, None)
+
+        doorway.close = close_and_forget  # type: ignore[method-assign]
+        doorway.publisher.publish(state="idle", response_text="")
+        return doorway
+
+    async def _close_touch_contexts(self) -> None:
+        for doorway in list(self._touch_contexts.values()):
+            cleanup_task = asyncio.create_task(doorway.close())
+            try:
+                await asyncio.wait_for(
+                    asyncio.shield(cleanup_task), SHUTDOWN_TASK_TIMEOUT
+                )
+            except asyncio.TimeoutError:
+                self._track_cleanup_task(cleanup_task)
+            except asyncio.CancelledError:
+                self._track_cleanup_task(cleanup_task)
+                raise
+            except Exception:
+                logger.debug("closing touch doorway failed", exc_info=True)
+        self._touch_contexts.clear()
+
     async def _switch_profile(
         self, profile: config.HouseholdProfile, *, publish_status: bool = True
     ) -> bool:
@@ -2053,6 +2135,39 @@ class Appliance:
             raise RuntimeError(str(error)) from error
 
     def _build(self) -> None:
+        if self._touch_voice_enabled:
+            if getattr(self.args, "browser_voice", False):
+                raise RuntimeError(
+                    "--touch-voice and --browser-voice are separate doorways; "
+                    "enable one at a time"
+                )
+            tls_context = self._display_tls_context()
+            # Fail before anything listens. A Touch doorway without approved
+            # local credential storage has no identity to admit, and there is
+            # no anonymous fallback to drift into.
+            try:
+                self._load_touch_device_config()
+            except TouchConfigurationError as error:
+                raise RuntimeError(str(error)) from error
+            if self._server is None:
+                try:
+                    self._server = DisplayServer(
+                        self.publisher,
+                        Path(__file__).with_name("static"),
+                        host=getattr(self.args, "display_host", "127.0.0.1"),
+                        port=getattr(self.args, "display_port", 0),
+                        allow_remote=getattr(self.args, "display_remote", False),
+                        ssl_context=tls_context,
+                        public_origin=getattr(self.args, "display_public_origin", None),
+                        browser_session_limit=getattr(
+                            self.args, "display_max_browser_sessions", 8
+                        ),
+                        on_touch_connect=self._create_touch_context,
+                    )
+                except ValueError as error:
+                    raise RuntimeError(str(error)) from error
+            self._browser_context_mode = True
+            return
         if self._uses_home_browser_transport and not getattr(
             self.args, "browser_voice", False
         ):
@@ -2355,6 +2470,22 @@ class Appliance:
         self._build()
         self.info = await self._server.start()
 
+        if self._touch_voice_enabled:
+            if self._on_ready is not None:
+                self._on_ready(self.info)
+            try:
+                await self._browser_stop.wait()
+            except asyncio.CancelledError:
+                current = asyncio.current_task()
+                if current is not None and getattr(current, "cancelling", lambda: 0)() > 0:
+                    raise
+            except KeyboardInterrupt:
+                pass
+            finally:
+                self._remove_signals(self._loop)
+                await self.aclose()
+            return
+
         if getattr(self.args, "browser_voice", False):
             if self._on_ready is not None:
                 self._on_ready(self.info)
@@ -2460,6 +2591,7 @@ class Appliance:
             self._browser_turn_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await self._browser_turn_task
+        await self._close_touch_contexts()
         for context in list(self._browser_contexts.values()):
             cleanup_task = asyncio.create_task(context.close())
             try:
@@ -2573,6 +2705,42 @@ def build_arg_parser(argv: list[str] | None = None) -> argparse.ArgumentParser:
         "--browser-voice",
         action="store_true",
         help="let the browser own microphone capture and speaker playback",
+    )
+    parser.add_argument(
+        "--touch-voice",
+        action="store_true",
+        help=(
+            "serve the ESP32 Touch doorway: bounded microphone PCM, local "
+            "transcription, and one Home turn per capture"
+        ),
+    )
+    parser.add_argument(
+        "--touch-device-id",
+        default=os.getenv(
+            "TOUCH_DEVICE_ID", str(settings.get("touch_device_id", ""))
+        ),
+        metavar="ID",
+        help="approved Touch device identifier; never supplied by a socket frame",
+    )
+    parser.add_argument(
+        "--touch-config-revision",
+        default=os.getenv(
+            "TOUCH_CONFIG_REVISION",
+            str(settings.get("touch_config_revision", "")),
+        ),
+        metavar="REVISION",
+        help="approved Touch configuration revision presented at claim time",
+    )
+    parser.add_argument(
+        "--touch-claim-url",
+        default=os.getenv(
+            "TOUCH_CLAIM_URL", str(settings.get("touch_claim_url", ""))
+        ),
+        metavar="URL",
+        help=(
+            "override the Home claim endpoint; defaults to the configured "
+            "bridge host with /api/v1/touch-claims"
+        ),
     )
     parser.add_argument(
         "--browser-transport",
