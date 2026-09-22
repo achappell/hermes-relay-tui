@@ -7,7 +7,7 @@
 
 static const char *TAG = "bsp_io_expander";
 static bsp_expander_type_t s_expander_type = EXPANDER_TYPE_NONE;
-static uint8_t s_output_state = 0xFF;
+static uint8_t s_output_state = 0xDF;
 
 esp_err_t bsp_io_expander_init(void)
 {
@@ -24,8 +24,8 @@ esp_err_t bsp_io_expander_init(void)
     if (err == ESP_OK) {
         s_expander_type = EXPANDER_TYPE_CH422G;
         ESP_LOGI(TAG, "Detected CH422G IO Expander at 0x%02X", BOARD_EXPANDER_CH422G_ADDR);
-        /* Set initial output state: all high */
-        s_output_state = 0xFF;
+        /* EXIO5 low keeps native USB selected throughout LCD/touch setup. */
+        s_output_state = 0xDF;
         uint8_t cmd[2] = {0x03, s_output_state};
         err = i2c_master_write_to_device(BOARD_I2C_PORT, BOARD_EXPANDER_CH422G_ADDR,
                                          cmd, sizeof(cmd), pdMS_TO_TICKS(50));
@@ -64,6 +64,7 @@ esp_err_t bsp_io_expander_set_level(uint8_t pin_num, uint8_t level)
         next_output_state &= (uint8_t)~(1U << pin_num);
     }
 
+    next_output_state &= (uint8_t)~(1U << BOARD_EXP_PIN_USB_SEL);
     if (s_expander_type == EXPANDER_TYPE_CH422G) {
         uint8_t cmd[2] = {0x03, next_output_state};
         esp_err_t err = i2c_master_write_to_device(BOARD_I2C_PORT, BOARD_EXPANDER_CH422G_ADDR,

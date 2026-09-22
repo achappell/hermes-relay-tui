@@ -1,0 +1,3 @@
+# Preserve the pinned upstream cJSON source and license byte-for-byte.
+tests/vendor/cjson/cJSON.h whitespace=-blank-at-eol
+tests/vendor/cjson/LICENSE whitespace=-blank-at-eof

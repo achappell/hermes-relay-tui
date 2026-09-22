@@ -1,0 +1,14 @@
+menu "Touch installation (private configuration)"
+config TOUCH_VOICE
+    bool "Enable authorized C6 voice capture"
+    default n
+config TOUCH_WIFI_SSID
+    string "Installation Wi-Fi SSID"
+    default ""
+config TOUCH_WIFI_PASSWORD
+    string "Installation Wi-Fi password"
+    default ""
+config TOUCH_HOST_URI
+    string "Trusted local host /state WebSocket URI"
+    default ""
+endmenu

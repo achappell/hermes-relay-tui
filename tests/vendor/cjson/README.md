@@ -1,0 +1,1 @@
+cJSON 1.7.17, vendored unchanged from the ESP-IDF cJSON component for deterministic native-source CI tests. Upstream: https://github.com/DaveGamble/cJSON/tree/v1.7.17. The MIT license is preserved in LICENSE and source headers. No PlatformIO installation is required.

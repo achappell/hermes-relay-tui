@@ -21,3 +21,12 @@ _bmad-output/implementation-artifacts/surface-status-report.md
 .bmad-loop/ci-status.sh
 .bmad-loop/plugins/close-trace-mr/
 /uv.lock
+
+# Generated firmware settings can contain installation Wi-Fi credentials.
+firmware/**/sdkconfig
+firmware/**/sdkconfig.old
+firmware/**/sdkconfig.installation
+firmware/**/sdkconfig.esp32*
+firmware/**/build/
+firmware/**/managed_components/
+firmware/**/dependencies.lock

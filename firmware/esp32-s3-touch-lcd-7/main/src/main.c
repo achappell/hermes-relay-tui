@@ -16,6 +16,9 @@
 #include "bsp_touch.h"
 #include "ui_display.h"
 #include "ui_transport.h"
+#include "network.h"
+#include "touch_capture.h"
+#include "sdkconfig.h"
 
 #if __has_include("lvgl.h")
     #include "lvgl.h"
@@ -25,6 +28,10 @@
     #define HAVE_LVGL 1
 #else
     #define HAVE_LVGL 0
+#endif
+
+#if defined(CONFIG_TOUCH_VOICE) && !HAVE_LVGL
+#error "Touch voice requires the LVGL hardware integration"
 #endif
 
 static const char *TAG = "main";
@@ -80,6 +87,7 @@ static void transport_state_cb(ui_transport_state_t state, void *user_data)
     (void)user_data;
     if (s_lvgl_mutex == NULL) return;
     if (xSemaphoreTake(s_lvgl_mutex, pdMS_TO_TICKS(20)) == pdTRUE) {
+        s_pending_snapshot_valid = false;
         if (state == UI_TRANSPORT_CONNECTED) {
             s_pending_transport_state = UI_DISPLAY_CONNECTION_CONNECTED;
             s_pending_transport_state_valid = true;
@@ -103,6 +111,9 @@ static void transport_action_cb(
 )
 {
     (void)user_data;
+#ifdef CONFIG_TOUCH_VOICE
+    return; /* Touch host does not accept prompt actions (2-E-5). */
+#endif
     esp_err_t err = ui_transport_send_action(
         action_id, option_id, operation, object_id, freshness);
     if (err != ESP_OK) {
@@ -133,6 +144,9 @@ static void lvgl_ui_task(void *pvParameters)
                 ui_display_set_connection_state(s_pending_transport_state);
                 s_pending_transport_state_valid = false;
             }
+            #ifdef CONFIG_TOUCH_VOICE
+            ui_display_capture_update((int)touch_capture_phase());
+#endif
             uint32_t task_delay_ms = lv_timer_handler();
             
             /* Read touch state for UI updates */
@@ -158,6 +172,42 @@ static void lvgl_ui_task(void *pvParameters)
             if (task_delay_ms > 16) task_delay_ms = 16;
             vTaskDelay(pdMS_TO_TICKS(task_delay_ms));
         }
+    }
+}
+#endif
+
+#if HAVE_LVGL
+static void network_task(void *arg)
+{
+    (void)arg;
+#ifdef HERMES_DISPLAY_WS_URI
+    const char *uri = HERMES_DISPLAY_WS_URI;
+#else
+    const char *uri = CONFIG_TOUCH_HOST_URI;
+#endif
+    ui_transport_config_t config = {.uri=uri, .on_snapshot=transport_snapshot_cb,
+        .on_state=transport_state_cb, .reconnect_timeout_ms=5000};
+    bool running = false;
+    int64_t retry_at = 0;
+    uint32_t retry_ms = 1000;
+    while (true) {
+        network_poll();
+        if (running && (!network_ready() || ui_transport_needs_restart())) {
+            ui_transport_invalidate();
+            ui_transport_stop();
+            running = false;
+            retry_at = esp_timer_get_time() / 1000 + retry_ms;
+            if (retry_ms < 30000) retry_ms = retry_ms > 15000 ? 30000 : retry_ms * 2;
+        }
+        if (!running && network_ready() && uri[0] && esp_timer_get_time() / 1000 >= retry_at) {
+            running = ui_transport_start(&config) == ESP_OK;
+            if (!running) {
+                retry_at = esp_timer_get_time() / 1000 + retry_ms;
+                if (retry_ms < 30000) retry_ms = retry_ms > 15000 ? 30000 : retry_ms * 2;
+            }
+        }
+        if (running && ui_transport_is_connected()) retry_ms = 1000;
+        vTaskDelay(pdMS_TO_TICKS(100));
     }
 }
 #endif
@@ -255,21 +305,12 @@ void app_main(void)
     /* Launch UI Task pinned to Core 1 */
     xTaskCreatePinnedToCore(lvgl_ui_task, "lvgl_ui", 8192, NULL, 5, NULL, 1);
 
-#ifdef HERMES_DISPLAY_WS_URI
-    static const ui_transport_config_t transport_config = {
-        .uri = HERMES_DISPLAY_WS_URI,
-        .on_snapshot = transport_snapshot_cb,
-        .on_state = transport_state_cb,
-        .user_data = NULL,
-        .reconnect_timeout_ms = 5000,
-    };
-    err = ui_transport_start(&transport_config);
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "Display WebSocket start failed: %s", esp_err_to_name(err));
-    }
-#else
-    ESP_LOGI(TAG, "Display WebSocket disabled; define HERMES_DISPLAY_WS_URI to connect");
+    if (network_start() == ESP_OK) {
+#ifdef CONFIG_TOUCH_VOICE
+        ESP_ERROR_CHECK(touch_capture_init());
 #endif
+        xTaskCreate(network_task, "display_network", 4096, NULL, 4, NULL);
+    }
 #else
     ESP_LOGI(TAG, "Direct mode test complete. Framebuffers active.");
 #endif

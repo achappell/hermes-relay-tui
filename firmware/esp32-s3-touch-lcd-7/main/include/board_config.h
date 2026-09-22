@@ -111,3 +111,9 @@ extern "C" {
 #ifdef __cplusplus
 }
 #endif
+
+/* Dedicated capture link; application console uses native USB. */
+#define BOARD_C6_TX 43
+#define BOARD_C6_RX 44
+#define BOARD_C6_RESET 6
+#define BOARD_EXP_PIN_USB_SEL 5

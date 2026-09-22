@@ -354,7 +354,7 @@ async def test_a_ready_claim_publishes_heard_and_sends_mic_ready():
     await doorway.handle_touch_frame(TouchFrame("mic_start", capture_id="c1"))
 
     assert sender.controls == [
-        {"type": "mic_ready", "schema": 1, "capture_id": "c1"}
+        {"type": "mic_ready", "schema": 1, "capture_id": "c1", "capture_terminal": True}
     ]
     assert publisher.snapshot.state == "heard"
     assert claim.calls == [("claim-id", claim.calls[0][1])]
@@ -523,7 +523,7 @@ async def test_a_duplicate_mic_start_is_rejected_and_drops_the_open_capture():
     await doorway.handle_touch_audio(b"\x01\x02")
     await doorway.handle_touch_frame(TouchFrame("mic_start", capture_id="c2"))
 
-    assert sender.control_types == ["mic_ready", "mic_reject"]
+    assert sender.control_types == ["mic_ready", "mic_terminal", "mic_reject"]
     assert doorway._capture is None
     assert session.prompts == []
 
@@ -626,7 +626,7 @@ async def test_a_malformed_frame_clears_the_capture_and_reports_the_rejection():
     await doorway.handle_touch_malformed("malformed")
 
     assert doorway._capture is None
-    assert sender.control_types == ["mic_ready", "mic_reject"]
+    assert sender.control_types == ["mic_ready", "mic_terminal"]
     assert session.prompts == []
 
 
@@ -639,7 +639,7 @@ async def test_an_unknown_frame_type_is_treated_as_malformed():
     await doorway.handle_touch_frame(TouchFrame("mic_shout", capture_id="c1"))
 
     assert doorway._capture is None
-    assert sender.control_types == ["mic_ready", "mic_reject"]
+    assert sender.control_types == ["mic_ready", "mic_terminal"]
 
 
 # ---- isolation ----------------------------------------------------------
@@ -1138,3 +1138,273 @@ async def test_the_browser_voice_path_is_untouched_by_touch_mode(tmp_path):
     server = DisplayServer(DisplayStatePublisher(), tmp_path)
     assert server.touch_contexts_enabled is False
     assert server.browser_contexts_enabled is False
+
+
+@pytest.mark.asyncio
+async def test_stale_abort_cannot_cancel_new_capture():
+    doorway = _doorway()
+    await doorway.handle_touch_frame(TouchFrame("mic_start", capture_id="new"))
+    await doorway.handle_touch_frame(TouchFrame("mic_abort", capture_id="old"))
+    assert doorway._capture.capture_id == "new"
+    await doorway.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("started", [False, True])
+async def test_watchdog_discards_and_emits_one_correlated_terminal(monkeypatch, started):
+    monkeypatch.setattr(touch_module, "TOUCH_START_TIMEOUT", .01)
+    monkeypatch.setattr(touch_module, "TOUCH_CAPTURE_END_TIMEOUT", .01)
+    sender, session = FakeSender(), FakeSession()
+    doorway = _doorway(sender=sender, session=session)
+    await doorway.handle_touch_frame(TouchFrame("mic_start", capture_id="timeout"))
+    if started:
+        await doorway.handle_touch_frame(TouchFrame("mic_capture_started", capture_id="timeout"))
+        await doorway.handle_touch_audio(b"\0\0")
+    await asyncio.sleep(.03)
+    terminals = [c for c in sender.controls if c["type"] == "mic_terminal"]
+    assert len(terminals) == 1
+    assert terminals[0]["capture_id"] == "timeout"
+    assert terminals[0]["outcome"] == "no_turn"
+    assert not session.prompts
+    await doorway.handle_touch_frame(TouchFrame("mic_capture_started", capture_id="timeout"))
+    assert len(sender.controls) == 2
+    await doorway.close()
+
+
+@pytest.mark.asyncio
+async def test_mic_end_cancels_watchdog_before_slow_transcription(monkeypatch):
+    import time
+    monkeypatch.setattr(touch_module, "TOUCH_CAPTURE_END_TIMEOUT", .01)
+    def transcribe(_pcm):
+        time.sleep(.03)
+        return {"success": True, "transcript": "Turn on the lights"}
+    sender = FakeSender()
+    doorway = _doorway(sender=sender, transcriber=transcribe)
+    await _capture(doorway)
+    assert [c["outcome"] for c in sender.controls if c["type"] == "mic_terminal"] == ["complete"]
+    assert doorway._deadline_task is None
+    await doorway.close()
+
+
+@pytest.mark.asyncio
+async def test_admission_deadline_never_sends_a_late_grant(monkeypatch):
+    monkeypatch.setattr(touch_module, "TOUCH_ADMISSION_TIMEOUT", .01)
+    class SlowClaim:
+        async def claim(self, **kwargs):
+            await asyncio.sleep(.1)
+            return "late"
+    sender = FakeSender()
+    doorway = _doorway(sender=sender, claim_client=SlowClaim())
+    await doorway.handle_touch_frame(TouchFrame("mic_start", capture_id="slow"))
+    await asyncio.sleep(.02)
+    assert sender.control_types == ["mic_reject"]
+    assert doorway._capture is None
+    await doorway.close()
+
+
+@pytest.mark.asyncio
+async def test_audio_abort_keeps_following_text_until_real_terminal():
+    sender, publisher = FakeSender(), RecordingPublisher()
+    session = FakeSession(events=[
+        {"type": "audio_start", "sample_rate": 24000, "channels": 1, "sample_width": 2},
+        {"type": "audio_abort"}, {"type": "text_delta", "text": "Still the answer"},
+        {"type": "turn_end"},
+    ])
+    doorway = _doorway(sender=sender, publisher=publisher, session=session)
+    await _capture(doorway)
+    assert doorway._response_text == "Still the answer"
+    assert publisher.states.count("complete") == 1
+    assert sender.controls[-1]["outcome"] == "complete"
+    await doorway.close()
+
+
+@pytest.mark.asyncio
+async def test_failed_terminal_delivery_invalidates_connection():
+    class BrokenTerminal(FakeSender):
+        async def send_control(self, payload):
+            await super().send_control(payload)
+            return payload["type"] != "mic_terminal"
+    session = FakeSession()
+    doorway = _doorway(sender=BrokenTerminal(), session=session)
+    await _capture(doorway)
+    assert doorway._closed and session.closed
+    await doorway.handle_touch_frame(TouchFrame("mic_start", capture_id="again"))
+    assert len(session.prompts) == 1
+
+
+@pytest.mark.asyncio
+async def test_close_cancels_and_awaits_pending_admission():
+    started, cancelled = asyncio.Event(), asyncio.Event()
+    class PendingClaim:
+        async def claim(self, **kwargs):
+            started.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                cancelled.set()
+    sender = FakeSender()
+    doorway = _doorway(sender=sender, claim_client=PendingClaim())
+    task = asyncio.create_task(doorway.handle_touch_frame(TouchFrame("mic_start", capture_id="pending")))
+    await started.wait()
+    await doorway.close()
+    await task
+    assert cancelled.is_set()
+    assert doorway._admission_task is None
+    assert sender.controls == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stage", ["transcribing", "turn"])
+async def test_late_mic_controls_and_pcm_retain_owned_turn(stage):
+    import threading
+    release_stt = threading.Event()
+    started_stt = threading.Event()
+    release_turn = asyncio.Event()
+    sender = FakeSender()
+    session = FakeSession(events=[{"type": "text_delta", "text": "Answer"}, {"type": "turn_end"}], gate=release_turn)
+    def transcribe(_pcm):
+        started_stt.set()
+        assert release_stt.wait(3)
+        return {"success": True, "transcript": "Turn on the lights"}
+    doorway = _doorway(sender=sender, session=session, transcriber=transcribe)
+    try:
+        await doorway.handle_touch_frame(TouchFrame("mic_start", capture_id="owned"))
+        await doorway.handle_touch_frame(TouchFrame("mic_capture_started", capture_id="owned"))
+        await doorway.handle_touch_audio(b"\0\0")
+        await doorway.handle_touch_frame(TouchFrame("mic_end", capture_id="owned"))
+        await asyncio.to_thread(started_stt.wait, 1)
+        task = doorway._turn_task
+        if stage == "turn":
+            release_stt.set()
+            for _ in range(100):
+                if session.prompts: break
+                await asyncio.sleep(.001)
+            assert session.prompts
+        for identity in ("owned", "old"):
+            for kind in ("mic_end", "mic_capture_started", "mic_abort"):
+                await doorway.handle_touch_frame(TouchFrame(kind, capture_id=identity))
+        await doorway.handle_touch_audio(b"\0\0")
+        await doorway.handle_touch_frame(TouchFrame("mic_start", capture_id="second"))
+        assert doorway._turn_task is task and not task.done()
+        assert doorway._active_capture_id == "owned"
+        assert not any(c["type"] == "mic_terminal" for c in sender.controls)
+        assert sender.controls[-1]["type"] == "mic_reject"
+        release_stt.set(); release_turn.set()
+        await task
+        assert len(session.prompts) == 1
+        assert [c["outcome"] for c in sender.controls if c["type"] == "mic_terminal"] == ["complete"]
+    finally:
+        release_stt.set(); release_turn.set()
+        await doorway.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("visible_before_wait", [False, True])
+async def test_admission_waits_for_terminal_finalization(visible_before_wait):
+    terminal_entered, release_terminal = asyncio.Event(), asyncio.Event()
+    class PausedTerminal(FakeSender):
+        async def send_control(self, payload):
+            if payload["type"] == "mic_terminal":
+                if visible_before_wait:
+                    await super().send_control(payload)
+                terminal_entered.set()
+                await release_terminal.wait()
+                if visible_before_wait:
+                    return True
+            return await super().send_control(payload)
+    sender = PausedTerminal()
+    doorway = _doorway(sender=sender)
+    await doorway.handle_touch_frame(TouchFrame("mic_start", capture_id="first"))
+    await doorway.handle_touch_frame(TouchFrame("mic_capture_started", capture_id="first"))
+    await doorway.handle_touch_audio(b"\0\0")
+    await doorway.handle_touch_frame(TouchFrame("mic_end", capture_id="first"))
+    task = doorway._turn_task
+    await asyncio.wait_for(terminal_entered.wait(), 2)
+    audio_report = asyncio.create_task(doorway.handle_touch_frame(
+        TouchFrame("audio_playback_failed", turn_id=doorway._turn_id)))
+    admission = asyncio.create_task(doorway.handle_touch_frame(
+        TouchFrame("mic_start", capture_id="second")))
+    await asyncio.sleep(0)
+    assert not admission.done() and not audio_report.done()
+    assert doorway._turn_task is task and not task.done()
+    assert "mic_reject" not in sender.control_types
+    release_terminal.set()
+    await asyncio.wait_for(asyncio.gather(task, audio_report, admission), 2)
+    assert doorway._capture.capture_id == "second"
+    assert sender.controls[-1]["type"] == "mic_ready"
+    assert sender.control_types.count("mic_terminal") == 1
+    assert "mic_reject" not in sender.control_types
+    await doorway.close()
+
+
+@pytest.mark.asyncio
+async def test_invalidation_clears_transient_fields_before_cleanup_awaits():
+    entered, release = asyncio.Event(), asyncio.Event()
+    doorway = _doorway()
+    doorway._capture = touch_module._Capture("capture", chunks=[b"\0\0"])
+    capture = doorway._capture
+    doorway._active_capture_id = "capture"
+    doorway._turn_id = "turn"
+    doorway._transcript_text = "private transcript"
+    doorway._response_text = "private response"
+    doorway._interrupt_pending = doorway._audio_open = doorway._playback_started = True
+    async def paused_cleanup():
+        entered.set()
+        await release.wait()
+    doorway._cancel_deadline = paused_cleanup
+    task = asyncio.create_task(doorway._invalidate_connection())
+    await entered.wait()
+    assert doorway._closed and doorway._capture is None and not capture.chunks
+    assert doorway._active_capture_id is None and doorway._turn_id is None
+    assert doorway._transcript_text == doorway._response_text == ""
+    assert not doorway._interrupt_pending and not doorway._audio_open and not doorway._playback_started
+    release.set()
+    await task
+
+
+@pytest.mark.asyncio
+async def test_playback_started_then_audio_abort_keeps_following_text_out_of_speaking():
+    gate = asyncio.Event()
+    sender, publisher = FakeSender(), RecordingPublisher()
+    session = FakeSession(events=[
+        {"type": "audio_start", "sample_rate": 24000, "channels": 1, "sample_width": 2},
+        {"type": "audio_abort"}, {"type": "text_delta", "text": "Still the answer"},
+        {"type": "turn_end"},
+    ], gate=gate)
+    doorway = _doorway(sender=sender, publisher=publisher, session=session)
+    capture = asyncio.create_task(_capture(doorway))
+    for _ in range(100):
+        if doorway._audio_open: break
+        await asyncio.sleep(.001)
+    assert doorway._audio_open
+    await doorway.handle_touch_frame(TouchFrame("audio_playback_started", turn_id="turn-1"))
+    assert publisher.states[-1] == "speaking"
+    after_started = len(publisher.states)
+    gate.set()
+    await capture
+    assert "speaking" not in publisher.states[after_started:]
+    assert doorway._response_text == "Still the answer"
+    assert doorway._last_published_state == "complete"
+    assert not doorway._playback_started
+    await doorway.close()
+
+
+@pytest.mark.asyncio
+async def test_close_cancels_a_locked_terminal_finalizer_without_deadlock():
+    entered = asyncio.Event()
+    class PausedTerminal(FakeSender):
+        async def send_control(self, payload):
+            if payload["type"] == "mic_terminal":
+                entered.set()
+                await asyncio.Event().wait()
+            return await super().send_control(payload)
+    doorway = _doorway(sender=PausedTerminal())
+    await doorway.handle_touch_frame(TouchFrame("mic_start", capture_id="first"))
+    await doorway.handle_touch_frame(TouchFrame("mic_capture_started", capture_id="first"))
+    await doorway.handle_touch_audio(b"\0\0")
+    await doorway.handle_touch_frame(TouchFrame("mic_end", capture_id="first"))
+    task = doorway._turn_task
+    await asyncio.wait_for(entered.wait(), 2)
+    await asyncio.wait_for(doorway.close(), 2)
+    assert task.done() and doorway._turn_task is None
+    assert doorway._closed and not doorway._lock.locked()

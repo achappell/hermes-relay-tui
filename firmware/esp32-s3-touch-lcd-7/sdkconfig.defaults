@@ -44,3 +44,11 @@ CONFIG_LV_INDEV_DEF_READ_PERIOD=16
 
 # Log Level
 CONFIG_LOG_DEFAULT_LEVEL_INFO=y
+
+# UART0 pins belong to the C6 capture link.
+CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y
+CONFIG_ESP_CONSOLE_UART_DEFAULT=n
+CONFIG_ESP_CONSOLE_SECONDARY_NONE=y
+
+# Use main/include/lv_conf.h for both LVGL and the application.
+# CONFIG_LV_CONF_SKIP is not set

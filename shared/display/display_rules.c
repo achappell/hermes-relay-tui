@@ -165,7 +165,8 @@ display_rules_result_t display_rules_apply_snapshot(
     if (current->initialized && snapshot->sequence <= current->sequence) {
         return DISPLAY_RULES_STALE;
     }
-    if (current->initialized && !transition_allowed(current->state, snapshot->state)) {
+    if (current->initialized && snapshot->sequence - current->sequence == 1 &&
+        !transition_allowed(current->state, snapshot->state)) {
         return DISPLAY_RULES_INVALID_TRANSITION;
     }
 

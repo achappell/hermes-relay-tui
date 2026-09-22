@@ -38,3 +38,14 @@ esp_err_t ui_transport_send_action(
     const char *freshness
 );
 bool ui_transport_is_connected(void);
+
+/* Called only by the capture worker; controls and PCM share ordering. */
+esp_err_t ui_transport_send_text(const char *text);
+esp_err_t ui_transport_send_pcm(const void *pcm, size_t size);
+void ui_transport_invalidate(void);
+bool ui_transport_needs_restart(void);
+
+/* Epoch is checked under the same lifetime lock that guards socket replacement. */
+esp_err_t ui_transport_send_text_epoch(const char *text, uint32_t epoch);
+esp_err_t ui_transport_send_pcm_epoch(const void *pcm, size_t size, uint32_t epoch);
+void ui_transport_invalidate_epoch(uint32_t epoch);

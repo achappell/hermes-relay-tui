@@ -1,6 +1,11 @@
 idf_component_register(
     SRCS 
         "src/main.c"
+        "src/network.c"
+        "src/touch_capture.c"
+        "src/touch_uart.c"
+        "${CMAKE_CURRENT_LIST_DIR}/../../../shared/touch_audio/capture_protocol.c"
+        "${CMAKE_CURRENT_LIST_DIR}/../../../shared/touch_audio/capture_state.c"
         "src/bsp_i2c.c"
         "src/bsp_lcd.c"
         "src/bsp_touch.c"
@@ -13,8 +18,13 @@ idf_component_register(
         "${CMAKE_CURRENT_LIST_DIR}/../../../shared/display/display_rules.c"
     INCLUDE_DIRS 
         "include"
+        "${CMAKE_CURRENT_LIST_DIR}/../../../shared/touch_audio"
         "${CMAKE_CURRENT_LIST_DIR}/../../../shared/display"
     REQUIRES 
+        lvgl__lvgl
+        esp_wifi
+        esp_netif
+        nvs_flash
         driver
         esp_lcd
         esp_timer

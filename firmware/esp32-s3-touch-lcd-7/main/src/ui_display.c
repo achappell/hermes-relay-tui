@@ -1,6 +1,12 @@
 #include "ui_display.h"
 
 #include "board_config.h"
+#ifdef ESP_PLATFORM
+#include "sdkconfig.h"
+#ifdef CONFIG_TOUCH_VOICE
+#include "touch_capture.h"
+#endif
+#endif
 
 #include <string.h>
 
@@ -131,6 +137,10 @@ static lv_obj_t *make_label(lv_obj_t *parent, const char *text, lv_color_t color
 
 static void render_prompt(void)
 {
+#ifdef CONFIG_TOUCH_VOICE
+    lv_obj_add_flag(s_prompt_panel, LV_OBJ_FLAG_HIDDEN);
+    return;
+#endif
     if (!s_prompt_panel) return;
     if (!s_snapshot.prompt.present) {
         lv_obj_add_flag(s_prompt_panel, LV_OBJ_FLAG_HIDDEN);
@@ -440,3 +450,39 @@ const display_rules_view_t *ui_display_rules_view(void)
 {
     return display_rules_view(&s_reducer);
 }
+
+#if HAVE_LVGL && defined(CONFIG_TOUCH_VOICE)
+static lv_obj_t *capture_buttons[3], *capture_label;
+static void capture_click(lv_event_t *event)
+{
+    touch_command_t command = (touch_command_t)(uintptr_t)lv_event_get_user_data(event);
+    /* Disable immediately: repeated LVGL events cannot queue another Finish. */
+    for (int i=0;i<3;i++) lv_obj_add_state(capture_buttons[i], LV_STATE_DISABLED);
+    touch_capture_command(command);
+}
+void ui_display_capture_update(int phase)
+{
+    if (!capture_label) {
+        const char *names[] = {"Talk", "Finish", "Cancel"};
+        for (int i=0;i<3;i++) {
+            capture_buttons[i] = lv_btn_create(lv_scr_act());
+            lv_obj_set_size(capture_buttons[i], 130, 48);
+            lv_obj_align(capture_buttons[i], LV_ALIGN_BOTTOM_MID, (i-1)*150, -40);
+            lv_obj_add_event_cb(capture_buttons[i], capture_click, LV_EVENT_CLICKED, (void *)(uintptr_t)i);
+            lv_obj_t *label = lv_label_create(capture_buttons[i]);
+            lv_label_set_text(label, names[i]);lv_obj_center(label);
+        }
+        capture_label = lv_label_create(lv_scr_act());
+        lv_obj_align(capture_label, LV_ALIGN_BOTTOM_MID, 0, -100);
+    }
+    lv_label_set_text(capture_label, touch_capture_status());
+    bool enabled[] = {phase==TOUCH_IDLE, phase==TOUCH_RECORDING,
+        phase==TOUCH_ADMISSION || phase==TOUCH_STARTING || phase==TOUCH_RECORDING};
+    for (int i=0;i<3;i++) {
+        if(enabled[i]) lv_obj_clear_state(capture_buttons[i], LV_STATE_DISABLED);
+        else lv_obj_add_state(capture_buttons[i], LV_STATE_DISABLED);
+    }
+}
+#else
+void ui_display_capture_update(int phase) { (void)phase; }
+#endif

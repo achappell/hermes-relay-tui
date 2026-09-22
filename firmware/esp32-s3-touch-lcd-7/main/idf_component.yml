@@ -1,3 +1,5 @@
 dependencies:
   espressif/esp_websocket_client:
     version: ">=1.0.0,<2.0.0"
+  lvgl/lvgl:
+    version: "8.3.11"

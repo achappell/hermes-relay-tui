@@ -71,6 +71,9 @@ TOUCH_CLAIM_PATH = "/api/v1/touch-claims"
 TOUCH_CLAIM_TIMEOUT = 10.0
 TOUCH_SESSION_CONNECT_TIMEOUT = 8.0
 TOUCH_SHUTDOWN_TIMEOUT = 3.0
+TOUCH_ADMISSION_TIMEOUT = 25.0
+TOUCH_START_TIMEOUT = 2.0
+TOUCH_CAPTURE_END_TIMEOUT = 17.0
 
 REJECT_UNAUTHORIZED = "unauthorized"
 REJECT_UNAVAILABLE = "unavailable"
@@ -340,6 +343,10 @@ class TouchDoorway:
         self._closed = False
         self._session: Any = None
         self._capture: _Capture | None = None
+        self._active_capture_id: str | None = None
+        self._deadline_task: asyncio.Task[Any] | None = None
+        self._admission_task: asyncio.Task[Any] | None = None
+        self._terminal_outcome = "no_turn"
         self._turn_task: asyncio.Task[Any] | None = None
         self._turn_id: str | None = None
         self._audio_open = False
@@ -383,11 +390,13 @@ class TouchDoorway:
             if self._closed:
                 return
             capture = self._capture
+            if self._turn_active():
+                return  # Late PCM cannot terminate an owned transcription/turn.
             if capture is None or not capture.started:
                 # PCM before `mic_capture_started`, or after the capture is
                 # gone, is not audio this doorway ever agreed to receive.
-                self._discard_capture()
-                self._publish("idle")
+                await self._finish_capture("no_turn", "malformed")
+                self._publish("idle", response_text="", transcript_text="")
                 return
             if (
                 not data
@@ -395,8 +404,8 @@ class TouchDoorway:
                 or len(data) > MAX_PCM_CHUNK_BYTES
                 or capture.total_bytes + len(data) > MAX_CAPTURE_BYTES
             ):
-                self._discard_capture()
-                self._publish("idle")
+                await self._finish_capture("no_turn", "malformed")
+                self._publish("idle", response_text="", transcript_text="")
                 return
             capture.chunks.append(bytes(data))
             capture.total_bytes += len(data)
@@ -414,16 +423,7 @@ class TouchDoorway:
                     reason,
                 )
                 return
-            capture_id = self._capture.capture_id
-            self._discard_capture()
-            await self._send_control(
-                {
-                    "type": "mic_reject",
-                    "schema": 1,
-                    "capture_id": capture_id,
-                    "reason": reason,
-                }
-            )
+            await self._finish_capture("no_turn", "malformed")
             self._publish("idle")
 
     # ---- control frames ------------------------------------------------
@@ -433,7 +433,7 @@ class TouchDoorway:
         if self._capture is not None:
             # A second start while one capture is open is a duplicate, not a
             # restart. Drop the audio already collected and create no turn.
-            self._discard_capture()
+            await self._finish_capture("no_turn", "duplicate_start")
             await self._reject(capture_id, REJECT_BUSY)
             self._publish("idle")
             return
@@ -442,8 +442,15 @@ class TouchDoorway:
             return
 
         if self._session is None:
+            self._admission_task = asyncio.create_task(self._open_home_binding())
             try:
-                opened_session = await self._open_home_binding()
+                opened_session = await asyncio.wait_for(
+                    self._admission_task, TOUCH_ADMISSION_TIMEOUT
+                )
+            except asyncio.CancelledError:
+                if self._closed:
+                    return
+                raise
             except TouchClaimError as error:
                 await self._reject(capture_id, error.reason)
                 self._publish("error", status_text="Not admitted by Home")
@@ -453,6 +460,8 @@ class TouchDoorway:
                 await self._reject(capture_id, REJECT_UNAVAILABLE)
                 self._publish("error", status_text="Home is unavailable")
                 return
+            finally:
+                self._admission_task = None
             if self._closed:
                 # close() ran while admission was still in flight. There is
                 # no doorway left to hand this session to; close it here
@@ -465,16 +474,20 @@ class TouchDoorway:
             self._session = opened_session
 
         self._capture = _Capture(capture_id)
+        self._active_capture_id = capture_id
+        self._terminal_outcome = "no_turn"
         self._audio_open = False
         self._playback_started = False
         self._audio_unavailable = False
         self._interrupt_pending = False
         self._turn_id = None
         if not await self._send_control(
-            {"type": "mic_ready", "schema": 1, "capture_id": capture_id}
+            {"type": "mic_ready", "schema": 1, "capture_id": capture_id,
+             "capture_terminal": True}
         ):
-            self._discard_capture()
+            await self._invalidate_connection()
             return
+        await self._set_deadline(TOUCH_START_TIMEOUT)
         self._publish("heard", response_text="", transcript_text="")
 
     async def _open_home_binding(self) -> Any:
@@ -497,37 +510,46 @@ class TouchDoorway:
     async def _on_capture_started(self, frame: Any) -> None:
         capture = self._capture
         capture_id = str(getattr(frame, "capture_id", "") or "")
-        if capture is None or capture.capture_id != capture_id or capture.started:
-            self._discard_capture()
+        if self._turn_active() or capture is None:
+            return
+        if capture.capture_id != capture_id or capture.started:
+            await self._finish_capture("no_turn", "invalid_started")
             self._publish("idle")
             return
         capture.started = True
+        await self._set_deadline(TOUCH_CAPTURE_END_TIMEOUT)
         self._publish("listening", response_text="", transcript_text="")
 
     async def _on_mic_end(self, frame: Any) -> None:
         capture = self._capture
         capture_id = str(getattr(frame, "capture_id", "") or "")
-        if capture is None or capture.capture_id != capture_id or not capture.started:
-            self._discard_capture()
+        if self._turn_active() or capture is None:
+            return
+        if capture.capture_id != capture_id or not capture.started:
+            await self._finish_capture("no_turn", "invalid_end")
             self._publish("idle")
             return
+        await self._cancel_deadline()
         pcm = capture.take()
         self._capture = None
         if not pcm:
+            await self._finish_capture("no_turn", "empty_pcm")
             self._publish("idle")
             return
         self._publish("transcribing", response_text="", transcript_text="")
-        self._turn_task = asyncio.create_task(self._transcribe_and_submit(pcm))
+        self._turn_task = asyncio.create_task(self._capture_turn(pcm))
 
     async def _on_mic_abort(self, frame: Any) -> None:
-        self._discard_capture()
+        if self._capture is None or getattr(frame, "capture_id", None) != self._capture.capture_id:
+            return
+        await self._finish_capture("no_turn", "cancelled")
         self._transcript_text = ""
         self._publish("idle", response_text="", transcript_text="")
 
     async def _on_turn_stop(self, _frame: Any) -> None:
         if self._capture is not None:
             # Nothing has been submitted, so there is nothing to interrupt.
-            self._discard_capture()
+            await self._finish_capture("no_turn", "cancelled")
             self._publish("idle", response_text="", transcript_text="")
             return
         if self._turn_task is None or self._turn_task.done():
@@ -545,17 +567,31 @@ class TouchDoorway:
 
     async def _on_playback_failed(self, frame: Any) -> None:
         turn_id = str(getattr(frame, "turn_id", "") or "")
-        if self._turn_id is None or turn_id != self._turn_id:
+        if self._turn_id is None or turn_id != self._turn_id or self._last_published_state in ("error", "disconnected"):
             return
         self._playback_started = False
         self._audio_unavailable = True
         # The answer is still the answer. Only the speaker failed.
         self._publish(
-            "buffering" if self._turn_active() else "complete",
+            "buffering" if self._turn_active() and self._terminal_outcome != "complete" else "complete",
             status_text=AUDIO_UNAVAILABLE_STATUS,
         )
 
     # ---- the one Home turn ---------------------------------------------
+
+    async def _capture_turn(self, pcm: bytes) -> None:
+        try:
+            await self._transcribe_and_submit(pcm)
+        finally:
+            # Terminal can reach the peer before send_control returns. Keep
+            # ingress serialized until both delivery and ownership release finish.
+            async with self._lock:
+                try:
+                    if not self._closed:
+                        await self._finish_capture(self._terminal_outcome, "turn_finished")
+                finally:
+                    if self._turn_task is asyncio.current_task():
+                        self._turn_task = None
 
     async def _transcribe_and_submit(self, pcm: bytes) -> None:
         try:
@@ -605,6 +641,7 @@ class TouchDoorway:
     async def _run_home_turn(self, transcript: str) -> None:
         """Submit one final transcript and follow it to a terminal event."""
         session = self._session
+        self._terminal_outcome = "error"
         if session is None:
             self._publish("error", status_text="Home is unavailable")
             return
@@ -656,9 +693,14 @@ class TouchDoorway:
                     if event.get("final") is True and self._audio_open:
                         await self._sender.send_audio_end(turn_id=self._turn_id or "")
                         self._audio_open = False
-                elif kind in ("audio_abort", "turn_interrupted"):
+                elif kind == "audio_abort":
+                    await self._abort_response_audio("unavailable")
+                    self._audio_unavailable = True
+                    self._publish(self._response_phase(), status_text=AUDIO_UNAVAILABLE_STATUS)
+                elif kind == "turn_interrupted":
                     await self._abort_response_audio(str(kind))
                     completed = True
+                    self._terminal_outcome = "complete"
                     self._publish(
                         "complete",
                         status_text="Stopped",
@@ -676,6 +718,7 @@ class TouchDoorway:
                         await self._sender.send_audio_end(turn_id=self._turn_id or "")
                         self._audio_open = False
                     completed = True
+                    self._terminal_outcome = "complete"
                     self._publish(
                         "complete",
                         status_text=(
@@ -728,6 +771,7 @@ class TouchDoorway:
         self._publish("buffering")
 
     async def _abort_response_audio(self, reason: str) -> None:
+        self._playback_started = False
         if not self._audio_open:
             return
         self._audio_open = False
@@ -759,6 +803,58 @@ class TouchDoorway:
         return "thinking"
 
     # ---- state ---------------------------------------------------------
+
+    async def _cancel_deadline(self) -> None:
+        task, self._deadline_task = self._deadline_task, None
+        if task is not None and task is not asyncio.current_task():
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
+    async def _set_deadline(self, seconds: float) -> None:
+        await self._cancel_deadline()
+        capture_id = self._active_capture_id
+
+        async def expire() -> None:
+            await asyncio.sleep(seconds)
+            async with self._lock:
+                if not self._closed and self._active_capture_id == capture_id:
+                    await self._finish_capture("no_turn", "timeout")
+                    self._publish("idle", response_text="", transcript_text="")
+
+        self._deadline_task = asyncio.create_task(expire())
+
+    async def _invalidate_connection(self) -> None:
+        self._closed = True
+        self._discard_capture()
+        self._active_capture_id = None
+        self._transcript_text = ""
+        self._response_text = ""
+        self._interrupt_pending = False
+        self._turn_id = None
+        self._audio_open = False
+        self._playback_started = False
+        self._audio_unavailable = False
+        await self._cancel_deadline()
+        close = getattr(self._sender, "close", None)
+        if callable(close):
+            with contextlib.suppress(Exception):
+                await close(code=1011, reason="capture transport invalid")
+        session, self._session = self._session, None
+        if session is not None:
+            with contextlib.suppress(Exception):
+                await session.close()
+
+    async def _finish_capture(self, outcome: str, reason: str) -> None:
+        await self._cancel_deadline()
+        self._discard_capture()
+        capture_id, self._active_capture_id = self._active_capture_id, None
+        if capture_id is None or self._closed:
+            return
+        if not await self._send_control({
+            "type": "mic_terminal", "schema": 1, "capture_id": capture_id,
+            "outcome": outcome, "reason": reason[:64],
+        }):
+            await self._invalidate_connection()
 
     def _discard_capture(self) -> None:
         capture = self._capture
@@ -826,6 +922,12 @@ class TouchDoorway:
         if self._closed:
             return
         self._closed = True
+        admission, self._admission_task = self._admission_task, None
+        if admission is not None:
+            admission.cancel()
+            await asyncio.gather(admission, return_exceptions=True)
+        await self._cancel_deadline()
+        self._active_capture_id = None
         self._discard_capture()
         self._transcript_text = ""
         self._response_text = ""

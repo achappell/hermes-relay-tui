@@ -3917,7 +3917,7 @@ async def test_mic_start_opens_a_home_browser_session_with_the_granted_handle(
     )
     assert created["connected"] is True
     assert sender.controls == [
-        {"type": "mic_ready", "schema": 1, "capture_id": "c1"}
+        {"type": "mic_ready", "schema": 1, "capture_id": "c1", "capture_terminal": True}
     ]
 
     await appliance._close_touch_contexts()
