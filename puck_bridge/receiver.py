@@ -22,6 +22,7 @@ from __future__ import annotations
 import http.server
 import logging
 import os
+import socket
 import socketserver
 import struct
 import tempfile
@@ -239,6 +240,7 @@ def make_handler(
     )
     captures: dict[int, _PendingCapture] = {}
     captures_lock = threading.Lock()
+    stopping = threading.Event()
 
     class Handler(http.server.BaseHTTPRequestHandler):
         # ESP-IDF's http_request component reuses one esp_http_client
@@ -248,6 +250,30 @@ def make_handler(
         # that reuse -- see tools/receiver.py's own docstring for the same
         # rule this story's spec calls out explicitly.
         protocol_version = "HTTP/1.1"
+
+        @classmethod
+        def request_stop(cls) -> None:
+            with captures_lock:
+                stopping.set()
+                captures.clear()
+            if response_stream is not None:
+                response_stream.shutdown()
+
+        @classmethod
+        def cleanup(cls) -> None:
+            cls.request_stop()
+            if work_dir is None:
+                try:
+                    os.rmdir(resolved_work_dir)
+                except FileNotFoundError:
+                    pass
+
+        def handle_one_request(self) -> None:
+            if stopping.is_set():
+                self.close_connection = True
+                return
+            super().handle_one_request()
+
 
         def log_message(self, fmt: str, *args: object) -> None:  # noqa: A003
             # Redact the query-string credential: /response carries the
@@ -578,6 +604,9 @@ def make_handler(
 
             finished_capture: _PendingCapture | None = None
             with captures_lock:
+                if stopping.is_set():
+                    self.close_connection = True
+                    return
                 _evict_stale_captures(captures)
                 capture = captures.setdefault(seq, _PendingCapture(total))
                 capture.chunks[chunk] = body
@@ -650,7 +679,11 @@ def make_handler(
             accepted_stream = (
                 response_stream is None or response_stream.seq == seq
             )
+            if stopping.is_set():
+                capture.chunks.clear()
+                return
             raw = capture.assemble()
+            capture.chunks.clear()
             os.makedirs(resolved_work_dir, exist_ok=True)
             wav_path = os.path.join(resolved_work_dir, f"puck_{seq}.wav")
             try:
@@ -667,6 +700,8 @@ def make_handler(
                 except OSError:
                     pass
 
+            if stopping.is_set():
+                return
             if not result.get("success"):
                 logger.warning(
                     "puck bridge transcription failed: %s", result.get("error")
@@ -717,4 +752,65 @@ def make_handler(
 
 
 class ThreadingHTTPServer(socketserver.ThreadingMixIn, http.server.HTTPServer):
-    daemon_threads = True
+    daemon_threads = False
+    block_on_close = False
+
+    def __init__(self, *args, **kwargs):
+        self._workers_cv = threading.Condition()
+        self._sockets = set()
+        self._stopping = False
+        super().__init__(*args, **kwargs)
+
+    def process_request(self, request, client_address):
+        with self._workers_cv:
+            if self._stopping:
+                self.shutdown_request(request)
+                return
+            self._sockets.add(request)
+        try:
+            super().process_request(request, client_address)
+        except BaseException:
+            with self._workers_cv:
+                self._sockets.discard(request)
+                self._workers_cv.notify_all()
+            raise
+
+    def process_request_thread(self, request, client_address):
+        try:
+            super().process_request_thread(request, client_address)
+        finally:
+            with self._workers_cv:
+                self._sockets.discard(request)
+                if self._stopping and not self._sockets:
+                    self.RequestHandlerClass.cleanup()
+                self._workers_cv.notify_all()
+
+    def request_stop(self):
+        with self._workers_cv:
+            self._stopping = True
+            self.RequestHandlerClass.request_stop()
+            for connection in self._sockets:
+                try:
+                    connection.shutdown(socket.SHUT_RDWR)
+                except OSError:
+                    pass
+                connection.close()
+
+    def wait_workers(self, deadline=None):
+        with self._workers_cv:
+            while self._sockets:
+                remaining = None if deadline is None else max(0.0, deadline - time.monotonic())
+                if remaining == 0:
+                    logger.warning("puck bridge request cleanup pending")
+                    return False
+                self._workers_cv.wait(remaining)
+        self.RequestHandlerClass.cleanup()
+        return True
+
+    def server_close(self):
+        self.request_stop()
+        super().server_close()
+        # Callers that need a bound use wait_workers(deadline) before this.
+        # Request threads remain non-daemon owners of transcription cleanup.
+        if not self._sockets:
+            self.RequestHandlerClass.cleanup()
