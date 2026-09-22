@@ -21,7 +21,14 @@ typedef enum {
     DISPLAY_RULES_ERROR,
     DISPLAY_RULES_DISCONNECTED,
     DISPLAY_RULES_PROMPT,
+    /* Appended after PROMPT deliberately: existing targets and the shared
+       fixtures index this enum by position, so the values above must not
+       move when the voice doorway adds its own observed phases. */
+    DISPLAY_RULES_TRANSCRIBING,
+    DISPLAY_RULES_COMPLETE,
 } display_rules_state_t;
+
+#define DISPLAY_RULES_STATE_LAST DISPLAY_RULES_COMPLETE
 
 typedef struct {
     char id[DISPLAY_RULES_OPTION_ID_MAX];

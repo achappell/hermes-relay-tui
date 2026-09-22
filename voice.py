@@ -708,6 +708,61 @@ def transcribe(wav_path: str, model: Optional[str] = None) -> Dict[str, Any]:
         return {"success": False, "transcript": "", "error": str(exc)}
 
 
+# A shared appliance doorway must not leave a recording on disk, even for the
+# few milliseconds a WAV round-trip would take. `transcribe_pcm` keeps the
+# samples in memory for the whole of their life and hands faster-whisper the
+# float array directly.
+MAX_FINAL_TRANSCRIPT_CHARACTERS = 4000
+
+
+def pcm_to_float32(pcm: bytes):
+    """Convert signed 16-bit little-endian PCM to whisper's float32 range."""
+    if not isinstance(pcm, (bytes, bytearray, memoryview)):
+        raise TypeError("pcm must be bytes")
+    data = bytes(pcm)
+    if len(data) % SAMPLE_WIDTH:
+        raise ValueError("pcm length must be a whole number of samples")
+    import numpy as np
+
+    return np.frombuffer(data, dtype="<i2").astype(np.float32) / 32768.0
+
+
+def transcribe_pcm(
+    pcm: bytes,
+    model: Optional[str] = None,
+    *,
+    max_characters: int = MAX_FINAL_TRANSCRIPT_CHARACTERS,
+) -> Dict[str, Any]:
+    """Transcribe in-memory 16 kHz mono signed-16 PCM without a WAV file.
+
+    Returns the same ``success``/``transcript`` shape as :func:`transcribe`.
+    The transcript is bounded so one long capture cannot become an unbounded
+    prompt, and nothing about the audio or the text is logged.
+    """
+    model_name = model or DEFAULT_STT_MODEL
+    try:
+        samples = pcm_to_float32(pcm)
+        if samples.size == 0:
+            return {"success": True, "transcript": ""}
+        whisper_model = _load_local_model(model_name)
+        segments, _info = whisper_model.transcribe(
+            samples,
+            beam_size=5,
+            condition_on_previous_text=False,
+            vad_filter=True,
+            vad_parameters={"min_silence_duration_ms": 500},
+            no_speech_threshold=0.6,
+            log_prob_threshold=-1.0,
+        )
+        transcript = " ".join(segment.text.strip() for segment in segments).strip()
+        if max_characters > 0:
+            transcript = transcript[:max_characters]
+        return {"success": True, "transcript": transcript}
+    except Exception as exc:
+        logger.exception("Local in-memory transcription failed")
+        return {"success": False, "transcript": "", "error": str(exc)}
+
+
 class LocalMicrophone:
     """Capture one bounded, silence-ended utterance and transcribe it locally."""
 

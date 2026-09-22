@@ -2,6 +2,8 @@ import sys
 import threading
 import types
 
+import pytest
+
 from mic import prepare_local_stt, wrap_recorder
 import session as session_module
 from session import HermesSession
@@ -234,3 +236,103 @@ def test_a_session_captures_through_the_shared_recorder_and_leaves_it_open(monke
 
     assert microphone.closed is False
     assert session.microphone is None
+
+
+# ---- in-memory speech-to-text for the shared Touch doorway -------------
+#
+# A doorway in a shared room must not leave a recording on disk, not even for
+# the milliseconds a WAV round-trip would take. These checks pin the
+# no-file path, the byte contract, and the bounded final transcript.
+
+
+def test_pcm_to_float32_reads_signed_16_bit_little_endian_samples():
+    import voice as voice_module
+
+    samples = voice_module.pcm_to_float32(b"\x00\x00\x00\x80\xff\x7f")
+
+    assert len(samples) == 3
+    assert samples[0] == 0.0
+    assert samples[1] == pytest.approx(-1.0)
+    assert samples[2] == pytest.approx(1.0, abs=1e-4)
+
+
+def test_pcm_to_float32_rejects_a_partial_sample():
+    import voice as voice_module
+
+    with pytest.raises(ValueError, match="whole number of samples"):
+        voice_module.pcm_to_float32(b"\x01")
+
+
+def test_transcribe_pcm_never_writes_a_wav_file(monkeypatch):
+    import voice as voice_module
+
+    seen = {}
+
+    class FakeSegment:
+        def __init__(self, text):
+            self.text = text
+
+    class FakeModel:
+        def transcribe(self, audio, **kwargs):
+            seen["audio"] = audio
+            seen["kwargs"] = kwargs
+            return [FakeSegment(" turn on "), FakeSegment("the lights ")], None
+
+    monkeypatch.setattr(voice_module, "_load_local_model", lambda name: FakeModel())
+    monkeypatch.setattr(
+        voice_module.wave,
+        "open",
+        lambda *args, **kwargs: pytest.fail("in-memory STT must not write a WAV"),
+    )
+
+    result = voice_module.transcribe_pcm(b"\x01\x02" * 100)
+
+    assert result == {"success": True, "transcript": "turn on the lights"}
+    # faster-whisper received samples, not a path.
+    assert not isinstance(seen["audio"], (str, bytes))
+    assert len(seen["audio"]) == 100
+
+
+def test_transcribe_pcm_bounds_the_final_transcript(monkeypatch):
+    import voice as voice_module
+
+    class FakeSegment:
+        def __init__(self, text):
+            self.text = text
+
+    class FakeModel:
+        def transcribe(self, audio, **kwargs):
+            return [FakeSegment("a" * 9000)], None
+
+    monkeypatch.setattr(voice_module, "_load_local_model", lambda name: FakeModel())
+
+    result = voice_module.transcribe_pcm(b"\x00\x00" * 10)
+
+    assert result["success"] is True
+    assert len(result["transcript"]) == voice_module.MAX_FINAL_TRANSCRIPT_CHARACTERS
+
+
+def test_transcribe_pcm_reports_failure_without_raising(monkeypatch):
+    import voice as voice_module
+
+    def explode(_name):
+        raise RuntimeError("no model")
+
+    monkeypatch.setattr(voice_module, "_load_local_model", explode)
+
+    result = voice_module.transcribe_pcm(b"\x00\x00" * 10)
+
+    assert result["success"] is False
+    assert result["transcript"] == ""
+
+
+def test_transcribe_pcm_treats_an_empty_capture_as_no_speech(monkeypatch):
+    import voice as voice_module
+
+    monkeypatch.setattr(
+        voice_module,
+        "_load_local_model",
+        lambda name: pytest.fail("an empty capture must not load a model"),
+    )
+
+    assert voice_module.transcribe_pcm(b"") == {"success": True, "transcript": ""}

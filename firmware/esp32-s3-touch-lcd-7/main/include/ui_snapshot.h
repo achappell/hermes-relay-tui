@@ -7,6 +7,10 @@
 #include "display_rules.h"
 
 #define UI_SNAPSHOT_RESPONSE_TEXT_MAX 512
+/* The host bounds a final transcript at 4000 characters. The panel only ever
+   shows what the room just said as a short confirmation line, so it keeps a
+   small buffer and truncates rather than rejecting a legitimate snapshot. */
+#define UI_SNAPSHOT_TRANSCRIPT_TEXT_MAX 256
 #define UI_SNAPSHOT_STATUS_TEXT_MAX 96
 #define UI_SNAPSHOT_ACCOUNT_MAX 48
 #define UI_SNAPSHOT_PROMPT_KIND_MAX 24
@@ -31,6 +35,9 @@ typedef display_rules_state_t ui_display_state_t;
 #define UI_DISPLAY_ERROR DISPLAY_RULES_ERROR
 #define UI_DISPLAY_DISCONNECTED DISPLAY_RULES_DISCONNECTED
 #define UI_DISPLAY_PROMPT DISPLAY_RULES_PROMPT
+#define UI_DISPLAY_TRANSCRIBING DISPLAY_RULES_TRANSCRIBING
+#define UI_DISPLAY_COMPLETE DISPLAY_RULES_COMPLETE
+#define UI_DISPLAY_STATE_LAST DISPLAY_RULES_STATE_LAST
 
 typedef struct {
     char id[UI_SNAPSHOT_OPTION_ID_MAX];
@@ -61,6 +68,7 @@ typedef struct {
     uint32_t sequence;
     ui_display_state_t state;
     char response_text[UI_SNAPSHOT_RESPONSE_TEXT_MAX];
+    char transcript_text[UI_SNAPSHOT_TRANSCRIPT_TEXT_MAX];
     char status_text[UI_SNAPSHOT_STATUS_TEXT_MAX];
     char account[UI_SNAPSHOT_ACCOUNT_MAX];
     ui_snapshot_prompt_t prompt;
@@ -72,5 +80,6 @@ const char *ui_display_state_name(ui_display_state_t state);
 bool ui_snapshot_init(ui_snapshot_t *snapshot);
 bool ui_snapshot_set_state(ui_snapshot_t *snapshot, const char *name);
 bool ui_snapshot_set_text(ui_snapshot_t *snapshot, const char *response_text, const char *status_text);
+bool ui_snapshot_set_transcript(ui_snapshot_t *snapshot, const char *transcript_text);
 bool ui_snapshot_from_json(const char *json, ui_snapshot_t *snapshot);
 bool ui_snapshot_to_rules(const ui_snapshot_t *snapshot, display_rules_snapshot_t *rules_snapshot);

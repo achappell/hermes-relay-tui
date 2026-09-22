@@ -29,6 +29,8 @@ ui_display_state_t ui_display_state_from_name(const char *name)
     if (strcmp(name, "error") == 0) return UI_DISPLAY_ERROR;
     if (strcmp(name, "disconnected") == 0) return UI_DISPLAY_DISCONNECTED;
     if (strcmp(name, "prompt") == 0) return UI_DISPLAY_PROMPT;
+    if (strcmp(name, "transcribing") == 0) return UI_DISPLAY_TRANSCRIBING;
+    if (strcmp(name, "complete") == 0) return UI_DISPLAY_COMPLETE;
     return UI_DISPLAY_UNKNOWN;
 }
 
@@ -37,8 +39,9 @@ const char *ui_display_state_name(ui_display_state_t state)
     static const char *names[] = {
         "unknown", "idle", "heard", "listening", "thinking",
         "speaking", "buffering", "error", "disconnected", "prompt",
+        "transcribing", "complete",
     };
-    if (state < UI_DISPLAY_UNKNOWN || state > UI_DISPLAY_PROMPT) {
+    if (state < UI_DISPLAY_UNKNOWN || state > UI_DISPLAY_STATE_LAST) {
         return names[UI_DISPLAY_UNKNOWN];
     }
     return names[state];
@@ -72,6 +75,17 @@ bool ui_snapshot_set_text(ui_snapshot_t *snapshot, const char *response_text, co
     } else {
         copy_bounded(snapshot->status_text, sizeof(snapshot->status_text), status_text);
     }
+    return true;
+}
+
+bool ui_snapshot_set_transcript(ui_snapshot_t *snapshot, const char *transcript_text)
+{
+    if (snapshot == NULL) return false;
+    if (transcript_text == NULL) {
+        snapshot->transcript_text[0] = '\0';
+        return true;
+    }
+    copy_bounded(snapshot->transcript_text, sizeof(snapshot->transcript_text), transcript_text);
     return true;
 }
 

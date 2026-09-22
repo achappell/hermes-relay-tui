@@ -42,6 +42,66 @@ static bool required_text(const cJSON *object, const char *name, char *destinati
     return cJSON_IsString(item) && copy_strict(destination, capacity, item->valuestring);
 }
 
+/* Back a byte cutoff up to the end of the last complete UTF-8 sequence at or
+   before it, so a multi-byte codepoint straddling the cutoff is dropped
+   whole rather than split into an invalid trailing byte sequence. */
+static size_t utf8_safe_cut(const char *text, size_t length)
+{
+    if (length == 0) return 0;
+
+    size_t lead = length;
+    int steps_back = 0;
+    while (lead > 0 && steps_back < 3 &&
+           (((unsigned char)text[lead - 1]) & 0xC0) == 0x80) {
+        lead--;
+        steps_back++;
+    }
+    if (lead == 0) return 0;
+
+    unsigned char lead_byte = (unsigned char)text[lead - 1];
+    size_t sequence_length;
+    if (lead_byte < 0x80) {
+        sequence_length = 1;
+    } else if ((lead_byte & 0xE0) == 0xC0) {
+        sequence_length = 2;
+    } else if ((lead_byte & 0xF0) == 0xE0) {
+        sequence_length = 3;
+    } else if ((lead_byte & 0xF8) == 0xF0) {
+        sequence_length = 4;
+    } else {
+        /* Not a valid UTF-8 leading byte either; drop it too. */
+        return lead - 1;
+    }
+
+    if (lead - 1 + sequence_length > length) {
+        /* This codepoint is cut off by the boundary: drop it whole. */
+        return lead - 1;
+    }
+    return length;
+}
+
+/* The host bounds a final transcript at 4000 characters, far more than the
+   panel's confirmation line holds. Truncate rather than rejecting an
+   otherwise valid snapshot: the answer and the connection state matter more
+   than the last few words of what the room said. */
+static bool optional_truncated_text(
+    const cJSON *object, const char *name, char *destination, size_t capacity)
+{
+    const cJSON *item = object_item(object, name);
+    if (item == NULL || cJSON_IsNull(item)) {
+        destination[0] = '\0';
+        return true;
+    }
+    if (!cJSON_IsString(item) || capacity == 0) return false;
+    size_t length = strlen(item->valuestring);
+    if (length >= capacity) {
+        length = utf8_safe_cut(item->valuestring, capacity - 1);
+    }
+    memcpy(destination, item->valuestring, length);
+    destination[length] = '\0';
+    return true;
+}
+
 static bool parse_capabilities(const cJSON *root, ui_snapshot_t *snapshot)
 {
     const cJSON *raw = object_item(root, "capabilities");
@@ -186,6 +246,13 @@ bool ui_snapshot_from_json(const char *json, ui_snapshot_t *snapshot)
                 snapshot,
                 response->valuestring,
                 cJSON_IsString(status) ? status->valuestring : NULL)) {
+            break;
+        }
+        if (!optional_truncated_text(
+                root,
+                "transcript_text",
+                snapshot->transcript_text,
+                sizeof(snapshot->transcript_text))) {
             break;
         }
         if (!optional_string(root, "account", snapshot->account, sizeof(snapshot->account))) break;

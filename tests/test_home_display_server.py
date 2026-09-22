@@ -899,3 +899,67 @@ async def test_state_rejects_an_unrelated_origin(tmp_path):
         assert status_code == 403
     finally:
         await server.close()
+
+
+# ---- Touch mode must not disturb the browser doorway -------------------
+
+
+@pytest.mark.asyncio
+async def test_touch_mode_does_not_change_the_browser_snapshot_contract(tmp_path):
+    """Browser regression: snapshots keep their shape, plus a transcript field."""
+    publisher = DisplayStatePublisher()
+    server = DisplayServer(publisher, tmp_path)
+    info = await server.start()
+    try:
+        async with connect(info.websocket_url) as socket:
+            first = json.loads(await socket.recv())
+            assert first["state"] == "idle"
+            assert first["response_text"] == ""
+            assert first["transcript_text"] == ""
+            publisher.publish(state="thinking", response_text="one moment")
+            second = json.loads(await socket.recv())
+            assert second["state"] == "thinking"
+            assert second["response_text"] == "one moment"
+            # The browser doorway never publishes a transcript of its own.
+            assert second["transcript_text"] == ""
+    finally:
+        await server.close()
+
+
+@pytest.mark.asyncio
+async def test_a_browser_server_ignores_touch_control_frames(tmp_path):
+    """A `mic_start` on the browser path is not a voice turn or an action."""
+    turns: list[str] = []
+    actions: list[tuple[str, str]] = []
+
+    async def on_voice_turn(text):
+        turns.append(text)
+
+    async def on_action(action_id, choice):
+        actions.append((action_id, choice))
+
+    server = DisplayServer(
+        DisplayStatePublisher(),
+        tmp_path,
+        on_action=on_action,
+        on_voice_turn=on_voice_turn,
+    )
+    info = await server.start()
+    try:
+        async with connect(info.websocket_url) as socket:
+            await socket.recv()
+            await socket.send(
+                json.dumps({"type": "mic_start", "schema": 1, "capture_id": "c1"})
+            )
+            await socket.send(
+                json.dumps({"type": "voice_turn", "schema": 1, "text": "hello"})
+            )
+            for _ in range(200):
+                if turns:
+                    break
+                await asyncio.sleep(0.01)
+    finally:
+        await server.close()
+
+    assert turns == ["hello"]
+    assert actions == []

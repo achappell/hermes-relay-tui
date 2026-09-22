@@ -20,10 +20,13 @@
         "buffering",
         "error",
         "disconnected",
-        "prompt"
+        "prompt",
+        "transcribing",
+        "complete"
       ]
     },
     "response_text": { "type": "string" },
+    "transcript_text": { "type": "string", "maxLength": 4000 },
     "status_text": { "type": ["string", "null"] },
     "media": { "type": ["object", "null"] },
     "account": { "type": ["string", "null"] },

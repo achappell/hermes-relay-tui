@@ -19,6 +19,7 @@ from websockets.exceptions import ConnectionClosed
 from websockets.http11 import Request, Response
 
 from .state import DisplayStatePublisher
+from .touch import MAX_CAPTURE_ID_LENGTH, MAX_PCM_CHUNK_BYTES
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -51,6 +52,36 @@ MAX_CONNECTION_TASKS = 8
 CONNECTION_TASK_CLEANUP_TIMEOUT = 3.0
 MAX_BROWSER_ROUTE_REQUEST_ID_LENGTH = 64
 MAX_BROWSER_WAKE_PHRASE_LENGTH = 128
+
+# ---- ESP32 Touch doorway ingress ---------------------------------------
+#
+# The Touch endpoint speaks the same `/state` socket as the browser, but it
+# also sends control frames and raw microphone PCM. The server owns the frame
+# shape and the byte bounds; the appliance-owned binding owns the capture and
+# session semantics. Nothing here ever inspects audio or transcript content.
+MAX_TOUCH_TURN_ID_LENGTH = 128
+MAX_TOUCH_REASON_LENGTH = 64
+TOUCH_PCM_SAMPLE_WIDTH = 2
+TOUCH_INGRESS_QUEUE_MAX = 256
+
+TOUCH_CAPTURE_FRAMES = frozenset(
+    {"mic_start", "mic_capture_started", "mic_end", "mic_abort"}
+)
+TOUCH_TURN_FRAMES = frozenset({"audio_playback_started", "audio_playback_failed"})
+TOUCH_CONTROL_FRAMES = TOUCH_CAPTURE_FRAMES | TOUCH_TURN_FRAMES | {"turn_stop"}
+
+_TOUCH_OVERFLOW = object()
+_TOUCH_MALFORMED = object()
+
+
+@dataclass(frozen=True, slots=True)
+class TouchFrame:
+    """One validated Touch control frame — never any audio or text."""
+
+    type: str
+    capture_id: str | None = None
+    turn_id: str | None = None
+    reason: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -89,6 +120,20 @@ class BrowserAudioSender(Protocol):
     async def send_audio_abort(self, *, turn_id: str, reason: str) -> None: ...
 
     async def close(self, *, code: int = 1000, reason: str = "") -> None: ...
+
+
+class TouchSessionBinding(Protocol):
+    """Appliance-owned capture and session state for one Touch socket."""
+
+    publisher: DisplayStatePublisher
+
+    async def handle_touch_frame(self, frame: TouchFrame) -> None: ...
+
+    async def handle_touch_audio(self, data: bytes) -> None: ...
+
+    async def handle_touch_malformed(self, reason: str = "malformed") -> None: ...
+
+    async def close(self) -> None: ...
 
 
 class BrowserSessionBinding(Protocol):
@@ -183,6 +228,17 @@ class _ConnectionAudioSender:
         )
         if not sent:
             raise ConnectionError("browser connection is closed")
+
+    async def send_control(self, payload: dict[str, object]) -> bool:
+        """Send one JSON control frame to this socket alone.
+
+        Touch admission answers (`mic_ready` / `mic_reject`) belong to the
+        socket that asked. Broadcasting one would tell every other panel in
+        the house that this one was admitted.
+        """
+        if not isinstance(payload, dict):
+            raise TypeError("control payload must be a dict")
+        return await self._server._send_connection_json(self._websocket, payload)
 
     async def close(self, *, code: int = 1000, reason: str = "") -> None:
         try:
@@ -281,6 +337,10 @@ class DisplayServer:
             [str, BrowserAudioSender], Awaitable[BrowserSessionBinding]
         ]
         | None = None,
+        on_touch_connect: Callable[
+            [str, BrowserAudioSender], Awaitable[TouchSessionBinding]
+        ]
+        | None = None,
     ) -> None:
         """Create a display server.
 
@@ -295,6 +355,11 @@ class DisplayServer:
                              receives a private audio sender for this socket.
         browser_context_factory -- compatibility spelling for
                                   on_browser_connect.
+        on_touch_connect -- optional appliance callback that creates the
+                           connection-scoped ESP32 Touch doorway. Selecting
+                           it puts this server in Touch mode: control frames
+                           and binary microphone PCM are routed to the
+                           doorway instead of the browser voice callbacks.
         """
         try:
             host_address = ipaddress.ip_address(host)
@@ -308,6 +373,12 @@ class DisplayServer:
             raise ValueError(
                 "on_browser_connect and browser_context_factory are mutually exclusive"
             )
+        if on_touch_connect is not None and (
+            on_browser_connect is not None or browser_context_factory is not None
+        ):
+            raise ValueError(
+                "on_touch_connect cannot be combined with a browser context factory"
+            )
 
         self._publisher = publisher
         self._static_dir = Path(static_dir).resolve()
@@ -315,7 +386,10 @@ class DisplayServer:
         self._port = port
         self._on_action = on_action
         self._on_voice_turn = on_voice_turn
-        self._browser_context_factory = on_browser_connect or browser_context_factory
+        self._browser_context_factory = (
+            on_browser_connect or browser_context_factory or on_touch_connect
+        )
+        self._touch_mode = on_touch_connect is not None
         self._browser_session_limit = browser_session_limit
         self._ssl_context = ssl_context
         self._public_origin = (
@@ -345,6 +419,11 @@ class DisplayServer:
     def browser_contexts_enabled(self) -> bool:
         """Whether each state socket receives its own appliance context."""
         return self._browser_context_factory is not None
+
+    @property
+    def touch_contexts_enabled(self) -> bool:
+        """Whether each state socket is an ESP32 Touch doorway."""
+        return self._touch_mode
 
     async def start(self) -> DisplayServerInfo:
         if self._server is not None:
@@ -627,6 +706,8 @@ class DisplayServer:
         next_snapshot: asyncio.Task[Any] | None = None
         incoming: asyncio.Task[Any] | None = None
         factory_task: asyncio.Task[Any] | None = None
+        touch_queue: asyncio.Queue[Any] | None = None
+        touch_worker: asyncio.Task[Any] | None = None
         try:
             if self._browser_context_factory is not None:
                 sender = _ConnectionAudioSender(self, websocket)
@@ -664,6 +745,16 @@ class DisplayServer:
                     raise RuntimeError("browser context factory returned no context")
                 self._connection_bindings[websocket] = binding
                 subscription = binding.publisher.subscribe()
+                if self._touch_mode:
+                    # One serial consumer per socket. Microphone PCM arrives
+                    # as many small frames; a task per frame would either
+                    # exhaust the per-connection task budget or let chunks
+                    # land out of order, and a reordered capture is a
+                    # corrupted one.
+                    touch_queue = asyncio.Queue(maxsize=TOUCH_INGRESS_QUEUE_MAX)
+                    touch_worker = asyncio.create_task(
+                        self._run_touch_ingress(binding, touch_queue)
+                    )
             else:
                 subscription = self._publisher.subscribe()
 
@@ -679,6 +770,22 @@ class DisplayServer:
                     return
 
                 if incoming in done:
+                    if self._touch_mode:
+                        try:
+                            message = incoming.result()
+                        except ConnectionClosed:
+                            return
+                        if touch_queue is not None:
+                            self._enqueue_touch_message(touch_queue, message)
+                        incoming = asyncio.create_task(websocket.recv())
+                        if next_snapshot in done:
+                            snapshot = next_snapshot.result()
+                            if not await self._send_frame(
+                                websocket, json.dumps(snapshot.to_dict())
+                            ):
+                                return
+                            next_snapshot = asyncio.create_task(anext(subscription))
+                        continue
                     try:
                         message = incoming.result()
                         action = self._parse_websocket_action(message)
@@ -757,13 +864,19 @@ class DisplayServer:
                 await websocket.close(code=1011, reason="browser session unavailable")
             return
         finally:
-            for task in (factory_task, next_snapshot, closed, incoming):
+            for task in (factory_task, next_snapshot, closed, incoming, touch_worker):
                 if task is not None and not task.done():
                     task.cancel()
             await asyncio.gather(
                 *(
                     task
-                    for task in (factory_task, next_snapshot, closed, incoming)
+                    for task in (
+                        factory_task,
+                        next_snapshot,
+                        closed,
+                        incoming,
+                        touch_worker,
+                    )
                     if task is not None
                 ),
                 return_exceptions=True,
@@ -782,6 +895,115 @@ class DisplayServer:
             self._forget_connection(websocket)
             if slot_reserved:
                 self._release_browser_slot()
+
+    # ---- Touch ingress -------------------------------------------------
+
+    def _enqueue_touch_message(
+        self, queue: asyncio.Queue[Any], message: str | bytes
+    ) -> None:
+        """Validate one Touch frame's shape and hand it to the serial consumer."""
+        if isinstance(message, (bytes, bytearray, memoryview)):
+            data = bytes(message)
+            item: Any
+            if (
+                not data
+                or len(data) % TOUCH_PCM_SAMPLE_WIDTH
+                or len(data) > MAX_PCM_CHUNK_BYTES
+            ):
+                item = _TOUCH_MALFORMED
+            else:
+                item = data
+        else:
+            frame = self._parse_touch_frame(message)
+            item = _TOUCH_MALFORMED if frame is None else frame
+        try:
+            queue.put_nowait(item)
+        except asyncio.QueueFull:
+            # The endpoint is sending faster than this host can consume. The
+            # capture is already unusable, so drop the backlog and make that
+            # explicit rather than submitting a prompt with holes in it.
+            while True:
+                try:
+                    queue.get_nowait()
+                except asyncio.QueueEmpty:
+                    break
+            with contextlib.suppress(asyncio.QueueFull):
+                queue.put_nowait(_TOUCH_OVERFLOW)
+
+    async def _run_touch_ingress(
+        self, binding: TouchSessionBinding, queue: asyncio.Queue[Any]
+    ) -> None:
+        """Apply Touch frames one at a time, in the order they arrived."""
+        while True:
+            item = await queue.get()
+            try:
+                if item is _TOUCH_OVERFLOW:
+                    await binding.handle_touch_malformed("overflow")
+                elif item is _TOUCH_MALFORMED:
+                    await binding.handle_touch_malformed("malformed")
+                elif isinstance(item, bytes):
+                    await binding.handle_touch_audio(item)
+                else:
+                    await binding.handle_touch_frame(item)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                with contextlib.suppress(Exception):
+                    await binding.handle_touch_malformed("unavailable")
+
+    @staticmethod
+    def _bounded_token(value: Any, limit: int) -> str | None:
+        if (
+            not isinstance(value, str)
+            or not 0 < len(value) <= limit
+            or any(char.isspace() for char in value)
+            or any(ord(char) < 32 or ord(char) == 127 for char in value)
+        ):
+            return None
+        return value
+
+    @classmethod
+    def _parse_touch_frame(cls, message: str | bytes) -> TouchFrame | None:
+        """Accept only the schema-1 Touch control frames, with bounded ids."""
+        if not isinstance(message, (str, bytes)):
+            return None
+        try:
+            payload = json.loads(message)
+        except (TypeError, ValueError):
+            return None
+        if not isinstance(payload, dict):
+            return None
+        frame_type = payload.get("type")
+        if (
+            frame_type not in TOUCH_CONTROL_FRAMES
+            or type(payload.get("schema")) is not int
+            or payload.get("schema") != 1
+        ):
+            return None
+
+        reason = payload.get("reason")
+        if reason is not None:
+            reason = cls._bounded_token(reason, MAX_TOUCH_REASON_LENGTH)
+            if reason is None:
+                return None
+
+        if frame_type in TOUCH_CAPTURE_FRAMES:
+            capture_id = cls._bounded_token(
+                payload.get("capture_id"), MAX_CAPTURE_ID_LENGTH
+            )
+            if capture_id is None:
+                return None
+            return TouchFrame(
+                type=str(frame_type), capture_id=capture_id, reason=reason
+            )
+        if frame_type in TOUCH_TURN_FRAMES:
+            turn_id = cls._bounded_token(
+                payload.get("turn_id"), MAX_TOUCH_TURN_ID_LENGTH
+            )
+            if turn_id is None:
+                return None
+            return TouchFrame(type=str(frame_type), turn_id=turn_id, reason=reason)
+        return TouchFrame(type=str(frame_type), reason=reason)
 
     def _reserve_browser_slot(self) -> bool:
         if self._reserved_browser_slots >= self._browser_session_limit:

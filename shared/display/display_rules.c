@@ -13,12 +13,13 @@ static bool bounded_nonempty(const char *value, size_t capacity)
 
 static bool known_state(display_rules_state_t state)
 {
-    return state >= DISPLAY_RULES_IDLE && state <= DISPLAY_RULES_PROMPT;
+    return state >= DISPLAY_RULES_IDLE && state <= DISPLAY_RULES_STATE_LAST;
 }
 
 static bool busy_state(display_rules_state_t state)
 {
     return state == DISPLAY_RULES_LISTENING ||
+           state == DISPLAY_RULES_TRANSCRIBING ||
            state == DISPLAY_RULES_THINKING ||
            state == DISPLAY_RULES_SPEAKING ||
            state == DISPLAY_RULES_BUFFERING;
@@ -47,6 +48,14 @@ static bool transition_allowed(display_rules_state_t current, display_rules_stat
                    next == DISPLAY_RULES_IDLE ||
                    next == DISPLAY_RULES_PROMPT;
         case DISPLAY_RULES_LISTENING:
+            return next == DISPLAY_RULES_TRANSCRIBING ||
+                   next == DISPLAY_RULES_THINKING ||
+                   next == DISPLAY_RULES_HEARD ||
+                   next == DISPLAY_RULES_IDLE;
+        /* Transcription is a local, pre-submission phase: it may reach a
+           submitted turn or fall back to idle, but it can never jump straight
+           to a response phase, because no prompt has been sent yet. */
+        case DISPLAY_RULES_TRANSCRIBING:
             return next == DISPLAY_RULES_THINKING ||
                    next == DISPLAY_RULES_HEARD ||
                    next == DISPLAY_RULES_IDLE;
@@ -54,16 +63,27 @@ static bool transition_allowed(display_rules_state_t current, display_rules_stat
             return next == DISPLAY_RULES_SPEAKING ||
                    next == DISPLAY_RULES_BUFFERING ||
                    next == DISPLAY_RULES_PROMPT ||
+                   next == DISPLAY_RULES_COMPLETE ||
                    next == DISPLAY_RULES_IDLE;
         case DISPLAY_RULES_SPEAKING:
             return next == DISPLAY_RULES_BUFFERING ||
                    next == DISPLAY_RULES_PROMPT ||
+                   next == DISPLAY_RULES_COMPLETE ||
                    next == DISPLAY_RULES_IDLE;
         case DISPLAY_RULES_BUFFERING:
             return next == DISPLAY_RULES_SPEAKING ||
                    next == DISPLAY_RULES_THINKING ||
                    next == DISPLAY_RULES_PROMPT ||
+                   next == DISPLAY_RULES_COMPLETE ||
                    next == DISPLAY_RULES_IDLE;
+        /* A completed turn is terminal for its answer. The next thing the
+           room may see is another initiation, never a resumed response. */
+        case DISPLAY_RULES_COMPLETE:
+            return next == DISPLAY_RULES_IDLE ||
+                   next == DISPLAY_RULES_HEARD ||
+                   next == DISPLAY_RULES_LISTENING ||
+                   next == DISPLAY_RULES_THINKING ||
+                   next == DISPLAY_RULES_PROMPT;
         case DISPLAY_RULES_ERROR:
             return next == DISPLAY_RULES_IDLE;
         case DISPLAY_RULES_DISCONNECTED:
