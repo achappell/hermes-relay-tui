@@ -470,10 +470,10 @@ def test_turn_runner_keeps_audio_from_multiple_hermes_segments_in_one_response()
     runner.start()
     try:
         assert runner._send("a segmented answer") is True
+        assert list(response.iter_chunks()) == [b"one", b"two"]
     finally:
         runner.stop()
 
-    assert list(response.iter_chunks()) == [b"one", b"two"]
 
 
 @pytest.mark.parametrize("terminal_type", ["audio_abort", "turn_interrupted"])
@@ -876,7 +876,13 @@ def test_home_transport_wires_home_session_without_resolving_hermes_profile(
         def start(self):
             captured["started"] = True
 
-        def stop(self):
+        def request_stop(self, deadline=None):
+            pass
+
+        def wait_closed(self):
+            pass
+
+        def stop(self, deadline=None):
             captured["stopped"] = True
 
         def set_response_seq(self, _seq):
@@ -886,9 +892,15 @@ def test_home_transport_wires_home_session_without_resolving_hermes_profile(
             return True
 
     class _HTTPServer:
-        def __init__(self, address, handler):
+        def __init__(self, address, handler, **kwargs):
             captured["address"] = address
             captured["handler"] = handler
+
+        def server_bind(self):
+            pass
+
+        def server_activate(self):
+            pass
 
         def __enter__(self):
             return self
@@ -896,7 +908,16 @@ def test_home_transport_wires_home_session_without_resolving_hermes_profile(
         def __exit__(self, *_args):
             return False
 
-        def serve_forever(self):
+        def request_stop(self):
+            pass
+
+        def server_close(self):
+            pass
+
+        def wait_workers(self, deadline=None):
+            return True
+
+        def handle_request(self):
             raise KeyboardInterrupt
 
     class _HomeSession:
@@ -1585,10 +1606,10 @@ def test_a_turn_publishes_audio_to_the_response_stream_not_the_host():
     runner.start()
     try:
         assert runner._send("a question") is True
+        assert list(stream.iter_chunks()) == [b"\x01\x02", b"\x03\x04"]
     finally:
         runner.stop()
 
-    assert list(stream.iter_chunks()) == [b"\x01\x02", b"\x03\x04"]
     assert player.written == [], "the host must stay silent when the Puck plays"
     assert stream.finished, "the body must be terminated for the device"
 
@@ -2671,11 +2692,11 @@ def test_the_file_fallback_goes_to_the_device_not_the_host():
     runner.start()
     try:
         assert runner._send("a question") is True
+        assert list(stream.iter_chunks()) != [], "the device must receive the fallback"
     finally:
         runner.stop()
 
     assert player.written == [], "the host must stay silent in device mode"
-    assert list(stream.iter_chunks()) != [], "the device must receive the fallback"
 
 
 def test_a_stale_player_failure_is_not_blamed_on_a_later_turn():
