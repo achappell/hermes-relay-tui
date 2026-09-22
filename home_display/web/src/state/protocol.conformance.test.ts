@@ -87,6 +87,8 @@ describe("shared display fixture conformance", () => {
         connection_healthy: !["error", "disconnected"].includes(fixture.state),
         can_choose: fixture.state === "prompt" &&
           capabilities?.actions.includes("prompt.choose") === true,
+        can_explore: fixture.state === "prompt" &&
+          capabilities?.actions.includes("prompt.explore") === true,
         can_dismiss: fixture.state === "prompt" &&
           capabilities?.actions.includes("prompt.dismiss") === true,
       },

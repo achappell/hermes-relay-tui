@@ -1,0 +1,9 @@
+{
+  "type": "action",
+  "schema": 1,
+  "action_id": "home-correlation-1",
+  "operation": "explore",
+  "option_id": "inspect",
+  "object_id": "home-choice-1",
+  "freshness": "home-freshness-1"
+}

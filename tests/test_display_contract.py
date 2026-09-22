@@ -112,6 +112,16 @@ def test_display_action_schema_covers_prompt_choice_actions() -> None:
     }
 
 
+def test_display_action_schema_covers_freshness_bound_typed_choice() -> None:
+    action = _read_json(FIXTURES_DIR / "actions" / "typed_choice_explore.json")
+
+    _assert_valid(CONTRACT_DIR / "display_action.schema.json", action)
+    assert action["operation"] == "explore"
+    assert action["option_id"] == "inspect"
+    assert action["object_id"] == "home-choice-1"
+    assert action["freshness"] == "home-freshness-1"
+
+
 def test_invalid_display_actions_are_rejected() -> None:
     schema_path = CONTRACT_DIR / "display_action.schema.json"
     fixtures = sorted((FIXTURES_DIR / "invalid-actions").glob("*.json"))

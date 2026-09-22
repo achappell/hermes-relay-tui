@@ -4,9 +4,11 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define DISPLAY_RULES_ACTION_ID_MAX 64
-#define DISPLAY_RULES_OPTION_COUNT_MAX 4
-#define DISPLAY_RULES_OPTION_ID_MAX 32
+#define DISPLAY_RULES_ACTION_ID_MAX 65
+#define DISPLAY_RULES_OPTION_COUNT_MAX 32
+#define DISPLAY_RULES_GENERIC_OPTION_COUNT_MAX 4
+#define DISPLAY_RULES_OPTION_ID_MAX 65
+#define DISPLAY_RULES_CHOICE_CONTEXT_MAX 65
 
 typedef enum {
     DISPLAY_RULES_UNKNOWN = 0,
@@ -34,9 +36,15 @@ typedef struct {
 
 typedef struct {
     bool present;
+    bool typed_choice;
     bool can_choose;
+    bool can_explore;
     bool can_dismiss;
+    bool allows_choose;
+    bool allows_explore;
     char action_id[DISPLAY_RULES_ACTION_ID_MAX];
+    char object_id[DISPLAY_RULES_CHOICE_CONTEXT_MAX];
+    char freshness[DISPLAY_RULES_CHOICE_CONTEXT_MAX];
     uint8_t option_count;
     display_rules_option_t options[DISPLAY_RULES_OPTION_COUNT_MAX];
 } display_rules_prompt_t;
@@ -55,6 +63,7 @@ typedef struct {
     bool is_busy;
     bool connection_healthy;
     bool can_choose;
+    bool can_explore;
     bool can_dismiss;
     display_rules_prompt_t prompt;
 } display_rules_view_t;
@@ -73,6 +82,7 @@ typedef enum {
     DISPLAY_RULES_ACTION_NOT_ALLOWED,
     DISPLAY_RULES_ACTION_ID_MISMATCH,
     DISPLAY_RULES_UNKNOWN_CHOICE,
+    DISPLAY_RULES_CHOICE_CONTEXT_MISMATCH,
 } display_rules_result_t;
 
 void display_rules_init(display_rules_reducer_t *reducer);
@@ -88,6 +98,15 @@ display_rules_result_t display_rules_validate_choice(
     const display_rules_reducer_t *reducer,
     const char *action_id,
     const char *choice
+);
+
+display_rules_result_t display_rules_validate_typed_choice(
+    const display_rules_reducer_t *reducer,
+    const char *action_id,
+    const char *operation,
+    const char *option_id,
+    const char *object_id,
+    const char *freshness
 );
 
 display_rules_result_t display_rules_validate_dismiss(

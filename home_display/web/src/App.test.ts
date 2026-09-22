@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import "@testing-library/jest-dom/vitest";
-import { fireEvent, render } from "@testing-library/svelte";
+import { fireEvent, render, screen } from "@testing-library/svelte";
 import { tick } from "svelte";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -119,6 +119,7 @@ describe("App", () => {
       is_busy: false,
       connection_healthy: true,
       can_choose: false,
+      can_explore: false,
       can_dismiss: false,
     };
     options?.onView(voiceSnapshot);
@@ -238,6 +239,7 @@ describe("App", () => {
       is_busy: false,
       connection_healthy: true,
       can_choose: false,
+      can_explore: false,
       can_dismiss: false,
     };
     options?.onConnectionState("connected");
@@ -331,6 +333,7 @@ describe("App", () => {
       is_busy: false,
       connection_healthy: true,
       can_choose: false,
+      can_explore: false,
       can_dismiss: false,
     };
     options?.onConnectionState("connected");
@@ -516,6 +519,7 @@ describe("App", () => {
       is_busy: false,
       connection_healthy: true,
       can_choose: false,
+      can_explore: false,
       can_dismiss: false,
     };
     options?.onConnectionState("connected");
@@ -597,6 +601,7 @@ describe("App", () => {
       is_busy: false,
       connection_healthy: true,
       can_choose: false,
+      can_explore: false,
       can_dismiss: false,
     };
     options?.onConnectionState("connected");
@@ -716,6 +721,7 @@ describe("App", () => {
       is_busy: false,
       connection_healthy: true,
       can_choose: false,
+      can_explore: false,
       can_dismiss: false,
     };
     options?.onConnectionState("connected");
@@ -801,6 +807,7 @@ describe("App", () => {
       is_busy: false,
       connection_healthy: true,
       can_choose: false,
+      can_explore: false,
       can_dismiss: false,
     });
     await tick();
@@ -834,6 +841,7 @@ describe("App", () => {
       is_busy: false,
       connection_healthy: true,
       can_choose: false,
+      can_explore: false,
       can_dismiss: false,
     });
     await tick();
@@ -867,6 +875,7 @@ describe("App", () => {
       is_busy: false,
       connection_healthy: true,
       can_choose: false,
+      can_explore: false,
       can_dismiss: false,
     });
     await tick();
@@ -936,6 +945,7 @@ describe("App", () => {
       is_busy: false,
       connection_healthy: true,
       can_choose: false,
+      can_explore: false,
       can_dismiss: false,
     });
     await tick();
@@ -960,6 +970,7 @@ describe("App", () => {
       is_busy: false,
       connection_healthy: true,
       can_choose: false,
+      can_explore: false,
       can_dismiss: false,
     });
     await tick();
@@ -1030,6 +1041,7 @@ describe("App", () => {
       is_busy: false,
       connection_healthy: true,
       can_choose: false,
+      can_explore: false,
       can_dismiss: false,
     });
     await tick();
@@ -1133,6 +1145,7 @@ describe("App", () => {
       is_busy: false,
       connection_healthy: true,
       can_choose: false,
+      can_explore: false,
       can_dismiss: false,
     });
     await tick();
@@ -1157,6 +1170,7 @@ describe("App", () => {
       is_busy: true,
       connection_healthy: true,
       can_choose: false,
+      can_explore: false,
       can_dismiss: false,
     });
     options?.onAudioEvent?.({
@@ -1183,6 +1197,7 @@ describe("App", () => {
       is_busy: false,
       connection_healthy: true,
       can_choose: false,
+      can_explore: false,
       can_dismiss: false,
     });
     await tick();
@@ -1228,6 +1243,7 @@ describe("App", () => {
       is_busy: true,
       connection_healthy: true,
       can_choose: false,
+      can_explore: false,
       can_dismiss: false,
     });
     options?.onAudioEvent?.({
@@ -1254,6 +1270,7 @@ describe("App", () => {
       is_busy: false,
       connection_healthy: true,
       can_choose: false,
+      can_explore: false,
       can_dismiss: false,
     });
     await tick();
@@ -1323,6 +1340,7 @@ describe("App", () => {
       is_busy: false,
       connection_healthy: true,
       can_choose: false,
+      can_explore: false,
       can_dismiss: false,
     });
     await tick();
@@ -1359,6 +1377,7 @@ describe("App", () => {
       is_busy: false,
       connection_healthy: true,
       can_choose: true,
+      can_explore: false,
       can_dismiss: false,
     });
     await tick();
@@ -1386,6 +1405,7 @@ describe("App", () => {
       is_busy: true,
       connection_healthy: true,
       can_choose: false,
+      can_explore: false,
       can_dismiss: false,
     });
     await tick();
@@ -1420,6 +1440,7 @@ describe("App", () => {
       is_busy: false,
       connection_healthy: true,
       can_choose: false,
+      can_explore: false,
       can_dismiss: false,
     });
     await tick();
@@ -1456,6 +1477,7 @@ describe("App", () => {
       is_busy: false,
       connection_healthy: true,
       can_choose: false,
+      can_explore: false,
       can_dismiss: false,
     });
     await tick();
@@ -1493,6 +1515,7 @@ describe("App", () => {
       is_busy: false,
       connection_healthy: true,
       can_choose: true,
+      can_explore: false,
       can_dismiss: false,
     });
     await tick();
@@ -1546,6 +1569,7 @@ describe("App", () => {
       is_busy: false,
       connection_healthy: true,
       can_choose: true,
+      can_explore: false,
       can_dismiss: false,
     });
     await tick();
@@ -1557,6 +1581,98 @@ describe("App", () => {
     expect(container.querySelector("[data-action-error]")).toHaveTextContent(
       "Display action could not be sent",
     );
+    unmount();
+  });
+
+  it("dispatches an Explore-only Home choice and waits for its replacement", async () => {
+    const { unmount } = render(App);
+    await tick();
+    const options = bridges.options.at(-1);
+    const bridge = bridges.instances.at(-1);
+    options?.onConnectionState("connected");
+    options?.onView({
+      type: "snapshot",
+      schema: 1,
+      sequence: 1,
+      state: "prompt",
+      response_text: "",
+      status_text: null,
+      media: null,
+      prompt: {
+        kind: "choice",
+        title: "Hermes choice",
+        body: "Which inspection step should I use?",
+        options: [{ id: "inspect", label: "Inspect the device" }],
+        action_id: "home-correlation-1",
+        timeout_seconds: null,
+        choice: {
+          object_id: "home-choice-1",
+          operations: ["explore"],
+          freshness: "freshness-1",
+        },
+      },
+      capabilities: { actions: ["prompt.explore"], features: [] },
+      is_busy: true,
+      connection_healthy: true,
+      can_choose: false,
+      can_explore: true,
+      can_dismiss: false,
+    });
+    await tick();
+
+    await fireEvent.click(screen.getByRole("button", { name: "Inspect the device" }));
+    expect(bridge?.dispatchAction).not.toHaveBeenCalled();
+    await fireEvent.click(screen.getByRole("button", { name: "Explore" }));
+    await tick();
+
+    expect(bridge?.dispatchAction).toHaveBeenCalledWith({
+      type: "action",
+      schema: 1,
+      action_id: "home-correlation-1",
+      operation: "explore",
+      option_id: "inspect",
+      object_id: "home-choice-1",
+      freshness: "freshness-1",
+    });
+    expect(screen.getByRole("dialog")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Explore" })).toBeDisabled();
+    expect(screen.getByRole("status")).toHaveTextContent("Waiting for Home to update this choice.");
+
+    options?.onView({
+      type: "snapshot",
+      schema: 1,
+      sequence: 2,
+      state: "prompt",
+      response_text: "",
+      status_text: null,
+      media: null,
+      prompt: {
+        kind: "choice",
+        title: "Hermes choice",
+        body: "Would you like to inspect the next step?",
+        options: [{ id: "inspect", label: "Inspect the device" }],
+        action_id: "home-correlation-2",
+        timeout_seconds: null,
+        choice: {
+          object_id: "home-choice-2",
+          operations: ["explore"],
+          freshness: "freshness-2",
+        },
+      },
+      capabilities: { actions: ["prompt.explore"], features: [] },
+      is_busy: true,
+      connection_healthy: true,
+      can_choose: false,
+      can_explore: true,
+      can_dismiss: false,
+    });
+    await tick();
+    expect(screen.getByRole("dialog")).toHaveTextContent(
+      "Would you like to inspect the next step?",
+    );
+    expect(screen.getByRole("button", { name: "Explore" })).toBeDisabled();
+    await fireEvent.click(screen.getByRole("button", { name: "Inspect the device" }));
+    expect(screen.getByRole("button", { name: "Explore" })).not.toBeDisabled();
     unmount();
   });
 
@@ -1585,6 +1701,7 @@ describe("App", () => {
       is_busy: false,
       connection_healthy: true,
       can_choose: true,
+      can_explore: false,
       can_dismiss: false,
     });
     await tick();

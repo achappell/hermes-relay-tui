@@ -90,6 +90,72 @@ def test_prompt_snapshot_advertises_the_browser_choice_capability():
     }
 
 
+def test_typed_choice_snapshot_preserves_home_object_freshness_and_operations():
+    from home_display.state import DisplayChoice
+
+    prompt = DisplayPrompt(
+        kind="choice",
+        title="Hermes choice",
+        body="Which route should I inspect?",
+        options=(
+            PromptOption(id="status", label="Check status"),
+            PromptOption(id="logs", label="Inspect logs"),
+        ),
+        action_id="correlation-1",
+        choice=DisplayChoice(
+            object_id="home-object-1",
+            operations=("choose", "explore"),
+            freshness="home-freshness-1",
+        ),
+    )
+
+    snapshot = DisplayStatePublisher().publish(
+        state="prompt",
+        prompt=prompt,
+        capabilities=DisplayCapabilities(
+            actions=("prompt.choose", "prompt.explore"),
+            features=("prompt_overlay",),
+        ),
+    )
+
+    assert snapshot.to_dict()["prompt"]["choice"] == {
+        "object_id": "home-object-1",
+        "operations": ["choose", "explore"],
+        "freshness": "home-freshness-1",
+    }
+
+
+def test_typed_choice_rejects_unhashable_operation_values_cleanly():
+    from home_display.state import DisplayChoice
+
+    with pytest.raises(ValueError, match="must contain strings"):
+        DisplayChoice("object", ([],), "freshness")  # type: ignore[arg-type]
+
+
+def test_typed_choice_prompt_enforces_its_larger_bounds_without_changing_legacy_bounds():
+    from home_display.state import DisplayChoice
+
+    choice = DisplayChoice("object", ("choose",), "freshness")
+    prompt = DisplayPrompt(
+        kind="choice",
+        title="Hermes choice",
+        body="x" * 1024,
+        options=tuple(PromptOption(f"id-{index}", "L" * 256) for index in range(32)),
+        action_id="correlation",
+        choice=choice,
+    )
+    assert len(prompt.options) == 32
+
+    legacy = DisplayPrompt(
+        kind="confirm",
+        title="Confirm",
+        body="x" * 193,
+        options=(PromptOption("yes", "Yes"),),
+        action_id="confirm",
+    )
+    assert len(legacy.body) == 193
+
+
 def test_hands_free_capabilities_serialize_only_non_secret_configuration():
     capabilities = DisplayCapabilities(
         features=("browser_voice", "browser_hands_free"),

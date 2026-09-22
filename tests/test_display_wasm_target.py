@@ -43,9 +43,12 @@ def _compile_and_run(source: str) -> subprocess.CompletedProcess[str]:
                 "-Werror",
                 "-I",
                 str(DISPLAY_DIR),
+                "-I",
+                str(REPO_ROOT / "firmware" / "esp32-s3-touch-lcd-7" / "main" / "include"),
                 str(harness),
                 str(DISPLAY_DIR / "display_wasm.c"),
                 str(DISPLAY_DIR / "display_rules.c"),
+                str(REPO_ROOT / "firmware" / "esp32-s3-touch-lcd-7" / "main" / "src" / "ui_snapshot.c"),
                 "-o",
                 str(binary),
             ],
@@ -67,7 +70,7 @@ def test_wasm_abi_matches_native_reducer_for_prompt_and_stale_snapshots() -> Non
         #include "display_wasm.h"
 
         int main(void) {
-            assert(display_wasm_abi_version() == 2);
+            assert(display_wasm_abi_version() == 3);
             assert(display_wasm_init() == DISPLAY_RULES_ACCEPTED);
             assert(display_wasm_apply_snapshot(
                 10, "prompt", "", "", "", "confirm", "Set home?", "Use this display?",
@@ -92,6 +95,46 @@ def test_wasm_abi_matches_native_reducer_for_prompt_and_stale_snapshots() -> Non
         '''
     )
 
+    assert result.returncode == 0, result.stderr
+
+
+def test_wasm_typed_choice_supports_thirty_two_options_and_rejects_stale_context() -> None:
+    result = _compile_and_run(
+        r'''
+        #include <assert.h>
+        #include <stdio.h>
+        #include "display_wasm.h"
+
+        int main(void) {
+            assert(display_wasm_init() == DISPLAY_RULES_ACCEPTED);
+            assert(display_wasm_begin_typed_choice_snapshot(
+                1, "", "Choose or explore", "Home", "corr-1", "Hermes choice",
+                "Inspect one item", "object-1", "fresh-1", 1, 1, 1, 1, 32
+            ) == DISPLAY_RULES_ACCEPTED);
+            char id[16];
+            char label[24];
+            for (uint32_t index = 0; index < 32; index++) {
+                snprintf(id, sizeof(id), "item-%u", (unsigned)index);
+                snprintf(label, sizeof(label), "Item %u", (unsigned)index);
+                assert(display_wasm_set_typed_choice_option(index, id, label) ==
+                       DISPLAY_RULES_ACCEPTED);
+            }
+            assert(display_wasm_finish_typed_choice_snapshot() == DISPLAY_RULES_ACCEPTED);
+            assert(display_wasm_view_can_choose());
+            assert(display_wasm_view_can_explore());
+            assert(display_wasm_validate_typed_choice(
+                "corr-1", "explore", "item-31", "object-1", "fresh-1"
+            ) == DISPLAY_RULES_ACCEPTED);
+            assert(display_wasm_validate_typed_choice(
+                "corr-1", "explore", "item-31", "object-1", "stale"
+            ) == DISPLAY_RULES_CHOICE_CONTEXT_MISMATCH);
+            assert(display_wasm_validate_typed_choice(
+                "corr-1", "choose", "item-32", "object-1", "fresh-1"
+            ) == DISPLAY_RULES_UNKNOWN_CHOICE);
+            return 0;
+        }
+        '''
+    )
     assert result.returncode == 0, result.stderr
 
 
@@ -209,6 +252,9 @@ def test_wasm_target_exports_browser_pointer_and_action_bridge() -> None:
     runtime = (DISPLAY_DIR / "display_wasm.c").read_text(encoding="utf-8")
 
     for export in (
+        "_display_wasm_begin_typed_choice_snapshot",
+        "_display_wasm_set_typed_choice_option",
+        "_display_wasm_finish_typed_choice_snapshot",
         "_display_wasm_set_pointer",
         "_display_wasm_action_pending",
         "_display_wasm_action_id",
@@ -217,6 +263,9 @@ def test_wasm_target_exports_browser_pointer_and_action_bridge() -> None:
     ):
         assert export in source
     for symbol in (
+        "display_wasm_begin_typed_choice_snapshot",
+        "display_wasm_set_typed_choice_option",
+        "display_wasm_finish_typed_choice_snapshot",
         "display_wasm_set_pointer",
         "display_wasm_action_pending",
         "display_wasm_action_id",

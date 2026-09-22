@@ -24,13 +24,18 @@ DisplayState = Literal[
     "complete",
 ]
 _STATES = frozenset(DisplayState.__args__)
-DisplayActionName = Literal["prompt.choose", "prompt.dismiss"]
+DisplayActionName = Literal["prompt.choose", "prompt.explore", "prompt.dismiss"]
 MAX_DISPLAY_WAKE_PHRASES = 8
 MAX_DISPLAY_WAKE_PHRASE_LENGTH = 128
 # One final transcript, bounded, and never the same field as the answer: a
 # surface that renders both must never be able to show what the room said as
 # though Hermes had said it. Reuses voice.py's bound rather than redefining it.
 MAX_DISPLAY_TRANSCRIPT_LENGTH = MAX_FINAL_TRANSCRIPT_CHARACTERS
+MAX_DISPLAY_CHOICE_ID_LENGTH = 64
+MAX_DISPLAY_CHOICE_TEXT_LENGTH = 1024
+MAX_DISPLAY_CHOICE_OPTIONS = 32
+MAX_DISPLAY_CHOICE_LABEL_LENGTH = 256
+DISPLAY_CHOICE_OPERATIONS = frozenset({"choose", "explore"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -48,6 +53,35 @@ class PromptOption:
 
     def to_dict(self) -> dict[str, object]:
         return {"id": self.id, "label": self.label}
+
+
+@dataclass(frozen=True, slots=True)
+class DisplayChoice:
+    """Home-minted freshness context for one Interactive Choice Object."""
+
+    object_id: str
+    operations: tuple[str, ...]
+    freshness: str
+
+    def __post_init__(self) -> None:
+        for name, value in (("object_id", self.object_id), ("freshness", self.freshness)):
+            if not isinstance(value, str) or not value.strip() or len(value) > MAX_DISPLAY_CHOICE_ID_LENGTH:
+                raise ValueError(f"DisplayChoice.{name} must be a bounded non-empty string")
+        if not isinstance(self.operations, tuple) or not self.operations:
+            raise ValueError("DisplayChoice.operations must be a non-empty tuple")
+        if any(not isinstance(operation, str) for operation in self.operations):
+            raise ValueError("DisplayChoice.operations must contain strings")
+        if len(set(self.operations)) != len(self.operations):
+            raise ValueError("DisplayChoice.operations must be non-empty and unique")
+        if any(operation not in DISPLAY_CHOICE_OPERATIONS for operation in self.operations):
+            raise ValueError("DisplayChoice.operations contains an unsupported operation")
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "object_id": self.object_id,
+            "operations": list(self.operations),
+            "freshness": self.freshness,
+        }
 
 
 @dataclass(frozen=True, slots=True)
@@ -75,6 +109,7 @@ class DisplayPrompt:
     options: tuple[PromptOption, ...]
     action_id: str
     timeout_seconds: int | None = None
+    choice: DisplayChoice | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.kind, str) or not self.kind:
@@ -94,9 +129,24 @@ class DisplayPrompt:
             not isinstance(self.timeout_seconds, int) or self.timeout_seconds <= 0
         ):
             raise ValueError("DisplayPrompt.timeout_seconds must be a positive int or None")
+        if self.choice is not None:
+            if self.kind != "choice" or not isinstance(self.choice, DisplayChoice):
+                raise ValueError("Home choice context is only valid for typed choice prompts")
+            if len(self.options) > MAX_DISPLAY_CHOICE_OPTIONS:
+                raise ValueError("typed choice prompts exceed the option limit")
+            if len({option.id for option in self.options}) != len(self.options):
+                raise ValueError("typed choice option IDs must be unique")
+            if len(self.body) > MAX_DISPLAY_CHOICE_TEXT_LENGTH:
+                raise ValueError("typed choice explanation exceeds the text limit")
+            if any(
+                len(option.id) > MAX_DISPLAY_CHOICE_ID_LENGTH
+                or len(option.label) > MAX_DISPLAY_CHOICE_LABEL_LENGTH
+                for option in self.options
+            ):
+                raise ValueError("typed choice option exceeds its field limit")
 
     def to_dict(self) -> dict[str, object]:
-        return {
+        result: dict[str, object] = {
             "kind": self.kind,
             "title": self.title,
             "body": self.body,
@@ -104,6 +154,9 @@ class DisplayPrompt:
             "action_id": self.action_id,
             "timeout_seconds": self.timeout_seconds,
         }
+        if self.choice is not None:
+            result["choice"] = self.choice.to_dict()
+        return result
 
 
 @dataclass(frozen=True, slots=True)
@@ -118,7 +171,7 @@ class DisplayCapabilities:
     wake_followup_seconds: float | None = None
 
     def __post_init__(self) -> None:
-        allowed_actions = {"prompt.choose", "prompt.dismiss"}
+        allowed_actions = {"prompt.choose", "prompt.explore", "prompt.dismiss"}
         if any(
             not isinstance(action, str) or action not in allowed_actions
             for action in self.actions
@@ -227,7 +280,10 @@ class DisplaySnapshot:
             object.__setattr__(
                 self,
                 "capabilities",
-                DisplayCapabilities(actions=("prompt.choose",), features=("prompt_overlay",)),
+                DisplayCapabilities(
+                    actions=("prompt.choose",),
+                    features=("prompt_overlay",),
+                ),
             )
 
     def to_dict(self) -> dict[str, object]:

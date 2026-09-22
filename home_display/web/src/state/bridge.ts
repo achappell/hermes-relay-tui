@@ -43,10 +43,15 @@ export interface DisplayBridgeOptions {
 }
 
 export const postDisplayAction: ActionTransport = async (action) => {
-  const query = new URLSearchParams({
-    action_id: action.action_id,
-    choice: action.choice,
-  });
+  const query = new URLSearchParams({ action_id: action.action_id });
+  if ("choice" in action) {
+    query.set("choice", action.choice);
+  } else {
+    query.set("operation", action.operation);
+    query.set("option_id", action.option_id);
+    query.set("object_id", action.object_id);
+    query.set("freshness", action.freshness);
+  }
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), DISPLAY_ACTION_TIMEOUT_MS);
   try {

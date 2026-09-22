@@ -129,6 +129,44 @@ describe("display reducer", () => {
     expect(reducer.validateAction(action)).toBe("action_not_allowed");
     expect(reducer.validateAction({ ...action, action_id: "" })).toBe("invalid_argument");
   });
+
+  it("validates typed explore using the current Home object and freshness token", () => {
+    const reducer = createDisplayReducer();
+    const typed = snapshot(1, "prompt", {
+      prompt: {
+        kind: "choice",
+        title: "Hermes choice",
+        body: "Choose an inspection step",
+        options: [{ id: "inspect", label: "Inspect the device" }],
+        action_id: "home-correlation-1",
+        timeout_seconds: null,
+        choice: {
+          object_id: "home-choice-1",
+          operations: ["explore"],
+          freshness: "freshness-1",
+        },
+      },
+      capabilities: { actions: ["prompt.explore"], features: ["prompt_overlay"] },
+    });
+    reducer.applySnapshot(typed);
+    const explore: DisplayAction = {
+      type: "action",
+      schema: 1,
+      action_id: "home-correlation-1",
+      operation: "explore",
+      option_id: "inspect",
+      object_id: "home-choice-1",
+      freshness: "freshness-1",
+    };
+
+    expect(reducer.validateAction(explore)).toBe("accepted");
+    expect(reducer.validateAction({ ...explore, freshness: "stale" })).toBe("choice_context_mismatch");
+    expect(reducer.validateAction({ ...explore, option_id: "other" })).toBe("unknown_choice");
+    expect(reducer.validateAction({
+      ...explore,
+      operation: "choose",
+    })).toBe("action_not_allowed");
+  });
 });
 
 describe("createInitialDisplayView", () => {

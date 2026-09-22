@@ -61,9 +61,15 @@ from .touch import (
 )
 from .state import (
     DisplayCapabilities,
+    DisplayChoice,
     DisplayPrompt,
     DisplayState,
     DisplayStatePublisher,
+    DISPLAY_CHOICE_OPERATIONS,
+    MAX_DISPLAY_CHOICE_ID_LENGTH,
+    MAX_DISPLAY_CHOICE_LABEL_LENGTH,
+    MAX_DISPLAY_CHOICE_OPTIONS,
+    MAX_DISPLAY_CHOICE_TEXT_LENGTH,
     MAX_DISPLAY_WAKE_PHRASE_LENGTH,
     MAX_DISPLAY_WAKE_PHRASES,
     PromptOption,
@@ -182,17 +188,29 @@ def _classify_prompt_request(event: dict) -> DisplayPrompt | None:
         or ""
     ).strip()
     question = str(event.get("question") or event.get("text") or "").strip()
+    raw_choice = event.get("choice")
+    typed_choice = home_prompt and kind == "choice" and isinstance(raw_choice, dict)
+    if home_prompt and kind == "choice" and not typed_choice:
+        # Home choice prompts require its object and freshness identity. Never
+        # downgrade one to the legacy approval buttons when that context is absent.
+        return None
+    if kind == "choice" and raw_choice is not None and not isinstance(raw_choice, dict):
+        return None
     if (
         not prompt_id
-        or len(prompt_id) > MAX_BROWSER_PROMPT_FIELD_LENGTH
-        or len(question) > MAX_BROWSER_PROMPT_TEXT_LENGTH
+        or len(prompt_id)
+        > (MAX_DISPLAY_CHOICE_ID_LENGTH if typed_choice else MAX_BROWSER_PROMPT_FIELD_LENGTH)
+        or len(question)
+        > (MAX_DISPLAY_CHOICE_TEXT_LENGTH if typed_choice else MAX_BROWSER_PROMPT_TEXT_LENGTH)
+        or (typed_choice and not question)
     ):
         return None
 
     raw_options = event.get("options")
     if not isinstance(raw_options, list):
         raw_options = []
-    if len(raw_options) > MAX_BROWSER_PROMPT_OPTIONS:
+    max_options = MAX_DISPLAY_CHOICE_OPTIONS if typed_choice else MAX_BROWSER_PROMPT_OPTIONS
+    if len(raw_options) > max_options:
         return None
 
     options: list[PromptOption] = []
@@ -211,18 +229,62 @@ def _classify_prompt_request(event: dict) -> DisplayPrompt | None:
             return None
         option_id = option_id.strip()
         label = label.strip()
-        if (
-            len(option_id) > MAX_BROWSER_PROMPT_FIELD_LENGTH
-            or len(label) > MAX_BROWSER_PROMPT_FIELD_LENGTH
-        ):
+        option_id_limit = (
+            MAX_DISPLAY_CHOICE_ID_LENGTH if typed_choice else MAX_BROWSER_PROMPT_FIELD_LENGTH
+        )
+        label_limit = (
+            MAX_DISPLAY_CHOICE_LABEL_LENGTH if typed_choice else MAX_BROWSER_PROMPT_FIELD_LENGTH
+        )
+        if len(option_id) > option_id_limit or len(label) > label_limit:
             return None
         options.append(PromptOption(id=option_id, label=label))
+
+    choice_context: DisplayChoice | None = None
+    if typed_choice:
+        object_id = raw_choice.get("object_id")
+        freshness = raw_choice.get("freshness")
+        raw_operations = raw_choice.get("operations")
+        if (
+            not isinstance(object_id, str)
+            or not isinstance(freshness, str)
+            or not isinstance(raw_operations, list)
+            or not raw_options
+        ):
+            return None
+        operations: list[str] = []
+        for operation in raw_operations:
+            if (
+                not isinstance(operation, str)
+                or operation not in DISPLAY_CHOICE_OPERATIONS
+                or operation in operations
+            ):
+                return None
+            operations.append(operation)
+        try:
+            choice_context = DisplayChoice(
+                object_id=object_id,
+                operations=tuple(operations),
+                freshness=freshness,
+            )
+        except (TypeError, ValueError):
+            return None
 
     if home_prompt and kind in {"choice", "approval", "confirm", "clarify"} and not options:
         # Home choices are data-bearing responses. Never invent an option for
         # a malformed or free-form request the browser cannot collect.
         return None
 
+    if typed_choice and choice_context is not None:
+        if not options:
+            return None
+        return DisplayPrompt(
+            kind="choice",
+            title="Hermes choice",
+            body=question,
+            options=tuple(options),
+            action_id=prompt_id,
+            choice=choice_context,
+        )
     if kind in {"approval", "choice"}:
         display_options = tuple(options) or (
             PromptOption(id="yes", label="Approve"),
@@ -422,11 +484,22 @@ class _BrowserSessionContext:
                 self._child._publish("idle")
             return result
 
-    async def handle_action(self, action_id: str, choice: str) -> None:
+    async def handle_action(
+        self,
+        action_id: str,
+        choice: str,
+        operation: str | None = None,
+        object_id: str | None = None,
+        freshness: str | None = None,
+    ) -> None:
         if self._closed or self._owner._stopping.is_set():
             return
 
         prompt = self.publisher.snapshot.prompt
+        snapshot_capabilities = self.publisher.snapshot.capabilities
+        typed_action = any(
+            value is not None for value in (operation, object_id, freshness)
+        )
         if (
             prompt is None
             or self._child._pending_prompt_action_id != action_id
@@ -439,11 +512,30 @@ class _BrowserSessionContext:
             )
             return
 
-        if action_id == "sethome":
+        if action_id == "sethome" and not typed_action and prompt.choice is None:
             self._child._pending_prompt_action_id = None
             self._child._publish("idle", response_text="")
             if choice == "yes":
                 await self.handle_voice_turn("/sethome")
+            return
+
+        if prompt.choice is not None:
+            required_action = (
+                f"prompt.{operation}"
+                if operation in DISPLAY_CHOICE_OPERATIONS
+                else None
+            )
+            if (
+                not typed_action
+                or required_action is None
+                or snapshot_capabilities is None
+                or required_action not in snapshot_capabilities.actions
+                or operation not in prompt.choice.operations
+                or object_id != prompt.choice.object_id
+                or freshness != prompt.choice.freshness
+            ):
+                return
+        elif typed_action:
             return
 
         session = self._child._session
@@ -453,11 +545,18 @@ class _BrowserSessionContext:
         if not getattr(session, "supports_structured_prompts", False):
             return
         try:
-            sent = await send_prompt_response(
-                prompt_id=action_id,
-                prompt_kind=prompt.kind,
-                option_id=choice,
-            )
+            response = {
+                "prompt_id": action_id,
+                "prompt_kind": prompt.kind,
+                "option_id": choice,
+            }
+            if prompt.choice is not None:
+                response.update(
+                    operation=operation,
+                    object_id=object_id,
+                    freshness=freshness,
+                )
+            sent = await send_prompt_response(**response)
         except Exception:
             logger.debug(
                 "browser prompt response failed connection=%s action_id=%s",
@@ -469,7 +568,30 @@ class _BrowserSessionContext:
         if sent is False:
             return
         self._child._pending_prompt_action_id = None
-        self._child._publish("idle", response_text="")
+        if prompt.choice is not None:
+            assert snapshot_capabilities is not None
+            capabilities = DisplayCapabilities(
+                actions=tuple(
+                    action
+                    for action in snapshot_capabilities.actions
+                    if action not in {"prompt.choose", "prompt.explore"}
+                ),
+                features=snapshot_capabilities.features,
+                timing=snapshot_capabilities.timing,
+                wake_phrases=snapshot_capabilities.wake_phrases,
+                wake_listen_seconds=snapshot_capabilities.wake_listen_seconds,
+                wake_followup_seconds=snapshot_capabilities.wake_followup_seconds,
+            )
+            self.publisher.publish(
+                state="prompt",
+                response_text=self.publisher.snapshot.response_text,
+                status_text=f"{operation.title()} requested",
+                account=self.publisher.snapshot.account,
+                prompt=prompt,
+                capabilities=capabilities,
+            )
+        else:
+            self._child._publish("idle", response_text="")
 
     async def close(self) -> None:
         async with self._close_lock:
@@ -619,9 +741,13 @@ class Appliance:
             and len({_normalise_wake_phrase(phrase) for phrase in phrases}) == len(phrases)
             and all(len(phrase) <= MAX_DISPLAY_WAKE_PHRASE_LENGTH for phrase in phrases)
         )
+        session_capabilities = getattr(self._session, "capabilities", ()) or ()
+        prompt_actions = ["prompt.choose"]
+        if "prompt.explore" in session_capabilities:
+            prompt_actions.append("prompt.explore")
         if not valid_phrases:
             return DisplayCapabilities(
-                actions=("prompt.choose",),
+                actions=tuple(prompt_actions),
                 features=("browser_voice",),
                 timing="absent" if self._uses_home_browser_transport else None,
             )
@@ -634,7 +760,7 @@ class Appliance:
             return seconds if math.isfinite(seconds) and seconds > 0 else 8.0
 
         return DisplayCapabilities(
-            actions=("prompt.choose",),
+            actions=tuple(prompt_actions),
             features=("browser_voice", "browser_hands_free"),
             wake_phrases=phrases,
             wake_listen_seconds=configured_seconds("wake_listen_timeout"),
@@ -733,7 +859,14 @@ class Appliance:
         else:
             loop.call_soon_threadsafe(_apply)
 
-    async def _on_action(self, action_id: str, choice: str) -> None:
+    async def _on_action(
+        self,
+        action_id: str,
+        choice: str,
+        operation: str | None = None,
+        object_id: str | None = None,
+        freshness: str | None = None,
+    ) -> None:
         """Dispatch a prompt response from the display's /action endpoint.
 
         action_id -- the opaque token set in DisplayPrompt.action_id
@@ -742,6 +875,77 @@ class Appliance:
         Dismiss the overlay first, then act. This keeps the display
         responsive even if the follow-up turn takes a moment to start.
         """
+        typed_action = any(value is not None for value in (operation, object_id, freshness))
+        active_prompt = self.publisher.snapshot.prompt
+        if (
+            not typed_action
+            and active_prompt is not None
+            and active_prompt.choice is not None
+        ):
+            # A typed Home choice must never fall back to the legacy
+            # {action_id, choice} path, which carries no freshness identity.
+            return
+        if typed_action:
+            prompt = active_prompt
+            capabilities = self.publisher.snapshot.capabilities
+            required_action = (
+                f"prompt.{operation}"
+                if operation in DISPLAY_CHOICE_OPERATIONS
+                else None
+            )
+            if (
+                prompt is None
+                or prompt.choice is None
+                or self._pending_prompt_action_id != action_id
+                or required_action is None
+                or capabilities is None
+                or required_action not in capabilities.actions
+                or operation not in prompt.choice.operations
+                or choice not in {option.id for option in prompt.options}
+                or object_id != prompt.choice.object_id
+                or freshness != prompt.choice.freshness
+            ):
+                return
+            send_prompt_response = getattr(self._session, "send_prompt_response", None)
+            if not callable(send_prompt_response):
+                return
+            try:
+                sent = await send_prompt_response(
+                    prompt_id=action_id,
+                    prompt_kind=prompt.kind,
+                    option_id=choice,
+                    operation=operation,
+                    object_id=object_id,
+                    freshness=freshness,
+                )
+            except Exception:
+                logger.debug("appliance typed prompt action failed", exc_info=True)
+                return
+            if sent is False:
+                return
+            self._pending_prompt_action_id = None
+            next_capabilities = DisplayCapabilities(
+                actions=tuple(
+                    action
+                    for action in capabilities.actions
+                    if action not in {"prompt.choose", "prompt.explore"}
+                ),
+                features=capabilities.features,
+                timing=capabilities.timing,
+                wake_phrases=capabilities.wake_phrases,
+                wake_listen_seconds=capabilities.wake_listen_seconds,
+                wake_followup_seconds=capabilities.wake_followup_seconds,
+            )
+            self.publisher.publish(
+                state="prompt",
+                response_text=self.publisher.snapshot.response_text,
+                status_text=f"{operation.title()} requested",
+                account=self.publisher.snapshot.account,
+                prompt=prompt,
+                capabilities=next_capabilities,
+            )
+            return
+
         logger.debug("appliance action action_id=%s choice=%s", action_id, choice)
         self._pending_prompt_action_id = None
         self._publish("idle", response_text="")

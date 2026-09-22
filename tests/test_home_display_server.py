@@ -341,6 +341,33 @@ def test_server_rejects_malformed_profile_routing_fields():
     })) is None
 
 
+def test_server_parses_typed_choice_actions_and_rejects_mixed_legacy_fields():
+    typed_action = {
+        "type": "action",
+        "schema": 1,
+        "action_id": "correlation-1",
+        "operation": "explore",
+        "option_id": "inspect",
+        "object_id": "home-object-1",
+        "freshness": "home-freshness-1",
+    }
+    assert DisplayServer._parse_websocket_action(json.dumps(typed_action)) == (
+        "correlation-1",
+        "inspect",
+        "explore",
+        "home-object-1",
+        "home-freshness-1",
+    )
+    assert DisplayServer._parse_websocket_action(json.dumps({
+        **typed_action,
+        "choice": "inspect",
+    })) is None
+    assert DisplayServer._parse_websocket_action(json.dumps({
+        **typed_action,
+        "freshness": "",
+    })) is None
+
+
 @pytest.mark.asyncio
 async def test_isolated_browser_connections_route_state_actions_and_audio_to_the_owner(
     tmp_path,

@@ -15,11 +15,13 @@
 #define UI_SNAPSHOT_ACCOUNT_MAX 48
 #define UI_SNAPSHOT_PROMPT_KIND_MAX 24
 #define UI_SNAPSHOT_PROMPT_TITLE_MAX 64
-#define UI_SNAPSHOT_PROMPT_BODY_MAX 192
-#define UI_SNAPSHOT_ACTION_ID_MAX 64
-#define UI_SNAPSHOT_OPTION_COUNT_MAX 4
-#define UI_SNAPSHOT_OPTION_ID_MAX 32
-#define UI_SNAPSHOT_OPTION_LABEL_MAX 48
+#define UI_SNAPSHOT_PROMPT_BODY_MAX 1025
+#define UI_SNAPSHOT_ACTION_ID_MAX 65
+#define UI_SNAPSHOT_CHOICE_CONTEXT_MAX 65
+#define UI_SNAPSHOT_OPTION_COUNT_MAX 32
+#define UI_SNAPSHOT_GENERIC_OPTION_COUNT_MAX 4
+#define UI_SNAPSHOT_OPTION_ID_MAX 65
+#define UI_SNAPSHOT_OPTION_LABEL_MAX 257
 
 typedef display_rules_state_t ui_display_state_t;
 
@@ -44,12 +46,18 @@ typedef struct {
 
 typedef struct {
     bool present;
+    bool typed_choice;
     bool can_choose;
+    bool can_explore;
     bool can_dismiss;
+    bool allows_choose;
+    bool allows_explore;
     char kind[UI_SNAPSHOT_PROMPT_KIND_MAX];
     char title[UI_SNAPSHOT_PROMPT_TITLE_MAX];
     char body[UI_SNAPSHOT_PROMPT_BODY_MAX];
     char action_id[UI_SNAPSHOT_ACTION_ID_MAX];
+    char object_id[UI_SNAPSHOT_CHOICE_CONTEXT_MAX];
+    char freshness[UI_SNAPSHOT_CHOICE_CONTEXT_MAX];
     int32_t timeout_seconds;
     uint8_t option_count;
     ui_snapshot_option_t options[UI_SNAPSHOT_OPTION_COUNT_MAX];

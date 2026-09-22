@@ -141,7 +141,14 @@ class BrowserSessionBinding(Protocol):
 
     publisher: DisplayStatePublisher
 
-    async def handle_action(self, action_id: str, choice: str) -> None: ...
+    async def handle_action(
+        self,
+        action_id: str,
+        choice: str,
+        operation: str | None = None,
+        object_id: str | None = None,
+        freshness: str | None = None,
+    ) -> None: ...
 
     async def handle_voice_turn(
         self, text: str, wake_phrase: str | None = None
@@ -317,7 +324,7 @@ class DisplayServer:
         host: str = "127.0.0.1",
         port: int = 0,
         allow_remote: bool = False,
-        on_action: Callable[[str, str], Awaitable[None]] | None = None,
+        on_action: Callable[..., Awaitable[None]] | None = None,
         on_voice_turn: Callable[[str], Awaitable[None]] | None = None,
         ssl_context: ssl.SSLContext | None = None,
         public_origin: str | None = None,
@@ -338,9 +345,8 @@ class DisplayServer:
         """Create a display server.
 
         on_action -- optional coroutine called when the display POSTs to
-                     /action.  Receives (action_id, choice) where both are
-                     strings supplied by the Svelte client via query params:
-                       POST /action?action_id=sethome&choice=yes
+                     /action. It receives either the legacy (action_id,
+                     choice) pair or the typed-choice action fields.
         on_voice_turn -- optional coroutine called when a same-origin browser
                         sends a recognized turn over the state WebSocket.
         on_browser_connect -- optional appliance callback that creates the
@@ -617,17 +623,44 @@ class DisplayServer:
         qs = parse_qs(urlsplit(request_path).query)
         action_ids = qs.get("action_id", [])
         choices = qs.get("choice", [])
-        if not action_ids or not choices:
+        typed_names = {"operation", "option_id", "object_id", "freshness"}
+        typed = {name: qs.get(name, []) for name in typed_names}
+        typed_present = {name for name, values in typed.items() if values}
+        if len(action_ids) != 1:
             return self._http_response(
                 HTTPStatus.BAD_REQUEST,
-                b'{"error": "action_id and choice are required"}\n',
+                b'{"error": "action_id is required"}\n',
                 content_type="application/json",
             )
         action_id = action_ids[0]
-        choice = choices[0]
+        action: tuple[str, ...] | None = None
+        if not typed_present and len(choices) == 1 and 0 < len(choices[0]) <= 32:
+            action = (action_id, choices[0])
+        elif (
+            typed_present == typed_names
+            and not choices
+            and all(len(values) == 1 for values in typed.values())
+        ):
+            operation = typed["operation"][0]
+            option_id = typed["option_id"][0]
+            object_id = typed["object_id"][0]
+            freshness = typed["freshness"][0]
+            if (
+                operation in {"choose", "explore"}
+                and 0 < len(option_id) <= 64
+                and 0 < len(object_id) <= 64
+                and 0 < len(freshness) <= 64
+            ):
+                action = (action_id, option_id, operation, object_id, freshness)
+        if action is None or not 0 < len(action_id) <= 64:
+            return self._http_response(
+                HTTPStatus.BAD_REQUEST,
+                b'{"error": "malformed display action"}\n',
+                content_type="application/json",
+            )
         if self._on_action is not None:
             loop = asyncio.get_event_loop()
-            loop.create_task(self._on_action(action_id, choice))
+            loop.create_task(self._on_action(*action))
         return self._http_response(
             HTTPStatus.OK, b"{}\n", content_type="application/json"
         )
@@ -799,7 +832,11 @@ class DisplayServer:
                                 )
                             self._track_connection_task(websocket, callback)
                     else:
-                        if action is not None and self._on_action is not None:
+                        if (
+                            action is not None
+                            and len(action) == 2
+                            and self._on_action is not None
+                        ):
                             self._track_connection_task(
                                 websocket, self._on_action(*action)
                             )
@@ -1152,7 +1189,9 @@ class DisplayServer:
             raise ValueError("browser audio requires signed 16-bit PCM")
 
     @staticmethod
-    def _parse_websocket_action(message: str | bytes) -> tuple[str, str] | None:
+    def _parse_websocket_action(
+        message: str | bytes,
+    ) -> tuple[str, str] | tuple[str, str, str, str, str] | None:
         if not isinstance(message, (str, bytes)):
             return None
         try:
@@ -1169,14 +1208,30 @@ class DisplayServer:
             return None
         action_id = payload.get("action_id")
         choice = payload.get("choice")
+        if not isinstance(action_id, str) or not 0 < len(action_id) <= 64:
+            return None
+        typed_names = {"operation", "option_id", "object_id", "freshness"}
+        typed_present = typed_names.intersection(payload)
+        if not typed_present and isinstance(choice, str) and 0 < len(choice) <= 32:
+            return action_id, choice
+        if typed_present != typed_names or "choice" in payload:
+            return None
+        operation = payload.get("operation")
+        option_id = payload.get("option_id")
+        object_id = payload.get("object_id")
+        freshness = payload.get("freshness")
         if (
-            not isinstance(action_id, str)
-            or not 0 < len(action_id) <= 64
-            or not isinstance(choice, str)
-            or not 0 < len(choice) <= 32
+            not isinstance(operation, str)
+            or operation not in {"choose", "explore"}
+            or not isinstance(option_id, str)
+            or not 0 < len(option_id) <= 64
+            or not isinstance(object_id, str)
+            or not 0 < len(object_id) <= 64
+            or not isinstance(freshness, str)
+            or not 0 < len(freshness) <= 64
         ):
             return None
-        return action_id, choice
+        return action_id, option_id, operation, object_id, freshness
 
     @staticmethod
     def _parse_websocket_voice_turn(
