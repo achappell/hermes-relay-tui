@@ -12,7 +12,12 @@ int xQueueSend(QueueHandle_t handle,const void *data,int wait) {queue_t *q=handl
 int xQueueReceive(QueueHandle_t handle,void *data,int wait) {
  queue_t *q=handle;(void)wait;
  if(handle==events){event_reads++;if(endless_events){*(uart_event_t *)data=(uart_event_t){.type=UART_DATA};return 1;}}
- if(!q->count)return 0;memcpy(data,q->data[0],q->size);memmove(q->data,q->data+1,(--q->count)*sizeof(q->data[0]));return 1;
+ if(!q->count) {
+  return 0;
+ }
+ memcpy(data,q->data[0],q->size);
+ memmove(q->data,q->data+1,(--q->count)*sizeof(q->data[0]));
+ return 1;
 }
 void xQueueReset(QueueHandle_t handle) {((queue_t *)handle)->count=0;}
 int xTaskCreate(void (*f)(void *),const char *n,int s,void *a,int p,void *h) {(void)f;(void)n;(void)s;(void)a;(void)p;(void)h;return pdPASS;}

@@ -57,7 +57,10 @@ int main(void) {
  setup(0);settle();block(0);fail_write=true;worker_step();assert(!enabled && !((queue_t *)pcm_queue)->count);
  setup(0);settle();for(int i=0;i<17;i++)block(0);worker_step();assert(!enabled && sent[sent_count-1].payload[0]==TC_OVERFLOW);
  setup(0);settle();for(int i=0;i<938;i++){clock_ms+=15;keepalive();block(0x7fff0000);worker_step();}
- while(state.phase==TC_DRAINING)worker_step();assert(state.ended && state.bytes==480000 && sent[sent_count-1].type==TC_ENDED);
+ while(state.phase==TC_DRAINING) {
+  worker_step();
+ }
+ assert(state.ended && state.bytes==480000 && sent[sent_count-1].type==TC_ENDED);
  setup((1ULL<<32)-128);settle();assert(state.started==clock_ms);block(0);worker_step();assert(state.phase==TC_CAPTURING); /* millisecond wrap */
  setup(0);settle();block(0);block(0);block(0);clock_ms=15256;keepalive();worker_step();assert(state.phase==TC_DRAINING);
  uint64_t expiry=drain_deadline;end_command();assert(state.phase==TC_DRAINING && drain_deadline==expiry);

@@ -66,7 +66,10 @@ int main(void) {
  f.type=TC_START;f.capture=1;assert(tc_command(&s,&f,10)==1);assert(tc_command(&s,&f,11)==0);tc_frame_t hello={.type=TC_HELLO,.generation=42};assert(tc_command(&s,&hello,12)==0 && s.phase==TC_STARTING);hello.generation=41;hello.type=TC_ABORT;hello.capture=1;assert(tc_command(&s,&hello,12)==0 && s.phase==TC_STARTING);
  assert(tc_tick(&s,1010)==-1);tc_abort(&s);assert(tc_command(&s,&f,1011)==0);
  f.capture=2;assert(tc_command(&s,&f,2000)==1);assert(tc_started(&s,2256));
- for(unsigned i=0;i<468;i++) assert(tc_accept_pcm(&s,1024));assert(tc_accept_pcm(&s,768));assert(s.bytes==480000);assert(!tc_accept_pcm(&s,2));
+ for(unsigned i=0;i<468;i++) {
+  assert(tc_accept_pcm(&s,1024));
+ }
+ assert(tc_accept_pcm(&s,768));assert(s.bytes==480000);assert(!tc_accept_pcm(&s,2));
  assert(tc_tick(&s,2257)==1);tc_ended(&s);f.type=TC_END;assert(tc_command(&s,&f,2258)==2);
  f.type=TC_START;assert(tc_command(&s,&f,2259)==0);f.capture=3;assert(tc_command(&s,&f,3000)==1);assert(tc_started(&s,3256));
  f.type=TC_KEEPALIVE;assert(tc_command(&s,&f,18255)==1);assert(tc_tick(&s,18256)==1);assert(tc_tick(&s,19255)==-1);
