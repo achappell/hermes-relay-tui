@@ -50,9 +50,9 @@ context:
 ## Tasks & Acceptance
 
 **Execution:**
-- [ ] Extend the v1 display contract compatibly for freshness-bound choices and paired operation actions.
-- [ ] Preserve and validate typed choice metadata through `HomeBrowserSession`; dispatch exactly one Home-owned response.
-- [ ] Render up to 32 options with explicit supported controls on LVGL and validate before transport.
+- [x] Extend the v1 display contract compatibly for freshness-bound choices and paired operation actions.
+- [x] Preserve and validate typed choice metadata through `HomeBrowserSession`; dispatch exactly one Home-owned response.
+- [x] Render up to 32 options with explicit supported controls on LVGL and validate before transport.
 - [ ] Verify malformed, stale, unadvertised, duplicate, and legacy actions; record simulator/build evidence separately from hardware evidence.
 
 **Acceptance:**
@@ -68,3 +68,9 @@ context:
 - `venv/bin/pytest`
 - `./scripts/simulate_native.sh`
 - `venv/bin/pio run -d firmware/esp32-s3-touch-lcd-7 -e esp32-s3-touch-lcd-7b`
+
+## Delivery reconciliation — 2026-09-22
+
+Implementation merged in [PR #196](https://github.com/achappell/hermes-relay-tui/pull/196) as `33ef14f8f374a473d9239a4e0a9c6c5ce0b509ef`. The tracker is reconciled to `review`, matching this specification's `in-review` state. The first three execution items are checked against the merged implementation. The final verification item remains open because native interaction and physical acceptance are incomplete.
+
+See [the validation record](validation-2-e-5-native-choose-explore.md) for the evidence boundary and remaining acceptance. Amanda confirmed on 2026-09-22 that the Touch hardware is not assembled. Physical acceptance is deferred until it is available; the story is not done and is not active implementation. Other hardware-independent work may proceed. No acceptance criterion or frozen intent was changed.

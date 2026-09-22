@@ -74,7 +74,9 @@ development_status:
   2-e-2-render-room-local-active-turn-state-live-transcription-and-t: backlog
   2-e-3-mirror-prompts-read-only-when-the-renderer-is-acting-as-a-pa: backlog
   2-e-4-render-honest-disconnected-state-and-safe-cached-context-on: backlog
-  2-e-5-render-and-submit-native-choose-explore-actions-for-current: in-progress
+  # PR #196 merged; native interaction and physical acceptance remain outstanding.
+  # Hardware assembly is pending; see validation-2-e-5-native-choose-explore.md.
+  2-e-5-render-and-submit-native-choose-explore-actions-for-current: review
   2-wk-1-render-the-shared-room-scoped-ambient-surface-for-web-and-ip: backlog
   2-wk-2-render-active-capture-room-local-transcription-response-and: done
   2-wk-3-mirror-prompts-read-only-when-the-browser-is-acting-as-a-pas: backlog
