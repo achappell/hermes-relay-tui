@@ -29,7 +29,7 @@
 # - Dev moves story to 'review', then runs code-review (fresh context, different LLM recommended)
 # - Retrospective appends its action items to action_items; the status view surfaces open ones
 generated: 09-08-2026 00:00
-last_updated: 09-22-2026 14:33
+last_updated: 09-22-2026 16:27
 project: hermes-relay-tui
 project_key: NOKEY
 tracking_system: file-system
@@ -46,10 +46,10 @@ development_status:
   1-4-recover-without-replaying-an-uncertain-turn: done
   1-p-1-authorized-wake-and-capture: done
   1-p-2-status-and-response-audio-delivery: done
-  1-p-3-bounded-follow-up-and-exact-stop: in-progress
+  1-p-3-bounded-follow-up-and-exact-stop: done
   1-p-4-recovery-without-replay: backlog
   1-p-5-complete-streamed-response-playback-without-underrun: done
-  1-p-6-graceful-bridge-service-shutdown-and-entry-point-coverage: review
+  1-p-6-graceful-bridge-service-shutdown-and-entry-point-coverage: done
   1-p-7-make-raw-pcm-diagnostics-explicitly-opt-in-and-bounded: backlog
   1-p-8-make-the-vendored-respeaker-audio-format-boundary-determinis: backlog
   1-p-9-make-respeaker-i2s-channel-startup-and-teardown-fail-safe: backlog
