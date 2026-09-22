@@ -39,6 +39,30 @@ def test_response_handoff_uses_the_confirmed_sequence_and_query_token():
     assert "media_player.play_media" in source
 
 
+def test_follow_up_capture_is_bounded_and_empty_upload_is_explicit():
+    capture_source = (Path(__file__).resolve().parents[1] / "firmware/respeaker-lite/pcm_capture.h").read_text()
+    response_source = (Path(__file__).resolve().parents[1] / "firmware/respeaker-lite/puck_response.h").read_text()
+    yaml_source = (Path(__file__).resolve().parents[1] / "firmware/respeaker-lite/respeaker-lite.yaml").read_text()
+
+    assert "CAPTURE_LISTEN_TIMEOUT_MS" in capture_source
+    assert "inline bool start_follow_up()" in capture_source
+    assert "last_upload_failed" in capture_source
+    assert "std::max<size_t>(" in capture_source
+    assert "follow_up_pending" in response_source
+    assert "FOLLOW_UP_CAPTURING" in response_source
+    assert "wake_capture::start_follow_up()" in yaml_source
+    assert "puck_response::follow_up_started()" in yaml_source
+    assert "puck_response::follow_up_capture_failed()" in yaml_source
+    no_speech_deadline = capture_source[
+        capture_source.index("if (follow_up_capture && !speech_seen)"):capture_source.index(
+            "if (silence_start_ms == 0)",
+            capture_source.index("if (follow_up_capture && !speech_seen)"),
+        )
+    ]
+    assert "write_pos = 0;" in no_speech_deadline
+    assert "last_capture_captured = false;" in no_speech_deadline
+
+
 def test_response_status_is_checked_after_idle_before_wake_resumes():
     root = Path(__file__).resolve().parents[1]
     source = (root / "firmware/respeaker-lite/respeaker-lite.yaml").read_text()
@@ -82,6 +106,143 @@ def test_response_status_is_checked_after_idle_before_wake_resumes():
         source[source.index("puck_response::refusal_pending()"):]
     )
     assert '#include "pcm_capture.h"' not in response_header
+
+
+def test_follow_up_no_speech_discards_buffered_pcm_before_empty_upload(tmp_path):
+    compiler = shutil.which("clang++") or shutil.which("c++")
+    if compiler is None:
+        pytest.skip("no C++ compiler available for the capture-state harness")
+
+    (tmp_path / "esphome/core").mkdir(parents=True)
+    (tmp_path / "esphome/components/http_request").mkdir(parents=True)
+    (tmp_path / "freertos").mkdir()
+    (tmp_path / "esp_heap_caps.h").write_text(
+        "#pragma once\n"
+        "#include <cstddef>\n"
+        "#include <cstdint>\n"
+        "#include <cstdlib>\n"
+        "enum { MALLOC_CAP_SPIRAM = 1, MALLOC_CAP_INTERNAL = 2 };\n"
+        "inline void *heap_caps_malloc(std::size_t size, int) { return std::malloc(size); }\n"
+        "inline std::uint32_t heap_caps_get_free_size(int) { return 200000; }\n"
+        "inline std::uint32_t heap_caps_get_minimum_free_size(int) { return 200000; }\n"
+    )
+    (tmp_path / "esphome/core/alloc_helpers.h").write_text("#pragma once\n")
+    (tmp_path / "esphome/core/application.h").write_text(
+        "#pragma once\n"
+        "namespace esphome {\n"
+        "struct Application { void safe_reboot() {} void feed_wdt() {} };\n"
+        "inline Application App;\n"
+        "}\n"
+    )
+    (tmp_path / "esphome/core/hal.h").write_text(
+        "#pragma once\n"
+        "#include <cstdint>\n"
+        "extern std::uint32_t fake_millis;\n"
+        "inline std::uint32_t millis() { return fake_millis; }\n"
+    )
+    (tmp_path / "esphome/core/log.h").write_text(
+        "#pragma once\n"
+        "#define ESP_LOGD(...) do {} while (0)\n"
+        "#define ESP_LOGE(...) do {} while (0)\n"
+        "#define ESP_LOGI(...) do {} while (0)\n"
+        "#define ESP_LOGW(...) do {} while (0)\n"
+    )
+    (tmp_path / "freertos/FreeRTOS.h").write_text(
+        "#pragma once\n"
+        "#define pdMS_TO_TICKS(value) (value)\n"
+    )
+    (tmp_path / "freertos/task.h").write_text(
+        "#pragma once\n"
+        "inline void vTaskDelay(unsigned int) {}\n"
+    )
+    (tmp_path / "esphome/components/http_request/http_request.h").write_text(
+        "#pragma once\n"
+        "#include <string>\n"
+        "#include <vector>\n"
+        "namespace esphome::http_request {\n"
+        "struct Header { const char *name; const char *value; };\n"
+        "struct Response { int status_code = 200; void end() {} };\n"
+        "class HttpRequestComponent {\n"
+        " public:\n"
+        "  std::vector<std::string> urls;\n"
+        "  std::vector<std::string> bodies;\n"
+        "  Response response;\n"
+        "  Response *post(const std::string &url, const std::string &body, const std::vector<Header> &) {\n"
+        "    urls.push_back(url);\n"
+        "    bodies.push_back(body);\n"
+        "    return &response;\n"
+        "  }\n"
+        "  Response *post(const std::string &url, const std::string &body) {\n"
+        "    return post(url, body, {});\n"
+        "  }\n"
+        "};\n"
+        "}\n"
+    )
+    (tmp_path / "esphome/core/alloc_helpers.h").write_text(
+        "#pragma once\n"
+        "#include <cstddef>\n"
+        "#include <cstdint>\n"
+        "#include <string>\n"
+        "namespace esphome {\n"
+        "inline std::string base64_encode(const std::uint8_t *, std::size_t) { return {}; }\n"
+        "}\n"
+    )
+    harness = tmp_path / "capture_state.cpp"
+    harness.write_text(
+        textwrap.dedent(
+            """
+            #include "pcm_capture.h"
+            #include <cassert>
+            #include <cstdint>
+
+            std::uint32_t fake_millis = 0;
+
+            int main() {
+              using namespace pcm_capture::wake_capture;
+              puck_identity::setup("configured");
+              setup();
+              assert(start_follow_up());
+
+              const std::uint8_t quiet_frames[] = {1, 2, 3, 4, 5, 6, 7, 8};
+              write(quiet_frames, sizeof(quiet_frames));
+              assert(write_pos == sizeof(quiet_frames));
+
+              fake_millis = CAPTURE_LISTEN_TIMEOUT_MS;
+              tick(false);
+              assert(!capturing);
+              assert(capture_done);
+              assert(capture_pending_upload);
+              assert(write_pos == 0);
+              assert(!last_capture_captured);
+
+              esphome::http_request::HttpRequestComponent client;
+              upload(&client, "http://bridge/upload", "token");
+              assert(client.bodies.size() == 1);
+              assert(client.bodies.front().empty());
+              assert(client.urls.front().find("total=1") != std::string::npos);
+              assert(last_upload_delivered);
+              return 0;
+            }
+            """
+        )
+    )
+    executable = tmp_path / "capture_state"
+    compile_result = subprocess.run(
+        [
+            compiler,
+            "-std=c++17",
+            f"-I{tmp_path}",
+            f"-I{Path(__file__).resolve().parents[1] / 'firmware/respeaker-lite'}",
+            str(harness),
+            "-o",
+            str(executable),
+        ],
+        capture_output=True,
+        text=True,
+    )
+    assert compile_result.returncode == 0, compile_result.stderr
+    run_result = subprocess.run([str(executable)], capture_output=True, text=True)
+    assert run_result.returncode == 0, run_result.stderr
 
 
 def test_respeaker_yaml_passes_esphome_config_generation():
@@ -154,11 +315,17 @@ def test_response_status_state_machine_retries_then_refuses(tmp_path):
               begin(8);
               media_idle();
               note_status(200, terminal_body(8, "complete"));
+              assert(follow_up_pending());
+              follow_up_started();
+              assert(follow_up_capturing());
+              begin(9);
+              media_idle();
+              note_status(200, terminal_body(9, "silent"));
               assert(ready_to_resume());
               wake_resumed();
               assert(state == State::IDLE);
 
-              begin(9);
+              begin(10);
               media_idle();
               note_transport_failure();
               assert(refusal_pending());
@@ -168,7 +335,7 @@ def test_response_status_state_machine_retries_then_refuses(tmp_path):
               wake_resumed();
               assert(state == State::IDLE);
 
-              begin(10);
+              begin(11);
               media_idle();
               note_status(404, "");
               assert(refusal_pending());
@@ -177,9 +344,9 @@ def test_response_status_state_machine_retries_then_refuses(tmp_path):
               assert(ready_to_resume());
               wake_resumed();
 
-              begin(11);
+              begin(12);
               media_idle();
-              note_status(200, terminal_body(11, "unavailable"));
+              note_status(200, terminal_body(12, "unavailable"));
               assert(refusal_pending());
               refusal_started();
               fake_millis = 3999;

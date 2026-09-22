@@ -257,9 +257,9 @@ inline void upload_and_restart(esphome::http_request::HttpRequestComponent *clie
 // capture window ends when `micro_wake_word`'s own VAD model (already
 // proven responsive: `probability_cutoff: 0.05` in respeaker-lite.yaml)
 // reports silence for a debounce period, not when the buffer fills, and
-// (c) it does NOT re-arm at the end -- one wake, one upload, then it waits
-// for the next `on_wake_word_detected` trigger. No continuous rolling
-// capture, matching this story's Boundaries & Constraints.
+// (c) it can be re-armed once after a successful response for a bounded
+// wake-free follow-up. No continuous microphone hold is allowed: each
+// follow-up is its own eight-second window.
 namespace wake_capture {
 
 // 8 seconds of stereo, 32-bit, 16kHz audio -- comfortably longer than any
@@ -271,6 +271,7 @@ static const size_t WAKE_CAPTURE_BYTES = 16000 * 4 * 2 * WAKE_CAPTURE_SECONDS;
 // over. Short enough to keep the round-trip snappy, long enough to survive
 // a normal mid-sentence pause without cutting the question off early.
 static const uint32_t VAD_SILENCE_DEBOUNCE_MS = 800;
+static const uint32_t CAPTURE_LISTEN_TIMEOUT_MS = WAKE_CAPTURE_SECONDS * 1000;
 
 static uint8_t *buffer = nullptr;
 static size_t write_pos = 0;
@@ -278,6 +279,9 @@ static bool capturing = false;
 static bool capture_done = false;
 static bool capture_pending_upload = false;
 static uint32_t silence_start_ms = 0;
+static uint32_t capture_started_ms = 0;
+static bool speech_seen = false;
+static bool follow_up_capture = false;
 static uint32_t sample_index = 0;
 
 // 1-p-1 task 3: set by start() when the identity gate refuses a wake, so
@@ -294,6 +298,11 @@ static bool last_wake_refused = false;
 // records it, rather than the automation re-deriving it and risking the
 // two drifting apart.
 static bool last_upload_delivered = false;
+
+// Set when a completed capture could not be confirmed by the bridge. The
+// normal wake path has no response state to advance, while a follow-up uses
+// this to leave FOLLOW_UP_CAPTURING instead of holding the wake gate forever.
+static bool last_upload_failed = false;
 
 // 1-p-2 task 7: set when a capture window closes with audio in it, so the
 // automation can acknowledge it. Deliberately NOT signalled at the wake:
@@ -349,6 +358,25 @@ inline void prepare(const std::string &wake_word) {
   ESP_LOGI(TAG, "wake accepted; acknowledgement will precede capture (wake_word=%s)", wake_word.c_str());
 }
 
+inline bool begin_capture(bool is_follow_up) {
+  if (!puck_identity::may_capture() || buffer == nullptr || capturing ||
+      capture_pending_upload) {
+    return false;
+  }
+  write_pos = 0;
+  capture_done = false;
+  capture_pending_upload = false;
+  silence_start_ms = 0;
+  capture_started_ms = millis();
+  speech_seen = false;
+  follow_up_capture = is_follow_up;
+  last_capture_captured = false;
+  last_upload_delivered = false;
+  last_upload_failed = false;
+  capturing = true;
+  return true;
+}
+
 // Called after the short acknowledgement has finished. Re-check the
 // identity gate here as well: a refusal arriving during the acknowledgement
 // must fail closed rather than opening the microphone after the delay.
@@ -364,17 +392,31 @@ inline void start_pending() {
     pending_wake_word.clear();
     return;
   }
-  if (buffer == nullptr || capturing || capture_pending_upload) {
+  if (!begin_capture(false)) {
     ESP_LOGD(TAG, "pending wake capture ignored (already busy)");
     pending_wake_word.clear();
     return;
   }
-  write_pos = 0;
-  capture_done = false;
-  silence_start_ms = 0;
-  capturing = true;
   ESP_LOGI(TAG, "wake capture started (wake_word=%s)", pending_wake_word.c_str());
   pending_wake_word.clear();
+}
+
+// Called by the Puck response state machine after successful playback. The
+// on-device detector is already running again before this is called; unlike a
+// wake capture, no acknowledgement or wake phrase is needed here.
+inline bool start_follow_up() {
+  if (!puck_identity::may_capture()) {
+    ESP_LOGW(TAG, "follow-up capture refused: identity %s",
+             puck_identity::state_name(puck_identity::state));
+    return false;
+  }
+  if (!begin_capture(true)) {
+    ESP_LOGD(TAG, "follow-up capture ignored (already busy)");
+    return false;
+  }
+  ESP_LOGI(TAG, "follow-up capture started (bounded to %ums)",
+           (unsigned) CAPTURE_LISTEN_TIMEOUT_MS);
+  return true;
 }
 
 // Preserve the immediate-start helper for non-automation callers and tests.
@@ -420,7 +462,28 @@ inline void tick(bool vad_active) {
   }
   uint32_t now = millis();
   if (vad_active) {
+    speech_seen = true;
     silence_start_ms = 0;
+    return;
+  }
+  // VAD silence before any speech is not an end-of-utterance for a follow-up.
+  // Keep that wake-free window bounded by a hard eight-second deadline
+  // instead of closing immediately on the detector's idle state. Preserve
+  // the initial wake capture's established debounce behavior.
+  if (follow_up_capture && !speech_seen) {
+    if (now - capture_started_ms < CAPTURE_LISTEN_TIMEOUT_MS) {
+      return;
+    }
+    capturing = false;
+    capture_done = true;
+    capture_pending_upload = true;
+    // Mic frames collected during the wake-free wait are silence/noise, not
+    // an utterance. Discard them before the explicit empty upload so a quiet
+    // follow-up cannot become a false Hermes turn.
+    write_pos = 0;
+    last_capture_captured = false;
+    ESP_LOGI(TAG, "capture ended on the %ums no-speech deadline (empty)",
+             (unsigned) CAPTURE_LISTEN_TIMEOUT_MS);
     return;
   }
   if (silence_start_ms == 0) {
@@ -449,25 +512,22 @@ inline void upload(esphome::http_request::HttpRequestComponent *client, const st
   }
   capture_pending_upload = false;
 
-  // VAD reported silence before any audio was ever captured (write_pos ==
-  // 0): total_chunks below would compute to 0, the upload loop would
-  // silently no-op, and this wake would produce no upload at all with no
-  // diagnostic. Bail out explicitly instead of relying on the loop's
-  // implicit skip.
-  if (write_pos == 0) {
-    ESP_LOGW(TAG, "Wake upload %u skipped -- capture ended with zero bytes written", (unsigned) sample_index);
-    sample_index++;
-    return;
-  }
-
-  size_t total_chunks = (write_pos + pcm_capture::UPLOAD_CHUNK_BYTES - 1) / pcm_capture::UPLOAD_CHUNK_BYTES;
+  // A no-speech follow-up still sends one empty final chunk. The bridge can
+  // then close the admitted response as `silent`, allowing the Puck to poll
+  // that honest result and resume wake mode instead of waiting for a request
+  // that will never be produced.
+  size_t total_chunks = std::max<size_t>(
+      1, (write_pos + pcm_capture::UPLOAD_CHUNK_BYTES - 1) /
+             pcm_capture::UPLOAD_CHUNK_BYTES);
   bool ok = true;
   bool reassembly_confirmed = false;
   int consecutive_failures = 0;
   const uint32_t upload_started_ms = millis();
   for (size_t chunk = 0; chunk < total_chunks; ++chunk) {
     size_t offset = chunk * pcm_capture::UPLOAD_CHUNK_BYTES;
-    size_t len = std::min(pcm_capture::UPLOAD_CHUNK_BYTES, write_pos - offset);
+    size_t len = write_pos > offset
+                     ? std::min(pcm_capture::UPLOAD_CHUNK_BYTES, write_pos - offset)
+                     : 0;
     std::string body(reinterpret_cast<const char *>(buffer + offset), len);
     std::string full_url = url + "?seq=" + std::to_string(sample_index) + "&chunk=" + std::to_string(chunk) +
                             "&total=" + std::to_string(total_chunks) + "&ms=" + std::to_string(millis());
@@ -537,6 +597,7 @@ inline void upload(esphome::http_request::HttpRequestComponent *client, const st
   }
   const uint32_t elapsed_ms = millis() - upload_started_ms;
   last_upload_delivered = ok && reassembly_confirmed;
+  last_upload_failed = !last_upload_delivered;
   last_delivered_seq = sample_index;
   if (ok && reassembly_confirmed) {
     ESP_LOGI(TAG, "Wake capture %u delivered (%u bytes, %u chunks, %ums)", (unsigned) sample_index,

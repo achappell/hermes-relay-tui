@@ -455,7 +455,7 @@ flashed at that log level with real household credentials in
 
 Story 3 got wake-word detection working; story 5 makes a validated wake
 actually *do* something. `on_wake_word_detected:` (under `micro_wake_word:`)
-now starts a bounded, VAD-gated, single-shot capture into a dedicated ~8s
+now starts a bounded, VAD-gated initial capture into a dedicated ~8s
 PSRAM buffer (`pcm_capture::wake_capture`, in `pcm_capture.h`) — separate
 from the pre-existing training-data capture buffer, which is unchanged.
 A fast (100ms) `interval:` tick watches `micro_wake_word`'s own VAD state
@@ -468,8 +468,9 @@ tick then uploads the finished capture, chunked, over the same wire shape
 function's heap-watermark reboot circuit breaker, 2-consecutive-failure
 abandonment, and 30ms inter-chunk delay unchanged. Unlike the training
 pipeline's `upload_and_restart()`, this capture does **not** re-arm itself
-when the upload finishes — one wake, one upload, then it waits for the next
-`on_wake_word_detected` trigger. No continuous rolling capture.
+when the upload finishes — the initial wake remains one upload, then the P-3
+response hand-off can offer one bounded follow-up window without another wake
+phrase. No continuous rolling capture or unbounded microphone hold is used.
 
 Each chunk POST carries an `X-Puck-Token` header — the hardcoded shared
 token (`puck_device_token` in `secrets.yaml`) standing in for Story 4's
@@ -552,6 +553,25 @@ Raw Puck audio stays transient end-to-end (NFR3): the receiver's in-memory
 chunk buffer for a capture is discarded as soon as it is reassembled, and
 the WAV file is deleted immediately after transcription, success or
 failure — no audio or transcript archive by default.
+
+### Story P-3: Bounded follow-up and exact `stop`
+
+After the Puck finishes a successful response, `puck_response.h` holds wake
+mode while the firmware opens an eight-second follow-up capture. VAD can end
+that window after 800ms of silence once speech has started; if nobody speaks,
+the hard eight-second deadline closes it and sends one empty upload. The host
+bridge turns that empty upload into a `silent` response status, so the Puck
+returns to wake mode without a refusal sound or an empty Hermes request.
+
+The bridge reuses `HandsFreeCoordinator`'s normalized session contract. Each
+non-empty follow-up is admitted through a thread-safe one-capture mailbox and
+sent exactly once on the original session/profile. A transcript that is only
+`stop`, ignoring case, surrounding whitespace, and terminal `.`, `!`, `?`, or
+`,` is handled locally: it creates no Hermes turn and no assistant audio. A
+phrase such as `stop the music` remains an ordinary request. Upload,
+transcription, or response failure ends the follow-up without replaying its
+audio. This story changes the ReSpeaker Puck path only; ESP32 Touch remains a
+separate surface and is not modified here.
 
 ### Verification
 

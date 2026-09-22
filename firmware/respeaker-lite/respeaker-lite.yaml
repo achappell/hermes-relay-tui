@@ -690,6 +690,33 @@ interval:
                 on_error:
                   then:
                     - lambda: puck_response::note_transport_failure();
+      # A follow-up upload can fail after the bridge has already admitted its
+      # bounded capture. Clear the flag in every state; only a live
+      # FOLLOW_UP_CAPTURING state needs the refusal/recovery transition.
+      - if:
+          condition:
+            lambda: return pcm_capture::wake_capture::last_upload_failed;
+          then:
+            - lambda: |-
+                const bool was_follow_up = puck_response::follow_up_capturing();
+                pcm_capture::wake_capture::last_upload_failed = false;
+                if (was_follow_up) {
+                  puck_response::follow_up_capture_failed();
+                }
+      # A complete response keeps the conversation alive. Start the next
+      # eight-second microphone window on the normal component task, after
+      # playback/status confirmation and without another wake phrase.
+      - if:
+          condition:
+            lambda: return puck_response::follow_up_pending();
+          then:
+            - micro_wake_word.start
+            - lambda: |-
+                if (pcm_capture::wake_capture::start_follow_up()) {
+                  puck_response::follow_up_started();
+                } else {
+                  puck_response::follow_up_capture_failed();
+                }
       - if:
           condition:
             lambda: return puck_response::refusal_pending();
@@ -716,11 +743,13 @@ interval:
           then:
             - micro_wake_word.start
             - lambda: puck_response::wake_resumed();
-  # Story 5: the actual outbound upload, from a slow tick (never the
-  # real-time audio path or the fast VAD-tick above) -- matches
+      # Story 5 / P-3: the actual outbound upload, from a slow tick (never the
+      # real-time audio path or the fast VAD-tick above) -- matches
   # `upload_and_restart`'s existing convention of only ever blocking on a
   # POST from a slow interval. A no-op until `tick()` above has closed a
-  # capture window.
+      # capture window. A zero-byte follow-up is sent as one empty POST so
+      # the bridge can return a silent terminal instead of leaving the Puck
+      # waiting for a response that cannot exist.
   - interval: 1s
     then:
       - lambda: |-
