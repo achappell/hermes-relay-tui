@@ -12,6 +12,7 @@
 
 #include "esphome/core/hal.h"
 #include "esphome/core/log.h"
+#include "puck_identity.h"
 
 #include <cstdint>
 #include <string>
@@ -41,6 +42,13 @@ static uint32_t response_seq = 0;
 static uint32_t retry_started_ms = 0;
 static uint32_t next_poll_ms = 0;
 static uint32_t refusal_started_ms = 0;
+static bool home_admission_needed = false;
+static bool home_admission_pending = false;
+static bool home_admission_granted_flag = false;
+static uint32_t home_admission_seq = 0;
+static bool follow_up_admission_pending = false;
+static bool follow_up_admission_granted_flag = false;
+static uint32_t follow_up_admission_seq = 0;
 
 inline const char *state_name(State value) {
   switch (value) {
@@ -69,6 +77,11 @@ inline std::string terminal_body(uint32_t seq, const char *status) {
          ", \"status\": \"" + status + "\"}";
 }
 
+inline std::string home_admission_terminal_body(uint32_t seq) {
+  return std::string("{\"seq\": ") + std::to_string(seq) +
+         ", \"status\": \"unavailable\", \"needs_home_admission\": true}";
+}
+
 inline std::string url_encode(const std::string &value) {
   static const char hex[] = "0123456789ABCDEF";
   std::string encoded;
@@ -93,12 +106,126 @@ inline void begin(uint32_t seq) {
   retry_started_ms = 0;
   next_poll_ms = 0;
   refusal_started_ms = 0;
+  home_admission_pending = false;
+  home_admission_granted_flag = false;
+  follow_up_admission_pending = false;
+  follow_up_admission_granted_flag = false;
   state = State::WAITING_FOR_MEDIA_IDLE;
   ESP_LOGI(TAG, "response admitted seq=%u build=%s; waiting for media idle",
            (unsigned) response_seq, BUILD_IDENTITY);
 }
 
 inline uint32_t sequence() { return response_seq; }
+
+inline bool needs_home_admission() { return home_admission_needed; }
+
+inline bool home_admission_in_flight() { return home_admission_pending; }
+
+inline bool can_start_wake_capture() {
+  return home_admission_granted_flag && !home_admission_pending;
+}
+
+inline bool can_start_follow_up_capture() {
+  return state == State::FOLLOW_UP_PENDING &&
+         follow_up_admission_granted_flag &&
+         !follow_up_admission_pending;
+}
+
+inline bool follow_up_admission_in_flight() {
+  return follow_up_admission_pending;
+}
+
+inline bool home_admission_granted() { return home_admission_granted_flag; }
+
+inline bool consume_home_admission() {
+  if (!can_start_wake_capture()) {
+    return false;
+  }
+  home_admission_granted_flag = false;
+  return true;
+}
+
+inline bool begin_home_admission(uint32_t seq) {
+  if (home_admission_pending || home_admission_granted_flag ||
+      state != State::IDLE) {
+    return false;
+  }
+  home_admission_pending = true;
+  home_admission_granted_flag = false;
+  home_admission_seq = seq;
+  return true;
+}
+
+inline bool begin_follow_up_admission(uint32_t seq) {
+  if (follow_up_admission_pending || follow_up_admission_granted_flag ||
+      state != State::FOLLOW_UP_PENDING || seq != response_seq) {
+    return false;
+  }
+  follow_up_admission_pending = true;
+  follow_up_admission_seq = seq;
+  return true;
+}
+
+template <typename AdmitFn, typename DenyFn>
+inline void dispatch_wake_capture(bool admitted, AdmitFn admit,
+                                 DenyFn deny) {
+  if (admitted) {
+    admit();
+  } else {
+    deny();
+  }
+}
+
+inline void refuse_home_admission(const char *reason) {
+  home_admission_pending = false;
+  home_admission_granted_flag = false;
+  response_seq = home_admission_seq;
+  state = State::REFUSAL_PENDING;
+  ESP_LOGW(TAG, "Home wake admission refused for seq=%u (%s); capture stays closed",
+           (unsigned) response_seq, reason);
+}
+
+inline void note_home_admission(int status, const std::string &body) {
+  if (!home_admission_pending) {
+    return;
+  }
+  if (status == 200 &&
+      body == std::string("admitted:") + std::to_string(home_admission_seq)) {
+    home_admission_pending = false;
+    home_admission_granted_flag = true;
+    home_admission_needed = false;
+    ESP_LOGI(TAG, "Home wake admission granted for seq=%u; capture may open",
+             (unsigned) home_admission_seq);
+    return;
+  }
+  if (body == std::string("identity_rejected:") +
+                  std::to_string(home_admission_seq)) {
+    puck_identity::reject_authority("Home");
+    refuse_home_admission("Home identity rejected");
+    return;
+  }
+  if (status == 401) {
+    puck_identity::note_upload_status(status);
+    refuse_home_admission("local bridge identity rejected");
+    return;
+  }
+  refuse_home_admission(status <= 0 ? "admission service unreachable"
+                                    : "Home claim denied or unavailable");
+}
+
+inline void note_home_admission_transport_failure() {
+  note_home_admission(0, "");
+}
+
+inline void initial_upload_failed(uint32_t seq) {
+  response_seq = seq;
+  retry_started_ms = 0;
+  next_poll_ms = 0;
+  refusal_started_ms = 0;
+  state = State::REFUSAL_PENDING;
+  ESP_LOGW(TAG, "initial upload failed for seq=%u; playing one refusal",
+           (unsigned) response_seq);
+}
 
 // Wake detection remains stopped for every non-IDLE response state. In
 // particular, READY_TO_RESUME waits for the interval action to start the
@@ -132,6 +259,8 @@ inline void refuse(const char *reason) {
       state == State::IDLE) {
     return;
   }
+  follow_up_admission_pending = false;
+  follow_up_admission_granted_flag = false;
   state = State::REFUSAL_PENDING;
   ESP_LOGW(TAG, "response seq=%u unavailable (%s); playing one refusal",
            (unsigned) response_seq, reason);
@@ -157,6 +286,13 @@ inline void note_status(int status, const std::string &body) {
     return;
   }
 
+  if (status == 200 &&
+      body == home_admission_terminal_body(response_seq)) {
+    home_admission_needed = true;
+    refuse("Home claim retired; fresh admission required");
+    return;
+  }
+
   if (status == 409 &&
       static_cast<uint32_t>(now - retry_started_ms) < STATUS_RETRY_WINDOW_MS) {
     next_poll_ms = now + STATUS_RETRY_INTERVAL_MS;
@@ -170,6 +306,7 @@ inline void note_status(int status, const std::string &body) {
   } else if (status == 404) {
     refuse("unknown response sequence");
   } else if (status == 401 || status == 403) {
+    puck_identity::note_upload_status(status);
     refuse("status authentication rejected");
   } else if (status >= 200 && status < 300) {
     refuse("terminal status was not complete");
@@ -191,17 +328,60 @@ inline bool follow_up_pending() { return state == State::FOLLOW_UP_PENDING; }
 inline bool follow_up_capturing() { return state == State::FOLLOW_UP_CAPTURING; }
 
 inline void follow_up_started() {
-  if (state == State::FOLLOW_UP_PENDING) {
+  if (can_start_follow_up_capture()) {
+    follow_up_admission_granted_flag = false;
     state = State::FOLLOW_UP_CAPTURING;
     ESP_LOGI(TAG, "follow-up capture started for response seq=%u",
              (unsigned) response_seq);
   }
 }
 
+inline void note_follow_up_admission(int status, const std::string &body) {
+  if (!follow_up_admission_pending) {
+    return;
+  }
+  const std::string admitted =
+      std::string("admitted:") + std::to_string(follow_up_admission_seq);
+  if (status == 200 && body == admitted &&
+      follow_up_admission_seq == response_seq &&
+      state == State::FOLLOW_UP_PENDING) {
+    follow_up_admission_pending = false;
+    follow_up_admission_granted_flag = true;
+    ESP_LOGI(TAG, "follow-up admission granted for seq=%u",
+             (unsigned) follow_up_admission_seq);
+    return;
+  }
+  const std::string identity_rejected =
+      std::string("identity_rejected:") + std::to_string(follow_up_admission_seq);
+  if (body == identity_rejected) {
+    puck_identity::reject_authority("Home");
+  } else if (status == 401) {
+    puck_identity::note_upload_status(status);
+  }
+  refuse("follow-up admission denied or unavailable");
+}
+
+inline void note_follow_up_admission_transport_failure() {
+  note_follow_up_admission(0, "");
+}
+
 inline void follow_up_capture_failed() {
   if (state == State::FOLLOW_UP_PENDING ||
       state == State::FOLLOW_UP_CAPTURING) {
+    follow_up_admission_pending = false;
+    follow_up_admission_granted_flag = false;
     refuse("follow-up capture or upload failed");
+  }
+}
+
+// The upload interval calls one transition for either capture kind. Keep the
+// dispatch here so the initial-versus-follow-up distinction is executable in
+// the state-machine harness instead of living only in ESPHome YAML.
+inline void upload_failed(uint32_t seq) {
+  if (state == State::FOLLOW_UP_CAPTURING) {
+    follow_up_capture_failed();
+  } else {
+    initial_upload_failed(seq);
   }
 }
 
@@ -237,6 +417,8 @@ inline void wake_resumed() {
     ESP_LOGI(TAG, "wake detection resumed after response seq=%u",
              (unsigned) response_seq);
     state = State::IDLE;
+    follow_up_admission_pending = false;
+    follow_up_admission_granted_flag = false;
   }
 }
 

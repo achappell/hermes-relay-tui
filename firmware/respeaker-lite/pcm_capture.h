@@ -25,6 +25,9 @@
 // any capture starts. Separate header -- this file owns capture, not
 // authorization.
 #include "puck_identity.h"
+// P-4: a retired Home claim must be replaced before even preparing a wake
+// capture; the response state owns this pre-capture admission latch.
+#include "puck_response.h"
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 #include <algorithm>
@@ -349,6 +352,12 @@ inline void prepare(const std::string &wake_word) {
              wake_word.c_str(), puck_identity::state_name(puck_identity::state));
     return;
   }
+  if (!puck_response::can_start_wake_capture()) {
+    last_wake_refused = true;
+    ESP_LOGW(TAG, "wake refused (wake_word=%s): Home admission is not current -- no capture",
+             wake_word.c_str());
+    return;
+  }
   if (buffer == nullptr || capturing || capture_pending_upload) {
     ESP_LOGD(TAG, "wake capture ignored (wake_word=%s, already busy)", wake_word.c_str());
     return;
@@ -392,6 +401,18 @@ inline void start_pending() {
     pending_wake_word.clear();
     return;
   }
+  if (!puck_response::can_start_wake_capture()) {
+    last_wake_refused = true;
+    ESP_LOGW(TAG, "pending wake cancelled: Home admission is not current");
+    pending_wake_word.clear();
+    return;
+  }
+  if (!puck_response::consume_home_admission()) {
+    last_wake_refused = true;
+    ESP_LOGW(TAG, "pending wake cancelled: admission was already consumed");
+    pending_wake_word.clear();
+    return;
+  }
   if (!begin_capture(false)) {
     ESP_LOGD(TAG, "pending wake capture ignored (already busy)");
     pending_wake_word.clear();
@@ -405,7 +426,8 @@ inline void start_pending() {
 // on-device detector is already running again before this is called; unlike a
 // wake capture, no acknowledgement or wake phrase is needed here.
 inline bool start_follow_up() {
-  if (!puck_identity::may_capture()) {
+  if (!puck_identity::may_capture() ||
+      !puck_response::can_start_follow_up_capture()) {
     ESP_LOGW(TAG, "follow-up capture refused: identity %s",
              puck_identity::state_name(puck_identity::state));
     return false;
@@ -417,6 +439,13 @@ inline bool start_follow_up() {
   ESP_LOGI(TAG, "follow-up capture started (bounded to %ums)",
            (unsigned) CAPTURE_LISTEN_TIMEOUT_MS);
   return true;
+}
+
+inline uint32_t pending_sequence() { return sample_index; }
+
+inline void cancel_pending() {
+  wake_pending = false;
+  pending_wake_word.clear();
 }
 
 // Preserve the immediate-start helper for non-automation callers and tests.

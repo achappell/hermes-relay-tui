@@ -6,6 +6,7 @@ from config import (
     DEFAULT_URL,
     DEFAULT_PROFILE_ENV,
     HOME_CONVERSATION_HANDLE_ENV,
+    HOME_WAKE_MAPPING_ID_ENV,
     HOME_DEVICE_CREDENTIAL_ENV,
     PUCK_DEVICE_TOKEN_ENV,
     _env_choice,
@@ -17,6 +18,7 @@ from config import (
     ensure_default_config_file,
     load_config_file,
     resolve_home_conversation_handle,
+    resolve_home_wake_mapping_id,
     resolve_home_device_credential,
     resolve_puck_device_token,
 )
@@ -591,6 +593,7 @@ def test_resolve_puck_device_token_defaults_to_the_default_profile_env(monkeypat
             HOME_CONVERSATION_HANDLE_ENV,
             "opaque-handle",
         ),
+        (resolve_home_wake_mapping_id, HOME_WAKE_MAPPING_ID_ENV, "hey-missy"),
     ],
 )
 def test_resolve_home_pairing_values_read_environment(monkeypatch, tmp_path, resolver, key, value):
@@ -601,12 +604,15 @@ def test_resolve_home_pairing_values_read_environment(monkeypatch, tmp_path, res
 def test_resolve_home_pairing_values_read_profile_env_file(tmp_path, monkeypatch):
     monkeypatch.delenv(HOME_DEVICE_CREDENTIAL_ENV, raising=False)
     monkeypatch.delenv(HOME_CONVERSATION_HANDLE_ENV, raising=False)
+    monkeypatch.delenv(HOME_WAKE_MAPPING_ID_ENV, raising=False)
     env_path = tmp_path / ".env"
     env_path.write_text(
         f'{HOME_DEVICE_CREDENTIAL_ENV}="device-from-file"\n'
-        f'{HOME_CONVERSATION_HANDLE_ENV}="handle-from-file"\n',
+        f'{HOME_CONVERSATION_HANDLE_ENV}="handle-from-file"\n'
+        f'{HOME_WAKE_MAPPING_ID_ENV}="mapping-from-file"\n',
         encoding="utf-8",
     )
 
     assert resolve_home_device_credential(env_path) == "device-from-file"
     assert resolve_home_conversation_handle(env_path) == "handle-from-file"
+    assert resolve_home_wake_mapping_id(env_path) == "mapping-from-file"

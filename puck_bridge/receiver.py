@@ -70,6 +70,8 @@ TOKEN_HEADER = "X-Puck-Token"
 UPLOAD_PATH = "/upload"
 RESPONSE_PATH = "/response"
 RESPONSE_STATUS_PATH = "/response-status"
+WAKE_ADMISSION_PATH = "/wake-admission"
+FOLLOW_UP_ADMISSION_PATH = "/follow-up-admission"
 # A connected client that stops reading must not retain the single response
 # reader forever. Keep this aligned with the response stream's stall budget;
 # tests may shorten it to exercise the failure path without waiting 20s.
@@ -221,6 +223,8 @@ def make_handler(
     transcribe_fn: Callable[[str], dict] | None = None,
     work_dir: str | os.PathLike[str] | None = None,
     response_stream: "ResponseStream | None" = None,
+    on_wake_admission: Callable[[str, int], str] | None = None,
+    on_follow_up_admission: Callable[[int], str] | None = None,
 ) -> type[http.server.BaseHTTPRequestHandler]:
     """Build a request handler bound to one token and one transcript sink.
 
@@ -318,7 +322,12 @@ def make_handler(
                 be terminated definitively or the device waits forever.
             """
             path = self.path.split("?", 1)[0]
-            if path not in {RESPONSE_PATH, RESPONSE_STATUS_PATH}:
+            if path not in {
+                RESPONSE_PATH,
+                RESPONSE_STATUS_PATH,
+                WAKE_ADMISSION_PATH,
+                FOLLOW_UP_ADMISSION_PATH,
+            }:
                 self._respond(404, b"not found")
                 return
 
@@ -343,6 +352,14 @@ def make_handler(
             if not expected_token or token != expected_token:
                 logger.warning("puck bridge response rejected: invalid token")
                 self._respond(401, b"invalid token")
+                return
+
+            if path == WAKE_ADMISSION_PATH:
+                self._do_wake_admission(query)
+                return
+
+            if path == FOLLOW_UP_ADMISSION_PATH:
+                self._do_follow_up_admission(query)
                 return
 
             if response_stream is None:
@@ -571,7 +588,75 @@ def make_handler(
                 self._respond(409, b"response active")
                 return
             body = b'{"seq": %d, "status": "%s"}' % (seq, status.encode("ascii"))
+            if response_stream.home_admission_required_for(seq):
+                body = (
+                    b'{"seq": %d, "status": "%s", '
+                    b'"needs_home_admission": true}'
+                    % (seq, status.encode("ascii"))
+                )
             self._respond(200, body, content_type="application/json")
+
+        def _do_wake_admission(self, query: dict[str, list[str]]) -> None:
+            """Resolve one pre-capture Home admission for one physical wake."""
+            if on_wake_admission is None:
+                self._respond(404, b"wake admission unavailable")
+                return
+            seq_values = query.get("seq", [])
+            wake_values = query.get("wake", [])
+            if len(seq_values) != 1 or len(wake_values) != 1:
+                self._respond(400, b"wake sequence and phrase required")
+                return
+            try:
+                seq = int(seq_values[0])
+            except ValueError:
+                self._respond(400, b"bad wake sequence")
+                return
+            wake_phrase = wake_values[0].strip()
+            if seq < 0 or seq > 0xFFFFFFFF or not wake_phrase or len(wake_phrase) > 128:
+                self._respond(400, b"invalid wake admission request")
+                return
+            try:
+                result = on_wake_admission(wake_phrase, seq)
+            except Exception as exc:
+                logger.warning(
+                    "puck Home wake admission failed (%s)", type(exc).__name__
+                )
+                result = "unavailable"
+            if result not in {"admitted", "denied", "identity_rejected", "unavailable"}:
+                logger.warning("puck Home wake admission returned an invalid result")
+                result = "unavailable"
+            body = f"{result}:{seq}".encode("ascii")
+            self._respond(200, body, content_type="text/plain; charset=utf-8")
+
+        def _do_follow_up_admission(self, query: dict[str, list[str]]) -> None:
+            """Check Home readiness before a wake-free follow-up opens the mic."""
+            if on_follow_up_admission is None:
+                self._respond(404, b"follow-up admission unavailable")
+                return
+            seq_values = query.get("seq", [])
+            if len(seq_values) != 1:
+                self._respond(400, b"response sequence required")
+                return
+            try:
+                seq = int(seq_values[0])
+            except ValueError:
+                self._respond(400, b"bad response sequence")
+                return
+            if seq < 0 or seq > 0xFFFFFFFF:
+                self._respond(400, b"invalid response sequence")
+                return
+            try:
+                result = on_follow_up_admission(seq)
+            except Exception as exc:
+                logger.warning(
+                    "Puck follow-up admission failed (%s)", type(exc).__name__
+                )
+                result = "unavailable"
+            if result not in {"admitted", "denied", "identity_rejected", "unavailable"}:
+                logger.warning("Puck follow-up admission returned an invalid result")
+                result = "unavailable"
+            body = f"{result}:{seq}".encode("ascii")
+            self._respond(200, body, content_type="text/plain; charset=utf-8")
 
         def _write_chunk(self, data: bytes) -> None:
             """Write one HTTP chunked-encoding frame."""

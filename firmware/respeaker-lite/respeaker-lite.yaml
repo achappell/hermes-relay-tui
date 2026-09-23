@@ -575,36 +575,66 @@ micro_wake_word:
   # capture window still has to close (see the fast interval below) before
   # there is anything to upload.
   on_wake_word_detected:
-    # 1-p-1: the gate lives inside wake_capture::prepare() -- deliberately,
-    # so no caller can route around it -- and reports whether it refused.
-    # A refusal must be AUDIBLE: an appliance that silently ignores a wake
-    # is indistinguishable from a broken one, which is a worse outcome
-    # than the refusal itself.
-    - lambda: pcm_capture::wake_capture::prepare(wake_word);
+    # Every physical wake must be authorized before the microphone opens.
+    # A response-status flag is only a hint; it can be lost during an idle
+    # disconnect or reboot. Refuse duplicate callbacks while one wake is in flight.
     - if:
         condition:
-          lambda: return pcm_capture::wake_capture::last_wake_refused;
+          lambda: |-
+            return !pcm_capture::wake_capture::capturing &&
+                   !pcm_capture::wake_capture::capture_pending_upload &&
+                   !puck_response::holds_wake() &&
+                   !puck_response::home_admission_in_flight() &&
+                   !puck_response::home_admission_granted();
         then:
-          - media_player.play_media:
-              id: puck_media_player
-              media_url: "audio-file://refused_sound"
-              announcement: true
-        else:
-          # The acknowledgement starts immediately, but capture is opened
-          # only after this short local tone has drained. Playing it while
-          # capture is open makes XMOS AEC suppress the question; the
-          # explicit hand-off keeps the frozen wake-time acknowledgement
-          # contract without sacrificing the transcript.
           - if:
               condition:
-                lambda: return pcm_capture::wake_capture::wake_pending;
+                lambda: return puck_response::begin_home_admission(
+                    pcm_capture::wake_capture::pending_sequence());
               then:
-                - media_player.play_media:
-                    id: puck_media_player
-                    media_url: "audio-file://heard_sound"
-                    announcement: true
-                - delay: 150ms
-                - lambda: pcm_capture::wake_capture::start_pending();
+                - micro_wake_word.stop
+                - http_request.get:
+                    id: http_client
+                    url: !lambda |-
+                      return std::string("http://${puck_bridge_host}:${puck_bridge_port}/wake-admission?seq=") +
+                             std::to_string(pcm_capture::wake_capture::pending_sequence()) +
+                             "&wake=" + puck_response::url_encode(wake_word) +
+                             "&token=" + puck_response::url_encode("${puck_device_token}");
+                    capture_response: true
+                    max_response_buffer_size: 128
+                    on_response:
+                      then:
+                        - lambda: puck_response::note_home_admission(response->status_code, body);
+                    on_error:
+                      then:
+                        - lambda: puck_response::note_home_admission_transport_failure();
+                - lambda: |-
+                    puck_response::dispatch_wake_capture(
+                        puck_response::can_start_wake_capture(),
+                        [&]() { pcm_capture::wake_capture::prepare(wake_word); },
+                        [&]() { pcm_capture::wake_capture::cancel_pending(); });
+                - if:
+                    condition:
+                      lambda: return pcm_capture::wake_capture::last_wake_refused;
+                    then:
+                      - media_player.play_media:
+                          id: puck_media_player
+                          media_url: "audio-file://refused_sound"
+                          announcement: true
+                    else:
+                      # Keep VAD running during capture, but only after the
+                      # admission response and wake acknowledgement are complete.
+                      - if:
+                          condition:
+                            lambda: return pcm_capture::wake_capture::wake_pending;
+                          then:
+                            - media_player.play_media:
+                                id: puck_media_player
+                                media_url: "audio-file://heard_sound"
+                                announcement: true
+                            - delay: 150ms
+                            - lambda: pcm_capture::wake_capture::start_pending();
+                            - micro_wake_word.start
 
 # Lightweight health telemetry retained after Story 3: the boot state
 # transition (STOPPED -> STARTING -> DETECTING_WAKE_WORD) is easy to miss,
@@ -698,11 +728,9 @@ interval:
             lambda: return pcm_capture::wake_capture::last_upload_failed;
           then:
             - lambda: |-
-                const bool was_follow_up = puck_response::follow_up_capturing();
+                puck_response::upload_failed(
+                    pcm_capture::wake_capture::last_delivered_seq);
                 pcm_capture::wake_capture::last_upload_failed = false;
-                if (was_follow_up) {
-                  puck_response::follow_up_capture_failed();
-                }
       # A complete response keeps the conversation alive. Start the next
       # eight-second microphone window on the normal component task, after
       # playback/status confirmation and without another wake phrase.
@@ -710,13 +738,37 @@ interval:
           condition:
             lambda: return puck_response::follow_up_pending();
           then:
-            - micro_wake_word.start
-            - lambda: |-
-                if (pcm_capture::wake_capture::start_follow_up()) {
-                  puck_response::follow_up_started();
-                } else {
-                  puck_response::follow_up_capture_failed();
-                }
+            - if:
+                condition:
+                  lambda: return puck_response::begin_follow_up_admission(
+                      puck_response::sequence());
+                then:
+                  - micro_wake_word.stop
+                  - http_request.get:
+                      id: http_client
+                      url: !lambda |-
+                        return std::string("http://${puck_bridge_host}:${puck_bridge_port}/follow-up-admission?seq=") +
+                               std::to_string(puck_response::sequence()) +
+                               "&token=" + puck_response::url_encode("${puck_device_token}");
+                      capture_response: true
+                      max_response_buffer_size: 128
+                      on_response:
+                        then:
+                          - lambda: puck_response::note_follow_up_admission(response->status_code, body);
+                      on_error:
+                        then:
+                          - lambda: puck_response::note_follow_up_admission_transport_failure();
+                  - lambda: |-
+                      if (pcm_capture::wake_capture::start_follow_up()) {
+                        puck_response::follow_up_started();
+                      } else if (!puck_response::refusal_pending()) {
+                        puck_response::follow_up_capture_failed();
+                      }
+                  - if:
+                      condition:
+                        lambda: return puck_response::follow_up_capturing();
+                      then:
+                        - micro_wake_word.start
       - if:
           condition:
             lambda: return puck_response::refusal_pending();

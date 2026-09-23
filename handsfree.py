@@ -80,6 +80,7 @@ class HandsFreeCoordinator:
         route_wake: Callable[[str | None], bool] | None = None,
         is_ready: Callable[[], bool] | None = None,
         on_unavailable: Callable[[], Any] | None = None,
+        on_finish: Callable[[], Any] | None = None,
         is_hallucination: Callable[[str], bool] | None = None,
         now: Callable[[], float] = time.monotonic,
     ) -> None:
@@ -99,6 +100,7 @@ class HandsFreeCoordinator:
         self._route_wake = route_wake
         self._is_ready = is_ready or self._session_is_connected
         self._on_unavailable = on_unavailable
+        self._on_finish = on_finish
         self._is_hallucination = is_hallucination
         self._now = now
         self._state = IDLE
@@ -336,6 +338,7 @@ class HandsFreeCoordinator:
         with self._lock:
             self._wake_conversation_active = False
             self._set_state(IDLE)
+        self._notify(self._on_finish, "conversation cleanup")
 
     def tick(self) -> None:
         """Expire the listening window if nobody ever started speaking."""

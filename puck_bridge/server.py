@@ -27,6 +27,7 @@ import signal
 import threading
 import time
 import sys
+import uuid
 from pathlib import Path
 from typing import Sequence
 
@@ -34,6 +35,7 @@ import config
 from session import HermesSession
 
 from .home_session import HomePuckSession
+from .home_admission import HomeClaimRecoveryState, HomePuckSessionFactory
 from .receiver import ThreadingHTTPServer, make_handler
 from .response import ResponseStream
 from .turn import SHUTDOWN_TIMEOUT_SECONDS, TurnRunner
@@ -73,6 +75,16 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "--home-conversation-handle",
         default="",
         help="opaque Home conversation handle; prefer HOME_CONVERSATION_HANDLE",
+    )
+    parser.add_argument(
+        "--home-device-id",
+        default=os.getenv("HOME_DEVICE_ID", ""),
+        help="Home device id used for wake claims and durable claim recovery",
+    )
+    parser.add_argument(
+        "--home-wake-mapping-id",
+        default=os.getenv("HOME_WAKE_MAPPING_ID", ""),
+        help="wake mapping bound to the initial Home handle",
     )
     parser.add_argument(
         "--home-device-credential-file",
@@ -123,6 +135,14 @@ def build_session_args(remaining_argv: Sequence[str]) -> argparse.Namespace:
     return session_args
 
 
+def fresh_puck_session_args(session_args: argparse.Namespace) -> argparse.Namespace:
+    """Copy the selected relay configuration with a never-reused session ID."""
+    values = dict(vars(session_args))
+    configured_id = str(values.get("session_id") or "puck-bridge").strip()
+    values["session_id"] = f"{configured_id}-recovery-{uuid.uuid4().hex}"
+    return argparse.Namespace(**values)
+
+
 def _read_home_device_credential(path: Path | None) -> str:
     """Read a paired Device credential without exposing file contents."""
 
@@ -153,6 +173,12 @@ def main(argv: list[str] | None = None) -> int:
     raw_argv = list(sys.argv[1:] if argv is None else argv)
     args, remaining = build_arg_parser().parse_known_args(raw_argv)
     transport = getattr(args, "transport", "legacy")
+    session_factory = None
+    home_claim_factory = None
+    home_recovery_state = None
+    connect_home_session = True
+    home_claim_retired = False
+    home_claim_close_confirmed = True
 
     if transport == "home":
         profile_env, profile_name = _home_profile_context(remaining)
@@ -182,6 +208,16 @@ def main(argv: list[str] | None = None) -> int:
             conversation_handle = config.resolve_home_conversation_handle(
                 profile_env
             )
+        home_device_id = str(
+            getattr(args, "home_device_id", "") or ""
+        ).strip()
+        if not home_device_id:
+            home_device_id = config.resolve_home_device_id(profile_env)
+        home_wake_mapping_id = str(
+            getattr(args, "home_wake_mapping_id", "") or ""
+        ).strip()
+        if not home_wake_mapping_id:
+            home_wake_mapping_id = config.resolve_home_wake_mapping_id(profile_env)
         missing = []
         if not home_url:
             missing.append("--home-url/HOME_BRIDGE_WS_URL")
@@ -191,6 +227,8 @@ def main(argv: list[str] | None = None) -> int:
             )
         if not conversation_handle:
             missing.append("--home-conversation-handle/HOME_CONVERSATION_HANDLE")
+        if not home_device_id:
+            missing.append("--home-device-id/HOME_DEVICE_ID")
         if missing:
             print(
                 "error: Home transport requires " + ", ".join(missing) + ".",
@@ -198,20 +236,51 @@ def main(argv: list[str] | None = None) -> int:
             )
             return 1
         try:
+            home_recovery_state = HomeClaimRecoveryState(home_device_id)
+            recovery_record = home_recovery_state.load()
+            if recovery_record is None:
+                home_recovery_state.record_active(
+                    conversation_handle, home_wake_mapping_id
+                )
+                active_handle = conversation_handle
+                active_mapping_id = home_wake_mapping_id
+            else:
+                # Process-local recovery latches die at reboot. A persisted
+                # claim is never reopened as an active conversation.
+                active_handle = recovery_record.conversation_handle
+                active_mapping_id = recovery_record.wake_mapping_id
+                connect_home_session = False
+                home_claim_retired = recovery_record.status != "active"
+                home_claim_close_confirmed = recovery_record.status == "retired"
             session = HomePuckSession(
                 home_url,
                 credential,
-                conversation_handle,
+                active_handle,
+                resume_uncertain_turn=False,
+                wake_mapping_id=active_mapping_id,
             )
-        except ValueError as exc:
+            home_claim_factory = HomePuckSessionFactory(
+                home_url,
+                credential,
+                home_device_id,
+                # The Puck has no production calibrated-evidence provider.
+                # This keeps current-claim wakes working and denies every
+                # replacement claim after retirement before asking Home.
+                evidence_provider=None,
+                recovery_state=home_recovery_state,
+            )
+        except (OSError, ValueError) as exc:
             print(
-                f"error: invalid Home transport configuration: {exc}",
+                f"error: Home claim recovery state could not be loaded or saved ({type(exc).__name__})",
                 file=sys.stderr,
             )
             return 1
     else:
         assert session_args is not None
         session = HermesSession(session_args)
+        session_factory = lambda: HermesSession(  # noqa: E731
+            fresh_puck_session_args(session_args)
+        )
     # Device playback is the normal Puck path. Host playback remains an
     # explicit diagnostic fallback for a firmware or response-stream outage.
     response_stream = (
@@ -219,7 +288,17 @@ def main(argv: list[str] | None = None) -> int:
         if args.play_on_device
         else None
     )
-    runner = TurnRunner(session, response_stream=response_stream)
+    runner = TurnRunner(
+        session,
+        response_stream=response_stream,
+        session_factory=(session_factory if transport != "home" else None),
+        home_claim_factory=(home_claim_factory if transport == "home" else None),
+        home_claim_recovery_state=(
+            home_recovery_state if transport == "home" else None
+        ),
+        home_claim_retired=home_claim_retired,
+        home_claim_close_confirmed=home_claim_close_confirmed,
+    )
     if response_stream is not None:
         logger.info(
             "puck bridge will stream the answer to the device at %s; "
@@ -265,7 +344,7 @@ def main(argv: list[str] | None = None) -> int:
             for sig in (signal.SIGINT, signal.SIGTERM):
                 previous_handlers[sig] = signal.signal(sig, signal_stop)
         coordinator.start()
-        runner.start()
+        runner.start(connect=connect_home_session)
         if not stopping.is_set():
             handler_cls = make_handler(
                 expected_token=token,
@@ -276,6 +355,8 @@ def main(argv: list[str] | None = None) -> int:
                 on_capture_silent=getattr(runner, "submit_capture_silent", None),
                 on_capture_failure=getattr(runner, "submit_capture_failure", None),
                 response_stream=response_stream,
+                on_wake_admission=runner.admit_wake,
+                on_follow_up_admission=runner.admit_follow_up,
             )
         if not stopping.is_set():
             httpd = ThreadingHTTPServer(

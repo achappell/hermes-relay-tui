@@ -117,4 +117,16 @@ inline void note_upload_status(int status) {
   }
 }
 
+// A second configured authority, such as Home's Device credential check,
+// can explicitly reject this physical device even when the local bridge
+// token is valid. Keep the same fail-closed state without pretending that
+// the local upload token caused the rejection.
+inline void reject_authority(const char *authority) {
+  if (state != State::UNAUTHORIZED) {
+    ESP_LOGE(TAG, "%s rejected device identity -- failing closed; no further capture until reboot",
+             authority ? authority : "configured authority");
+  }
+  state = State::UNAUTHORIZED;
+}
+
 }  // namespace puck_identity

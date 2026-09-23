@@ -53,6 +53,7 @@ def test_follow_up_capture_is_bounded_and_empty_upload_is_explicit():
     assert "wake_capture::start_follow_up()" in yaml_source
     assert "puck_response::follow_up_started()" in yaml_source
     assert "puck_response::follow_up_capture_failed()" in yaml_source
+    assert "/follow-up-admission?seq=" in yaml_source
     no_speech_deadline = capture_source[
         capture_source.index("if (follow_up_capture && !speech_seen)"):capture_source.index(
             "if (silence_start_ms == 0)",
@@ -201,7 +202,65 @@ def test_follow_up_no_speech_discards_buffered_pcm_before_empty_upload(tmp_path)
               using namespace pcm_capture::wake_capture;
               puck_identity::setup("configured");
               setup();
+
+              auto finish_refusal = []() {
+                puck_response::refusal_started();
+                puck_response::media_idle();
+                puck_response::wake_resumed();
+              };
+
+              // Denial and a response for another sequence leave capture shut.
+              assert(puck_response::begin_home_admission(1));
+              puck_response::note_home_admission(200, "denied:1");
+              prepare("hey missy");
+              start_pending();
+              assert(last_wake_refused);
+              assert(!wake_pending && !capturing && !capture_pending_upload);
+              esphome::http_request::HttpRequestComponent denied_client;
+              upload(&denied_client, "http://bridge/upload", "token");
+              assert(denied_client.urls.empty());
+              finish_refusal();
+
+              assert(puck_response::begin_home_admission(2));
+              puck_response::note_home_admission(200, "admitted:99");
+              prepare("hey missy");
+              start_pending();
+              assert(last_wake_refused);
+              assert(!wake_pending && !capturing && !capture_pending_upload);
+              finish_refusal();
+
+              assert(puck_response::begin_home_admission(3));
+              puck_response::note_home_admission(200, "admitted:3");
+              prepare("hey missy");
+              assert(wake_pending && !capturing);
+              start_pending();
+              assert(capturing && !wake_pending);
+              const uint8_t wake_pcm[] = {1, 2, 3, 4};
+              write(wake_pcm, sizeof(wake_pcm));
+              capturing = false;
+              capture_done = true;
+              capture_pending_upload = true;
+              esphome::http_request::HttpRequestComponent wake_client;
+              upload(&wake_client, "http://bridge/upload", "token");
+              assert(wake_client.urls.size() == 1);
+              assert(wake_client.bodies.front().size() == sizeof(wake_pcm));
+              assert(last_upload_delivered);
+
+              puck_response::response_seq = 3;
+              puck_response::state = puck_response::State::FOLLOW_UP_PENDING;
+              assert(!puck_response::can_start_follow_up_capture());
+              assert(!start_follow_up());
+              assert(puck_response::begin_follow_up_admission(3));
+              puck_response::note_follow_up_admission(200, "admitted:99");
+              assert(!puck_response::can_start_follow_up_capture());
+              assert(!start_follow_up());
+              // Reset the refused follow-up window to model a later response.
+              puck_response::state = puck_response::State::FOLLOW_UP_PENDING;
+              assert(puck_response::begin_follow_up_admission(3));
+              puck_response::note_follow_up_admission(200, "admitted:3");
               assert(start_follow_up());
+              puck_response::follow_up_started();
+              assert(puck_response::follow_up_capturing());
 
               const std::uint8_t quiet_frames[] = {1, 2, 3, 4, 5, 6, 7, 8};
               write(quiet_frames, sizeof(quiet_frames));
@@ -276,6 +335,7 @@ def test_response_status_state_machine_retries_then_refuses(tmp_path):
     log_header = tmp_path / "esphome/core/log.h"
     log_header.write_text(
         "#pragma once\n"
+        "#define ESP_LOGE(...) do {} while (0)\n"
         "#define ESP_LOGD(...) do {} while (0)\n"
         "#define ESP_LOGI(...) do {} while (0)\n"
         "#define ESP_LOGW(...) do {} while (0)\n"
@@ -292,6 +352,25 @@ def test_response_status_state_machine_retries_then_refuses(tmp_path):
 
             int main() {
               using namespace puck_response;
+
+              assert(!can_start_wake_capture());
+              assert(begin_home_admission(6));
+              note_home_admission(200, "admitted:6");
+              assert(can_start_wake_capture());
+              int prepared = 0;
+              int cancelled = 0;
+              dispatch_wake_capture(
+                  can_start_wake_capture(),
+                  [&]() { ++prepared; },
+                  [&]() { ++cancelled; });
+              dispatch_wake_capture(
+                  false,
+                  [&]() { ++prepared; },
+                  [&]() { ++cancelled; });
+              assert(prepared == 1);
+              assert(cancelled == 1);
+              assert(consume_home_admission());
+              assert(!can_start_wake_capture());
 
               begin(7);
               assert(holds_wake());
@@ -316,6 +395,8 @@ def test_response_status_state_machine_retries_then_refuses(tmp_path):
               media_idle();
               note_status(200, terminal_body(8, "complete"));
               assert(follow_up_pending());
+              assert(begin_follow_up_admission(8));
+              note_follow_up_admission(200, "admitted:8");
               follow_up_started();
               assert(follow_up_capturing());
               begin(9);
@@ -358,6 +439,62 @@ def test_response_status_state_machine_retries_then_refuses(tmp_path):
               wake_resumed();
               assert(state == State::IDLE);
 
+              begin(13);
+              media_idle();
+              note_status(200, home_admission_terminal_body(13));
+              assert(needs_home_admission());
+              assert(refusal_pending());
+              refusal_started();
+              media_idle();
+              wake_resumed();
+              assert(!can_start_wake_capture());
+
+              assert(begin_home_admission(14));
+              assert(home_admission_in_flight());
+              note_home_admission(200, "denied:14");
+              assert(needs_home_admission());
+              assert(refusal_pending());
+              refusal_started();
+              media_idle();
+              wake_resumed();
+
+              assert(begin_home_admission(15));
+              note_home_admission(200, "admitted:15");
+              assert(!needs_home_admission());
+              assert(home_admission_granted());
+              assert(can_start_wake_capture());
+              consume_home_admission();
+              assert(!home_admission_granted());
+
+              upload_failed(16);
+              assert(refusal_pending());
+              assert(response_seq == 16);
+              refusal_started();
+              media_idle();
+              wake_resumed();
+              assert(state == State::IDLE);
+
+              begin(18);
+              media_idle();
+              note_status(200, terminal_body(18, "complete"));
+              assert(begin_follow_up_admission(18));
+              note_follow_up_admission(200, "admitted:18");
+              follow_up_started();
+              assert(follow_up_capturing());
+              upload_failed(19);
+              assert(refusal_pending());
+              assert(response_seq == 18);
+              refusal_started();
+              media_idle();
+              wake_resumed();
+
+              puck_identity::setup("token");
+              home_admission_needed = true;
+              assert(begin_home_admission(17));
+              note_home_admission(200, "identity_rejected:17");
+              assert(puck_identity::state == puck_identity::State::UNAUTHORIZED);
+              assert(refusal_pending());
+
               assert(url_encode("a+b & c") == "a%2Bb%20%26%20c");
               return 0;
             }
@@ -388,11 +525,23 @@ def test_wake_acknowledgement_finishes_before_capture_opens():
     capture_source = (Path(__file__).resolve().parents[1] / "firmware/respeaker-lite/pcm_capture.h").read_text()
     assert "inline void prepare(const std::string &wake_word)" in capture_source
     assert "inline void start_pending()" in capture_source
-    prepare = yaml_source.index("wake_capture::prepare(wake_word)")
-    acknowledgement = yaml_source.index('media_url: "audio-file://heard_sound"')
-    delay = yaml_source.index("delay: 150ms")
-    start = yaml_source.index("wake_capture::start_pending()")
-    assert prepare < acknowledgement < delay < start
+    wake = yaml_source.split("  on_wake_word_detected:\n", 1)[1].split(
+        "# Lightweight health telemetry", 1
+    )[0]
+    admission = wake.index("/wake-admission?seq=")
+    prepare = wake.index("wake_capture::prepare(wake_word)")
+    acknowledgement = wake.index('media_url: "audio-file://heard_sound"')
+    delay = wake.index("delay: 150ms")
+    start = wake.index("wake_capture::start_pending()")
+    assert admission < prepare < acknowledgement < delay < start
+    assert "puck_response::begin_home_admission(" in wake
+    assert "puck_response::dispatch_wake_capture(" in wake
+    assert "puck_response::can_start_wake_capture()" in wake
+    assert "puck_response::needs_home_admission()" not in wake
+    assert "!pcm_capture::wake_capture::capturing" in wake
+    assert "!pcm_capture::wake_capture::capture_pending_upload" in wake
+    assert "[&]() { pcm_capture::wake_capture::cancel_pending(); }" in wake
+    assert "puck_response::upload_failed(" in yaml_source
 
 
 def test_wake_capture_acknowledgement_signal_covers_both_close_paths():
