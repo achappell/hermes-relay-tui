@@ -114,3 +114,5 @@ development_status:
   standard-6-puck-migrate-respeaker-puck-path: done
   standard-7-esp32-add-touch-display-audio-session-adapter: review
   standard-8-wk-migrate-browser-and-ipad-routes: done
+  # Blocked on HOME-NW-17 (hermes-relay-home#52).
+  tui-home-01-pair-with-home-and-own-sessions: backlog
