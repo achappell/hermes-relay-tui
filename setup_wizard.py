@@ -270,20 +270,10 @@ def run_setup(
         else str(existing.get("hermes_profile") or "").strip()
     ) or None
     if transport == "home":
-        output_fn(
-            "Transport: paired Home bridge. Its Device credential and opaque "
-            "conversation handle stay in the private profile env."
-        )
-        if not config.resolve_home_device_credential(token_path):
-            output_fn(
-                f"Setup cancelled: set {config.HOME_DEVICE_CREDENTIAL_ENV} in {token_path}."
-            )
-            return 1
-        if not config.resolve_home_conversation_handle(token_path):
-            output_fn(
-                f"Setup cancelled: set {config.HOME_CONVERSATION_HANDLE_ENV} in {token_path}."
-            )
-            return 1
+        from home_pairing_cli import run_pairing_command
+        name = _ask(input_fn, "New local Home profile name", default="home")
+        label = _ask(input_fn, "Device label shown to the approver", default="Hermes TUI")
+        return run_pairing_command(["pair", "--config", str(config_path), "--profile", name, "--label", label], input_fn=input_fn, secret_fn=secret_fn, output_fn=output_fn)
     else:
         output_fn("The bearer token is stored separately in a private .env file.")
         output_fn("Copy the WebSocket endpoint and token from the Hermes server setup.")
@@ -407,26 +397,14 @@ async def probe_connection(
     """Verify credentials and protocol compatibility without sending a turn."""
     connect = connect_factory or config.connect_factory()
     if transport == "home":
-        from puck_bridge.home_session import HomePuckSession
-
-        session = None
+        from home_client import HomeClient
         try:
-            credential = config.resolve_home_device_credential(profile_env)
-            handle = config.resolve_home_conversation_handle(profile_env)
-            session = HomePuckSession(
-                url,
-                credential,
-                handle,
-                connect_factory=connect,
-                session_label="Setup",
-            )
-            await asyncio.wait_for(session.connect(), timeout=timeout)
-            return True, "Connection verified: Home bridge ready"
+            home = HomeClient(url)
+            record = await home.credential()
+            _, grants = await home.configuration(record)
+            return (True, "Home pairing verified; " + str(sum(g.usable for g in grants)) + " available Profile(s). Bridge readiness is checked on launch.")
         except Exception:
-            return False, "Connection failed: Home pairing or bridge readiness was not verified"
-        finally:
-            if session is not None:
-                await session.close()
+            return False, "Home pairing/configuration could not be verified. Run hermes-relay pair."
     if transport == "gateway":
         from gateway_client import GatewayClient
 

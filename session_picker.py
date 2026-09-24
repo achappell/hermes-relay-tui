@@ -7,6 +7,8 @@ for switching and resuming conversations.
 from __future__ import annotations
 
 from typing import Any, Optional
+from datetime import datetime
+import math
 
 from rich.text import Text
 from textual import events
@@ -129,6 +131,8 @@ class SessionPickerModal(ModalScreen[Optional[str]]):
                 and 0 <= option_list.highlighted < len(self.filtered_sessions)
             ):
                 s = self.filtered_sessions[option_list.highlighted]
+                if s.get("opaque") and s.get("active"):
+                    return
                 sid = str(s.get("session_id") or s.get("id") or "")
                 if filter_input.value != sid:
                     filter_input.value = sid
@@ -182,8 +186,17 @@ class SessionPickerModal(ModalScreen[Optional[str]]):
             model = str(s.get("model") or "").strip()
             msg_count = s.get("message_count") or s.get("messages") or s.get("turn_count") or 0
             last_active = str(
-                s.get("last_active") or s.get("updated_at") or s.get("timestamp") or ""
+                s.get("last_active") or s.get("started_at") or s.get("updated_at") or s.get("timestamp") or ""
             ).strip()
+
+            if s.get("opaque"):
+                timestamp = s.get("started_at")
+                last_active = ""
+                if type(timestamp) in {int, float} and math.isfinite(timestamp) and timestamp > 0:
+                    try:
+                        last_active = datetime.fromtimestamp(timestamp).astimezone().strftime("%Y-%m-%d %H:%M %Z")
+                    except (OverflowError, OSError, ValueError):
+                        pass
 
             searchable = f"{sid} {title} {preview} {model} {last_active}".lower()
             if terms and not all(t in searchable for t in terms):
@@ -194,6 +207,8 @@ class SessionPickerModal(ModalScreen[Optional[str]]):
             is_active = bool(sid and sid == self.current_session_id)
             prefix = "▶ " if is_active else "  "
             title_str = title if title else sid
+            if s.get("active"):
+                title_str += " (busy)"
             time_str = f" · {last_active}" if last_active else ""
             count_str = f"({msg_count} msgs)" if msg_count else ""
             model_str = f" · {model}" if model and model != title else ""
@@ -224,7 +239,7 @@ class SessionPickerModal(ModalScreen[Optional[str]]):
                     preview_clean = preview_clean[:72] + "…"
                 text.append(f"\n    {preview_clean}", style="bright_black")
 
-            option_list.add_option(Option(prompt=text, id=sid))
+            option_list.add_option(Option(prompt=text, id=sid, disabled=bool(s.get("opaque") and s.get("active"))))
 
         if self.filtered_sessions:
             option_list.highlighted = 0
@@ -260,7 +275,8 @@ class SessionPickerModal(ModalScreen[Optional[str]]):
         ):
             s = self.filtered_sessions[option_list.highlighted]
             sid = str(s.get("session_id") or s.get("id") or "")
-            self.dismiss(sid)
+            if not (s.get("opaque") and s.get("active")):
+                self.dismiss(sid)
 
     def action_cancel(self) -> None:
         self.dismiss(None)

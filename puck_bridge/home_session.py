@@ -117,7 +117,8 @@ class HomeBridgeRPCError(HomeBridgeProtocolError):
         delivery: Any = "unknown",
     ) -> None:
         self.operation = operation
-        self.code = str(code or "unknown")
+        known_codes = {"invalid_request", "authorization_unavailable", "unauthorized", "stale_conversation", "conversation_mismatch", "request_rejected", "transport_unavailable", "transport_timeout", "protocol_error", "capability_unavailable", "hermes_unavailable", "reconnect_required"}
+        self.code = code if isinstance(code, str) and code in known_codes else "unknown"
         normalized_delivery = str(delivery or "unknown").strip().lower()
         self.delivery = (
             normalized_delivery
@@ -268,6 +269,13 @@ class HomeBridgeClient:
                     self.url,
                     **_home_connection_kwargs(connect, self.credential),
                 )
+                # Device authorization must never follow an HTTP redirect to
+                # another origin. The supported asyncio connector exposes its
+                # redirect decision before it sends the next handshake.
+                if hasattr(self._connect_cm, "process_redirect"):
+                    self._connect_cm.process_redirect = lambda exc: exc
+                elif self._connect_factory is None:
+                    raise HomeBridgeProtocolError("Home requires a WebSocket connector that can refuse redirects")
                 self.ws = await self._connect_cm.__aenter__()
                 self._reader_task = asyncio.create_task(
                     self._read_frames(),
@@ -644,6 +652,7 @@ class HomePuckSession:
         self._claim_retired = False
         self._retirement_attempted = False
         self._retirement_confirmed = False
+        self.retirement_rejection: str | None = None
         self._connected = False
         self._active_turn_id: str | None = None
         self._pending_prompt: dict[str, Any] | None = None
@@ -1286,6 +1295,18 @@ class HomePuckSession:
     def claim_retired(self) -> bool:
         return self._claim_retired
 
+    async def dispatch_title(self, title: str) -> None:
+        """Dispatch only the title operation advertised on this bridge."""
+        if "title" not in self.capabilities or not self.is_connected() or self._client is None:
+            raise HomeBridgeProtocolError("Home title command is unavailable")
+        if not isinstance(title, str) or not title.strip() or len(title) > 256:
+            raise ValueError("Title must contain 1–256 characters")
+        result = await self._client.request("command.dispatch", {"conversation_handle": self._conversation_handle, "name": "title", "arg": title})
+        if not isinstance(result, dict) or result.get("schema") != 1 or result.get("conversation_handle") != self._conversation_handle:
+            raise HomeBridgeProtocolError("Home title command returned an invalid result")
+        if result.get("accepted") is False or result.get("status") in {"rejected", "error", "failed"}:
+            raise HomeBridgeProtocolError("Home rejected the title command")
+
     async def close_claim(self) -> bool:
         """Retire a healthy claim on its current ready control connection."""
         client = self._client
@@ -1352,6 +1373,7 @@ class HomePuckSession:
             self._retirement_confirmed = True
             return True
         except Exception as exc:
+            self.retirement_rejection = exc.code if isinstance(exc, HomeBridgeRPCError) else None
             logger.warning(
                 "Puck Home claim retirement was not confirmed (%s)",
                 type(exc).__name__,

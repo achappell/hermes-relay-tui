@@ -6,6 +6,7 @@ from types import SimpleNamespace
 import pytest
 
 from puck_bridge.home_textual_session import HomeTextualSession
+from home_client import Grant, PairingRecord
 from session import UnsupportedTransportError
 
 
@@ -23,6 +24,7 @@ class FakeHomeSession:
         self.credential = credential
         self.handle = handle
         self.options = kwargs
+        self.session_id = kwargs["session_id"]
         self.connected = False
         self.turn_index = 0
         self.active_turn_id = None
@@ -64,18 +66,34 @@ class FakeHomeSession:
         return False
 
 
+class FakePairingStore:
+    def load(self, home):
+        return PairingRecord(home, "device-1", "device-secret", 1, 9_999_999_999)
+
+
+class FakeHomeClient:
+    def __init__(self, _url):
+        self.home = "https://home.example"
+        self.store = FakePairingStore()
+        self.claim_count = 0
+
+    async def credential(self, *, renew=True):
+        return self.store.load(self.home)
+
+    async def configuration(self, _record):
+        return 1, [Grant("grant-1", "Amanda", "active", True)]
+
+    async def claim(self, _record, _revision, _grant, mode, _ref, *, claim_id):
+        self.claim_count += 1
+        return {"conversation_handle": "opaque-handle", "session": {"mode": mode}}
+
+
 @pytest.mark.asyncio
-async def test_textual_home_session_delegates_turns_and_keeps_pairing_private(tmp_path):
-    profile_env = tmp_path / "private.env"
-    profile_env.write_text(
-        'HOME_DEVICE_CREDENTIAL="device-secret"\n'
-        'HOME_CONVERSATION_HANDLE="opaque-handle"\n',
-        encoding="utf-8",
-    )
+async def test_textual_home_session_delegates_turns_and_keeps_pairing_private(monkeypatch):
+    monkeypatch.setattr("puck_bridge.home_textual_session.HomeClient", FakeHomeClient)
     args = SimpleNamespace(
         url="wss://home.example/api/v1/bridge/ws",
-        profile_env=profile_env,
-        session_id="stale-hermes-session",
+        session_id="home-local-display",
     )
     session = HomeTextualSession(args, home_session_factory=FakeHomeSession)
 
@@ -83,7 +101,7 @@ async def test_textual_home_session_delegates_turns_and_keeps_pairing_private(tm
     try:
         assert ready["status"] == "ready"
         assert session.is_connected()
-        assert session.session_id == "stale-hermes-session"
+        assert session.session_id == "home-local-display"
         assert session.capabilities == frozenset({"heartbeat"})
         assert session.supports_structured_prompts is True
         assert session._home_session.credential == "device-secret"
@@ -97,7 +115,7 @@ async def test_textual_home_session_delegates_turns_and_keeps_pairing_private(tm
             {"type": "turn_end"},
         ]
         assert session.turn_index == 1
-        with pytest.raises(UnsupportedTransportError, match="Home owns conversation selection"):
+        with pytest.raises(UnsupportedTransportError, match="Choose a conversation from /sessions"):
             await session.switch_session("another-session")
     finally:
         await session.close()
@@ -105,22 +123,22 @@ async def test_textual_home_session_delegates_turns_and_keeps_pairing_private(tm
     assert session._home_session.closed is True
 
 
-def test_textual_home_session_marks_recovery_as_reconnect(tmp_path):
-    profile_env = tmp_path / "private.env"
-    profile_env.write_text(
-        'HOME_DEVICE_CREDENTIAL="device-secret"\n'
-        'HOME_CONVERSATION_HANDLE="opaque-handle"\n',
-        encoding="utf-8",
-    )
+def test_textual_home_session_marks_recovery_as_reconnect(monkeypatch):
+    monkeypatch.setattr("puck_bridge.home_textual_session.HomeClient", FakeHomeClient)
     args = SimpleNamespace(
         url="wss://home.example/api/v1/bridge/ws",
-        profile_env=profile_env,
         session_id="home-default",
-        home_reconnect_required=True,
     )
     session = HomeTextualSession(args, home_session_factory=FakeHomeSession)
 
-    session._get_home_session()
+    async def recover():
+        await session.connect()
+        original = session._home_session
+        await session.close()
+        await session.connect()
+        assert session._home_session is original
+        assert session.home_client.claim_count == 1
+        assert session._home_session.handle == "opaque-handle"
+        await session.close()
 
-    assert session._home_session.options["reconnect_required"] is True
-    asyncio.run(session.close())
+    asyncio.run(recover())

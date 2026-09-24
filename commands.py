@@ -19,6 +19,9 @@ class Command:
 COMMAND_REGISTRY: tuple[Command, ...] = (
     Command("help", "Show available commands", args_hint="[filter]"),
     Command("new", "Start a fresh Hermes session", args_hint="[session-id]"),
+    Command("continue", "Continue the Home Profile's most recent conversation"),
+    Command("title", "Rename the conversation when advertised by Home", args_hint="<title>"),
+    Command("home", "Home Profiles and owner approvals", args_hint="grants|select|pending|holders|approve|reject|leave", subcommands=("grants", "select", "pending", "holders", "approve", "reject", "leave")),
     Command("clear", "Clear the visible transcript"),
     Command("status", "Show connection and session status"),
     Command("model", "Change the active Hermes model", args_hint="[model]"),

@@ -2,13 +2,7 @@
 
 A small Textual terminal UI for authenticated Hermes voice sessions. Type text, capture a local microphone turn, watch the reply stream into the transcript, and play streamed PCM audio locally.
 
-This is a client for the existing Hermes voice-session channel. The legacy
-channel remains the default. An explicitly selected `gateway` transport also
-proves the pinned Standard Hermes boundary without changing the fork wire
-contract. It is a direct Standard Hermes development/rollback path, not the
-Home bridge: it must not be pointed at Home's planned `/api/v1/bridge/ws`
-route, and it does not claim Home route, Device-credential, opaque-handle, or
-live integration support. It does not run the Hermes server.
+The TUI supports an explicitly selected HomeBridge connection with Home-owned pairing and approved Profile grants, or the existing direct Standard Hermes `gateway` connection. The legacy voice-session transport remains available pending TUI-RETIRE-01. No connection silently changes mode. This client does not run Hermes or Home, and the new Home pairing/session flow has not yet passed live deployment acceptance.
 
 ## BMAD surface ownership
 
@@ -33,24 +27,22 @@ here.
 - Cancellable microphone capture with session-local input/output device selection.
 - Live signed 16-bit PCM playback through `sounddevice`.
 - WAV output when playback is disabled or `--output` is supplied.
-- A unique Hermes Session for every TUI launch and profile selection.
+- A new conversation on launch by default; explicit Home continue/resume and Profile selection.
 - Bounded reconnect attempts with visible connection state and local prompt preservation.
-- Explicit reconnect recovery that creates a fresh session without replaying an uncertain turn.
+- Home reconnect recovers the same in-memory claim without replaying an uncertain turn; failed continuity stays visible.
 - Structured thinking, status, tool, notification, and background activity rendering with unsupported-event diagnostics available on demand.
 - Typed Markdown transcript rendering with `/details [show|hide]` and `--hide-thinking` controls.
 - Connection, timeout, and turn errors shown in the UI instead of crashing the app.
 - Local image staging and `@path` attachment previews with an explicit text-only relay boundary.
 - Opt-in bounded local `!command` execution and `{!command}` prompt interpolation.
 - Opt-in direct Standard Hermes `/api/ws` text turns with a separate PCM speech
-  sidecar. Home authentication and route roaming remain a separate, not-yet-
-  live adapter boundary.
+  sidecar. Home uses its own Device authentication and bridge adapter.
 
 ## Requirements
 
 - Python 3.14
-- Access to a Hermes voice-session WebSocket endpoint
-- A bearer token for the legacy or direct Standard endpoint. This is not a Home
-  Device credential; the planned Home bridge credential path is not live here.
+- Access to Home with NW-17 client enrollment/session APIs, or a supported direct Hermes endpoint.
+- For Home: a working macOS Keychain or Linux Secret Service, plus approval on Home’s pairing page. For direct connections: their existing bearer-token setup.
 - A working audio input/output device for voice and playback
 
 The base install includes the typed client and configuration support. Local microphone capture and speech-to-text are optional extras, so a package or Homebrew install stays quick; `hermes-relay install` adds them with visible pip progress when you want voice.
@@ -104,6 +96,31 @@ private `~/.hermes-relay-tui/.env`. Those credentials are for the direct
 legacy/Standard path only; they are not the Home Device-credential flow. Use
 `hermes-relay setup` again to change them. See [`docs/packaging/jensen-trial.md`](docs/packaging/jensen-trial.md)
 for the server-side setup and smoke-test steps.
+
+### Pair this TUI with Home
+
+Install the current client with `keyring`, then run `hermes-relay pair --profile household`. Paste Home’s `hermes-home://pair?home=…&code=…` link at the hidden prompt, or use `hermes-relay pair --home https://home.example --profile household` and enter its short code privately. `hermes-relay setup --transport home` starts the same flow. Compare the displayed device label and confirmation code on Home’s pairing page before approving and granting Profiles. The client waits up to five minutes; pending owner grants remain unavailable until their owner approves them.
+
+Credentials and interrupted renewal request IDs live only in macOS Keychain or Linux Secret Service, keyed by the canonical Home address. Null, plaintext, and fallback keyrings are refused. YAML holds public Home/profile settings and the selected grant label or disambiguating grant ID. No ordinary Device credential, conversation handle, or pairing code belongs in YAML, environment variables, shell history, or logs. Pairing a different Home never reuses another Home’s credential. Existing local relay profiles are preserved.
+
+```bash
+hermes-relay --profile household                         # new conversation
+hermes-relay --profile household --continue              # most recent session
+hermes-relay --profile household --home-grant 'Amanda'    # approved Profile
+hermes-relay unpair --home https://home.example          # local forgetting
+```
+
+Unpair forgets local access for that Home. Close existing TUI windows as well. It does **not** revoke the device on the server: use Home’s device/pairing page to revoke it. Saved public settings and intentional local history remain. If the credential was saved but public configuration was interrupted or could not be written, restore the missing local profile without enrolling again: `hermes-relay profile add household --transport home --url wss://home.example/api/v1/bridge/ws --home-grant '<approved-selection-id>'`. Use the approved selection ID shown during pairing, or a unique approved label; add `--config <path>` when using another config file. If credential saving itself failed or its outcome is unknown, check secure storage and Home’s page before enrolling again; revoke any issued but unused device.
+
+Inside Home mode, `/home grants` lists labelled grants and selection IDs, `/home select <label-or-id>` deliberately opens a new conversation for one available grant, `/new` creates a conversation, `/continue` selects the most recent, and `/sessions` or `/resume` opens a picker. The picker shows titles, start dates, message counts and busy state using local selection keys; Home session references remain in memory. An explicit `--resume <session-ref>` is also supported for a reference obtained for that same Home/grant. `/title <text>` runs only when Home advertises its title command. Unsupported commands are reported locally.
+
+`/home pending` and `/home holders` show Profile owner information. `/home approve <grant-id>` and `/home reject <grant-id>` send only the decision explicitly requested. Pending/revoked/unavailable grants cannot claim a conversation. Multiple grants with the same label can be selected by their listed IDs.
+
+Session and Profile changes wait until active turns, prompts and capture have finished. Remove unsent queued prompts or attachments before switching. After an uncertain turn, `/reconnect` recovers the same claim’s transport without replay. It does not consume the earlier turn’s events or resolve its uncertain outcome; the UI says so and continues to block new turns and conversation changes. `/home leave` is required to explicitly leave that uncertainty behind before a deliberate next action. A failed replacement preserves the previous transcript on screen. Home restores Hermes context on resume, but does not expose a history retrieval API: earlier messages are **not** loaded. Local prompt history and default saved artifacts are isolated by canonical Home and granted identity, with no automatic migration from older identity scopes.
+
+Quit and switching attempt a bounded claim close while preserving the Standard session for later resume. Network loss keeps the claim for recovery within Home’s configured grace (NW-17 defaults to 120 seconds); loss of the process loses this in-memory recovery binding. Claim expiry, revocation, and failed release stay explicit. Before a new claim the credential renews in its final 14 days, under a per-Home lock shared by windows, and configuration is fetched again. Renewal on Home can invalidate older-generation claims in other windows; those windows must report failed recovery and make a deliberate session choice.
+
+Live prerequisites: deploy compatible Home NW-17 HTTP and bridge routes behind a valid HTTPS/WSS certificate, configure unmodified Standard Hermes and its session directory, and enable enrollment/approval on Home. The implementation was inspected against Home commit `d2447f684a143817f7b5688b597c11aa053bb672`. Secure-store operation, pairing approvals, text/voice, stop, concurrent windows, renewal, revocation, and disconnect recovery still require live acceptance. This implementation does not change a Home deployment or retire legacy clients.
 
 ### Python package
 
