@@ -9,14 +9,14 @@ WORKFLOWS = ROOT / "_bmad/_config/custom/workflows/common"
 
 
 class IssueTrackingWorkflowTests(unittest.TestCase):
-    def test_issue_lookup_uses_exact_key_when_no_story_url_index_exists(self) -> None:
-        index = ROOT / "_bmad-output/implementation-artifacts/story-index.yaml"
-        self.assertFalse(index.exists())
+    def test_issue_lookup_uses_exact_key_when_indexed_issue_url_is_missing(self) -> None:
         workflow = (WORKFLOWS / "find-issue.yaml").read_text(encoding="utf-8")
         indexed = workflow.index("scripts/bmad_issue_tracking.py issue-id")
+        missing_indexed_url = workflow.index("- CHECK: empty indexed_issue_id")
         exact_key = workflow.index("scripts/bmad_issue_tracking.py search-issue-id")
         broad_platform_search = workflow.index("glab api")
-        self.assertLess(indexed, exact_key)
+        self.assertLess(indexed, missing_indexed_url)
+        self.assertLess(missing_indexed_url, exact_key)
         self.assertLess(exact_key, broad_platform_search)
         ensure_issue = (WORKFLOWS / "ensure-issue.yaml").read_text(encoding="utf-8")
         self.assertIn("**Sprint Key:** `{story_key}`", ensure_issue)

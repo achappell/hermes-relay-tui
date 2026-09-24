@@ -247,5 +247,5 @@ def test_create_home_profile_does_not_request_or_store_a_bearer_token(tmp_path):
     assert profile["transport"] == "home"
     assert profile["url"] == "wss://home.example/api/v1/bridge/ws"
     assert "token" not in profile
-    assert "Home Device pairing" in output[-1]
+    assert "Home pairing uses platform secure storage" in output[-1]
     assert not profile_env.exists()

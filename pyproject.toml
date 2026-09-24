@@ -11,9 +11,10 @@ requires-python = ">=3.14,<3.15"
 authors = [{ name = "Amanda Chappell" }]
 dependencies = [
   "textual>=8.2",
-  "websockets>=13.0",
+  "websockets>=15.0",
   "python-dotenv>=1.0.1",
   "PyYAML>=6.0",
+  "keyring>=25.0",
 ]
 
 [project.optional-dependencies]
@@ -65,7 +66,7 @@ hermes-relay-benchmark = "speech_benchmark:main"
 environments = ["sys_platform == 'darwin'"]
 
 [tool.setuptools]
-py-modules = ["app", "attachments", "audio", "clipboard", "client", "commands", "config", "diagnostics", "domain", "earcons", "gateway_audio", "gateway_client", "gateway_session", "help_screen", "history", "installer", "mic", "profile_cli", "prompts", "session", "session_picker", "setup_wizard", "shell", "speech_benchmark", "timing", "transcript", "voice", "wake", "handsfree"]
+py-modules = ["app", "attachments", "audio", "clipboard", "client", "commands", "config", "diagnostics", "domain", "earcons", "gateway_audio", "gateway_client", "gateway_session", "help_screen", "history", "home_client", "home_pairing_cli", "installer", "mic", "profile_cli", "prompts", "session", "session_picker", "setup_wizard", "shell", "speech_benchmark", "timing", "transcript", "voice", "wake", "handsfree"]
 include-package-data = false
 
 [tool.setuptools.packages.find]

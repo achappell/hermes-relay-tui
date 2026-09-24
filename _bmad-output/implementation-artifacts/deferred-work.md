@@ -300,3 +300,11 @@
 - source_spec: `_bmad-output/implementation-artifacts/spec-1-p-4-recovery-without-replay.md`
   summary: Define the calibrated proximity provider's qualification threshold and score semantics before enabling Home re-claims.
   evidence: `puck_bridge/home_admission.py` accepts finite scores from 0.0 through 1.0, but this repository has no trusted production provider or calibration contract defining whether each value means sufficient proximity. The hardware provider contract must settle the threshold and evidence semantics.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-tui-home-01-pair-with-home-and-own-sessions.md`
+  summary: Confirm the pinned Standard title-command success response before strengthening acknowledgment validation.
+  evidence: Medium/unverified review finding; Home currently passes the upstream result through after known rejection checks and adds schema/handle, without a title-specific positive response schema. Capture the actual contract before requiring a new field.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-tui-home-01-pair-with-home-and-own-sessions.md`
+  summary: Complete TUI-HOME-01 regression coverage and update obsolete environment-pairing assertions before acceptance.
+  evidence: Current session prohibits adding/running tests without explicit request. Six existing old-contract cases were maintained by static inspection only. Renewal retry and pairing persistence still need dedicated regression cases, and all tests remain unexecuted; runtime acceptance is not passed or closed.

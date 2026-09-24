@@ -284,9 +284,10 @@ def test_home_transport_selects_local_capture_adapter_without_a_hermes_session_i
     session = app._new_session(session_args)
 
     assert isinstance(session, app_module.HomeTextualSession)
-    assert session_args.session_id == "home-amanda"
-    assert session.session_id == "home-amanda"
-    assert session_args.home_reconnect_required is False
+    assert session_args.session_id.startswith("home-")
+    assert len(session_args.session_id.removeprefix("home-")) == 12
+    assert session_args.session_id != "home-amanda"
+    assert session.session_id == session_args.session_id
 
 
 def test_default_transport_keeps_the_fork_session_at_the_real_session_seam():

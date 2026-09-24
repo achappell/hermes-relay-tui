@@ -117,7 +117,8 @@ class HomeBridgeRPCError(HomeBridgeProtocolError):
         delivery: Any = "unknown",
     ) -> None:
         self.operation = operation
-        self.code = str(code or "unknown")
+        known_codes = {"invalid_request", "authorization_unavailable", "unauthorized", "stale_conversation", "conversation_mismatch", "request_rejected", "transport_unavailable", "transport_timeout", "protocol_error", "capability_unavailable", "hermes_unavailable", "reconnect_required"}
+        self.code = code if isinstance(code, str) and code in known_codes else "unknown"
         normalized_delivery = str(delivery or "unknown").strip().lower()
         self.delivery = (
             normalized_delivery
@@ -268,6 +269,13 @@ class HomeBridgeClient:
                     self.url,
                     **_home_connection_kwargs(connect, self.credential),
                 )
+                # Device authorization must never follow an HTTP redirect to
+                # another origin. The supported asyncio connector exposes its
+                # redirect decision before it sends the next handshake.
+                if hasattr(self._connect_cm, "process_redirect"):
+                    self._connect_cm.process_redirect = lambda exc: exc
+                elif self._connect_factory is None:
+                    raise HomeBridgeProtocolError("Home requires a WebSocket connector that can refuse redirects")
                 self.ws = await self._connect_cm.__aenter__()
                 self._reader_task = asyncio.create_task(
                     self._read_frames(),
@@ -644,6 +652,7 @@ class HomePuckSession:
         self._claim_retired = False
         self._retirement_attempted = False
         self._retirement_confirmed = False
+        self.retirement_rejection: str | None = None
         self._connected = False
         self._active_turn_id: str | None = None
         self._pending_prompt: dict[str, Any] | None = None
@@ -841,6 +850,8 @@ class HomePuckSession:
         pcm_remainder = b""
         resume_attempts = 0
         audio_lost = False
+        text_terminal = False
+        audio_wait_remaining: float | None = None
         text_state: dict[str, Any] = {
             "committed": "",
             "rendered_preview": "",
@@ -852,7 +863,22 @@ class HomePuckSession:
         try:
             while True:
                 try:
-                    frame = await client.next_frame()
+                    if audio_wait_remaining is None:
+                        frame = await client.next_frame()
+                    else:
+                        # Count network waiting only; rendering/playback happens
+                        # while this generator is suspended at yield.
+                        started_wait = asyncio.get_running_loop().time()
+                        try:
+                            async with asyncio.timeout(max(0, audio_wait_remaining)):
+                                frame = await client.next_frame()
+                        except asyncio.TimeoutError:
+                            try:
+                                yield {"type": "audio_abort", "error": "Home audio completion timed out; text completed. Reconnect before the next prompt.", "text_completed": True}
+                            finally:
+                                await self._close_after_protocol_failure()
+                            return
+                        audio_wait_remaining -= asyncio.get_running_loop().time() - started_wait
                 except HomeBridgeTransportError:
                     if not self._resume_uncertain_turn:
                         self._note_uncertain_transport()
@@ -883,6 +909,14 @@ class HomePuckSession:
                         audio_lost = True
                         pcm_remainder = b""
                         yield {"type": "audio_end"}
+                        if text_terminal:
+                            # The resumed worker may still send unlabelled PCM.
+                            # Retire this socket so its tail cannot enter a new turn.
+                            try:
+                                yield {"type": "audio_abort", "error": "Home audio was interrupted; text completed. Reconnect before the next prompt.", "text_completed": True}
+                            finally:
+                                await self._close_after_protocol_failure()
+                            return
                     continue
                 if isinstance(frame, bytes):
                     if audio_failed or audio_lost:
@@ -891,6 +925,8 @@ class HomePuckSession:
                         raise HomeBridgeAudioError(
                             "Home bridge sent PCM outside an active audio frame"
                         )
+                    if text_terminal and frame:
+                        audio_wait_remaining = self._request_timeout
                     data = pcm_remainder + frame
                     pcm_remainder = data[-1:] if len(data) % 2 else b""
                     if pcm_remainder:
@@ -916,6 +952,8 @@ class HomePuckSession:
                     )
                     if audio_event is None:
                         continue
+                    if text_terminal:
+                        audio_wait_remaining = self._request_timeout
                     kind = audio_event["type"]
                     if kind == "audio_start":
                         audio_started = True
@@ -930,6 +968,8 @@ class HomePuckSession:
                     else:
                         yield audio_event
                         audio_failed = True
+                    if text_terminal and (audio_ended or audio_failed):
+                        return
                     continue
                 if method != "event":
                     # Heartbeat and future Home notifications cannot complete
@@ -1029,10 +1069,13 @@ class HomePuckSession:
                     }:
                         return
                 if _is_terminal_event(event_type, payload):
-                    if audio_started and not audio_ended and not audio_failed:
-                        raise HomeBridgeAudioError(
-                            "Home bridge turn ended before audio.end"
-                        )
+                    # Home pumps text and audio independently. Text completion
+                    # does not end an advertised or already-started audio stream.
+                    if (audio_started or "audio" in self.capabilities) and not audio_ended and not audio_failed:
+                        if not text_terminal:
+                            audio_wait_remaining = self._request_timeout
+                        text_terminal = True
+                        continue
                     return
         except asyncio.CancelledError:
             await self._close_after_uncertain_prompt()
@@ -1286,6 +1329,18 @@ class HomePuckSession:
     def claim_retired(self) -> bool:
         return self._claim_retired
 
+    async def dispatch_title(self, title: str) -> None:
+        """Dispatch only the title operation advertised on this bridge."""
+        if "title" not in self.capabilities or not self.is_connected() or self._client is None:
+            raise HomeBridgeProtocolError("Home title command is unavailable")
+        if not isinstance(title, str) or not title.strip() or len(title) > 256:
+            raise ValueError("Title must contain 1–256 characters")
+        result = await self._client.request("command.dispatch", {"conversation_handle": self._conversation_handle, "name": "title", "arg": title})
+        if not isinstance(result, dict) or result.get("schema") != 1 or result.get("conversation_handle") != self._conversation_handle:
+            raise HomeBridgeProtocolError("Home title command returned an invalid result")
+        if result.get("accepted") is False or result.get("status") in {"rejected", "error", "failed"}:
+            raise HomeBridgeProtocolError("Home rejected the title command")
+
     async def close_claim(self) -> bool:
         """Retire a healthy claim on its current ready control connection."""
         client = self._client
@@ -1352,6 +1407,7 @@ class HomePuckSession:
             self._retirement_confirmed = True
             return True
         except Exception as exc:
+            self.retirement_rejection = exc.code if isinstance(exc, HomeBridgeRPCError) else None
             logger.warning(
                 "Puck Home claim retirement was not confirmed (%s)",
                 type(exc).__name__,
@@ -1946,9 +2002,16 @@ def _normalize_event(
             }
         )
         return events
-    if event_type in {"thinking.delta", "reasoning.delta"} and payload.get("text"):
+    if event_type in {"thinking.delta", "reasoning.delta"}:
+        reasoning_delta = (
+            payload.get("text")
+            if "text" in payload
+            else payload.get("delta")
+        )
+        if not reasoning_delta:
+            return None
         state["streamed_reasoning"] = True
-        return {"type": "thinking_delta", "text": str(payload["text"])}
+        return {"type": "thinking_delta", "text": str(reasoning_delta)}
     if event_type == "reasoning.available":
         reasoning_text = str(payload.get("text") or "")
         if reasoning_text:
