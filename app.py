@@ -1900,11 +1900,18 @@ class HermesStreamingApp(App):
     async def _close_session_for_shutdown(self) -> None:
         """Give session cleanup a budget so quit cannot wait on a dead socket."""
         if isinstance(self.session, HomeTextualSession):
+            # The transcript is already being unmounted here, so an unconfirmed
+            # close is logged; Home's reconnect grace still retires the claim.
             try:
-                if not await self.session.release_claim():
-                    self._append_block("Home claim close was not confirmed; Home's expiry rules still apply. Standard history is retained.")
-            except Exception:
-                self._append_block("Home claim close was not confirmed; Home's expiry rules still apply.")
+                confirmed = await self.session.release_claim()
+            except Exception as exc:  # noqa: BLE001 - quit must always finish
+                confirmed = False
+                diagnostic_logger.warning(
+                    "app.shutdown.home_claim_release_failed error=%s",
+                    type(exc).__name__,
+                )
+            if not confirmed:
+                diagnostic_logger.warning("app.shutdown.home_claim_release_unconfirmed")
         await self._close_session_with_timeout(
             self.session,
             event="app.shutdown.session_close",
