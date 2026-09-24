@@ -538,16 +538,43 @@ Configure the paired values outside Git and start the adapter with:
 export PUCK_DEVICE_TOKEN=local-upload-credential
 export HOME_BRIDGE_WS_URL=wss://home.example/api/v1/bridge/ws
 export HOME_DEVICE_CREDENTIAL=paired-device-credential
+export HOME_DEVICE_ID=puck-device-id
+export HOME_WAKE_MAPPING_ID=hey-missy
 export HOME_CONVERSATION_HANDLE=opaque-conversation-handle
 venv/bin/python -m puck_bridge --transport home --port 8766
 ```
 
 `PUCK_DEVICE_TOKEN` remains the local firmware-to-bridge upload credential;
-the Home Device credential is a separate boundary credential. Home transport
-fails closed when any pairing value is absent and never falls back to the
-direct Hermes bearer path. The public Home route is not live in this checkout,
-so this slice is covered by fake-bridge tests; the live route and hardware
-round trip remain explicit integration gates.
+the Home Device credential is a separate boundary credential. `HOME_DEVICE_ID`
+keys the bridge's private claim-recovery record, and `HOME_WAKE_MAPPING_ID`
+binds the configured conversation handle to its Home wake mapping. The mapping
+ID may be omitted when Home exposes exactly one active mapping; with multiple
+mappings it is required. Each physical wake checks that its phrase still maps
+to the active claim before capture. Each wake-free follow-up checks the live
+bridge session before its microphone window opens.
+
+The firmware defaults to Direct Hermes so a local bridge outage does not
+disable capture. Build Home firmware with the explicit mode substitution so
+every physical wake stays closed until the bridge confirms admission:
+
+```bash
+venv-firmware/bin/esphome -s puck_home_transport true compile firmware/respeaker-lite/respeaker-lite.yaml
+venv-firmware/bin/esphome -s puck_home_transport true upload firmware/respeaker-lite/respeaker-lite.yaml --device respeaker-lite.local
+```
+
+The bridge stores the current opaque handle and mapping ID in
+`~/.hermes-relay-tui/home-claim-state/` with owner-only permissions. After a
+process restart it never reopens the saved handle as an active conversation.
+On the next physical wake, it attempts a bounded control-only close for an
+active or unconfirmed marker. If closure remains unconfirmed, later physical
+wakes may retry that close while capture stays closed. A verified close still
+requires fresh calibrated proximity evidence before Home grants a replacement.
+The Puck has no production evidence provider yet, so new Home claims remain
+denied after a restart or claim loss. Home transport fails closed when required
+pairing is absent and never falls back to the direct Hermes bearer path. The
+public Home route is not live in this checkout, so the bridge contract is
+covered by fake-bridge tests; live-route and hardware round trips remain
+integration gates.
 
 Raw Puck audio stays transient end-to-end (NFR3): the receiver's in-memory
 chunk buffer for a capture is discarded as soon as it is reassembled, and
@@ -557,11 +584,13 @@ failure — no audio or transcript archive by default.
 ### Story P-3: Bounded follow-up and exact `stop`
 
 After the Puck finishes a successful response, `puck_response.h` holds wake
-mode while the firmware opens an eight-second follow-up capture. VAD can end
-that window after 800ms of silence once speech has started; if nobody speaks,
-the hard eight-second deadline closes it and sends one empty upload. The host
-bridge turns that empty upload into a `silent` response status, so the Puck
-returns to wake mode without a refusal sound or an empty Hermes request.
+mode while the firmware asks the bridge to admit an eight-second follow-up
+capture. The bridge checks that the same session is still connected and does
+not create a new Home claim for a follow-up. VAD can end the window after
+800ms of silence once speech has started; if nobody speaks, the hard
+eight-second deadline closes it and sends one empty upload. The host bridge
+turns that empty upload into a `silent` response status, so the Puck returns to
+wake mode without a refusal sound or an empty Hermes request.
 
 The bridge reuses `HandsFreeCoordinator`'s normalized session contract. Each
 non-empty follow-up is admitted through a thread-safe one-capture mailbox and

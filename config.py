@@ -461,9 +461,11 @@ def resolve_profile_token_source(profile_env: Path, token_env: str) -> str:
 # exists -- do not treat this as adequate for a real household deployment.
 PUCK_DEVICE_TOKEN_ENV = "PUCK_DEVICE_TOKEN"
 HOME_DEVICE_CREDENTIAL_ENV = "HOME_DEVICE_CREDENTIAL"
+HOME_DEVICE_ID_ENV = "HOME_DEVICE_ID"
 HOME_BRIDGE_URL_ENV = "HOME_BRIDGE_URL"
 HOME_BRIDGE_PATH = "/api/v1/bridge/ws"
 HOME_CONVERSATION_HANDLE_ENV = "HOME_CONVERSATION_HANDLE"
+HOME_WAKE_MAPPING_ID_ENV = "HOME_WAKE_MAPPING_ID"
 
 
 def resolve_puck_device_token(profile_env: Path | None = None) -> str:
@@ -478,10 +480,22 @@ def resolve_home_device_credential(profile_env: Path | None = None) -> str:
     return _private_env_value(env_path, HOME_DEVICE_CREDENTIAL_ENV)
 
 
+def resolve_home_device_id(profile_env: Path | None = None) -> str:
+    """Resolve the configured Home device identity without exposing secrets."""
+    env_path = Path(profile_env or DEFAULT_PROFILE_ENV).expanduser()
+    return _private_env_value(env_path, HOME_DEVICE_ID_ENV)
+
+
 def resolve_home_conversation_handle(profile_env: Path | None = None) -> str:
     """Resolve the opaque Home conversation binding from private config."""
     env_path = Path(profile_env or DEFAULT_PROFILE_ENV).expanduser()
     return _private_env_value(env_path, HOME_CONVERSATION_HANDLE_ENV)
+
+
+def resolve_home_wake_mapping_id(profile_env: Path | None = None) -> str:
+    """Resolve the wake mapping bound to the configured Home conversation."""
+    env_path = Path(profile_env or DEFAULT_PROFILE_ENV).expanduser()
+    return _private_env_value(env_path, HOME_WAKE_MAPPING_ID_ENV)
 
 
 def _profile_env_path(cfg: dict[str, Any], args: Any = None) -> Path:
@@ -1528,10 +1542,14 @@ __all__ = [
     "migrate_legacy_profile_config",
     "profile_token_env",
     "HOME_CONVERSATION_HANDLE_ENV",
+    "HOME_WAKE_MAPPING_ID_ENV",
     "HOME_DEVICE_CREDENTIAL_ENV",
+    "HOME_DEVICE_ID_ENV",
     "PUCK_DEVICE_TOKEN_ENV",
     "resolve_home_conversation_handle",
+    "resolve_home_wake_mapping_id",
     "resolve_home_device_credential",
+    "resolve_home_device_id",
     "resolve_profile_token",
     "resolve_profile_token_source",
     "resolve_puck_device_token",

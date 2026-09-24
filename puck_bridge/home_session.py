@@ -33,6 +33,15 @@ HOME_BRIDGE_SCHEMA = 1
 HOME_BRIDGE_CONNECT_TIMEOUT = 10.0
 HOME_BRIDGE_REQUEST_TIMEOUT = 15.0
 HOME_BRIDGE_CLOSE_TIMEOUT = 3.0
+HOME_CLAIM_RETIRE_TIMEOUT = 10.0
+# Claim retirement closes the old reader, performs a bounded control reconnect,
+# then closes that control client. Bound all three phases at their outer callsite.
+HOME_CLAIM_RETIRE_CALL_TIMEOUT_SECONDS = (
+    (2 * HOME_BRIDGE_CLOSE_TIMEOUT)
+    + HOME_CLAIM_RETIRE_TIMEOUT
+    + HOME_BRIDGE_CLOSE_TIMEOUT
+    + 1.0
+)
 HOME_BRIDGE_MAX_SIZE = 256 * 1024
 HOME_BRIDGE_QUEUE_MAX = 128
 HOME_BRIDGE_MAX_SAMPLE_RATE = 384_000
@@ -191,11 +200,15 @@ class HomeBridgeClient:
         *,
         connect_factory: Any | None = None,
         request_timeout: float = HOME_BRIDGE_REQUEST_TIMEOUT,
+        discard_queued_events_on_close: bool = False,
     ) -> None:
         self.url = require_home_bridge_url(url)
         self.credential = credential
         self._connect_factory = connect_factory
         self._request_timeout = request_timeout
+        self._discard_queued_events_on_close = bool(
+            discard_queued_events_on_close
+        )
         self._connect_cm: Any = None
         self.ws: Any = None
         self._reader_task: asyncio.Task[None] | None = None
@@ -539,6 +552,15 @@ class HomeBridgeClient:
     def _queue_close_sentinel(self) -> None:
         if not self._sentinel_queued:
             self._sentinel_queued = True
+            if self._discard_queued_events_on_close:
+                # P-4's Puck mode treats every queued event from a dropped
+                # socket as unresolved. It must see transport failure before
+                # any of those events can be forwarded as authoritative.
+                while True:
+                    try:
+                        self._events.get_nowait()
+                    except asyncio.QueueEmpty:
+                        break
             try:
                 self._events.put_nowait(_CLOSE_SENTINEL)
             except asyncio.QueueFull:
@@ -596,12 +618,15 @@ class HomePuckSession:
         request_timeout: float = HOME_BRIDGE_REQUEST_TIMEOUT,
         supports_structured_prompts: bool = False,
         reconnect_required: bool = False,
+        resume_uncertain_turn: bool = True,
         session_id: str = "home-puck",
         session_label: str = "Puck",
+        wake_mapping_id: str = "",
     ) -> None:
         self.url = require_home_bridge_url(url)
         self.device_credential = str(device_credential).strip()
         self._conversation_handle = str(conversation_handle).strip()
+        self.wake_mapping_id = str(wake_mapping_id).strip()
         if not self.device_credential:
             raise ValueError("Home Device credential is required")
         if not self._conversation_handle:
@@ -615,11 +640,16 @@ class HomePuckSession:
         self._retired_client: HomeBridgeClient | None = None
         self._opened = False
         self._reconnect_required = bool(reconnect_required)
+        self._resume_uncertain_turn = bool(resume_uncertain_turn)
+        self._claim_retired = False
+        self._retirement_attempted = False
+        self._retirement_confirmed = False
         self._connected = False
         self._active_turn_id: str | None = None
         self._pending_prompt: dict[str, Any] | None = None
         self._turn_lock = asyncio.Lock()
         self._prompt_response_lock = asyncio.Lock()
+        self._retirement_lock = asyncio.Lock()
         self._capabilities: frozenset[str] = frozenset()
         self._timing_capability: str | None = None
         self.turn_index = 0
@@ -674,6 +704,7 @@ class HomePuckSession:
             self.device_credential,
             connect_factory=self._connect_factory,
             request_timeout=self._request_timeout,
+            discard_queued_events_on_close=not self._resume_uncertain_turn,
         )
         self._client = client
         method = "conversation.reconnect" if self._reconnect_required else "conversation.open"
@@ -823,6 +854,9 @@ class HomePuckSession:
                 try:
                     frame = await client.next_frame()
                 except HomeBridgeTransportError:
+                    if not self._resume_uncertain_turn:
+                        self._note_uncertain_transport()
+                        raise
                     if resume_attempts >= 3:
                         raise
                     resume_attempts += 1
@@ -1244,6 +1278,94 @@ class HomePuckSession:
         self._reconnect_required = self._opened
         await self.close()
 
+    @property
+    def conversation_handle(self) -> str:
+        return self._conversation_handle
+
+    @property
+    def claim_retired(self) -> bool:
+        return self._claim_retired
+
+    async def close_claim(self) -> bool:
+        """Retire a healthy claim on its current ready control connection."""
+        client = self._client
+        if not self.is_connected() or client is None:
+            return False
+        try:
+            result = await client.request(
+                "conversation.close",
+                {"conversation_handle": self._conversation_handle},
+            )
+            _validate_close_result(result, self._conversation_handle)
+        except Exception as exc:
+            logger.warning("Puck Home claim close was not confirmed (%s)", type(exc).__name__)
+            self._claim_retired = True
+            return False
+        self._claim_retired = True
+        self._retirement_confirmed = True
+        await self.close()
+        return True
+
+    async def retire_uncertain_claim(self) -> bool:
+        """Use one control-only reconnect to close a claim after turn loss.
+
+        The temporary reader may queue old response frames while the close
+        RPC is in flight. This method never consumes or forwards that queue.
+        """
+        async with self._retirement_lock:
+            return await self._retire_uncertain_claim_once()
+
+    async def retry_uncertain_claim(self) -> bool:
+        """Make one fresh control-only close attempt on a later physical wake."""
+        async with self._retirement_lock:
+            if self._retirement_confirmed:
+                return True
+            self._retirement_attempted = False
+            return await self._retire_uncertain_claim_once()
+
+    async def _retire_uncertain_claim_once(self) -> bool:
+        if self._retirement_attempted:
+            return self._retirement_confirmed
+        self._retirement_attempted = True
+        self._claim_retired = True
+        await self.close()
+        client = HomeBridgeClient(
+            self.url,
+            self.device_credential,
+            connect_factory=self._connect_factory,
+            request_timeout=min(self._request_timeout, 3.0),
+            discard_queued_events_on_close=True,
+        )
+        try:
+            async with asyncio.timeout(HOME_CLAIM_RETIRE_TIMEOUT):
+                await client.connect()
+                ready = await client.request(
+                    "conversation.reconnect",
+                    {"conversation_handle": self._conversation_handle},
+                )
+                self._validate_ready_result(ready)
+                result = await client.request(
+                    "conversation.close",
+                    {"conversation_handle": self._conversation_handle},
+                )
+                _validate_close_result(result, self._conversation_handle)
+            self._retirement_confirmed = True
+            return True
+        except Exception as exc:
+            logger.warning(
+                "Puck Home claim retirement was not confirmed (%s)",
+                type(exc).__name__,
+            )
+            return False
+        finally:
+            try:
+                await asyncio.wait_for(client.close(), HOME_BRIDGE_CLOSE_TIMEOUT)
+            except Exception as exc:
+                logger.debug(
+                    "Puck Home control connection cleanup pending (%s)",
+                    type(exc).__name__,
+                )
+
     def _validate_prompt_result(self, result: Any) -> str:
         if not isinstance(result, dict):
             raise HomeBridgeProtocolError(
@@ -1468,6 +1590,22 @@ def _reconnected_turn_id(result: dict[str, Any], conversation_handle: str) -> st
     raise HomeBridgeProtocolError(
         "Home bridge reconnect omitted unresolved-turn state"
     )
+
+
+def _validate_close_result(result: Any, conversation_handle: str) -> None:
+    if not isinstance(result, dict):
+        raise HomeBridgeProtocolError("Home bridge close result is not an object")
+    _require_schema(result, "Home bridge close result")
+    handle = _require_string(
+        result.get("conversation_handle"),
+        "Home bridge close result has no conversation handle",
+    )
+    if handle != conversation_handle:
+        raise HomeBridgeProtocolError(
+            "Home bridge close result changed conversation handle"
+        )
+    if result.get("status") != "closed":
+        raise HomeBridgeProtocolError("Home bridge did not confirm claim closure")
 
 
 def _require_schema(params: dict[str, Any], what: str) -> None:

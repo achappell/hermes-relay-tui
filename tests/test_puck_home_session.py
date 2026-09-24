@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 
 import pytest
 
@@ -16,6 +17,11 @@ from puck_bridge.home_session import (
     HomeBrowserSession,
     HomePuckSession,
     require_home_bridge_url,
+)
+from puck_bridge.home_admission import (
+    CalibratedProximityEvidence,
+    HomeClaimRecoveryState,
+    HomePuckSessionFactory,
 )
 
 
@@ -107,6 +113,16 @@ class _FakeSocket:
         method = payload["method"]
         if method in {"conversation.open", "conversation.reconnect"}:
             self.incoming.put_nowait(_reply(payload["id"], READY))
+        elif method == "conversation.close":
+            self.incoming.put_nowait(
+                _reply(
+                    payload["id"],
+                    {
+                        "conversation_handle": "opaque-home-handle",
+                        "status": "closed",
+                    },
+                )
+            )
         elif method == "prompt.submit":
             self.incoming.put_nowait(
                 _reply(
@@ -1695,6 +1711,454 @@ async def test_home_close_retains_reader_cleanup_ownership(monkeypatch):
         ]
     finally:
         await session.close()
+
+
+@pytest.mark.asyncio
+async def test_home_drops_queued_events_after_socket_disconnect():
+    class _QueueThenDisconnectSocket(_FakeSocket):
+        async def send(self, raw: str) -> None:
+            payload = json.loads(raw)
+            self.sent.append(payload)
+            method = payload["method"]
+            if method in {"conversation.open", "conversation.reconnect"}:
+                self.incoming.put_nowait(_reply(payload["id"], READY))
+            elif method == "prompt.submit":
+                self.incoming.put_nowait(
+                    _reply(
+                        payload["id"],
+                        {
+                            "conversation_handle": "opaque-home-handle",
+                            "turn_id": "home-turn-1",
+                            "status": "submitted",
+                        },
+                    )
+                )
+                self.incoming.put_nowait(
+                    _event(
+                        "message.delta",
+                        "home-turn-1",
+                        {"rendered": "stale queued event"},
+                    )
+                )
+                self.incoming.put_nowait(ConnectionError("socket closed"))
+
+    session = HomePuckSession(
+        f"wss://home.example{HOME_BRIDGE_PATH}",
+        "device-secret",
+        "opaque-home-handle",
+        connect_factory=_FakeConnect([_QueueThenDisconnectSocket()]),
+        resume_uncertain_turn=False,
+    )
+    await session.connect()
+
+    delivered = []
+    with pytest.raises(HomeBridgeTransportError):
+        async for event in session.send_turn("uncertain turn"):
+            delivered.append(event)
+
+    assert delivered == []
+    assert not session.is_connected()
+    await session.close()
+
+
+@pytest.mark.asyncio
+async def test_retired_puck_claim_uses_one_control_only_close_without_replay():
+    first = _ready_socket(
+        _event("message.delta", "home-turn-1", {"text": "discard this"}),
+        ConnectionError("socket dropped"),
+    )
+    control = _FakeSocket()
+    factory = _FakeConnect([first, control])
+    session = HomePuckSession(
+        f"wss://home.example{HOME_BRIDGE_PATH}",
+        "device-secret",
+        "opaque-home-handle",
+        connect_factory=factory,
+        resume_uncertain_turn=False,
+    )
+    await session.connect()
+    with pytest.raises(HomeBridgeTransportError):
+        _ = [event async for event in session.send_turn("submit exactly once")]
+
+    assert [frame["method"] for frame in first.sent].count("prompt.submit") == 1
+    assert len(factory.calls) == 1
+    assert await session.retire_uncertain_claim()
+    assert session.claim_retired
+    assert [frame["method"] for frame in control.sent] == [
+        "conversation.reconnect",
+        "conversation.close",
+    ]
+    assert all("discard this" not in json.dumps(frame) for frame in control.sent)
+    await session.close()
+
+
+@pytest.mark.asyncio
+async def test_unconfirmed_puck_claim_can_retry_control_close_once():
+    class _FailedCloseSocket(_FakeSocket):
+        async def send(self, raw: str) -> None:
+            payload = json.loads(raw)
+            if payload["method"] == "conversation.close":
+                self.sent.append(payload)
+                self.incoming.put_nowait(ConnectionError("close not confirmed"))
+                return
+            await super().send(raw)
+
+    first = _FakeSocket()
+    failed_control = _FailedCloseSocket()
+    confirmed_control = _FakeSocket()
+    factory = _FakeConnect([first, failed_control, confirmed_control])
+    session = _session(factory)
+    await session.connect()
+
+    assert not await session.retire_uncertain_claim()
+    assert not session._retirement_confirmed
+    assert await session.retry_uncertain_claim()
+    assert session._retirement_confirmed
+    assert [
+        frame["method"] for frame in failed_control.sent
+    ] == ["conversation.reconnect", "conversation.close"]
+    assert [
+        frame["method"] for frame in confirmed_control.sent
+    ] == ["conversation.reconnect", "conversation.close"]
+    await session.close()
+
+
+@pytest.mark.asyncio
+async def test_home_fresh_claim_denies_before_home_request_without_evidence():
+    calls = []
+    factory = HomePuckSessionFactory(
+        f"wss://home.example{HOME_BRIDGE_PATH}",
+        "device-secret",
+        "puck-1",
+        evidence_provider=None,
+        request_json=lambda *args, **kwargs: calls.append((args, kwargs)) or {},
+    )
+
+    result = await factory.admit_wake("hey missy")
+
+    assert result.status == "denied"
+    assert result.reason == "calibration_unavailable"
+    assert calls == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "case",
+    ["stale", "future", "negative", "too_large", "nan", "infinite", "blank_id", "bool"],
+)
+async def test_home_fresh_claim_rejects_invalid_evidence_before_home_request(case):
+    now_ms = int(time.time() * 1000)
+    value = 0.8
+    calibration_id = "calibration-1"
+    observed_at_ms = now_ms
+    if case == "stale":
+        observed_at_ms -= 1001
+    elif case == "future":
+        observed_at_ms += 1000
+    elif case == "negative":
+        value = -0.01
+    elif case == "too_large":
+        value = 1.01
+    elif case == "nan":
+        value = float("nan")
+    elif case == "infinite":
+        value = float("inf")
+    elif case == "blank_id":
+        calibration_id = "  "
+    elif case == "bool":
+        value = True
+
+    requests = []
+    factory = HomePuckSessionFactory(
+        f"wss://home.example{HOME_BRIDGE_PATH}",
+        "device-secret",
+        "puck-1",
+        evidence_provider=lambda _phrase: CalibratedProximityEvidence(
+            value, calibration_id, observed_at_ms
+        ),
+        request_json=lambda *args, **kwargs: requests.append((args, kwargs)) or {},
+    )
+
+    result = await factory.admit_wake("hey missy")
+
+    assert result.status == "denied"
+    assert result.reason == "invalid_proximity_evidence"
+    assert requests == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("wrong_field", ["claim_id", "configuration_revision"])
+async def test_home_fresh_claim_rejects_a_mismatched_grant_binding(wrong_field):
+    requested = []
+
+    def request_json(method, url, *, credential, payload, timeout):
+        del url, credential, timeout
+        if method == "GET":
+            return {
+                "schema": 1,
+                "snapshot": {
+                    "revision": 4,
+                    "wake_mappings": [{"id": "hey-missy", "phrase": "Hey Missy"}],
+                },
+            }
+        requested.append(payload)
+        response = {
+            "schema": 1,
+            "claim_id": payload["claim_id"],
+            "configuration_revision": 4,
+            "decision": "granted",
+            "conversation_handle": "fresh-home-handle",
+        }
+        response[wrong_field] = (
+            "some-other-claim"
+            if wrong_field == "claim_id"
+            else 5
+        )
+        return response
+
+    factory = HomePuckSessionFactory(
+        f"wss://home.example{HOME_BRIDGE_PATH}",
+        "device-secret",
+        "puck-1",
+        evidence_provider=lambda _phrase: CalibratedProximityEvidence(
+            0.8, "calibration-1", int(time.time() * 1000)
+        ),
+        request_json=request_json,
+        connect_factory=lambda *_args, **_kwargs: pytest.fail(
+            "a mismatched grant must not open its conversation"
+        ),
+    )
+
+    result = await factory.admit_wake("hey missy")
+
+    assert result.status == "denied"
+    assert len(requested) == 1
+    assert requested[0]["wake_mapping_id"] == "hey-missy"
+    assert requested[0]["configuration_revision"] == 4
+
+
+@pytest.mark.asyncio
+async def test_home_fresh_claim_opens_a_verified_new_handle(tmp_path):
+    calls = []
+
+    class _FreshHandleSocket(_FakeSocket):
+        async def send(self, raw: str) -> None:
+            payload = json.loads(raw)
+            self.sent.append(payload)
+            method = payload["method"]
+            if method in {"conversation.open", "conversation.reconnect"}:
+                ready = {**READY, "conversation_handle": "fresh-home-handle"}
+                self.incoming.put_nowait(_reply(payload["id"], ready))
+            elif method == "conversation.close":
+                self.incoming.put_nowait(
+                    _reply(
+                        payload["id"],
+                        {
+                            "conversation_handle": "fresh-home-handle",
+                            "status": "closed",
+                        },
+                    )
+                )
+
+    def request_json(method, url, *, credential, payload, timeout):
+        del url, credential, timeout
+        calls.append((method, payload))
+        if method == "GET":
+            return {
+                "schema": 1,
+                "snapshot": {
+                    "revision": 4,
+                    "wake_mappings": [{"id": "hey-missy", "phrase": "Hey Missy"}],
+                },
+            }
+        return {
+            "schema": 1,
+            "claim_id": payload["claim_id"],
+            "configuration_revision": 4,
+            "decision": "granted",
+            "conversation_handle": "fresh-home-handle",
+        }
+
+    socket = _FreshHandleSocket()
+    recovery_state = HomeClaimRecoveryState("puck-1", tmp_path / "claim.json")
+    factory = HomePuckSessionFactory(
+        f"wss://home.example{HOME_BRIDGE_PATH}",
+        "device-secret",
+        "puck-1",
+        evidence_provider=lambda _phrase: CalibratedProximityEvidence(
+            0.8, "calibration-1", int(time.time() * 1000)
+        ),
+        request_json=request_json,
+        connect_factory=_FakeConnect([socket]),
+        recovery_state=recovery_state,
+    )
+
+    result = await factory.admit_wake("hey missy", previous_handle="old-handle")
+
+    assert result.status == "admitted"
+    assert result.session is not None and result.session.is_connected()
+    assert result.session.conversation_handle == "fresh-home-handle"
+    assert result.session.wake_mapping_id == "hey-missy"
+    persisted = recovery_state.load()
+    assert persisted is not None and persisted.status == "active"
+    assert persisted.conversation_handle == "fresh-home-handle"
+    assert [method for method, _payload in calls] == ["GET", "POST"]
+    assert await result.session.close_claim()
+
+
+@pytest.mark.asyncio
+async def test_home_active_claim_admits_only_its_current_authorized_mapping():
+    config = {
+        "schema": 1,
+        "snapshot": {
+            "revision": 9,
+            "wake_mappings": [
+                {"id": "hey-missy", "phrase": "Hey Missy"},
+                {"id": "hey-other", "phrase": "Hey Other"},
+            ],
+        },
+    }
+    factory = HomePuckSessionFactory(
+        f"wss://home.example{HOME_BRIDGE_PATH}",
+        "device-secret",
+        "puck-1",
+        request_json=lambda *_args, **_kwargs: config,
+    )
+
+    assert await factory.current_mapping_id("HEY MISSY", "hey-missy") == "hey-missy"
+    assert await factory.current_mapping_id("Hey Other", "hey-missy") is None
+    # An unbound initial handle cannot borrow one of several active mappings.
+    assert await factory.current_mapping_id("Hey Missy") is None
+
+
+@pytest.mark.asyncio
+async def test_home_active_mapping_does_not_infer_a_blank_mapping_id():
+    config = {
+        "schema": 1,
+        "snapshot": {
+            "revision": 10,
+            "wake_mappings": [
+                {"id": "   ", "phrase": "Hey Missy"},
+                {"id": "hey-other", "phrase": "Hey Other"},
+            ],
+        },
+    }
+    factory = HomePuckSessionFactory(
+        f"wss://home.example{HOME_BRIDGE_PATH}",
+        "device-secret",
+        "puck-1",
+        request_json=lambda *_args, **_kwargs: config,
+    )
+
+    assert await factory.current_mapping_id("Hey Missy") is None
+
+
+def test_home_claim_retirement_outer_budget_covers_control_close_cleanup():
+    from puck_bridge.home_session import (
+        HOME_BRIDGE_CLOSE_TIMEOUT,
+        HOME_CLAIM_RETIRE_CALL_TIMEOUT_SECONDS,
+        HOME_CLAIM_RETIRE_TIMEOUT,
+    )
+
+    assert HOME_CLAIM_RETIRE_CALL_TIMEOUT_SECONDS >= (
+        HOME_CLAIM_RETIRE_TIMEOUT + (3 * HOME_BRIDGE_CLOSE_TIMEOUT)
+    )
+
+
+def test_home_claim_recovery_state_survives_restart_and_records_unconfirmed_close(tmp_path):
+    state_path = tmp_path / "private" / "claim.json"
+    first = HomeClaimRecoveryState("puck-1", state_path)
+    assert first.load() is None
+    first.record_active("opaque-handle", "hey-missy")
+
+    second = HomeClaimRecoveryState("puck-1", state_path)
+    active = second.load()
+    assert active is not None
+    assert active.status == "active"
+    assert active.conversation_handle == "opaque-handle"
+    assert active.wake_mapping_id == "hey-missy"
+    assert state_path.stat().st_mode & 0o777 == 0o600
+    assert state_path.parent.stat().st_mode & 0o777 == 0o700
+
+    second.record_retired("opaque-handle", "hey-missy", confirmed=False)
+    third = HomeClaimRecoveryState("puck-1", state_path)
+    unconfirmed = third.load()
+    assert unconfirmed is not None and unconfirmed.status == "unconfirmed"
+
+    with pytest.raises(ValueError, match="invalid"):
+        HomeClaimRecoveryState("another-device", state_path).load()
+
+
+@pytest.mark.asyncio
+async def test_home_fresh_claim_closes_grant_when_websocket_open_fails(tmp_path):
+    class _OpenFailureSocket(_FakeSocket):
+        async def send(self, raw: str) -> None:
+            payload = json.loads(raw)
+            self.sent.append(payload)
+            if payload["method"] == "conversation.open":
+                raise ConnectionError("private open failure")
+
+    class _ControlCloseSocket(_FakeSocket):
+        async def send(self, raw: str) -> None:
+            payload = json.loads(raw)
+            self.sent.append(payload)
+            if payload["method"] in {"conversation.open", "conversation.reconnect"}:
+                ready = {**READY, "conversation_handle": "fresh-home-handle"}
+                self.incoming.put_nowait(_reply(payload["id"], ready))
+            elif payload["method"] == "conversation.close":
+                self.incoming.put_nowait(
+                    _reply(
+                        payload["id"],
+                        {
+                            "conversation_handle": "fresh-home-handle",
+                            "status": "closed",
+                        },
+                    )
+                )
+
+    def request_json(method, url, *, credential, payload, timeout):
+        del url, credential, timeout
+        if method == "GET":
+            return {
+                "schema": 1,
+                "snapshot": {
+                    "revision": 4,
+                    "wake_mappings": [{"id": "hey-missy", "phrase": "Hey Missy"}],
+                },
+            }
+        return {
+            "schema": 1,
+            "claim_id": payload["claim_id"],
+            "configuration_revision": 4,
+            "decision": "granted",
+            "conversation_handle": "fresh-home-handle",
+        }
+
+    opening = _OpenFailureSocket()
+    control = _ControlCloseSocket()
+    recovery_state = HomeClaimRecoveryState("puck-1", tmp_path / "claim.json")
+    factory = HomePuckSessionFactory(
+        f"wss://home.example{HOME_BRIDGE_PATH}",
+        "device-secret",
+        "puck-1",
+        evidence_provider=lambda _phrase: CalibratedProximityEvidence(
+            0.8, "calibration-1", int(time.time() * 1000)
+        ),
+        request_json=request_json,
+        connect_factory=_FakeConnect([opening, control]),
+        recovery_state=recovery_state,
+    )
+
+    result = await factory.admit_wake("hey missy")
+
+    assert result.status == "denied"
+    assert [frame["method"] for frame in opening.sent] == ["conversation.open"]
+    assert [frame["method"] for frame in control.sent] == [
+        "conversation.reconnect",
+        "conversation.close",
+    ]
+    record = recovery_state.load()
+    assert record is not None and record.status == "retired"
 
 
 def test_home_url_requires_secure_pinned_path():

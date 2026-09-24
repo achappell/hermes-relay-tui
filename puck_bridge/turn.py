@@ -22,8 +22,9 @@ import logging
 import threading
 import time
 from collections import deque
-from typing import Any
+from typing import Any, Callable
 
+from client import TransportError
 from audio import PCMPlayer, read_wav
 from handsfree import (
     DEFAULT_LISTEN_TIMEOUT,
@@ -31,6 +32,8 @@ from handsfree import (
     is_local_stop_command,
 )
 
+from .home_admission import HOME_WAKE_ADMISSION_TIMEOUT_SECONDS
+from .home_session import HOME_CLAIM_RETIRE_CALL_TIMEOUT_SECONDS
 from .response import MAX_QUEUED_PCM_BYTES, ResponseStreamError
 
 logger = logging.getLogger("hermes_relay_tui.puck_bridge.turn")
@@ -176,8 +179,22 @@ class TurnRunner:
         *,
         player: PCMPlayer | None = None,
         response_stream: Any | None = None,
+        session_factory: Callable[[], Any] | None = None,
+        home_claim_factory: Any | None = None,
+        home_claim_recovery_state: Any | None = None,
+        home_claim_retired: bool = False,
+        home_claim_close_confirmed: bool = True,
     ) -> None:
         self._session = session
+        self._session_factory = session_factory
+        self._home_claim_factory = home_claim_factory
+        self._home_claim_recovery_state = home_claim_recovery_state
+        self._home_claim_retired = bool(home_claim_retired)
+        self._home_claim_close_confirmed = bool(home_claim_close_confirmed)
+        self._home_identity_rejected = False
+        self._home_admission_lock = threading.Lock()
+        self._turn_transport_uncertain = False
+        self._turn_stage = "idle"
         self._player = player if player is not None else _OwnedPCMPlayer(True)
         # When set, the spoken answer is published here for the Puck to
         # fetch instead of being played on this host. Optional so the
@@ -228,7 +245,18 @@ class TurnRunner:
             send=self._send,
             follow_up_capture=self._take_follow_up_transcript,
             follow_up_listen_timeout=DEFAULT_LISTEN_TIMEOUT,
+            is_ready=self._session_is_connected,
+            on_finish=self._disarm_follow_up_admission,
         )
+
+    def _session_is_connected(self) -> bool:
+        session = self._session
+        if session is None:
+            return False
+        try:
+            return bool(session.is_connected())
+        except Exception:
+            return False
 
     @property
     def coordinator(self) -> HandsFreeCoordinator:
@@ -483,7 +511,14 @@ class TurnRunner:
                     return TRANSCRIPT_REJECTED
                 if self._stopping.is_set():
                     return TRANSCRIPT_REJECTED
-                if self._needs_reconnect or not self._session.is_connected():
+                if self._home_claim_factory is not None:
+                    if (
+                        self._home_identity_rejected
+                        or self._home_claim_retired
+                        or not self._session_is_connected()
+                    ):
+                        return TRANSCRIPT_REJECTED
+                elif self._needs_reconnect or not self._session.is_connected():
                     if self._loop is None:
                         return TRANSCRIPT_REJECTED
                     self._needs_reconnect = True
@@ -549,6 +584,318 @@ class TurnRunner:
             self._response_stream.unavailable(seq, reason="capture_failure")
         return TRANSCRIPT_REJECTED
 
+    def admit_wake(self, wake_phrase: str, seq: int) -> str:
+        """Authorize a physical wake before the device opens its mic."""
+        if self._stopping.is_set():
+            return "unavailable"
+        if self._home_claim_factory is None:
+            # Compatibility for older Direct firmware that still asks this
+            # endpoint; current Direct builds bypass the Home-only gate.
+            return "admitted"
+        if self._loop is None:
+            return "unavailable"
+        if self._home_identity_rejected:
+            return "identity_rejected"
+        factory = self._home_claim_factory
+        if not self._home_admission_lock.acquire(blocking=False):
+            return "denied"
+        try:
+            future = asyncio.run_coroutine_threadsafe(
+                self._admit_home_wake(wake_phrase, seq), self._loop
+            )
+            try:
+                return str(
+                    future.result(
+                        timeout=(
+                            HOME_CLAIM_RETIRE_CALL_TIMEOUT_SECONDS
+                            + HOME_WAKE_ADMISSION_TIMEOUT_SECONDS
+                            + 1.0
+                        )
+                    )
+                )
+            except Exception as exc:
+                future.cancel()
+                logger.warning(
+                    "Puck Home pre-capture admission failed (%s)",
+                    type(exc).__name__,
+                )
+                return "denied"
+        finally:
+            self._home_admission_lock.release()
+
+    def admit_follow_up(self, seq: int) -> str:
+        """Authorize a wake-free follow-up only while its session stays live."""
+        if self._stopping.is_set() or self._loop is None:
+            return "unavailable"
+        if not self._home_admission_lock.acquire(blocking=False):
+            return "denied"
+        try:
+            future = asyncio.run_coroutine_threadsafe(
+                self._admit_follow_up(seq), self._loop
+            )
+            try:
+                return str(future.result(timeout=RECONNECT_TIMEOUT_SECONDS + 1.0))
+            except Exception as exc:
+                future.cancel()
+                logger.warning(
+                    "Puck follow-up admission failed (%s)", type(exc).__name__
+                )
+                self._disarm_follow_up_admission()
+                return "denied"
+        finally:
+            self._home_admission_lock.release()
+
+    async def _admit_follow_up(self, seq: int) -> str:
+        with self._follow_up_condition:
+            follow_up_expected = self._follow_up_admission or self._follow_up_waiting
+        if (
+            self._stopping.is_set()
+            or not follow_up_expected
+            or self._response_seq != seq
+            or self._home_identity_rejected
+        ):
+            self._disarm_follow_up_admission()
+            return "denied"
+        if self._session_is_connected() and not self._home_claim_retired:
+            return "admitted"
+        if self._home_claim_factory is not None:
+            await self._retire_home_claim()
+        else:
+            self._needs_reconnect = True
+        self._disarm_follow_up_admission()
+        return "denied"
+
+    async def _admit_home_wake(self, wake_phrase: str, seq: int) -> str:
+        del seq  # The HTTP reply binds this result to the request sequence.
+        if self._stopping.is_set():
+            return "unavailable"
+        if self._home_identity_rejected:
+            return "identity_rejected"
+        factory = self._home_claim_factory
+
+        # The active claim admits only the wake mapping that owns it. A
+        # physical phrase for a different configured mapping cannot borrow
+        # this conversation handle.
+        if not self._home_claim_retired and self._session_is_connected():
+            mapping_id = str(getattr(self._session, "wake_mapping_id", "") or "")
+            resolve_mapping = getattr(factory, "current_mapping_id", None)
+            if not callable(resolve_mapping):
+                return "denied"
+            try:
+                resolved = await resolve_mapping(wake_phrase, mapping_id)
+            except Exception as exc:
+                if getattr(exc, "status", None) in {401, 403}:
+                    self._home_identity_rejected = True
+                    return "identity_rejected"
+                logger.warning(
+                    "Puck Home wake mapping check failed (%s)", type(exc).__name__
+                )
+                return "denied"
+            if self._home_claim_retired or not self._session_is_connected():
+                if not self._home_claim_retired:
+                    await self._retire_home_claim()
+                return "denied"
+            if not resolved:
+                return "denied"
+            if not mapping_id:
+                try:
+                    self._session.wake_mapping_id = str(resolved)
+                    if self._home_claim_recovery_state is not None:
+                        self._home_claim_recovery_state.record_active(
+                            str(getattr(self._session, "conversation_handle", "")),
+                            str(resolved),
+                        )
+                except Exception as exc:
+                    logger.warning(
+                        "Puck Home mapping binding could not be persisted (%s)",
+                        type(exc).__name__,
+                    )
+                    return "denied"
+            return "admitted"
+
+        if not self._home_claim_retired:
+            await self._retire_home_claim()
+        elif not self._home_claim_close_confirmed:
+            await self._retry_home_claim_retirement()
+        if not self._home_claim_close_confirmed:
+            return (
+                "identity_rejected"
+                if self._home_identity_rejected
+                else "denied"
+            )
+        if factory is None:
+            return "denied"
+        result = await factory.admit_wake(
+            wake_phrase,
+            previous_handle=str(
+                getattr(self._session, "conversation_handle", "")
+            ),
+        )
+        status = str(getattr(result, "status", "denied"))
+        if status == "identity_rejected":
+            self._home_identity_rejected = True
+            return status
+        if status != "admitted":
+            return "denied"
+        replacement = getattr(result, "session", None)
+        if replacement is None:
+            return "denied"
+        mapping_id = str(getattr(replacement, "wake_mapping_id", "") or "")
+        if not mapping_id:
+            await self._retire_replacement_home_claim(replacement)
+            return "denied"
+        try:
+            ready = bool(replacement.is_connected())
+        except Exception:
+            ready = False
+        if not ready:
+            await self._retire_replacement_home_claim(replacement)
+            return "denied"
+
+        self._session = replacement
+        self._home_claim_retired = False
+        self._home_claim_close_confirmed = True
+        self._home_identity_rejected = False
+        self._needs_reconnect = False
+        logger.info("Puck Home claim admitted for a fresh physical wake")
+        return "admitted"
+
+    async def _retire_replacement_home_claim(self, replacement: Any) -> bool:
+        """Retire a granted claim that lost its socket during handoff."""
+        self._session = replacement
+        self._home_claim_retired = True
+        self._home_claim_close_confirmed = False
+        handle = str(getattr(replacement, "conversation_handle", ""))
+        mapping_id = str(getattr(replacement, "wake_mapping_id", ""))
+        if not self._record_home_retirement(handle, mapping_id, False):
+            logger.error("Puck fresh Home claim recovery state could not be written")
+            return False
+        retire = getattr(replacement, "retire_uncertain_claim", None)
+        confirmed = False
+        if callable(retire):
+            try:
+                confirmed = bool(
+                    await asyncio.wait_for(
+                        retire(), timeout=HOME_CLAIM_RETIRE_CALL_TIMEOUT_SECONDS
+                    )
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Puck fresh Home claim retirement failed (%s)",
+                    type(exc).__name__,
+                )
+        persisted = self._record_home_retirement(handle, mapping_id, confirmed)
+        self._home_claim_close_confirmed = confirmed and persisted
+        if not self._home_claim_close_confirmed:
+            logger.error("Puck fresh Home claim close was not confirmed; capture stays closed")
+        return self._home_claim_close_confirmed
+
+    async def _retire_home_claim(self) -> bool:
+        """Attempt the Home contract's one control-only close path."""
+        if self._home_claim_retired:
+            return self._home_claim_close_confirmed
+        self._home_claim_retired = True
+        self._home_claim_close_confirmed = False
+        session = self._session
+        handle = str(getattr(session, "conversation_handle", ""))
+        mapping_id = str(getattr(session, "wake_mapping_id", ""))
+        if not self._record_home_retirement(handle, mapping_id, False):
+            logger.error("Puck Home claim recovery state could not be written")
+            return False
+        retire = getattr(session, "retire_uncertain_claim", None)
+        if retire is None:
+            logger.error("Puck Home claim cannot be retired; capture stays closed")
+            return False
+        try:
+            closed = await asyncio.wait_for(
+                retire(), timeout=HOME_CLAIM_RETIRE_CALL_TIMEOUT_SECONDS
+            )
+        except Exception as exc:
+            logger.warning(
+                "Puck Home claim retirement failed (%s)", type(exc).__name__
+            )
+            closed = False
+        confirmed = bool(closed)
+        persisted = self._record_home_retirement(handle, mapping_id, confirmed)
+        self._home_claim_close_confirmed = confirmed and persisted
+        if not self._home_claim_close_confirmed:
+            logger.error("Puck Home claim close was not confirmed; capture stays closed")
+        return self._home_claim_close_confirmed
+
+    async def _retry_home_claim_retirement(self) -> bool:
+        """Retry an unconfirmed claim close only when a new physical wake arrives."""
+        session = self._session
+        handle = str(getattr(session, "conversation_handle", ""))
+        mapping_id = str(getattr(session, "wake_mapping_id", ""))
+        if not self._record_home_retirement(handle, mapping_id, False):
+            logger.error("Puck Home claim recovery state could not be refreshed")
+            return False
+        retry = getattr(session, "retry_uncertain_claim", None)
+        if not callable(retry):
+            logger.error("Puck Home claim cannot retry retirement; capture stays closed")
+            return False
+        try:
+            closed = await asyncio.wait_for(
+                retry(), timeout=HOME_CLAIM_RETIRE_CALL_TIMEOUT_SECONDS
+            )
+        except Exception as exc:
+            logger.warning(
+                "Puck Home claim retirement retry failed (%s)", type(exc).__name__
+            )
+            closed = False
+        confirmed = bool(closed)
+        persisted = self._record_home_retirement(handle, mapping_id, confirmed)
+        self._home_claim_close_confirmed = confirmed and persisted
+        if not self._home_claim_close_confirmed:
+            logger.error("Puck Home claim close remains unconfirmed; capture stays closed")
+        return self._home_claim_close_confirmed
+
+    def _record_home_retirement(
+        self, handle: str, mapping_id: str, confirmed: bool
+    ) -> bool:
+        state = self._home_claim_recovery_state
+        if state is None or not handle:
+            return True
+        try:
+            state.record_retired(handle, mapping_id, confirmed=confirmed)
+            return True
+        except Exception as exc:
+            logger.warning(
+                "Puck Home retirement state could not be persisted (%s)",
+                type(exc).__name__,
+            )
+            return False
+
+    def _mark_home_admission_required(self) -> None:
+        if self._response_stream is not None:
+            self._response_stream.require_home_admission(self._response_seq)
+
+    def _recover_after_uncertain_turn(self, turn_task=None) -> None:
+        """Retire Home or request a fresh direct session after uncertain delivery."""
+        self._needs_reconnect = True
+        if self._home_claim_factory is None:
+            return
+        self._mark_home_admission_required()
+        loop = self._loop
+        if loop is None or self._stopping.is_set():
+            return
+
+        async def retire_after_turn() -> None:
+            if turn_task is not None:
+                try:
+                    await turn_task
+                except BaseException:
+                    pass
+            await self._retire_home_claim()
+
+        future = asyncio.run_coroutine_threadsafe(retire_after_turn(), loop)
+        try:
+            future.result(timeout=RECONNECT_TIMEOUT_SECONDS + 1.0)
+        except Exception as exc:
+            logger.warning(
+                "Puck Home retirement remains unresolved (%s)", type(exc).__name__
+            )
+
     async def _reconnect(self) -> bool:
         if self._stopping.is_set():
             return False
@@ -562,18 +909,64 @@ class TurnRunner:
                 return False
             if not previous.cancelled():
                 previous.exception()
-        task = asyncio.create_task(self._session.connect())
-        self._reconnect_task = task
-        try:
-            done, _ = await asyncio.wait({task}, timeout=RECONNECT_TIMEOUT_SECONDS)
+        deadline = time.monotonic() + RECONNECT_TIMEOUT_SECONDS
+
+        async def bounded(operation) -> tuple[bool, Any]:
+            task = asyncio.create_task(operation)
+            self._reconnect_task = task
+            remaining = max(0.0, deadline - time.monotonic())
+            done, _ = await asyncio.wait({task}, timeout=remaining)
             if not done:
+                if not task.cancelling():
+                    task.cancel()
                 logger.error("puck bridge reconnect timed out; question not sent")
+                return False, None
+            try:
+                return True, task.result()
+            except Exception as exc:
+                logger.error(
+                    "puck bridge reconnect operation failed (%s); question not sent",
+                    type(exc).__name__,
+                )
+                return False, None
+
+        old_session = self._session
+        if self._session_factory is None:
+            # Compatibility for direct TurnRunner users and focused fakes.
+            # The production direct-Hermes server always supplies a factory.
+            operation = getattr(old_session, "connect", None)
+            if operation is None:
                 return False
-            task.result()
-            return True
-        finally:
-            if not task.done() and not task.cancelling():
-                task.cancel()
+            ok, _ = await bounded(operation())
+            return ok and self._session_is_connected()
+
+        if old_session is not None:
+            ok, _ = await bounded(old_session.close())
+            if not ok:
+                return False
+        if self._stopping.is_set():
+            return False
+        try:
+            replacement = self._session_factory()
+        except Exception as exc:
+            logger.error(
+                "puck bridge could not create a fresh session (%s); question not sent",
+                type(exc).__name__,
+            )
+            return False
+        ok, _ = await bounded(replacement.connect())
+        if not ok:
+            return False
+        try:
+            ready = bool(replacement.is_connected())
+        except Exception:
+            ready = False
+        if not ready:
+            logger.error("puck bridge fresh session was not verified; question not sent")
+            return False
+        self._session = replacement
+        logger.info("puck bridge replaced the failed session for a fresh question")
+        return True
 
     def _take_pending_transcript(self) -> str:
         with self._follow_up_condition:
@@ -624,6 +1017,7 @@ class TurnRunner:
             if owner["cancel_requested"]:
                 return False
             owner["task"] = asyncio.current_task()
+            self._turn_stage = "preparing"
             return await self._run_turn(text)
 
         def cancel_owned():
@@ -633,6 +1027,7 @@ class TurnRunner:
         with self._lifecycle_lock:
             if self._stopping.is_set():
                 return False
+            self._turn_transport_uncertain = False
             with self._follow_up_condition:
                 self._follow_up_admission = True
             future = asyncio.run_coroutine_threadsafe(run_owned(), loop)
@@ -642,16 +1037,18 @@ class TurnRunner:
             )
             if not self._delivery_succeeded:
                 self._disarm_follow_up_admission()
+                if self._turn_transport_uncertain or not self._session_is_connected():
+                    self._recover_after_uncertain_turn(owner["task"])
             return self._delivery_succeeded
         except TurnTimeout as exc:
-            self._needs_reconnect = True
             self._disarm_follow_up_admission()
+            if self._turn_transport_uncertain or not self._session_is_connected():
+                self._recover_after_uncertain_turn(owner["task"])
             # Hermes stopped producing events. `_run_turn` has already
             # logged the specifics and closed the player.
             logger.error("puck bridge turn abandoned: %s", exc)
             return False
         except TimeoutError:
-            self._needs_reconnect = True
             self._disarm_follow_up_admission()
             # The backstop, not the normal path -- `_run_turn` bounds itself.
             #
@@ -662,6 +1059,10 @@ class TurnRunner:
             # behind a later turn's back -- two responses interleaving into
             # one speaker.
             loop.call_soon_threadsafe(cancel_owned)
+            if self._turn_stage == "waiting_for_hermes_event":
+                self._turn_transport_uncertain = True
+            if self._turn_transport_uncertain or not self._session_is_connected():
+                self._recover_after_uncertain_turn(owner["task"])
             logger.error(
                 "puck bridge turn hit the %.0fs backstop and was cancelled; "
                 "this indicates a wedge inside the turn loop, not a slow answer",
@@ -670,8 +1071,11 @@ class TurnRunner:
             return False
 
         except Exception as exc:
-            self._needs_reconnect = True
             self._disarm_follow_up_admission()
+            if isinstance(exc, TransportError):
+                self._turn_transport_uncertain = True
+            if self._turn_transport_uncertain or not self._session_is_connected():
+                self._recover_after_uncertain_turn(owner["task"])
             # The coordinator catches callback exceptions at DEBUG. Report
             # the failure here without exception text, which can contain
             # credentials or conversation content.
@@ -769,10 +1173,13 @@ class TurnRunner:
                     else STALL_TIMEOUT_SECONDS
                 )
                 try:
+                    self._turn_stage = "waiting_for_hermes_event"
                     event = await self._wait_owned(stream.__anext__(), budget)
+                    self._turn_stage = "processing_event"
                 except StopAsyncIteration:
                     break
                 except TimeoutError:
+                    self._turn_transport_uncertain = True
                     raise TurnTimeout(
                         "no first audio within %.0fs" % budget
                         if awaiting_first_audio
@@ -883,7 +1290,38 @@ class TurnRunner:
                                 chunks_spoken += 1
             if self._response_stream is not None and spoke:
                 response_outcome = "complete"
+        except TurnTimeout:
+            if self._turn_transport_uncertain and self._home_claim_factory is not None:
+                self._mark_home_admission_required()
+            raise
+        except TransportError:
+            self._turn_transport_uncertain = True
+            if self._home_claim_factory is not None:
+                self._mark_home_admission_required()
+            raise
+        except ConnectionError:
+            if (
+                self._turn_stage == "waiting_for_hermes_event"
+                or not self._session_is_connected()
+            ):
+                self._turn_transport_uncertain = True
+            if (
+                self._turn_transport_uncertain
+                and self._home_claim_factory is not None
+            ):
+                self._mark_home_admission_required()
+            raise
+        except Exception:
+            if not self._session_is_connected():
+                self._turn_transport_uncertain = True
+            if (
+                self._turn_transport_uncertain
+                and self._home_claim_factory is not None
+            ):
+                self._mark_home_admission_required()
+            raise
         finally:
+            self._turn_stage = "local_delivery"
             # Publish the producer outcome before closing the generator. The
             # consumer may already be waiting on the condition, and it must
             # either drain a normal completion or stop immediately on a

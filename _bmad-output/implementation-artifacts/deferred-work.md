@@ -294,3 +294,9 @@
 - source_spec: `_bmad-output/implementation-artifacts/spec-1-p-3-bounded-follow-up-and-exact-stop.md`
   summary: Synchronize capture state shared by the I2S task and interval loop.
   evidence: `capturing`, `write_pos`, and the close/upload flags cross the microphone task and the main-loop intervals without an explicit synchronization boundary. The same shape predates P-3 for initial capture, so a task-timing or hardware check should settle the risk before changing this shared path.
+
+## Deferred from: code review of spec-1-p-4-recovery-without-replay (2026-09-23)
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-1-p-4-recovery-without-replay.md`
+  summary: Define the calibrated proximity provider's qualification threshold and score semantics before enabling Home re-claims.
+  evidence: `puck_bridge/home_admission.py` accepts finite scores from 0.0 through 1.0, but this repository has no trusted production provider or calibration contract defining whether each value means sufficient proximity. The hardware provider contract must settle the threshold and evidence semantics.

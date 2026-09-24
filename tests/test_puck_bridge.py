@@ -831,7 +831,121 @@ def test_turn_runner_reports_failed_send_without_exposing_content(caplog):
         runner.stop()
 
 
-def test_turn_runner_reconnects_only_for_a_fresh_question_after_failure():
+def test_home_local_response_delivery_failure_keeps_live_claim_usable():
+    from puck_bridge.response import ResponseStream
+
+    class HomeSession(FakeSession):
+        def __init__(self):
+            super().__init__()
+            self.retirement_calls = 0
+
+        async def retire_uncertain_claim(self):
+            self.retirement_calls += 1
+            return True
+
+    class ClaimFactory:
+        def __init__(self):
+            self.calls = []
+
+        async def current_mapping_id(self, wake_phrase, mapping_id):
+            assert wake_phrase == "hey missy"
+            return mapping_id or "hey-missy"
+
+        async def admit_wake(self, wake_phrase, *, previous_handle):
+            self.calls.append((wake_phrase, previous_handle))
+            return type("Denied", (), {"status": "denied", "session": None})()
+
+    session = HomeSession()
+    response = ResponseStream()
+    assert response.expect(seq=23)
+    response.write = lambda *_args, **_kwargs: False
+    claim_factory = ClaimFactory()
+    runner = TurnRunner(
+        session,
+        response_stream=response,
+        home_claim_factory=claim_factory,
+    )
+    runner.set_response_seq(23)
+    runner.start()
+    try:
+        assert runner.submit_transcript("ordinary local delivery failure") is False
+        assert response.status_for(23) == "unavailable"
+        assert not response.home_admission_required_for(23)
+        assert session.retirement_calls == 0
+
+        # The initial authorized Home claim remains usable. A local failure
+        # must not send a new-claim evidence request or close capture.
+        assert runner.admit_wake("hey missy", seq=24) == "admitted"
+        assert claim_factory.calls == []
+    finally:
+        runner.stop()
+
+
+def test_home_transport_uncertainty_retires_claim_and_requires_admission():
+    from puck_bridge.response import ResponseStream
+
+    class BrokenHomeSession(FakeSession):
+        def __init__(self):
+            super().__init__()
+            self.conversation_handle = "old-home-handle"
+            self.retirement_calls = 0
+
+        def send_turn(self, text, *, stt_source="local"):
+            self.turns.append((text, stt_source))
+
+            async def events():
+                raise ConnectionError("private transport detail")
+                yield
+
+            return events()
+
+        async def retire_uncertain_claim(self):
+            self.retirement_calls += 1
+            self.connected = False
+            return True
+
+    class ClaimFactory:
+        def __init__(self):
+            self.calls = []
+
+        async def current_mapping_id(self, wake_phrase, mapping_id):
+            assert wake_phrase == "hey missy"
+            return mapping_id or "hey-missy"
+
+        async def admit_wake(self, wake_phrase, *, previous_handle):
+            self.calls.append((wake_phrase, previous_handle))
+            return type("Denied", (), {"status": "denied", "session": None})()
+
+    session = BrokenHomeSession()
+    response = ResponseStream()
+    assert response.expect(seq=31)
+    claim_factory = ClaimFactory()
+    runner = TurnRunner(
+        session,
+        response_stream=response,
+        home_claim_factory=claim_factory,
+    )
+    runner.set_response_seq(31)
+    runner.start()
+    try:
+        assert runner.submit_transcript("one uncertain submission") is False
+        assert session.turns == [("one uncertain submission", "local")]
+        assert session.retirement_calls == 1
+        assert response.status_for(31) == "unavailable"
+        assert response.home_admission_required_for(31)
+
+        assert runner.admit_wake("hey missy", seq=32) == "denied"
+        assert claim_factory.calls == [("hey missy", "old-home-handle")]
+        assert session.turns == [("one uncertain submission", "local")]
+    finally:
+        runner.stop()
+
+
+def test_turn_runner_reconnects_only_for_a_fresh_question_after_failure(monkeypatch):
+    import puck_bridge.turn as turn_module
+
+    monkeypatch.setattr(turn_module, "FOLLOW_UP_CAPTURE_WAIT_SECONDS", 0.01)
+
     class RecoveringSession(FakeSession):
         connects = 0
 
@@ -850,17 +964,398 @@ def test_turn_runner_reconnects_only_for_a_fresh_question_after_failure():
                 return events()
             return super().send_turn(text, stt_source=stt_source)
 
-    session = RecoveringSession()
-    runner = TurnRunner(session, player=FakePlayer())
+    original = RecoveringSession()
+    replacements = []
+
+    def make_fresh_session():
+        replacement = FakeSession()
+        replacements.append(replacement)
+        return replacement
+
+    runner = TurnRunner(
+        original,
+        player=FakePlayer(),
+        session_factory=make_fresh_session,
+    )
     runner.start()
     try:
         assert runner.submit_transcript("first question") is False
-        assert session.connects == 1
+        assert original.connects == 1
+        assert original.turns == [("first question", "local")]
+        assert replacements == []
         assert runner.submit_transcript("fresh question") is True
-        assert session.connects == 2
-        assert session.turns == [
-            ("first question", "local"), ("fresh question", "local")
+        assert len(replacements) == 1
+        assert not original.is_connected()
+        assert replacements[0].is_connected()
+        assert replacements[0].turns == [("fresh question", "local")]
+        assert original.turns == [("first question", "local")]
+        assert runner._session is replacements[0]
+    finally:
+        runner.stop()
+
+
+def test_home_idle_disconnect_requires_admission_before_a_turn_is_submitted():
+    class DisconnectedHomeSession(FakeSession):
+        conversation_handle = "idle-old-home-handle"
+
+        def __init__(self):
+            super().__init__()
+            self.retirement_calls = 0
+
+        async def retire_uncertain_claim(self):
+            self.retirement_calls += 1
+            self.connected = False
+            return True
+
+    class ClaimFactory:
+        def __init__(self):
+            self.calls = []
+
+        async def current_mapping_id(self, wake_phrase, mapping_id):
+            assert wake_phrase == "hey missy"
+            return mapping_id or "hey-missy"
+
+        async def admit_wake(self, wake_phrase, *, previous_handle):
+            self.calls.append((wake_phrase, previous_handle))
+            return type("Denied", (), {"status": "denied", "session": None})()
+
+    session = DisconnectedHomeSession()
+    session.connected = True
+    claim_factory = ClaimFactory()
+    runner = TurnRunner(session, home_claim_factory=claim_factory)
+    runner.start()
+    try:
+        assert runner.admit_wake("hey missy", seq=41) == "admitted"
+        session.connected = False
+
+        assert runner.admit_wake("hey missy", seq=42) == "denied"
+        assert session.retirement_calls == 1
+        assert claim_factory.calls == [("hey missy", "idle-old-home-handle")]
+        assert session.turns == []
+    finally:
+        runner.stop()
+
+
+def test_home_connected_claim_rejects_a_different_wake_mapping():
+    class HomeSession(FakeSession):
+        conversation_handle = "current-handle"
+        wake_mapping_id = "hey-missy"
+
+    class ClaimFactory:
+        def __init__(self):
+            self.claim_calls = []
+            self.mapping_checks = []
+
+        async def current_mapping_id(self, wake_phrase, mapping_id):
+            self.mapping_checks.append((wake_phrase, mapping_id))
+            if wake_phrase.casefold() == "hey missy" and mapping_id == "hey-missy":
+                return mapping_id
+            return None
+
+        async def admit_wake(self, *args, **kwargs):
+            self.claim_calls.append((args, kwargs))
+            return type("Denied", (), {"status": "denied", "session": None})()
+
+    session = HomeSession()
+    factory = ClaimFactory()
+    runner = TurnRunner(session, home_claim_factory=factory)
+    runner.start()
+    try:
+        assert runner.admit_wake("Hey Other", seq=57) == "denied"
+        assert runner.admit_wake("Hey Missy", seq=58) == "admitted"
+        assert factory.mapping_checks == [
+            ("Hey Other", "hey-missy"),
+            ("Hey Missy", "hey-missy"),
         ]
+        assert factory.claim_calls == []
+        assert session.turns == []
+    finally:
+        runner.stop()
+
+
+def test_home_wake_denies_if_session_disconnects_during_mapping_lookup():
+    from concurrent.futures import ThreadPoolExecutor
+
+    class HomeSession(FakeSession):
+        conversation_handle = "current-handle"
+        wake_mapping_id = "hey-missy"
+
+        def __init__(self):
+            super().__init__()
+            self.retirement_calls = 0
+
+        async def retire_uncertain_claim(self):
+            self.retirement_calls += 1
+            self.connected = False
+            return True
+
+    class BlockingClaimFactory:
+        def __init__(self):
+            self.lookup_started = threading.Event()
+            self.release_lookup = threading.Event()
+            self.claim_calls = []
+
+        async def current_mapping_id(self, _wake_phrase, mapping_id):
+            self.lookup_started.set()
+            assert await asyncio.to_thread(self.release_lookup.wait, 5)
+            return mapping_id
+
+        async def admit_wake(self, *args, **kwargs):
+            self.claim_calls.append((args, kwargs))
+            pytest.fail("a disconnected current claim must not open capture")
+
+    session = HomeSession()
+    factory = BlockingClaimFactory()
+    runner = TurnRunner(session, home_claim_factory=factory)
+    runner.start()
+    try:
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            admission = pool.submit(runner.admit_wake, "hey missy", 59)
+            assert factory.lookup_started.wait(2)
+            session.connected = False
+            factory.release_lookup.set()
+            assert admission.result(timeout=5) == "denied"
+        assert session.retirement_calls == 1
+        assert factory.claim_calls == []
+    finally:
+        factory.release_lookup.set()
+        runner.stop()
+
+
+def test_unconfirmed_home_claim_close_is_retried_after_restart(tmp_path):
+    from puck_bridge.home_admission import HomeClaimRecoveryState
+
+    class UnconfirmedHomeSession(FakeSession):
+        conversation_handle = "old-home-handle"
+
+        def __init__(self):
+            super().__init__()
+            self.retry_calls = 0
+
+        async def retire_uncertain_claim(self):
+            self.connected = False
+            return False
+
+        async def retry_uncertain_claim(self):
+            self.retry_calls += 1
+            self.connected = False
+            return True
+
+    class ClaimFactory:
+        def __init__(self):
+            self.calls = []
+
+        async def current_mapping_id(self, wake_phrase, mapping_id):
+            assert wake_phrase == "hey missy"
+            return mapping_id or "hey-missy"
+
+        async def admit_wake(self, wake_phrase, *, previous_handle):
+            self.calls.append((wake_phrase, previous_handle))
+            return type("Denied", (), {"status": "denied", "session": None})()
+
+    session = UnconfirmedHomeSession()
+    session.connected = True
+    factory = ClaimFactory()
+    state = HomeClaimRecoveryState("puck-1", tmp_path / "claim.json")
+    state.record_active("old-home-handle", "")
+    runner = TurnRunner(
+        session,
+        home_claim_factory=factory,
+        home_claim_recovery_state=state,
+    )
+    runner.start()
+    try:
+        session.connected = False
+        assert runner.admit_wake("hey missy", seq=43) == "denied"
+        assert factory.calls == []
+        record = state.load()
+        assert record is not None and record.status == "unconfirmed"
+    finally:
+        runner.stop()
+
+    restarted_factory = ClaimFactory()
+    restarted_session = UnconfirmedHomeSession()
+    restarted = TurnRunner(
+        restarted_session,
+        home_claim_factory=restarted_factory,
+        home_claim_recovery_state=state,
+        home_claim_retired=True,
+        home_claim_close_confirmed=False,
+    )
+    restarted.start(connect=False)
+    try:
+        assert restarted.admit_wake("hey missy", seq=44) == "denied"
+        assert restarted_session.retry_calls == 1
+        assert restarted_factory.calls == [("hey missy", "old-home-handle")]
+        record = state.load()
+        assert record is not None and record.status == "retired"
+    finally:
+        restarted.stop()
+
+
+def test_home_grant_that_disconnects_during_handoff_is_retired_and_persisted():
+    class State:
+        def __init__(self):
+            self.retirements = []
+
+        def record_retired(self, handle, mapping_id, *, confirmed):
+            self.retirements.append((handle, mapping_id, confirmed))
+
+    class OldHomeSession(FakeSession):
+        conversation_handle = "old-handle"
+        wake_mapping_id = "hey-missy"
+
+        async def retire_uncertain_claim(self):
+            self.connected = False
+            return True
+
+    class DisconnectingGrant(FakeSession):
+        conversation_handle = "fresh-handle"
+        wake_mapping_id = "hey-missy"
+
+        def __init__(self):
+            super().__init__()
+            self.connected = True
+            self.checks = 0
+            self.retirement_calls = 0
+
+        def is_connected(self):
+            self.checks += 1
+            return self.checks == 1
+
+        async def retire_uncertain_claim(self):
+            self.retirement_calls += 1
+            self.connected = False
+            return True
+
+    grant = DisconnectingGrant()
+
+    class ClaimFactory:
+        def __init__(self):
+            self.calls = []
+
+        async def admit_wake(self, wake_phrase, *, previous_handle):
+            self.calls.append((wake_phrase, previous_handle))
+            assert grant.is_connected()  # Factory's verification just passed.
+            return type("Granted", (), {"status": "admitted", "session": grant})()
+
+    state = State()
+    factory = ClaimFactory()
+    runner = TurnRunner(
+        OldHomeSession(),
+        home_claim_factory=factory,
+        home_claim_recovery_state=state,
+        home_claim_retired=True,
+        home_claim_close_confirmed=True,
+    )
+    runner.start(connect=False)
+    try:
+        assert runner.admit_wake("hey missy", seq=52) == "denied"
+        assert factory.calls == [("hey missy", "old-handle")]
+        assert grant.retirement_calls == 1
+        assert state.retirements == [
+            ("fresh-handle", "hey-missy", False),
+            ("fresh-handle", "hey-missy", True),
+        ]
+        assert runner._home_claim_retired is True
+        assert runner._home_claim_close_confirmed is True
+    finally:
+        runner.stop()
+
+
+def test_home_fresh_claim_submits_a_later_capture_once(monkeypatch):
+    import puck_bridge.turn as turn_module
+
+    monkeypatch.setattr(turn_module, "FOLLOW_UP_CAPTURE_WAIT_SECONDS", 0.01)
+
+    class BrokenHomeSession(FakeSession):
+        conversation_handle = "uncertain-handle"
+        wake_mapping_id = "hey-missy"
+
+        async def retire_uncertain_claim(self):
+            self.connected = False
+            return True
+
+        def send_turn(self, text, *, stt_source="local"):
+            self.turns.append((text, stt_source))
+
+            async def events():
+                raise ConnectionError("lost after submission")
+                yield
+
+            return events()
+
+    class FreshHomeSession(FakeSession):
+        conversation_handle = "fresh-home-handle"
+        wake_mapping_id = "hey-missy"
+
+    old = BrokenHomeSession()
+    replacement = FreshHomeSession()
+    replacement.connected = True
+
+    class ClaimFactory:
+        def __init__(self):
+            self.calls = []
+
+        async def admit_wake(self, wake_phrase, *, previous_handle):
+            self.calls.append((wake_phrase, previous_handle))
+            return type("Granted", (), {"status": "admitted", "session": replacement})()
+
+    factory = ClaimFactory()
+    runner = TurnRunner(old, player=FakePlayer(), home_claim_factory=factory)
+    runner.start()
+    try:
+        assert runner.submit_transcript("uncertain submission") is False
+        assert old.turns == [("uncertain submission", "local")]
+        assert runner.admit_wake("hey missy", seq=54) == "admitted"
+        assert runner.submit_transcript("later fresh capture") is True
+        assert replacement.turns == [("later fresh capture", "local")]
+        assert old.turns == [("uncertain submission", "local")]
+        assert factory.calls == [("hey missy", "uncertain-handle")]
+    finally:
+        runner.stop()
+
+
+def test_follow_up_admission_requires_live_session_and_disarms_mailbox():
+    class HomeSession(FakeSession):
+        conversation_handle = "current-handle"
+        wake_mapping_id = "hey-missy"
+
+        def __init__(self):
+            super().__init__()
+            self.retirement_calls = 0
+
+        async def retire_uncertain_claim(self):
+            self.retirement_calls += 1
+            self.connected = False
+            return True
+
+    class ClaimFactory:
+        async def current_mapping_id(self, _wake_phrase, mapping_id):
+            return mapping_id
+
+        async def admit_wake(self, *_args, **_kwargs):
+            pytest.fail("follow-up admission must never create a new Home claim")
+
+    session = HomeSession()
+    runner = TurnRunner(session, home_claim_factory=ClaimFactory())
+    runner.set_response_seq(55)
+    runner.start()
+    try:
+        with runner._follow_up_condition:
+            runner._follow_up_admission = True
+        assert runner.admit_follow_up(54) == "denied"
+        assert runner._follow_up_admission is False
+
+        with runner._follow_up_condition:
+            runner._follow_up_admission = True
+        assert runner.admit_follow_up(55) == "admitted"
+        assert runner._follow_up_admission is True
+
+        session.connected = False
+        assert runner.admit_follow_up(55) == "denied"
+        assert session.retirement_calls == 1
+        assert runner._follow_up_admission is False
     finally:
         runner.stop()
 
@@ -1029,6 +1524,21 @@ def test_build_session_args_honors_an_explicit_session_id_flag():
     args = build_session_args(["--session-id", "custom-id"])
     assert args.session_id == "custom-id"
 
+
+def test_fresh_puck_session_args_never_reuses_the_failed_identity():
+    from argparse import Namespace
+
+    from puck_bridge.server import fresh_puck_session_args
+
+    configured = Namespace(session_id="guest-puck-bridge", profile_name="guest")
+    first = fresh_puck_session_args(configured)
+    second = fresh_puck_session_args(configured)
+
+    assert first.session_id.startswith("guest-puck-bridge-recovery-")
+    assert second.session_id.startswith("guest-puck-bridge-recovery-")
+    assert first.session_id != second.session_id
+    assert configured.session_id == "guest-puck-bridge"
+
 # --- 1-p-1 task 6: no fallback ---------------------------------------------
 
 
@@ -1060,7 +1570,6 @@ def test_bridge_refuses_missing_selected_identity_before_starting_a_session(monk
     from types import SimpleNamespace
 
     from puck_bridge import server
-
     selected_profile_env = tmp_path / "guest.env"
     resolved_paths = []
 
@@ -1148,6 +1657,7 @@ def test_home_transport_wires_home_session_without_resolving_hermes_profile(
     from types import SimpleNamespace
 
     from puck_bridge import server
+    from puck_bridge.home_admission import HomeClaimRecoveryState as RecoveryState
 
     captured = {}
 
@@ -1170,9 +1680,14 @@ def test_home_transport_wires_home_session_without_resolving_hermes_profile(
         def __init__(self, session, **kwargs):
             captured["session"] = session
             captured["runner_response_stream"] = kwargs.get("response_stream")
+            captured["home_claim_factory"] = kwargs.get("home_claim_factory")
+            captured["home_claim_recovery_state"] = kwargs.get("home_claim_recovery_state")
+            captured["home_claim_retired"] = kwargs.get("home_claim_retired")
+            captured["home_claim_close_confirmed"] = kwargs.get("home_claim_close_confirmed")
 
-        def start(self):
+        def start(self, *, connect=True):
             captured["started"] = True
+            captured["connect"] = connect
 
         def request_stop(self, deadline=None):
             pass
@@ -1188,6 +1703,12 @@ def test_home_transport_wires_home_session_without_resolving_hermes_profile(
 
         def submit_transcript(self, _text):
             return True
+
+        def admit_wake(self, _wake_phrase, _seq):
+            return "denied"
+
+        def admit_follow_up(self, _seq):
+            return "denied"
 
     class _HTTPServer:
         def __init__(self, address, handler, **kwargs):
@@ -1219,8 +1740,9 @@ def test_home_transport_wires_home_session_without_resolving_hermes_profile(
             raise KeyboardInterrupt
 
     class _HomeSession:
-        def __init__(self, url, credential, handle):
+        def __init__(self, url, credential, handle, **kwargs):
             captured["home_args"] = (url, credential, handle)
+            captured["home_session_kwargs"] = kwargs
 
         async def connect(self):
             return {}
@@ -1248,11 +1770,21 @@ def test_home_transport_wires_home_session_without_resolving_hermes_profile(
         "resolve_home_device_credential",
         lambda _path: "device-secret",
     )
+    monkeypatch.setattr(server.config, "resolve_home_device_id", lambda _path: "puck-1")
+    monkeypatch.setattr(server.config, "resolve_home_wake_mapping_id", lambda _path: "hey-missy")
+    monkeypatch.setattr(
+        server,
+        "HomeClaimRecoveryState",
+        lambda device_id: RecoveryState(
+            device_id, tmp_path / "home-claim-state.json"
+        ),
+    )
     monkeypatch.setattr(server, "HomePuckSession", _HomeSession)
     monkeypatch.setattr(server, "TurnRunner", _Runner)
     monkeypatch.setattr(server, "ThreadingHTTPServer", _HTTPServer)
     monkeypatch.setattr(server, "make_handler", lambda **kwargs: kwargs)
 
+    assert server.main([]) == 0
     assert server.main([]) == 0
     assert captured["home_args"] == (
         "wss://home.example/api/v1/bridge/ws",
@@ -1266,6 +1798,153 @@ def test_home_transport_wires_home_session_without_resolving_hermes_profile(
         captured["handler"]["response_stream"]
         is captured["runner_response_stream"]
     )
+    assert captured["home_session_kwargs"]["resume_uncertain_turn"] is False
+    assert captured["home_session_kwargs"]["wake_mapping_id"] == "hey-missy"
+    assert captured["home_claim_factory"].device_id == "puck-1"
+    assert captured["home_claim_factory"].evidence_provider is None
+    assert captured["home_claim_factory"].recovery_state is captured["home_claim_recovery_state"]
+    assert captured["handler"]["on_wake_admission"] is not None
+    assert captured["handler"]["on_follow_up_admission"] is not None
+    # A second bridge process sees the durable active marker and does not
+    # reopen the configured claim as an active conversation.
+    assert captured["connect"] is False
+    assert captured["home_claim_retired"] is False
+    assert captured["home_claim_close_confirmed"] is False
+
+
+def test_direct_server_wires_a_fresh_hermes_session_factory(
+    monkeypatch, tmp_path
+):
+    from types import SimpleNamespace
+
+    from puck_bridge import server
+
+    captured = {"sessions": []}
+
+    class _BridgeParser:
+        def parse_known_args(self, _argv):
+            return (
+                SimpleNamespace(
+                    host="127.0.0.1",
+                    port=8766,
+                    play_on_device=False,
+                    transport="legacy",
+                    home_url="",
+                    home_conversation_handle="",
+                    home_device_credential_file=None,
+                    home_device_id="",
+                ),
+                [],
+            )
+
+    class _Runner:
+        def __init__(self, session, **kwargs):
+            captured["initial_session"] = session
+            captured["session_factory"] = kwargs.get("session_factory")
+            captured["home_claim_factory"] = kwargs.get("home_claim_factory")
+
+        def start(self, *, connect=True):
+            captured["connect"] = connect
+
+        def request_stop(self, deadline=None):
+            pass
+
+        def wait_closed(self):
+            pass
+
+        def stop(self, deadline=None):
+            pass
+
+        def set_response_seq(self, _seq):
+            pass
+
+        def submit_transcript(self, _text):
+            return True
+
+        def admit_wake(self, wake_phrase, seq):
+            captured["direct_wake"] = (wake_phrase, seq)
+            return "admitted"
+
+        def admit_follow_up(self, seq):
+            captured["direct_follow_up"] = seq
+            return "admitted"
+
+    class _HTTPServer:
+        def __init__(self, _address, _handler, **_kwargs):
+            pass
+
+        def server_bind(self):
+            pass
+
+        def server_activate(self):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def request_stop(self):
+            pass
+
+        def server_close(self):
+            pass
+
+        def wait_workers(self, deadline=None):
+            return True
+
+        def handle_request(self):
+            raise KeyboardInterrupt
+
+    class _HermesSession:
+        def __init__(self, args):
+            self.args = args
+            captured["sessions"].append(self)
+
+    initial_args = SimpleNamespace(
+        profile_name="guest",
+        profile_env=tmp_path / "profile.env",
+        session_id="guest-puck-bridge",
+    )
+    monkeypatch.setattr(server, "build_arg_parser", lambda: _BridgeParser())
+    monkeypatch.setattr(server, "build_session_args", lambda _argv: initial_args)
+    monkeypatch.setattr(server.config, "resolve_puck_device_token", lambda _path: "local")
+    monkeypatch.setattr(server, "HermesSession", _HermesSession)
+    monkeypatch.setattr(server, "TurnRunner", _Runner)
+    monkeypatch.setattr(server, "ThreadingHTTPServer", _HTTPServer)
+    monkeypatch.setattr(
+        server,
+        "make_handler",
+        lambda **kwargs: captured.setdefault("handler", kwargs),
+    )
+
+    assert server.main([]) == 0
+    replacement = captured["session_factory"]()
+
+    assert captured["initial_session"].args.session_id == "guest-puck-bridge"
+    assert replacement.args.session_id.startswith("guest-puck-bridge-recovery-")
+    assert replacement.args.session_id != captured["initial_session"].args.session_id
+    assert captured["home_claim_factory"] is None
+    assert captured["handler"]["on_wake_admission"]("hey missy", 44) == "admitted"
+    assert captured["direct_wake"] == ("hey missy", 44)
+
+
+def test_direct_wake_admission_preserves_session_and_turn_state():
+    session = FakeSession()
+    factory_calls = []
+    runner = TurnRunner(
+        session,
+        session_factory=lambda: factory_calls.append(True) or FakeSession(),
+    )
+    runner.start()
+    try:
+        assert runner.admit_wake("hey missy", seq=45) == "admitted"
+        assert session.is_connected()
+        assert session.turns == []
+        assert factory_calls == []
+    finally:
+        runner.stop()
 
 
 def test_bridge_defaults_to_device_playback_and_keeps_host_as_explicit_fallback():
@@ -2004,6 +2683,59 @@ def _get_response_status(
         conn.close()
 
 
+def _get_wake_admission(
+    port: int,
+    *,
+    seq: int,
+    wake: str,
+    token: str | None,
+    token_in_query: bool = False,
+) -> tuple[int, bytes]:
+    from urllib.parse import quote
+
+    conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+    try:
+        headers = (
+            {TOKEN_HEADER: token}
+            if token is not None and not token_in_query
+            else {}
+        )
+        path = f"/wake-admission?seq={seq}&wake={quote(wake, safe='')}"
+        if token is not None and token_in_query:
+            path += f"&token={quote(token, safe='')}"
+        conn.request("GET", path, headers=headers)
+        response = conn.getresponse()
+        return response.status, response.read()
+    finally:
+        conn.close()
+
+
+def _get_follow_up_admission(
+    port: int,
+    *,
+    seq: int,
+    token: str | None,
+    token_in_query: bool = False,
+) -> tuple[int, bytes]:
+    from urllib.parse import quote
+
+    conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+    try:
+        headers = (
+            {TOKEN_HEADER: token}
+            if token is not None and not token_in_query
+            else {}
+        )
+        path = f"/follow-up-admission?seq={seq}"
+        if token is not None and token_in_query:
+            path += f"&token={quote(token, safe='')}"
+        conn.request("GET", path, headers=headers)
+        response = conn.getresponse()
+        return response.status, response.read()
+    finally:
+        conn.close()
+
+
 class _FixtureFile(io.BytesIO):
     """Keep the static wire fixture readable after HTTPResponse closes it."""
 
@@ -2457,6 +3189,89 @@ def test_response_status_is_authenticated_sequence_scoped_and_terminal(tmp_path)
     assert old == 404
     assert failed == 200
     assert failed_body == b'{"seq": 12, "status": "unavailable"}'
+
+
+def test_retired_home_status_and_pre_capture_admission_are_sequence_scoped(tmp_path):
+    from puck_bridge.response import ResponseStream
+
+    calls = []
+    stream = ResponseStream()
+    assert stream.expect(seq=33)
+    stream.unavailable(seq=33, reason="home_transport_loss")
+    assert stream.require_home_admission(seq=33)
+
+    def admit(wake: str, seq: int) -> str:
+        calls.append((wake, seq))
+        return "admitted" if seq == 34 and wake == "hey missy" else "denied"
+
+    handler_cls = make_handler(
+        expected_token="s3cret",
+        on_transcript=_RecordingSink(),
+        work_dir=tmp_path,
+        response_stream=stream,
+        on_wake_admission=admit,
+    )
+    server = _start_server(handler_cls)
+    port = server.server_address[1]
+    try:
+        retired, retired_body = _get_response_status(
+            port, seq=33, token="s3cret"
+        )
+        wrong_token, _ = _get_wake_admission(
+            port, seq=34, wake="hey missy", token="wrong"
+        )
+        admitted, admitted_body = _get_wake_admission(
+            port, seq=34, wake="hey missy", token="s3cret", token_in_query=True
+        )
+        denied, denied_body = _get_wake_admission(
+            port, seq=35, wake="hey skippy", token="s3cret"
+        )
+    finally:
+        server.shutdown()
+
+    assert retired == 200
+    assert retired_body == (
+        b'{"seq": 33, "status": "unavailable", '
+        b'"needs_home_admission": true}'
+    )
+    assert wrong_token == 401
+    assert admitted == 200 and admitted_body == b"admitted:34"
+    assert denied == 200 and denied_body == b"denied:35"
+    assert calls == [("hey missy", 34), ("hey skippy", 35)]
+
+
+def test_follow_up_admission_accepts_firmware_query_token_and_checks_sequence(tmp_path):
+    calls = []
+
+    def admit(seq):
+        calls.append(seq)
+        return "admitted" if seq == 77 else "denied"
+
+    handler_cls = make_handler(
+        expected_token="s3cret",
+        on_transcript=_RecordingSink(),
+        work_dir=tmp_path,
+        on_follow_up_admission=admit,
+    )
+    server = _start_server(handler_cls)
+    port = server.server_address[1]
+    try:
+        invalid, _ = _get_follow_up_admission(
+            port, seq=77, token="wrong", token_in_query=True
+        )
+        admitted, body = _get_follow_up_admission(
+            port, seq=77, token="s3cret", token_in_query=True
+        )
+        denied, denied_body = _get_follow_up_admission(
+            port, seq=78, token="s3cret", token_in_query=True
+        )
+    finally:
+        server.shutdown()
+
+    assert invalid == 401
+    assert admitted == 200 and body == b"admitted:77"
+    assert denied == 200 and denied_body == b"denied:78"
+    assert calls == [77, 78]
 
 
 def test_response_endpoint_rejects_a_bad_token(tmp_path):

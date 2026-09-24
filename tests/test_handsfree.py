@@ -113,6 +113,7 @@ def test_connection_loss_before_follow_up_does_not_open_the_follow_up_window():
     session = FakeSession()
     ready = [True]
     follow_up_captures = []
+    finished = []
 
     def send(_text):
         ready[0] = False
@@ -124,11 +125,13 @@ def test_connection_loss_before_follow_up_does_not_open_the_follow_up_window():
         send=send,
         follow_up_capture=lambda: follow_up_captures.append(True) or "again",
         is_ready=lambda: ready[0],
+        on_finish=lambda: finished.append(True),
     )
 
     assert coordinator.on_wake() is True
 
     assert follow_up_captures == []
+    assert finished == [True]
     assert coordinator.state == handsfree.IDLE
 
 

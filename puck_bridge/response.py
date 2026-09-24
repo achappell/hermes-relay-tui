@@ -187,6 +187,7 @@ class ResponseStream:
         self._stall_duration = 0.0
         self._terminal_reason: str | None = None
         self._response_ended_at: float | None = None
+        self._home_admission_required = False
 
     # -- producer side (the turn) -----------------------------------------
 
@@ -236,6 +237,7 @@ class ResponseStream:
             self._terminal_at = None
             self._terminal_reason = None
             self._response_ended_at = None
+            self._home_admission_required = False
             self._clear_queue_locked()
             self._seq = seq
             self._reset_metrics_locked()
@@ -518,9 +520,24 @@ class ResponseStream:
                 self._terminal_at = None
                 self._audio_format = None
                 self._expecting = False
+                self._home_admission_required = False
             if self._seq != seq:
                 return None
             return self._delivery_terminal or "active"
+
+    def require_home_admission(self, seq: int | None = None) -> bool:
+        """Flag an unavailable Home turn that needs a new pre-capture claim."""
+        with self._cv:
+            if not self._matches_locked(seq) or self._delivery_terminal == "complete":
+                return False
+            self._home_admission_required = True
+            self._cv.notify_all()
+            return True
+
+    def home_admission_required_for(self, seq: int) -> bool:
+        """Return whether this retained sequence needs Home pre-capture admission."""
+        with self._cv:
+            return self._seq == seq and self._home_admission_required
 
     def acquire_reader(self, seq: int | None = None) -> bool:
         """Claim the single consumer slot for one sequence."""
