@@ -9,6 +9,8 @@ inputDocuments:
   - _bmad-output/planning-artifacts/ux-designs/ux-hermes-relay-tui-2026-09-07/EXPERIENCE.md
 ---
 
+> **Historical scope snapshot:** Active nine-epic parents and delivery scope are in `../implementation-artifacts/story-index.yaml` and `../implementation-artifacts/course-correction-2026-09-23.md`. Original numeric headings below preserve provenance; they are not the active work order.
+
 # hermes-relay-tui - Epic Breakdown
 
 > **Ownership note:** This file is an imported cross-surface planning snapshot

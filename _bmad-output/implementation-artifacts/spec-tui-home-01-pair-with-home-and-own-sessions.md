@@ -6,13 +6,15 @@ github_issue: https://github.com/achappell/hermes-relay-tui/issues/205
 depends_on: HOME-NW-17 (https://github.com/achappell/hermes-relay-home/issues/52)
 ---
 
+> **Approved correction (2026-09-23):** [Current delivery contract](course-correction-2026-09-23.md) governs mode separation, required voice in Home mode, session recovery and retirement. TUI-HOME-01 remains Epic 1; direct setup is TUI-STD-01 in Epic 2.
+
 # TUI-HOME-01 — Pair with Home and own the session lifecycle
 
 ## Problem
 
 Home now runs in paired mode, and the TUI cannot use it on its own. The TUI's `transport: home` expects a Device credential and a fixed `HOME_CONVERSATION_HANDLE` pasted into the private profile env. A conversation handle is created only by a granted claim, expires 90 seconds after issue if it is not opened, and closes 8 seconds after playback, so a saved handle stops working within minutes. The TUI has no pairing flow, no claim, no credential renewal, and no way to choose sessions through Home.
 
-Verified on 2026-09-23: the legacy direct voice-session path (profiles `amanda`, `jensen`, `spark`) completes a hello and a full text-and-audio turn, so it remains a working rollback while this story is built.
+Verified on 2026-09-23: the legacy direct voice-session path (profiles `amanda`, `jensen`, `spark`) completes a hello and a full text-and-audio turn, which is historical migration evidence; it is not the supported post-cutover configuration.
 
 ## Outcome
 
@@ -28,7 +30,7 @@ A person pairs the TUI with a particular Home once, using one pairing link and o
 - **Sessions, CLI-style.** A launch starts a new session by default. `--continue` resumes the most recent session and `--resume <ref>` resumes a specific one. In the app, `/sessions` lists the Profile's conversations from every surface (Puck, Touch panel, W/K, other clients), marking ones another device holds; `/new`, `/resume`, and `/title` act on the current connection. `session_busy` explains that another device is using that conversation.
 - **Owner approvals.** `/approvals` lists pending grants for the Profiles this TUI holds and approves or rejects them. `/devices` lists the devices holding each Profile.
 - **Renewal.** On each connect inside the renewal window, the TUI renews its credential. An expired credential prompts `hermes-relay pair` with the Home named.
-- **Setup and migration.** `hermes-relay setup` offers pairing for Home transport. The `HOME_CONVERSATION_HANDLE` requirement is removed. The legacy `voice-session` and direct `gateway` transports remain available as rollback until the cross-surface retirement gate.
+- **Setup and migration.** `hermes-relay setup` offers pairing for Home transport. The `HOME_CONVERSATION_HANDLE` requirement is removed. Direct Standard `gateway` remains an explicitly supported setup choice under TUI-STD-01. Legacy `voice-session` is removed under TUI-RETIRE-01 at the cross-surface cutover.
 
 ## Out of scope
 

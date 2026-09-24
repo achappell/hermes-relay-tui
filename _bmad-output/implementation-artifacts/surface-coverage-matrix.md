@@ -40,12 +40,28 @@ It is not a backlog, a story specification, or a formal status tracker.
 | Derived portfolio status | The public [`hermes-relay-coordinator`](https://github.com/achappell/hermes-relay-coordinator) renderer; its output is disposable and read-only. |
 | Durable product intent and reconciliation | Private product hub. |
 
+## Current epic applicability — approved 2026-09-23
+
+The historical sections below retain their original numeric headings. Current parent relationships live in each owner's story-index.yaml; they supersede those old groupings. The TUI now has its own YAML story index; the imported epics file is historical scope evidence.
+
+| Current epic | Owners and cross-surface dependency |
+| --- | --- |
+| 1 — HomeBridge personal clients | HOME-NW-17 supplies personal enrollment/session admission to TUI-HOME-01, IOS-HOME-02 (iOS/macOS) and ANDROID-HOME-02. |
+| 2 — Standard-only personal clients | TUI-STD-01, IOS-STD-01 and ANDROID-STD-01; reuse supported adapters, separate credentials/history, no Home dependency. |
+| 3 — Room voice devices | Home wake/tap grants; TUI Puck/Touch/WK adapters; Apple/Android room administration. Personal grants do not replace room admission. |
+| 4 — Legacy retirement/deployment | HOME-MIG-09 reuses migration Story 9; owner RETIRE-01 stories supply removal/evidence. Broader NW-15 and automatic updater scope follow later. |
+| 5 — Room activity/departures | Home owns shared evaluator 4-C-1; TUI owns display and departure renderers. |
+| 6 — Observation/diagnostics | Home diagnostics/health/Watch services; Apple Watch consumer. |
+| 7 — Choices/protected input | Supported upstream capability, Home policy and owning client UI. |
+| 8 — Notifications | Home policy and native consumers. |
+| 9 — Artifacts/attachments | Home shared artifact/transport contract and consuming client work. |
+
 ## Surfaces
 
 | Code | Surface | Boundary |
 |---|---|---|
 | I | iOS app | Native SwiftUI conversation and device-administration client in the sibling repository. |
-| A | Android app | Native Android conversation and device-administration client with feature parity to iOS; sibling repository bootstrap is pending. |
+| A | Android app | Native Android conversation and device-administration client with feature parity to iOS; delivery remains in its own repository. |
 | P | ReSpeaker Puck | ESP32-based audio/status doorway without a touch display; physical wake, capture, local status, and response audio. |
 | E | ESP32 Touch Display | Waveshare ESP32-S3/LVGL voice-plus-display doorway. It captures voice, renders its own response, and delivers response audio. |
 | W/K | Web and iPad voice/display | One Python/Svelte browser surface; iPad is a Safari/Guided Access deployment, not a separate renderer. |

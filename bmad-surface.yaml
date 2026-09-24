@@ -2,16 +2,16 @@ schema_version: 1
 repository: hermes-relay-tui
 planning: bmad
 surfaces:
-  - id: T
-    name: Textual TUI
-  - id: P
-    name: ReSpeaker Puck
-  - id: E
-    name: ESP32 Touch Display
-  - id: W/K
-    name: Web and iPad voice/display
+- id: T
+  name: Textual TUI
+- id: P
+  name: ReSpeaker Puck
+- id: E
+  name: ESP32 Touch Display
+- id: W/K
+  name: Web and iPad voice/display
 status_tracker: _bmad-output/implementation-artifacts/sprint-status.yaml
-story_index: _bmad-output/planning-artifacts/epics.md
+story_index: _bmad-output/implementation-artifacts/story-index.yaml
 coordination_authority: product-hub
 story_aliases:
   1-1-start-an-authorized-hermes-turn: T-1
@@ -22,3 +22,57 @@ story_aliases:
   standard-6-puck-migrate-respeaker-puck-path: STD-6
   standard-7-esp32-add-touch-display-audio-session-adapter: STD-7
   standard-8-wk-migrate-browser-and-ipad-routes: STD-8
+  1-p-1-authorized-wake-and-capture: P-1
+  1-p-2-status-and-response-audio-delivery: P-2
+  1-p-3-bounded-follow-up-and-exact-stop: P-3
+  1-p-4-recovery-without-replay: P-4
+  1-p-5-complete-streamed-response-playback-without-underrun: P-5
+  1-p-6-graceful-bridge-service-shutdown-and-entry-point-coverage: P-6
+  1-p-7-make-raw-pcm-diagnostics-explicitly-opt-in-and-bounded: P-7
+  1-p-8-make-the-vendored-respeaker-audio-format-boundary-determinis: P-8
+  1-p-9-make-respeaker-i2s-channel-startup-and-teardown-fail-safe: P-9
+  1-p-10-keep-internal-wake-models-out-of-ordinary-capture-routing: P-10
+  1-p-11-surface-runtime-audio-output-failures-honestly-and-recoverab: P-11
+  1-e-1-authorized-voice-capture: E-1
+  1-e-2-native-phases-and-streamed-response-rendering: E-2
+  1-e-3-response-audio-delivery: E-3
+  1-e-4-bounded-follow-up-and-exact-stop: E-4
+  1-e-5-recovery-without-replay: E-5
+  1-wk-1-one-shared-w-k-browser-voice-plus-display-surface-for-author: WK-1
+  1-t-5-non-blocking-wake-listener-and-microphone-teardown-during-re: T-5
+  1-t-6-detect-idle-relay-loss-and-present-honest-recovery-without-r: T-6
+  1-wk-2-concurrent-w-k-browser-session-isolation: WK-2
+  2-p-1-expose-the-puck-s-local-capture-response-and-status-phases-w: 2-P-1
+  2-p-2-fail-closed-and-show-unavailable-disconnected-status-when-th: 2-P-2
+  2-e-1-render-the-room-scoped-ambient-surface-in-native-lvgl: 2-E-1
+  2-e-2-render-room-local-active-turn-state-live-transcription-and-t: 2-E-2
+  2-e-3-mirror-prompts-read-only-when-the-renderer-is-acting-as-a-pa: 2-E-3
+  2-e-4-render-honest-disconnected-state-and-safe-cached-context-on: 2-E-4
+  2-e-5-render-and-submit-native-choose-explore-actions-for-current: 2-E-5
+  2-wk-1-render-the-shared-room-scoped-ambient-surface-for-web-and-ip: 2-WK-1
+  2-wk-2-render-active-capture-room-local-transcription-response-and: 2-WK-2
+  2-wk-3-mirror-prompts-read-only-when-the-browser-is-acting-as-a-pas: 2-WK-3
+  2-wk-4-render-honest-disconnected-state-cached-context-and-accessib: 2-WK-4
+  2-wk-5-validate-direct-use-typed-choice-actions-at-the-server-bound: 2-WK-5
+  2-wk-6-render-accessible-native-choose-explore-actions-for-current: 2-WK-6
+  2-t-1-keep-the-direct-tui-doorway-s-capture-and-phase-state-visibl: 2-T-1
+  2-t-2-keep-tui-disconnect-recovery-presentation-honest-without-rep: 2-T-2
+  2-t-3-render-typed-choice-objects-with-keyboard-choose-explore-act: 2-T-3
+  3-p-1-advertise-independently-identifiable-unconfigured-state-for: 3-P-1
+  3-p-2-apply-approved-room-credential-and-wake-mapping-configuratio: 3-P-2
+  3-p-3-enforce-the-selected-wake-mapping-and-profile-before-capture: 3-P-3
+  3-p-4-participate-in-single-winner-wake-arbitration-and-remain-sil: 3-P-4
+  3-p-5-reject-revoked-unavailable-or-unverified-identity-before-cap: 3-P-5
+  3-p-6-retire-revoked-credentials-and-require-the-ordered-setup-flo: 3-P-6
+  4-e-1-promote-the-household-wide-departure-card-in-native-lvgl-whi: 4-E-1
+  4-e-2-recompute-and-clear-the-native-departure-card-on-time-locati: 4-E-2
+  4-wk-1-promote-the-same-departure-card-in-the-shared-web-ipad-brows: 4-WK-1
+  4-wk-2-recompute-and-clear-the-browser-departure-card-while-preserv: 4-WK-2
+  5-t-1-use-the-tui-as-an-independent-direct-voice-chat-gateway-with: 5-T-1
+  tui-home-01-pair-with-home-and-own-sessions: TUI-HOME-01
+  tui-std-01: TUI-STD-01
+  tui-retire-01: TUI-RETIRE-01
+  tui-defect-102: TUI-DEFECT-102
+  tui-defect-104: TUI-DEFECT-104
+  tui-attach-11: TUI-ATTACH-11
+historical_story_index: _bmad-output/planning-artifacts/epics.md
