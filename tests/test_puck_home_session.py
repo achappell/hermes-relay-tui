@@ -1633,6 +1633,22 @@ async def test_home_preserves_standard_final_text_and_completion_events():
 
 
 @pytest.mark.asyncio
+async def test_home_normalizes_thinking_delta_field_from_standard_event():
+    socket = _ready_socket(
+        _event("thinking.delta", "home-turn-1", {"delta": "working it out"}),
+        _event("message.complete", "home-turn-1", {"text": "done"}),
+    )
+    session = _session(_FakeConnect([socket]))
+    await session.connect()
+    try:
+        events = [event async for event in session.send_turn("think")]
+        assert events[0] == {"type": "thinking_delta", "text": "working it out"}
+        assert all(event.get("type") != "unknown_event" for event in events)
+    finally:
+        await session.close()
+
+
+@pytest.mark.asyncio
 async def test_home_rejects_concurrent_puck_turns():
     socket = _ready_socket()
     factory = _FakeConnect([socket])

@@ -2002,9 +2002,16 @@ def _normalize_event(
             }
         )
         return events
-    if event_type in {"thinking.delta", "reasoning.delta"} and payload.get("text"):
+    if event_type in {"thinking.delta", "reasoning.delta"}:
+        reasoning_delta = (
+            payload.get("text")
+            if "text" in payload
+            else payload.get("delta")
+        )
+        if not reasoning_delta:
+            return None
         state["streamed_reasoning"] = True
-        return {"type": "thinking_delta", "text": str(payload["text"])}
+        return {"type": "thinking_delta", "text": str(reasoning_delta)}
     if event_type == "reasoning.available":
         reasoning_text = str(payload.get("text") or "")
         if reasoning_text:
