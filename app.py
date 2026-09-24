@@ -971,20 +971,9 @@ class HermesStreamingApp(App):
         """Return connection identity without ever rendering its token."""
         configured = bool(getattr(args, "profiles_configured", False))
         transport = getattr(args, "transport", "voice-session")
-        if not configured and transport == "home":
-            profile_env = getattr(args, "profile_env", None)
-            credential = config.resolve_home_device_credential(profile_env)
-            credential_fingerprint = hashlib.sha256(
-                credential.encode("utf-8")
-            ).hexdigest() if credential else ""
-            return (
-                False,
-                transport,
-                getattr(args, "profile_name", None) or getattr(args, "profile", None),
-                getattr(args, "url", None),
-                config.resolve_home_conversation_handle(profile_env),
-                credential_fingerprint,
-            )
+        if transport == "home":
+            from home_client import canonical_home
+            return (configured, transport, canonical_home(getattr(args, "url", "")), getattr(args, "home_grant", ""))
         if not configured and transport != "gateway":
             # Legacy reload deliberately retains its existing in-memory
             # session behavior; TUI-02 reconnects only when a named catalog is
@@ -1003,7 +992,19 @@ class HermesStreamingApp(App):
             getattr(args, "display_name", None),
         )
 
+    def _artifact_profile_name(self) -> str:
+        if getattr(self.args, "transport", "") == "home":
+            return self._history_path_for_args(self.args).parent.name
+        return self._active_profile_name
+
     def _history_path_for_args(self, args: Any) -> Path:
+        if getattr(args, "transport", "") == "home":
+            from home_client import canonical_home
+            origin = canonical_home(getattr(args, "url", ""))
+            identity = getattr(args, "home_history_identity", "unselected")
+            scope = hashlib.sha256((origin + "\0" + identity).encode()).hexdigest()
+            base = Path(getattr(args, "history_path", None) or "~/.hermes-relay-tui/history/home.jsonl").expanduser()
+            return base.parent / "home" / scope / base.name
         profile_name = (
             getattr(args, "profile_name", None)
             or getattr(args, "profile", None)
@@ -1025,9 +1026,9 @@ class HermesStreamingApp(App):
         """Open profile-local prompt history and migrate its old local file."""
         path = self._history_path_for_args(args)
         legacy_paths: tuple[Path, ...] = ()
-        if bool(getattr(args, "profiles_configured", False)) or getattr(
+        if getattr(args, "transport", "") != "home" and (bool(getattr(args, "profiles_configured", False)) or getattr(
             args, "transport", "voice-session"
-        ) == "gateway":
+        ) == "gateway"):
             legacy_transport = (
                 "voice-session"
                 if getattr(args, "transport", "voice-session") == "gateway"
@@ -1054,15 +1055,7 @@ class HermesStreamingApp(App):
         if getattr(args, "transport", "voice-session") == "home":
             # This is a local display key only. Home never receives a Hermes
             # session ID from the Textual client.
-            profile = str(
-                getattr(args, "profile_name", None)
-                or getattr(args, "profile", None)
-                or "default"
-            ).strip().lower()
-            session_args.session_id = f"home-{profile}"
-            session_args.home_reconnect_required = bool(
-                getattr(args, "home_reconnect_required", False)
-            )
+            session_args.session_id = "home-" + uuid.uuid4().hex[:12]
             return session_args
         if (
             getattr(args, "transport", "voice-session") == "gateway"
@@ -1502,9 +1495,7 @@ class HermesStreamingApp(App):
 
         try:
             recovery_args = self._doorway_session_args(self.args)
-            if getattr(recovery_args, "transport", "voice-session") == "home":
-                recovery_args.home_reconnect_required = True
-            fresh_session = self._new_session(recovery_args)
+            fresh_session = old_session if isinstance(old_session, HomeTextualSession) else self._new_session(recovery_args)
         except Exception as exc:
             diagnostic_logger.debug(
                 "app.recovery.new_session_failed type=%s",
@@ -1615,7 +1606,7 @@ class HermesStreamingApp(App):
 
                     try:
                         session = self.session
-                        async with asyncio.timeout(HANDSHAKE_TIMEOUT):
+                        async with asyncio.timeout(90 if isinstance(session, HomeTextualSession) else HANDSHAKE_TIMEOUT):
                             hello = await session.connect()
                         if not session.is_connected():
                             raise ConnectionError("session did not establish a connection")
@@ -1651,6 +1642,18 @@ class HermesStreamingApp(App):
                         )
                         continue
 
+                    if getattr(self, "_pending_profile_transcript_reset", False) or getattr(session, "pending_replacement", False):
+                        self.transcript.clear()
+                        self._refresh_transcript()
+                        self._last_prompt = None
+                        self._last_prompt_status = None
+                        self._pending_profile_transcript_reset = False
+                        switch_notice = getattr(self, "_pending_profile_switch_notice", None)
+                        if switch_notice:
+                            self._append_block(switch_notice)
+                            self._pending_profile_switch_notice = None
+                        if isinstance(session, HomeTextualSession):
+                            session.pending_replacement = False
                     session_id = (
                         getattr(session, "session_id", None)
                         or getattr(self.args, "session_id", "session")
@@ -1674,6 +1677,13 @@ class HermesStreamingApp(App):
                         conn_details.append(f"relay v{session.confirmed_server_version}")
                     detail_suffix = f" ({', '.join(conn_details)})" if conn_details else ""
                     self._append_block(f"Connected to {session_id}{detail_suffix}.")
+                    if isinstance(session, HomeTextualSession):
+                        self._bind_home_history()
+                        self._append_block("HomeBridge · " + (session.grant.label if session.grant else "Profile unavailable"))
+                        if reconnecting and self._last_prompt_status == PROMPT_AMBIGUOUS:
+                            self._append_block("Home transport recovered, but the earlier turn remains unresolved. Its events were not consumed or replayed. Use /home leave before deliberately sending another turn or changing conversations.")
+                        elif session.resumed and not reconnecting:
+                            self._append_block("Hermes context resumed. Home has no transcript retrieval API; earlier messages were not loaded.")
                     if (
                         hydrate_history
                         and not reconnecting
@@ -1740,7 +1750,7 @@ class HermesStreamingApp(App):
                 self._set_connection_state(CONNECTION_DISCONNECTED)
                 self._set_voice_state(VOICE_DISCONNECTED)
                 self._append_block(
-                    "reconnect requested — starting a fresh Hermes session."
+                    ("reconnect requested — recovering the same Home claim." if isinstance(self.session, HomeTextualSession) else "reconnect requested — starting a fresh Hermes session.")
                 )
                 if not await self._prepare_fresh_recovery_session():
                     self._append_block(
@@ -1755,7 +1765,8 @@ class HermesStreamingApp(App):
             connected = await self._connect(force=True, hydrate_history=False)
             if connected:
                 self._append_block(
-                    "reconnected; no prompt was sent and queued prompts remain pending."
+                    "Transport reconnected; no prompt was sent and queued prompts remain pending."
+                    + (" The earlier Home turn is still unresolved; /home leave is required before a deliberate next action." if isinstance(self.session, HomeTextualSession) and self._last_prompt_status == PROMPT_AMBIGUOUS else "")
                 )
             else:
                 self._append_block(
@@ -1888,6 +1899,19 @@ class HermesStreamingApp(App):
 
     async def _close_session_for_shutdown(self) -> None:
         """Give session cleanup a budget so quit cannot wait on a dead socket."""
+        if isinstance(self.session, HomeTextualSession):
+            # The transcript is already being unmounted here, so an unconfirmed
+            # close is logged; Home's reconnect grace still retires the claim.
+            try:
+                confirmed = await self.session.release_claim()
+            except Exception as exc:  # noqa: BLE001 - quit must always finish
+                confirmed = False
+                diagnostic_logger.warning(
+                    "app.shutdown.home_claim_release_failed error=%s",
+                    type(exc).__name__,
+                )
+            if not confirmed:
+                diagnostic_logger.warning("app.shutdown.home_claim_release_unconfirmed")
         await self._close_session_with_timeout(
             self.session,
             event="app.shutdown.session_close",
@@ -2964,6 +2988,24 @@ class HermesStreamingApp(App):
                 f"· busy-mode: {self.busy_mode} · queued: {len(self._queued_prompts)} "
                 f"· history: {self._history.path} · config: {config_path}"
             )
+        elif command.name == "home":
+            await self._handle_home_command(invocation.args)
+        elif command.name == "continue":
+            if isinstance(self.session, HomeTextualSession):
+                await self._home_change(self.session.continue_session)
+            else:
+                self._append_block("/continue is available in Home mode; use /resume for this transport.")
+        elif command.name == "title":
+            if isinstance(self.session, HomeTextualSession):
+                if self._home_change_blocked():
+                    return
+                try:
+                    await self.session.set_title(invocation.args.strip())
+                    self._append_block("Conversation title updated.")
+                except Exception as exc:
+                    self._append_block(f"[error] Title: {exc}")
+            else:
+                await self._dispatch_command(invocation)
         elif command.name == "profile":
             await self._handle_profile_command(invocation.args)
         elif command.name == "session":
@@ -2981,9 +3023,9 @@ class HermesStreamingApp(App):
         elif command.name == "voice":
             voice_args = invocation.args.strip().lower()
             if not voice_args or voice_args in VOICE_GATEWAY_COMMANDS:
-                if getattr(self.args, "transport", "voice-session") == "gateway":
+                if getattr(self.args, "transport", "voice-session") in {"gateway", "home"}:
                     self._append_block(
-                        "[error] /voice controls are not exposed by the Standard gateway; "
+                        "[error] /voice controls are not exposed by this transport; "
                         "no request was sent."
                     )
                 else:
@@ -3021,6 +3063,98 @@ class HermesStreamingApp(App):
         else:
             await self._dispatch_command(invocation)
 
+    def _bind_home_history(self) -> None:
+        session = self.session
+        if isinstance(session, HomeTextualSession) and session.grant is not None:
+            self.args.home_history_identity = session.grant.grant_id
+            self.args.home_grant = session._grant_label or session.grant.grant_id
+            self._history = self._prompt_history_for_args(self.args)
+            self._history_index = None
+            self._history_draft = ""
+
+    def _home_change_blocked(self) -> bool:
+        if self._profile_switch_is_busy() or self._reconnect_in_flight or self._connection_lock.locked():
+            self._append_block("[busy] Finish the current turn, prompt, capture, or connection operation first.")
+            return True
+        if self._last_prompt_status == PROMPT_AMBIGUOUS:
+            self._append_block("The previous turn has an uncertain outcome. /reconnect recovers its claim without replay; /home leave explicitly leaves that uncertainty behind before choosing another conversation.")
+            return True
+        if self._queued_prompts or self._staged_attachments:
+            self._append_block("Unsent prompts or attachments are still pending. Remove them deliberately before changing conversations.")
+            return True
+        return False
+
+    async def _home_change(self, operation: Any) -> None:
+        if self._home_change_blocked():
+            return
+        async with self._connection_lock:
+            session = self.session
+            generation = self._session_generation
+            await self._stop_connection_watcher(session, generation, expected_close=True)
+            self._disarm_wake("wake mode off — changing Home conversation. Use /wake on to arm again.")
+            await self._close_player(abort=True)
+            try:
+                result = await operation()
+            except Exception as exc:
+                self._install_session(session)
+                if session.is_connected():
+                    self._start_connection_watcher(session, self._session_generation)
+                else:
+                    self._needs_reconnect = True
+                    self._set_connection_state(CONNECTION_DISCONNECTED)
+                    self._set_voice_state(VOICE_DISCONNECTED)
+                self._append_block(f"[error] Home conversation unchanged on screen: {exc}")
+                return
+            self._install_session(session)
+            self._needs_reconnect = False
+            self._start_connection_watcher(session, self._session_generation)
+            self._bind_home_history()
+            session.pending_replacement = False
+            self.domain.reset_session(session.session_id)
+            self._last_prompt = None
+            self._last_prompt_status = None
+            self.transcript.clear()
+            self._refresh_transcript()
+            self._set_connection_state(CONNECTION_CONNECTED)
+            self._set_voice_state(VOICE_READY)
+            if result.get("resumed"):
+                self._append_block("Hermes context resumed. Home has no transcript retrieval API; earlier messages were not loaded.")
+            else:
+                self._append_block(f"New Home conversation {session.session_id}.")
+
+    async def _handle_home_command(self, args: str) -> None:
+        if not isinstance(self.session, HomeTextualSession):
+            self._append_block("Home Profile grants and owner approvals are unavailable in this connection mode.")
+            return
+        parts = args.strip().split(maxsplit=1)
+        action, value = (parts[0], parts[1] if len(parts) > 1 else "") if parts else ("grants", "")
+        try:
+            if action == "grants":
+                await self.session.refresh_grants()
+                self._append_block("Home Profiles:\n" + "\n".join(f"{g.label} — {g.status}; {'available' if g.available else 'unavailable'}; selection {g.grant_id}" for g in self.session.grants))
+            elif action == "select" and value:
+                await self._home_change(lambda: self.session.select_grant(value))
+            elif action in {"pending", "holders"}:
+                rows = await self.session.home_client.owners(action)
+                self._append_block("Home " + action + ":\n" + ("\n".join(f"{r['grant_id']} · {r['profile_label']} · {r['device_label']} ({r['device_type']}) · {r['status']}" for r in rows) or "none"))
+            elif action in {"approve", "reject"} and value:
+                await self.session.home_client.decide(value, approve=action == "approve")
+                self._append_block("Home grant decision recorded.")
+            elif action == "leave" and not value:
+                if self._profile_switch_is_busy():
+                    self._append_block("Finish the active turn or capture before leaving its uncertainty behind.")
+                    return
+                if self._last_prompt_status == PROMPT_AMBIGUOUS:
+                    self._last_prompt_status = PROMPT_UNDONE
+                    self._last_prompt = None
+                    self._append_block("Left the uncertain turn behind by explicit choice. Nothing was replayed. Choose /new, /continue, or /sessions.")
+                else:
+                    self._append_block("There is no uncertain turn to leave behind.")
+            else:
+                self._append_block("usage: /home grants|select <label-or-id>|pending|holders|approve <grant-id>|reject <grant-id>|leave")
+        except Exception as exc:
+            self._append_block(f"[error] Home: {exc}")
+
     def _load_profile_catalog(self) -> list[config.RelayProfile]:
         config_path = getattr(self.args, "config", None)
         document = config.load_config_file(config_path) if config_path else {}
@@ -3053,6 +3187,8 @@ class HermesStreamingApp(App):
             self._append_block(self._profile_switch_busy_message())
             return False
 
+        if isinstance(self.session, HomeTextualSession) and self._home_change_blocked():
+            return False
         old_args = self.args
         old_name = self._active_profile_name
         new_name = (
@@ -3080,6 +3216,21 @@ class HermesStreamingApp(App):
                     expected_close=True,
                 )
                 await self._close_player(abort=True)
+                if isinstance(old_session, HomeTextualSession):
+                    try:
+                        released = await old_session.release_claim()
+                    except Exception:
+                        released = False
+                    if not released:
+                        self._append_block("Home did not confirm releasing this claim; Profile switch stopped and transcript retained.")
+                        self._install_session(old_session)
+                        if old_session.is_connected():
+                            self._start_connection_watcher(old_session, self._session_generation)
+                        else:
+                            self._needs_reconnect = True
+                            self._set_connection_state(CONNECTION_DISCONNECTED)
+                            self._set_voice_state(VOICE_DISCONNECTED)
+                        return False
                 await self._close_session_with_timeout(
                     old_session,
                     event="app.profile.old_session_close",
@@ -3101,12 +3252,9 @@ class HermesStreamingApp(App):
             self._history = self._prompt_history_for_args(new_args)
             self._queued_prompts.clear()
             self._staged_attachments.clear()
-            self._pending_prompt = None
-            self._last_prompt = None
-            self._last_prompt_status = None
+            self._pending_profile_transcript_reset = True
             self._refresh_queue_shelf()
             self._refresh_prompt_panel()
-            self.transcript.clear()
             self._refresh_transcript()
             self._set_connection_state(CONNECTION_CONNECTING)
             self._set_voice_state(VOICE_CONNECTING)
@@ -3118,6 +3266,7 @@ class HermesStreamingApp(App):
                 detail += f" Discarded {dropped_queue} queued prompt(s); none were replayed."
             if dropped_attachments:
                 detail += f" Cleared {dropped_attachments} staged attachment(s)."
+            self._pending_profile_switch_notice = detail
             self._append_block(detail)
 
         # Keep the lock free while the new hello handshake waits on the relay.
@@ -3141,7 +3290,7 @@ class HermesStreamingApp(App):
                 if sub_args and profile.name != sub_args.lower():
                     continue
                 marker = "*" if profile.name == self._active_profile_name else " "
-                state = "token configured" if profile.token_configured else "token missing"
+                state = ("platform pairing; grant " + (profile.home_grant or "not selected")) if profile.transport == "home" else ("token configured" if profile.token_configured else "token missing")
                 endpoint = profile.url.split("?", 1)[0]
                 lines.append(
                     f"{marker} {profile.name} — {profile.display_name} · {endpoint} · "
@@ -3169,6 +3318,8 @@ class HermesStreamingApp(App):
                 return
             if self._profile_switch_is_busy():
                 self._append_block(self._profile_switch_busy_message())
+                return
+            if isinstance(self.session, HomeTextualSession) and self._home_change_blocked():
                 return
             config_path = getattr(self.args, "config", None)
             if config_path is not None:
@@ -3201,6 +3352,8 @@ class HermesStreamingApp(App):
             await self._handle_session_list_command(sub_args)
         elif subcommand in ("new", "create"):
             await self._handle_session_new_command(sub_args)
+        elif subcommand == "continue" and isinstance(self.session, HomeTextualSession):
+            await self._home_change(self.session.continue_session)
         elif subcommand in ("resume", "switch", "open"):
             await self._handle_session_resume_command(sub_args)
         elif subcommand in ("info", "status"):
@@ -3235,13 +3388,16 @@ class HermesStreamingApp(App):
         if self._turn_in_flight:
             self._append_block("[busy] Cannot list sessions while a turn is active.")
             return
-        if not self.session.is_connected():
+        if not self.session.is_connected() and not isinstance(self.session, HomeTextualSession):
             self._append_block("[error] Not connected to relay.")
             return
         search = args.strip()
         await self._open_session_picker(initial_search=search)
 
     async def _handle_session_new_command(self, args: str) -> None:
+        if isinstance(self.session, HomeTextualSession):
+            await self._home_change(lambda: self.session.new_session(session_id=args.strip() or None))
+            return
         if self._turn_in_flight:
             self._append_block("[busy] Cannot start a new session while a turn is active.")
             return
@@ -3275,7 +3431,7 @@ class HermesStreamingApp(App):
         if self._turn_in_flight:
             self._append_block("[busy] Cannot select a session while a turn is active.")
             return
-        if not self.session.is_connected():
+        if not self.session.is_connected() and not isinstance(self.session, HomeTextualSession):
             self._append_block("[error] Not connected to relay.")
             return
         try:
@@ -3300,6 +3456,9 @@ class HermesStreamingApp(App):
         )
 
     async def _resume_session(self, sid: str) -> None:
+        if isinstance(self.session, HomeTextualSession):
+            await self._home_change(lambda: self.session.switch_session(sid))
+            return
         if self._turn_in_flight:
             self._append_block("[busy] Cannot resume a session while a turn is active.")
             return
@@ -3321,6 +3480,9 @@ class HermesStreamingApp(App):
         self._append_block(f"Resumed session {self.session.session_id} ({len(history)} message(s)).")
 
     async def _dispatch_command(self, invocation: CommandInvocation) -> None:
+        if isinstance(self.session, HomeTextualSession):
+            self._append_block(f"/{invocation.name} is unavailable through this Home client; no command was sent.")
+            return
         if self._command_dispatcher is None:
             self._append_block(
                 f"[error] /{invocation.name} needs Hermes gateway command dispatch; "
@@ -3413,8 +3575,8 @@ class HermesStreamingApp(App):
         )
         path = artifact_path_for_profile(
             path,
-            self._active_profile_name,
-            legacy=not self._profiles_configured,
+            self._artifact_profile_name(),
+            legacy=not self._profiles_configured and getattr(self.args, "transport", "") != "home",
         ) or path
         try:
             await asyncio.to_thread(_write_new_text_file, path, text)
@@ -3948,6 +4110,12 @@ class HermesStreamingApp(App):
         history: Optional[PromptHistory] = None,
     ) -> None:
         """Prepare local references, then apply the busy-turn policy."""
+        if isinstance(self.session, HomeTextualSession) and self._last_prompt_status == PROMPT_AMBIGUOUS:
+            self._append_block("The prior Home turn is still uncertain. Use /reconnect or /home leave; your draft remains here.")
+            return
+        if isinstance(self.session, HomeTextualSession) and not self._connection_is_ready():
+            self._append_block("Connect an approved Home Profile before sending a prompt. Your draft remains here.")
+            return
         history = self._history if history is None else history
         history_text = text
         local_command = standalone_command(text)
@@ -4064,6 +4232,9 @@ class HermesStreamingApp(App):
     # --- the turn loop --------------------------------------------------------
 
     async def _run_turn(self, text: str, *, stt_source: str = "local") -> bool:
+        if isinstance(self.session, HomeTextualSession) and self._last_prompt_status == PROMPT_AMBIGUOUS:
+            self._append_block("The prior Home turn is still uncertain. Use /reconnect without replay or /home leave before sending another turn.")
+            return False
         if self._reconnect_in_flight or self._connection_loss_in_flight:
             self._last_prompt = text
             self._last_prompt_status = PROMPT_NOT_SENT
@@ -4866,6 +5037,8 @@ class HermesStreamingApp(App):
                 audio_expected = False
                 reason = str(event.get("reason") or "sidecar unavailable").strip()
                 self._mark_audio_unavailable(reason)
+                await self._close_player(abort=True, player=player)
+                self._append_block(f"[audio unavailable] {reason}")
                 # The sidecar has definitively failed; release any text that
                 # was held behind its first-word pacing bridge immediately.
                 render_assistant()
@@ -5203,13 +5376,13 @@ class HermesStreamingApp(App):
         if base is not None:
             base = artifact_path_for_profile(
                 Path(base),
-                self._active_profile_name,
-                legacy=not self._profiles_configured,
+                self._artifact_profile_name(),
+                legacy=not self._profiles_configured and getattr(self.args, "transport", "") != "home",
             )
-        elif self._profiles_configured:
+        elif self._profiles_configured or getattr(self.args, "transport", "") == "home":
             base = artifact_path_for_profile(
                 Path.cwd() / "hermes-audio" / "response.wav",
-                self._active_profile_name,
+                self._artifact_profile_name(),
             )
         output = audio_path(base, index, turn_id or "turn")
         try:
@@ -5234,8 +5407,21 @@ def main() -> int:
         from profile_cli import run_profile_command
 
         return run_profile_command(sys.argv[2:])
+    if len(sys.argv) > 1 and sys.argv[1] in {"pair", "unpair"}:
+        from home_pairing_cli import run_pairing_command
+        return run_pairing_command(sys.argv[1:])
     parser = config.build_arg_parser()
     args = parser.parse_args()
+    if args.transport == "home":
+        from home_client import bridge_url
+        try:
+            args.url = bridge_url(args.url)
+        except ValueError as exc:
+            parser.error(str(exc))
+        if args.session_id_explicit:
+            parser.error("Home uses --continue or --resume; --session-id is not a Home session reference")
+    elif args.home_continue or args.home_resume:
+        parser.error("--continue and --resume are Home options; use --session-id for gateway resume")
     config.ensure_default_config_file(args.config)
     if args.log_file is not None:
         args.debug = True

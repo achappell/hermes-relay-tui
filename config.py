@@ -243,6 +243,7 @@ class RelayProfile:
     wake_phrases: tuple[str, ...] = ()
     transport: str = "voice-session"
     hermes_profile: Optional[str] = None
+    home_grant: str = ""
 
     @property
     def token_configured(self) -> bool:
@@ -553,6 +554,7 @@ def load_relay_profiles(
                     model=str(entry["model"]).strip() if entry.get("model") is not None else None,
                     wake_phrases=wake_phrases,
                     transport=transport,
+                    home_grant=str(entry.get("home_grant") or ""),
                     hermes_profile=(
                         str(entry["hermes_profile"]).strip()
                         if entry.get("hermes_profile") is not None
@@ -612,6 +614,7 @@ def load_relay_profiles(
             legacy=True,
             wake_phrases=wake_phrases,
             transport=fallback_transport,
+            home_grant=str(cfg.get("home_grant") or ""),
             hermes_profile=(
                 str(cfg["hermes_profile"]).strip()
                 if cfg.get("hermes_profile") is not None
@@ -752,7 +755,7 @@ def _migrate_document(document: dict[str, Any], profile_env: Path | None = None)
     }
     if transport != "home":
         entry["token_env"] = "VOICE_SESSION_TOKEN"
-    for key in ("model", "wake_phrase", "wake_phrases"):
+    for key in ("model", "wake_phrase", "wake_phrases", "home_grant"):
         if key in document:
             entry[key] = document[key]
     if "transport" in document:
@@ -828,6 +831,7 @@ def save_relay_profile(
     profile_env: Path | None = None,
     transport: str | None = None,
     hermes_profile: str | None = None,
+    home_grant: str | None = None,
 ) -> RelayProfile:
     """Create or update one profile, keeping its bearer token private."""
     canonical = validate_profile_name(name)
@@ -871,6 +875,8 @@ def save_relay_profile(
             ),
         }
     )
+    if home_grant is not None:
+        entry["home_grant"] = str(home_grant).strip()
     if hermes_profile is not None:
         selected_hermes_profile = str(hermes_profile).strip()
         if selected_hermes_profile:
@@ -1079,6 +1085,11 @@ def make_profile_args(base_args: Any, profile: HouseholdProfile) -> Any:
         "profiles_configured": not getattr(profile, "legacy", False),
         "transport": getattr(profile, "transport", data.get("transport", "voice-session")),
         "hermes_profile": getattr(profile, "hermes_profile", data.get("hermes_profile")),
+        "home_grant": getattr(profile, "home_grant", ""),
+        "home_session_mode": "new",
+        "home_continue": False,
+        "home_history_identity": "unselected",
+        "home_resume": None,
     })
     return argparse.Namespace(**data)
 
@@ -1219,6 +1230,10 @@ def build_arg_parser(
         profile_names=configured_profile_names,
         session_id_explicit=_option_value(raw_argv, "--session-id") is not None,
     )
+    parser.add_argument("--home-grant", default=selected_profile.home_grant, help="approved Home Profile label")
+    home_mode = parser.add_mutually_exclusive_group()
+    home_mode.add_argument("--continue", dest="home_continue", action="store_true", help="continue the Home Profile’s most recent session")
+    home_mode.add_argument("--resume", dest="home_resume", help="resume a scoped Home session reference")
     selected_url = selected_profile.url
     selected_client_id = selected_profile.client_id
     selected_device_id = selected_profile.device_id
@@ -1234,11 +1249,7 @@ def build_arg_parser(
     connection_transport = transport_override or selected_transport
     selected_hermes_profile = selected_profile.hermes_profile
     if connection_transport == "home":
-        default_url = (
-            os.getenv(HOME_BRIDGE_URL_ENV)
-            or _cfg_str(cfg, "home_bridge_url")
-            or selected_url
-        )
+        default_url = selected_url
     else:
         default_url = os.getenv("HERMES_VOICE_SESSION_URL", selected_url)
     parser.add_argument(
@@ -1559,3 +1570,18 @@ __all__ = [
     "validate_token_env",
     "write_private_env_value",
 ]
+
+
+def save_home_profile(config_path: Path, *, name: str, home: str, grant_label: str, display_name: str) -> None:
+    """Add public Home settings, preserving every existing relay profile."""
+    from home_client import bridge_url
+    path = Path(config_path).expanduser()
+    canonical = validate_profile_name(name)
+    document = _mutable_config(path)
+    document, profiles, _ = _normalized_profile_document(document, path)
+    if canonical in profiles:
+        raise ValueError("That local profile already exists; choose a new name")
+    profiles[canonical] = {"transport": "home", "url": bridge_url(home), "display_name": display_name, "home_grant": grant_label}
+    document["profiles"] = profiles
+    document["active_profile"] = canonical
+    _write_config_document(path, document)

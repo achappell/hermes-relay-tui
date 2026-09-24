@@ -94,18 +94,18 @@ def test_parser_accepts_home_transport_and_uses_the_paired_bridge_url(tmp_path):
     assert args.token == ""
 
 
-def test_explicit_home_transport_uses_home_url_environment_without_a_bearer_token(
+def test_explicit_home_transport_keeps_configured_home_without_a_bearer_token(
     tmp_path, monkeypatch
 ):
     config_path = tmp_path / "legacy.yaml"
-    config_path.write_text("url: ws://relay.example/voice-session\n", encoding="utf-8")
+    config_path.write_text("url: wss://configured-home.example/api/v1/bridge/ws\n", encoding="utf-8")
     monkeypatch.setenv("HOME_BRIDGE_URL", "wss://home.example/api/v1/bridge/ws")
     argv = ["--config", str(config_path), "--transport", "home"]
 
     args = build_arg_parser(argv).parse_args(argv)
 
     assert args.transport == "home"
-    assert args.url == "wss://home.example/api/v1/bridge/ws"
+    assert args.url == "wss://configured-home.example/api/v1/bridge/ws"
     assert args.token == ""
 
 

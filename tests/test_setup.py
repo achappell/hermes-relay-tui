@@ -406,35 +406,40 @@ def test_home_endpoint_normalization_enforces_the_secure_bridge_route():
         normalize_endpoint("wss://home.example/other", transport="home")
 
 
-def test_home_setup_uses_paired_env_values_and_never_prompts_for_a_bearer_token(
+def test_home_setup_uses_pairing_and_never_prompts_for_a_bearer_token(
     tmp_path, monkeypatch
 ):
-    monkeypatch.setenv("HOME_DEVICE_CREDENTIAL", "device-secret")
-    monkeypatch.setenv("HOME_CONVERSATION_HANDLE", "opaque-handle")
+    from home_client import Grant
     config_path = tmp_path / "config.yaml"
     profile_env = tmp_path / "private.env"
-    answers = iter(["https://home.example", "home-tui", "home-local"])
+    answers = iter(["household", "Home TUI"])
 
-    def fail_if_token_is_requested(_prompt):
-        raise AssertionError("Home must not request a bearer token")
+    async def fake_pair(home, code, *, label, output_fn):
+        assert home == "https://home.example"
+        assert code == "short-code"
+        assert label == "Home TUI"
+        return [Grant("grant-1", "Amanda", "active", True)]
 
+    monkeypatch.setattr("home_pairing_cli.pair", fake_pair)
     result = run_setup(
         ["--transport", "home", "--no-check"],
         config_path=config_path,
         token_path=profile_env,
         input_fn=lambda _prompt: next(answers),
-        secret_fn=fail_if_token_is_requested,
+        secret_fn=lambda _prompt: "hermes-home://pair?home=https%3A%2F%2Fhome.example&code=short-code",
         output_fn=lambda _message: None,
         check_connection=False,
     )
 
     assert result == 0
     saved = yaml.safe_load(config_path.read_text(encoding="utf-8"))
-    assert saved["transport"] == "home"
-    assert saved["url"] == "wss://home.example/api/v1/bridge/ws"
-    assert saved["profile_env"] == str(profile_env)
+    profile = saved["profiles"]["household"]
+    assert profile["transport"] == "home"
+    assert profile["url"] == "wss://home.example/api/v1/bridge/ws"
+    assert profile["home_grant"] == "grant-1"
+    assert "profile_env" not in profile
     assert not profile_env.exists()
-    assert "device-secret" not in config_path.read_text(encoding="utf-8")
+    assert "short-code" not in config_path.read_text(encoding="utf-8")
     assert "opaque-handle" not in config_path.read_text(encoding="utf-8")
 
 

@@ -1633,6 +1633,22 @@ async def test_home_preserves_standard_final_text_and_completion_events():
 
 
 @pytest.mark.asyncio
+async def test_home_normalizes_thinking_delta_field_from_standard_event():
+    socket = _ready_socket(
+        _event("thinking.delta", "home-turn-1", {"delta": "working it out"}),
+        _event("message.complete", "home-turn-1", {"text": "done"}),
+    )
+    session = _session(_FakeConnect([socket]))
+    await session.connect()
+    try:
+        events = [event async for event in session.send_turn("think")]
+        assert events[0] == {"type": "thinking_delta", "text": "working it out"}
+        assert all(event.get("type") != "unknown_event" for event in events)
+    finally:
+        await session.close()
+
+
+@pytest.mark.asyncio
 async def test_home_rejects_concurrent_puck_turns():
     socket = _ready_socket()
     factory = _FakeConnect([socket])
@@ -2177,3 +2193,192 @@ def test_home_url_requires_secure_pinned_path():
         require_home_bridge_url("wss://:443/api/v1/bridge/ws")
     with pytest.raises(ValueError):
         require_home_bridge_url("wss://@home.example/api/v1/bridge/ws")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("ending", ["end", "fallback", "unavailable"])
+async def test_home_text_terminal_waits_for_audio_completion(ending):
+    socket = _ready_socket(
+        _audio("start", "home-turn-1", sample_rate=24000, channels=1,
+               sample_width=2, byte_order="little"),
+        _event("message.complete", "home-turn-1", {}),
+        b"\x01\x00",
+        _audio(ending, "home-turn-1"),
+    )
+    session = _session(_FakeConnect([socket]))
+    await session.connect()
+    try:
+        events = [event async for event in session.send_turn("TEST")]
+        assert [event["type"] for event in events] == [
+            "audio_start", "message_complete", "audio_chunk",
+            "audio_end" if ending == "end" else "audio_abort",
+        ]
+    finally:
+        await session.close()
+
+
+@pytest.mark.asyncio
+async def test_home_missing_audio_end_times_out_after_text_terminal():
+    socket = _ready_socket(
+        _audio("start", "home-turn-1", sample_rate=24000, channels=1,
+               sample_width=2, byte_order="little"),
+        _event("message.complete", "home-turn-1", {}),
+    )
+    session = _session(_FakeConnect([socket]))
+    session._request_timeout = 0.02
+    await session.connect()
+    events = []
+    try:
+        async for event in session.send_turn("TEST"):
+            events.append(event)
+        assert events[-2]["type"] == "message_complete"
+        assert events[-1]["text_completed"] is True
+        assert "timed out" in events[-1]["error"]
+        assert not session.is_connected()
+    finally:
+        await session.close()
+
+
+@pytest.mark.asyncio
+async def test_home_audio_activity_extends_completion_deadline():
+    socket = _ready_socket(
+        _audio("start", "home-turn-1", sample_rate=24000, channels=1,
+               sample_width=2, byte_order="little"),
+        _event("message.complete", "home-turn-1", {}),
+    )
+    session = _session(_FakeConnect([socket]))
+    session._request_timeout = 0.1
+    await session.connect()
+    async def feed_audio():
+        for _ in range(4):
+            await asyncio.sleep(0.04)
+            socket.incoming.put_nowait(b"\x01\x00")
+        socket.incoming.put_nowait(_audio("end", "home-turn-1"))
+    feeder = asyncio.create_task(feed_audio())
+    try:
+        events = [event async for event in session.send_turn("TEST")]
+        assert events[-1] == {"type": "audio_end"}
+        assert sum(event["type"] == "audio_chunk" for event in events) == 4
+    finally:
+        await feeder
+        await session.close()
+
+
+@pytest.mark.asyncio
+async def test_home_advertised_audio_can_start_after_text_terminal():
+    socket = _ready_socket(
+        _event("message.complete", "home-turn-1", {}),
+        _audio("start", "home-turn-1", sample_rate=24000, channels=1,
+               sample_width=2, byte_order="little"),
+        b"\x01\x00",
+        _audio("end", "home-turn-1"),
+    )
+    session = _session(_FakeConnect([socket]))
+    await session.connect()
+    session._capabilities = session.capabilities | {"audio"}
+    try:
+        events = [event async for event in session.send_turn("TEST")]
+        assert [event["type"] for event in events] == [
+            "message_complete", "audio_start", "audio_chunk", "audio_end",
+        ]
+    finally:
+        await session.close()
+
+
+@pytest.mark.asyncio
+async def test_home_unrelated_frames_do_not_extend_audio_deadline():
+    socket = _ready_socket(
+        _audio("start", "home-turn-1", sample_rate=24000, channels=1,
+               sample_width=2, byte_order="little"),
+        _event("message.complete", "home-turn-1", {}),
+    )
+    session = _session(_FakeConnect([socket]))
+    session._request_timeout = 0.03
+    await session.connect()
+    async def chatter():
+        for _ in range(20):
+            await asyncio.sleep(0.01)
+            socket.incoming.put_nowait(_notification("heartbeat", {}))
+    feeder = asyncio.create_task(chatter())
+    try:
+        async with asyncio.timeout(0.15):
+            events = [event async for event in session.send_turn("TEST")]
+        assert events[-1]["text_completed"] is True
+        assert "timed out" in events[-1]["error"]
+    finally:
+        feeder.cancel()
+        await asyncio.gather(feeder, return_exceptions=True)
+        await session.close()
+
+
+@pytest.mark.asyncio
+async def test_home_audio_wait_excludes_slow_consumer_processing():
+    socket = _ready_socket(
+        _audio("start", "home-turn-1", sample_rate=24000, channels=1,
+               sample_width=2, byte_order="little"),
+        _event("message.complete", "home-turn-1", {}),
+        b"\x01\x00", b"\x02\x00", _audio("end", "home-turn-1"),
+    )
+    session = _session(_FakeConnect([socket]))
+    session._request_timeout = 0.01
+    await session.connect()
+    events = []
+    try:
+        async for event in session.send_turn("TEST"):
+            events.append(event)
+            await asyncio.sleep(0.02)
+        assert events[-1] == {"type": "audio_end"}
+        assert session.is_connected()
+    finally:
+        await session.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("session_type", [HomePuckSession, HomeBrowserSession], ids=["puck", "browser"])
+async def test_home_text_completed_before_audio_disconnect_does_not_replay_or_reuse_tail(session_type):
+    first = _ready_socket(
+        _audio("start", "home-turn-1", sample_rate=24000, channels=1,
+               sample_width=2, byte_order="little"),
+        _event("message.delta", "home-turn-1", {"text": "Confirmed answer."}),
+        _event("message.complete", "home-turn-1", {}),
+        ConnectionError("audio transport dropped"),
+    )
+    class ResumedSocket(_FakeSocket):
+        async def send(self, raw):
+            request = json.loads(raw)
+            if request["method"] != "conversation.reconnect":
+                return await super().send(raw)
+            self.sent.append(request)
+            self.incoming.put_nowait(_reply(request["id"], {**READY, "unresolved_turn": {
+                "schema": 1, "conversation_handle": "opaque-home-handle",
+                "turn_id": "home-turn-1", "status": "submitted",
+            }}))
+            # Home's still-running worker can send a tail after attachment.
+            self.incoming.put_nowait(b"\x02\x00")
+            self.incoming.put_nowait(_audio("end", "home-turn-1"))
+    resumed = ResumedSocket()
+    fresh = _ready_socket(_event("message.complete", "home-turn-1", {}))
+    session = session_type(
+        f"wss://home.example{HOME_BRIDGE_PATH}", "device-secret", "opaque-home-handle",
+        connect_factory=_FakeConnect([first, resumed, fresh]),
+    )
+    await session.connect()
+    try:
+        events = [event async for event in session.send_turn("TEST")]
+        assert {"type": "text_delta", "text": "Confirmed answer."} in events
+        assert any(event["type"] == "audio_end" for event in events)
+        assert any(event.get("text_completed") is True for event in events)
+        if session_type is HomeBrowserSession:
+            assert events[-1] == {"type": "turn_end"}
+            assert {"type": "audio_end", "final": True} in events
+        assert session.active_turn_id is None
+        assert not session.is_connected()
+        assert sum(request["method"] == "prompt.submit" for sock in (first, resumed) for request in sock.sent) == 1
+        await session.connect()
+        next_events = [event async for event in session.send_turn("TEST")]
+        expected = ["message_complete"]
+        if session_type is HomeBrowserSession:
+            expected.append("turn_end")
+        assert [event["type"] for event in next_events] == expected
+    finally:
+        await session.close()

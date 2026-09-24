@@ -34,6 +34,7 @@ def _add_profile_fields(parser: argparse.ArgumentParser) -> None:
         "--hermes-profile",
         help="Hermes server profile when this profile uses the gateway transport",
     )
+    parser.add_argument("--home-grant", help="approved Home Profile label")
     parser.add_argument("--display-name", help="human-readable profile label")
     parser.add_argument("--client-id", help="Hermes client identity")
     parser.add_argument("--device-id", help="machine/device identity")
@@ -129,7 +130,7 @@ def _render_profiles(profiles: list[config.RelayProfile], active: str | None) ->
     for profile in profiles:
         marker = "*" if profile.name == active else " "
         token_state = (
-            "Home pairing uses the private profile env"
+            f"Home pairing in platform secure storage; grant {profile.home_grant or 'not selected'}"
             if profile.transport == "home"
             else (
                 f"token configured via {profile.token_env}"
@@ -280,13 +281,14 @@ def run_profile_command(
                 config_path,
                 **fields,
                 token=token or None,
+                home_grant=args.home_grant,
                 model=args.model,
                 wake_phrases=args.wake_phrases,
                 token_env=args.token_env,
                 profile_env=args.profile_env,
             )
             auth_note = (
-                "Home Device pairing is read from the private profile env."
+                "Home pairing uses platform secure storage. Run hermes-relay pair to enroll."
                 if profile.transport == "home"
                 else "Bearer token stored in private env."
             )
@@ -306,13 +308,14 @@ def run_profile_command(
                 config_path,
                 **fields,
                 token=token or None,
+                home_grant=args.home_grant,
                 model=args.model,
                 wake_phrases=args.wake_phrases,
                 token_env=args.token_env,
                 profile_env=args.profile_env,
             )
             auth_note = (
-                "Home Device pairing is read from the private profile env."
+                "Home pairing uses platform secure storage. Run hermes-relay pair to enroll."
                 if profile.transport == "home"
                 else "Bearer token stored in private env."
             )
