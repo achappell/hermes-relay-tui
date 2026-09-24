@@ -1,685 +1,685 @@
 schema_version: 1
 repository: hermes-relay-tui
 stories:
-- id: STD-3
-  title: Migrate the terminal client to the Standard Home boundary.
-  surface: T
-  kind: surface
-  spec: _bmad-output/implementation-artifacts/spec-standard-3-tui-migrate-terminal-client.md
-  tracker_key: standard-3-tui-migrate-the-terminal-client
-  product_epic: 1
-  owner: hermes-relay-tui
-  release_scope: migration
-  depends_on: []
-  acceptance_overlay: _bmad-output/implementation-artifacts/course-correction-2026-09-23.md
-- id: T-1
-  title: Authorized initiation. The historical numeric artifact 1.1 remains its stable local alias.
-  surface: T
-  kind: surface
-  spec: _bmad-output/implementation-artifacts/spec-1-1-start-an-authorized-hermes-turn.md
-  tracker_key: 1-1-start-an-authorized-hermes-turn
-  product_epic: 1
-  owner: hermes-relay-tui
-  release_scope: migration
-  depends_on: []
-  acceptance_overlay: _bmad-output/implementation-artifacts/course-correction-2026-09-23.md
-- id: T-2
-  title: Honest phases and response delivery. The historical numeric artifact 1.2 remains its stable local alias.
-  surface: T
-  kind: surface
-  spec: _bmad-output/implementation-artifacts/spec-1-2-render-honest-turn-phases-and-response-delivery.md
-  tracker_key: 1-2-render-honest-turn-phases-and-response-delivery
-  product_epic: 1
-  owner: hermes-relay-tui
-  release_scope: migration
-  depends_on: []
-  acceptance_overlay: _bmad-output/implementation-artifacts/course-correction-2026-09-23.md
-- id: T-3
-  title: Bounded follow-up and exact `stop`. The historical numeric artifact 1.3 remains its stable local alias.
-  surface: T
-  kind: surface
-  spec: _bmad-output/implementation-artifacts/spec-1-3-continue-with-bounded-follow-up-and-exact-stop.md
-  tracker_key: 1-3-continue-with-bounded-follow-up-and-exact-stop
-  product_epic: 1
-  owner: hermes-relay-tui
-  release_scope: migration
-  depends_on: []
-  acceptance_overlay: _bmad-output/implementation-artifacts/course-correction-2026-09-23.md
-- id: T-4
-  title: Recovery without replay. The historical numeric artifact 1.4 remains its stable local alias.
-  surface: T
-  kind: surface
-  spec: _bmad-output/implementation-artifacts/spec-1-4-recover-without-replaying-an-uncertain-turn.md
-  tracker_key: 1-4-recover-without-replaying-an-uncertain-turn
-  product_epic: 1
-  owner: hermes-relay-tui
-  release_scope: migration
-  depends_on: []
-  acceptance_overlay: _bmad-output/implementation-artifacts/course-correction-2026-09-23.md
-- id: T-5
-  title: Non-blocking wake-listener and microphone teardown during recovery, reload, disarm, and quit.
-  surface: T
-  kind: surface
-  spec: _bmad-output/planning-artifacts/epics.md
-  tracker_key: 1-t-5-non-blocking-wake-listener-and-microphone-teardown-during-re
-  product_epic: 1
-  owner: hermes-relay-tui
-  release_scope: migration
-  depends_on: []
-  acceptance_overlay: _bmad-output/implementation-artifacts/course-correction-2026-09-23.md
-- id: T-6
-  title: Detect idle relay loss and present honest recovery without replaying an uncertain turn.
-  surface: T
-  kind: surface
-  spec: _bmad-output/implementation-artifacts/spec-1-t-6-detect-idle-relay-loss-and-present-honest-recovery-without-replaying-an-uncertain-turn.md
-  tracker_key: 1-t-6-detect-idle-relay-loss-and-present-honest-recovery-without-r
-  product_epic: 1
-  owner: hermes-relay-tui
-  release_scope: migration
-  depends_on: []
-  acceptance_overlay: _bmad-output/implementation-artifacts/course-correction-2026-09-23.md
-- id: 2-T-1
-  title: Keep the direct TUI doorway's capture and phase state visible while a Room Display may mirror separately.
-  surface: T
-  kind: surface
-  spec: _bmad-output/planning-artifacts/epics.md
-  tracker_key: 2-t-1-keep-the-direct-tui-doorway-s-capture-and-phase-state-visibl
-  product_epic: 1
-  owner: hermes-relay-tui
-  release_scope: migration
-  depends_on: []
-  acceptance_overlay: _bmad-output/implementation-artifacts/course-correction-2026-09-23.md
-- id: 2-T-2
-  title: Keep TUI disconnect/recovery presentation honest without replaying an uncertain turn.
-  surface: T
-  kind: surface
-  spec: _bmad-output/implementation-artifacts/spec-2-t-2-keep-tui-disconnect-recovery-presentation-honest-without-replaying-an-uncertain-turn.md
-  tracker_key: 2-t-2-keep-tui-disconnect-recovery-presentation-honest-without-rep
-  product_epic: 1
-  owner: hermes-relay-tui
-  release_scope: migration
-  depends_on: []
-  acceptance_overlay: _bmad-output/implementation-artifacts/course-correction-2026-09-23.md
-- id: 5-T-1
-  title: Use the TUI as an independent direct voice-chat gateway with inline response rendering, diagnostics, and deliberate local history.
-  surface: T
-  kind: surface
-  spec: _bmad-output/planning-artifacts/epics.md
-  tracker_key: 5-t-1-use-the-tui-as-an-independent-direct-voice-chat-gateway-with
-  product_epic: 1
-  owner: hermes-relay-tui
-  release_scope: migration
-  depends_on: []
-  acceptance_overlay: _bmad-output/implementation-artifacts/course-correction-2026-09-23.md
-- id: TUI-HOME-01
-  title: Pair with Home and own the session lifecycle
-  surface: T
-  kind: surface
-  spec: _bmad-output/implementation-artifacts/spec-tui-home-01-pair-with-home-and-own-sessions.md
-  tracker_key: tui-home-01-pair-with-home-and-own-sessions
-  product_epic: 1
-  owner: hermes-relay-tui
-  release_scope: migration
-  depends_on:
-  - home:HOME-NW-17
-  acceptance_overlay: _bmad-output/implementation-artifacts/course-correction-2026-09-23.md
-  github_issue: https://github.com/achappell/hermes-relay-tui/issues/205
-- id: TUI-DEFECT-102
-  title: Resolve first-turn wake failure
-  kind: course-correction
-  product_epic: 1
-  owner: hermes-relay-tui
-  tracker_key: tui-defect-102
-  release_scope: migration
-  spec: _bmad-output/implementation-artifacts/spec-tui-defect-102.md
-  depends_on: []
-  surface: T
-  github_issue: https://github.com/achappell/hermes-relay-tui/issues/102
-- id: TUI-DEFECT-104
-  title: Resolve truncated microphone capture
-  kind: course-correction
-  product_epic: 1
-  owner: hermes-relay-tui
-  tracker_key: tui-defect-104
-  release_scope: migration
-  spec: _bmad-output/implementation-artifacts/spec-tui-defect-104.md
-  depends_on: []
-  surface: T
-  github_issue: https://github.com/achappell/hermes-relay-tui/issues/104
-- id: TUI-STD-01
-  title: Offer explicit Standard-only terminal setup
-  kind: course-correction
-  product_epic: 2
-  owner: hermes-relay-tui
-  tracker_key: tui-std-01
-  release_scope: migration
-  spec: _bmad-output/implementation-artifacts/spec-tui-std-01.md
-  depends_on:
-  - tui:TUI-HOME-01
-  surface: T
-  github_issue: https://github.com/achappell/hermes-relay-tui/issues/207
-- id: P-1
-  title: Authorized wake and capture.
-  surface: P
-  kind: surface
-  spec: _bmad-output/implementation-artifacts/spec-1-p-1-authorized-wake-and-capture.md
-  tracker_key: 1-p-1-authorized-wake-and-capture
-  product_epic: 3
-  owner: hermes-relay-tui
-  release_scope: migration
-  depends_on: []
-  acceptance_overlay: _bmad-output/implementation-artifacts/course-correction-2026-09-23.md
-- id: P-2
-  title: Status and response-audio delivery.
-  surface: P
-  kind: surface
-  spec: _bmad-output/implementation-artifacts/spec-1-p-2-status-and-response-audio-delivery.md
-  tracker_key: 1-p-2-status-and-response-audio-delivery
-  product_epic: 3
-  owner: hermes-relay-tui
-  release_scope: migration
-  depends_on: []
-  acceptance_overlay: _bmad-output/implementation-artifacts/course-correction-2026-09-23.md
-- id: P-3
-  title: Bounded follow-up and exact `stop`.
-  surface: P
-  kind: surface
-  spec: _bmad-output/implementation-artifacts/spec-1-p-3-bounded-follow-up-and-exact-stop.md
-  tracker_key: 1-p-3-bounded-follow-up-and-exact-stop
-  product_epic: 3
-  owner: hermes-relay-tui
-  release_scope: migration
-  depends_on: []
-  acceptance_overlay: _bmad-output/implementation-artifacts/course-correction-2026-09-23.md
-- id: P-4
-  title: Recovery without replay.
-  surface: P
-  kind: surface
-  spec: _bmad-output/implementation-artifacts/spec-1-p-4-recovery-without-replay.md
-  tracker_key: 1-p-4-recovery-without-replay
-  product_epic: 3
-  owner: hermes-relay-tui
-  release_scope: migration
-  depends_on: []
-  evidence_note: 'PR #204 merged; tracker remains in-progress and calibrated proximity provider remains absent. Preserve outstanding Home physical acceptance.'
-  acceptance_overlay: _bmad-output/implementation-artifacts/course-correction-2026-09-23.md
-- id: P-5
-  title: Complete streamed response playback without underrun.
-  surface: P
-  kind: surface
-  spec: _bmad-output/implementation-artifacts/spec-1-p-5-complete-streamed-response-playback-without-underrun.md
-  tracker_key: 1-p-5-complete-streamed-response-playback-without-underrun
-  product_epic: 3
-  owner: hermes-relay-tui
-  release_scope: migration
-  depends_on: []
-  acceptance_overlay: _bmad-output/implementation-artifacts/course-correction-2026-09-23.md
-- id: P-6
-  title: Graceful bridge-service shutdown and entry-point coverage.
-  surface: P
-  kind: surface
-  spec: _bmad-output/implementation-artifacts/spec-1-p-6-graceful-bridge-service-shutdown-and-entry-point-coverage.md
-  tracker_key: 1-p-6-graceful-bridge-service-shutdown-and-entry-point-coverage
-  product_epic: 3
-  owner: hermes-relay-tui
-  release_scope: migration
-  depends_on: []
-  acceptance_overlay: _bmad-output/implementation-artifacts/course-correction-2026-09-23.md
-- id: P-7
-  title: Make raw PCM diagnostics explicitly opt-in and bounded.
-  surface: P
-  kind: surface
-  spec: _bmad-output/planning-artifacts/epics.md
-  tracker_key: 1-p-7-make-raw-pcm-diagnostics-explicitly-opt-in-and-bounded
-  product_epic: 3
-  owner: hermes-relay-tui
-  release_scope: migration
-  depends_on: []
-  acceptance_overlay: _bmad-output/implementation-artifacts/course-correction-2026-09-23.md
-- id: P-8
-  title: Make the vendored reSpeaker audio-format boundary deterministic and testable.
-  surface: P
-  kind: surface
-  spec: _bmad-output/planning-artifacts/epics.md
-  tracker_key: 1-p-8-make-the-vendored-respeaker-audio-format-boundary-determinis
-  product_epic: 3
-  owner: hermes-relay-tui
-  release_scope: migration
-  depends_on: []
-  acceptance_overlay: _bmad-output/implementation-artifacts/course-correction-2026-09-23.md
-- id: P-9
-  title: Make ReSpeaker I2S channel startup and teardown fail-safe.
-  surface: P
-  kind: surface
-  spec: _bmad-output/planning-artifacts/epics.md
-  tracker_key: 1-p-9-make-respeaker-i2s-channel-startup-and-teardown-fail-safe
-  product_epic: 3
-  owner: hermes-relay-tui
-  release_scope: migration
-  depends_on: []
-  acceptance_overlay: _bmad-output/implementation-artifacts/course-correction-2026-09-23.md
-- id: P-10
-  title: Keep internal wake models out of ordinary capture routing.
-  surface: P
-  kind: surface
-  spec: _bmad-output/planning-artifacts/epics.md
-  tracker_key: 1-p-10-keep-internal-wake-models-out-of-ordinary-capture-routing
-  product_epic: 3
-  owner: hermes-relay-tui
-  release_scope: migration
-  depends_on: []
-  acceptance_overlay: _bmad-output/implementation-artifacts/course-correction-2026-09-23.md
-- id: P-11
-  title: Surface runtime audio-output failures honestly and recoverably.
-  surface: P
-  kind: surface
-  spec: _bmad-output/planning-artifacts/epics.md
-  tracker_key: 1-p-11-surface-runtime-audio-output-failures-honestly-and-recoverab
-  product_epic: 3
-  owner: hermes-relay-tui
-  release_scope: migration
-  depends_on: []
-  acceptance_overlay: _bmad-output/implementation-artifacts/course-correction-2026-09-23.md
-- id: E-1
-  title: Authorized voice capture.
-  surface: E
-  kind: surface
-  spec: _bmad-output/implementation-artifacts/spec-1-e-1-authorized-voice-capture.md
-  tracker_key: 1-e-1-authorized-voice-capture
-  product_epic: 3
-  owner: hermes-relay-tui
-  release_scope: migration
-  depends_on: []
-  acceptance_overlay: _bmad-output/implementation-artifacts/course-correction-2026-09-23.md
-- id: E-2
-  title: Native phases and streamed-response rendering.
-  surface: E
-  kind: surface
-  spec: _bmad-output/planning-artifacts/epics.md
-  tracker_key: 1-e-2-native-phases-and-streamed-response-rendering
-  product_epic: 3
-  owner: hermes-relay-tui
-  release_scope: migration
-  depends_on: []
-  acceptance_overlay: _bmad-output/implementation-artifacts/course-correction-2026-09-23.md
-- id: E-3
-  title: Response-audio delivery.
-  surface: E
-  kind: surface
-  spec: _bmad-output/planning-artifacts/epics.md
-  tracker_key: 1-e-3-response-audio-delivery
-  product_epic: 3
-  owner: hermes-relay-tui
-  release_scope: migration
-  depends_on: []
-  acceptance_overlay: _bmad-output/implementation-artifacts/course-correction-2026-09-23.md
-- id: E-4
-  title: Bounded follow-up and exact `stop`.
-  surface: E
-  kind: surface
-  spec: _bmad-output/planning-artifacts/epics.md
-  tracker_key: 1-e-4-bounded-follow-up-and-exact-stop
-  product_epic: 3
-  owner: hermes-relay-tui
-  release_scope: migration
-  depends_on: []
-  acceptance_overlay: _bmad-output/implementation-artifacts/course-correction-2026-09-23.md
-- id: E-5
-  title: Recovery without replay.
-  surface: E
-  kind: surface
-  spec: _bmad-output/planning-artifacts/epics.md
-  tracker_key: 1-e-5-recovery-without-replay
-  product_epic: 3
-  owner: hermes-relay-tui
-  release_scope: migration
-  depends_on: []
-  acceptance_overlay: _bmad-output/implementation-artifacts/course-correction-2026-09-23.md
-- id: WK-1
-  title: One shared W/K browser voice-plus-display surface for authorized capture, honest phases, streamed/completed response text, response audio, and delivery/error state, including bounded post-playback hands-free recovery across supported browsers. iPad is a deployment target, not a separate surface.
-  surface: W/K
-  kind: surface
-  spec: _bmad-output/implementation-artifacts/spec-1-wk-1-one-shared-w-k-browser-voice-plus-display-surface-for-author.md
-  tracker_key: 1-wk-1-one-shared-w-k-browser-voice-plus-display-surface-for-author
-  product_epic: 3
-  owner: hermes-relay-tui
-  release_scope: migration
-  depends_on: []
-  acceptance_overlay: _bmad-output/implementation-artifacts/course-correction-2026-09-23.md
-- id: WK-2
-  title: Isolate concurrent browser voice/display sessions with one server-owned Hermes session, state publisher, prompt-action route, and response-audio stream per browser connection, bounded admission, and fresh no-replay reconnects.
-  surface: W/K
-  kind: surface
-  spec: _bmad-output/planning-artifacts/epics.md
-  tracker_key: 1-wk-2-concurrent-w-k-browser-session-isolation
-  product_epic: 3
-  owner: hermes-relay-tui
-  release_scope: migration
-  depends_on: []
-  acceptance_overlay: _bmad-output/implementation-artifacts/course-correction-2026-09-23.md
-- id: 2-P-1
-  title: Expose the Puck's local capture, response, and status phases without putting transcript text on the TFT.
-  surface: P
-  kind: surface
-  spec: _bmad-output/planning-artifacts/epics.md
-  tracker_key: 2-p-1-expose-the-puck-s-local-capture-response-and-status-phases-w
-  product_epic: 3
-  owner: hermes-relay-tui
-  release_scope: migration
-  depends_on: []
-  acceptance_overlay: _bmad-output/implementation-artifacts/course-correction-2026-09-23.md
-- id: 2-P-2
-  title: Fail closed and show unavailable/disconnected status when the Puck or Hermes path is unavailable.
-  surface: P
-  kind: surface
-  spec: _bmad-output/planning-artifacts/epics.md
-  tracker_key: 2-p-2-fail-closed-and-show-unavailable-disconnected-status-when-th
-  product_epic: 3
-  owner: hermes-relay-tui
-  release_scope: migration
-  depends_on: []
-  acceptance_overlay: _bmad-output/implementation-artifacts/course-correction-2026-09-23.md
-- id: 3-P-1
-  title: Advertise independently identifiable unconfigured state for discovery and connection.
-  surface: P
-  kind: surface
-  spec: _bmad-output/planning-artifacts/epics.md
-  tracker_key: 3-p-1-advertise-independently-identifiable-unconfigured-state-for
-  product_epic: 3
-  owner: hermes-relay-tui
-  release_scope: migration
-  depends_on: []
-  acceptance_overlay: _bmad-output/implementation-artifacts/course-correction-2026-09-23.md
-- id: 3-P-2
-  title: Apply approved Room, credential, and Wake Mapping configuration without becoming Ready early.
-  surface: P
-  kind: surface
-  spec: _bmad-output/planning-artifacts/epics.md
-  tracker_key: 3-p-2-apply-approved-room-credential-and-wake-mapping-configuratio
-  product_epic: 3
-  owner: hermes-relay-tui
-  release_scope: migration
-  depends_on: []
-  acceptance_overlay: _bmad-output/implementation-artifacts/course-correction-2026-09-23.md
-- id: 3-P-3
-  title: Enforce the selected Wake Mapping and Profile before capture.
-  surface: P
-  kind: surface
-  spec: _bmad-output/planning-artifacts/epics.md
-  tracker_key: 3-p-3-enforce-the-selected-wake-mapping-and-profile-before-capture
-  product_epic: 3
-  owner: hermes-relay-tui
-  release_scope: migration
-  depends_on: []
-  acceptance_overlay: _bmad-output/implementation-artifacts/course-correction-2026-09-23.md
-- id: 3-P-4
-  title: Participate in single-winner wake arbitration and remain silent when it loses.
-  surface: P
-  kind: surface
-  spec: _bmad-output/planning-artifacts/epics.md
-  tracker_key: 3-p-4-participate-in-single-winner-wake-arbitration-and-remain-sil
-  product_epic: 3
-  owner: hermes-relay-tui
-  release_scope: migration
-  depends_on: []
-  acceptance_overlay: _bmad-output/implementation-artifacts/course-correction-2026-09-23.md
-- id: 3-P-5
-  title: Reject revoked, unavailable, or unverified identity before capture or submission.
-  surface: P
-  kind: surface
-  spec: _bmad-output/planning-artifacts/epics.md
-  tracker_key: 3-p-5-reject-revoked-unavailable-or-unverified-identity-before-cap
-  product_epic: 3
-  owner: hermes-relay-tui
-  release_scope: migration
-  depends_on: []
-  acceptance_overlay: _bmad-output/implementation-artifacts/course-correction-2026-09-23.md
-- id: 3-P-6
-  title: Retire revoked credentials and require the ordered setup flow on re-enrollment.
-  surface: P
-  kind: surface
-  spec: _bmad-output/planning-artifacts/epics.md
-  tracker_key: 3-p-6-retire-revoked-credentials-and-require-the-ordered-setup-flo
-  product_epic: 3
-  owner: hermes-relay-tui
-  release_scope: migration
-  depends_on: []
-  acceptance_overlay: _bmad-output/implementation-artifacts/course-correction-2026-09-23.md
-- id: STD-6
-  title: Migrate the Puck path to the Standard Home boundary.
-  surface: P
-  kind: surface
-  spec: _bmad-output/implementation-artifacts/spec-standard-6-puck-migrate-respeaker-puck-path.md
-  tracker_key: standard-6-puck-migrate-respeaker-puck-path
-  product_epic: 3
-  owner: hermes-relay-tui
-  release_scope: migration
-  depends_on: []
-  acceptance_overlay: _bmad-output/implementation-artifacts/course-correction-2026-09-23.md
-- id: STD-7
-  title: Add the Touch Display audio/session adapter on the Standard Home boundary.
-  surface: E
-  kind: surface
-  spec: _bmad-output/planning-artifacts/epics.md
-  tracker_key: standard-7-esp32-add-touch-display-audio-session-adapter
-  product_epic: 3
-  owner: hermes-relay-tui
-  release_scope: migration
-  depends_on: []
-  acceptance_overlay: _bmad-output/implementation-artifacts/course-correction-2026-09-23.md
-- id: STD-8
-  title: Migrate browser and iPad routes to the Standard Home boundary.
-  surface: W/K
-  kind: surface
-  spec: _bmad-output/planning-artifacts/epics.md
-  tracker_key: standard-8-wk-migrate-browser-and-ipad-routes
-  product_epic: 3
-  owner: hermes-relay-tui
-  release_scope: migration
-  depends_on: []
-  acceptance_overlay: _bmad-output/implementation-artifacts/course-correction-2026-09-23.md
-- id: TUI-RETIRE-01
-  title: Remove legacy terminal and room-device pairing and fork integration
-  kind: course-correction
-  product_epic: 4
-  owner: hermes-relay-tui
-  tracker_key: tui-retire-01
-  release_scope: migration
-  spec: _bmad-output/implementation-artifacts/spec-tui-retire-01.md
-  depends_on:
-  - tui:TUI-HOME-01
-  - tui:TUI-STD-01
-  - epic:3
-  surface: T
-  github_issue: https://github.com/achappell/hermes-relay-tui/issues/208
-- id: 2-E-1
-  title: Render the Room-scoped Ambient Surface in native LVGL.
-  surface: E
-  kind: surface
-  spec: _bmad-output/planning-artifacts/epics.md
-  tracker_key: 2-e-1-render-the-room-scoped-ambient-surface-in-native-lvgl
-  product_epic: 5
-  owner: hermes-relay-tui
-  release_scope: later
-  depends_on: []
-  acceptance_overlay: _bmad-output/implementation-artifacts/course-correction-2026-09-23.md
-- id: 2-E-2
-  title: Render room-local active-turn state, live Transcription, and the touch doorway's observed response state.
-  surface: E
-  kind: surface
-  spec: _bmad-output/planning-artifacts/epics.md
-  tracker_key: 2-e-2-render-room-local-active-turn-state-live-transcription-and-t
-  product_epic: 5
-  owner: hermes-relay-tui
-  release_scope: later
-  depends_on: []
-  acceptance_overlay: _bmad-output/implementation-artifacts/course-correction-2026-09-23.md
-- id: 2-E-3
-  title: Mirror prompts read-only when the renderer is acting as a passive Room Display.
-  surface: E
-  kind: surface
-  spec: _bmad-output/planning-artifacts/epics.md
-  tracker_key: 2-e-3-mirror-prompts-read-only-when-the-renderer-is-acting-as-a-pa
-  product_epic: 5
-  owner: hermes-relay-tui
-  release_scope: later
-  depends_on: []
-  acceptance_overlay: _bmad-output/implementation-artifacts/course-correction-2026-09-23.md
-- id: 2-E-4
-  title: Render honest disconnected state and safe cached context on the native Display.
-  surface: E
-  kind: surface
-  spec: _bmad-output/planning-artifacts/epics.md
-  tracker_key: 2-e-4-render-honest-disconnected-state-and-safe-cached-context-on
-  product_epic: 5
-  owner: hermes-relay-tui
-  release_scope: later
-  depends_on: []
-  acceptance_overlay: _bmad-output/implementation-artifacts/course-correction-2026-09-23.md
-- id: 2-WK-1
-  title: Render the shared Room-scoped Ambient Surface for web and iPad deployment.
-  surface: W/K
-  kind: surface
-  spec: _bmad-output/planning-artifacts/epics.md
-  tracker_key: 2-wk-1-render-the-shared-room-scoped-ambient-surface-for-web-and-ip
-  product_epic: 5
-  owner: hermes-relay-tui
-  release_scope: later
-  depends_on: []
-  acceptance_overlay: _bmad-output/implementation-artifacts/course-correction-2026-09-23.md
-- id: 2-WK-2
-  title: Render active capture, room-local Transcription, response, and phase state in the browser surface, including live/final user text, streamed/completed response text, explicit audio state, and bounded post-turn response retention.
-  surface: W/K
-  kind: surface
-  spec: _bmad-output/implementation-artifacts/spec-2-wk-2-render-active-capture-room-local-transcription-response-and.md
-  tracker_key: 2-wk-2-render-active-capture-room-local-transcription-response-and
-  product_epic: 5
-  owner: hermes-relay-tui
-  release_scope: later
-  depends_on: []
-  acceptance_overlay: _bmad-output/implementation-artifacts/course-correction-2026-09-23.md
-- id: 2-WK-3
-  title: Mirror prompts read-only when the browser is acting as a passive Room Display.
-  surface: W/K
-  kind: surface
-  spec: _bmad-output/planning-artifacts/epics.md
-  tracker_key: 2-wk-3-mirror-prompts-read-only-when-the-browser-is-acting-as-a-pas
-  product_epic: 5
-  owner: hermes-relay-tui
-  release_scope: later
-  depends_on: []
-  acceptance_overlay: _bmad-output/implementation-artifacts/course-correction-2026-09-23.md
-- id: 2-WK-4
-  title: Render honest disconnected state, cached context, and accessible recovery presentation.
-  surface: W/K
-  kind: surface
-  spec: _bmad-output/planning-artifacts/epics.md
-  tracker_key: 2-wk-4-render-honest-disconnected-state-cached-context-and-accessib
-  product_epic: 5
-  owner: hermes-relay-tui
-  release_scope: later
-  depends_on: []
-  acceptance_overlay: _bmad-output/implementation-artifacts/course-correction-2026-09-23.md
-- id: 4-E-1
-  title: Promote the household-wide Departure Card in native LVGL while preserving Room-local Active Turn precedence.
-  surface: E
-  kind: surface
-  spec: _bmad-output/planning-artifacts/epics.md
-  tracker_key: 4-e-1-promote-the-household-wide-departure-card-in-native-lvgl-whi
-  product_epic: 5
-  owner: hermes-relay-tui
-  release_scope: later
-  depends_on: []
-  acceptance_overlay: _bmad-output/implementation-artifacts/course-correction-2026-09-23.md
-- id: 4-E-2
-  title: Recompute and clear the native Departure Card on time, location, cancellation, and event-start changes.
-  surface: E
-  kind: surface
-  spec: _bmad-output/planning-artifacts/epics.md
-  tracker_key: 4-e-2-recompute-and-clear-the-native-departure-card-on-time-locati
-  product_epic: 5
-  owner: hermes-relay-tui
-  release_scope: later
-  depends_on: []
-  acceptance_overlay: _bmad-output/implementation-artifacts/course-correction-2026-09-23.md
-- id: 4-WK-1
-  title: Promote the same Departure Card in the shared web/iPad browser renderer without audio.
-  surface: W/K
-  kind: surface
-  spec: _bmad-output/planning-artifacts/epics.md
-  tracker_key: 4-wk-1-promote-the-same-departure-card-in-the-shared-web-ipad-brows
-  product_epic: 5
-  owner: hermes-relay-tui
-  release_scope: later
-  depends_on: []
-  acceptance_overlay: _bmad-output/implementation-artifacts/course-correction-2026-09-23.md
-- id: 4-WK-2
-  title: Recompute and clear the browser Departure Card while preserving active-turn precedence and accessible state.
-  surface: W/K
-  kind: surface
-  spec: _bmad-output/planning-artifacts/epics.md
-  tracker_key: 4-wk-2-recompute-and-clear-the-browser-departure-card-while-preserv
-  product_epic: 5
-  owner: hermes-relay-tui
-  release_scope: later
-  depends_on: []
-  acceptance_overlay: _bmad-output/implementation-artifacts/course-correction-2026-09-23.md
-- id: 2-E-5
-  title: Render and submit native `Choose`/`Explore` actions for current typed choice objects when the touch unit is the active doorway.
-  surface: E
-  kind: surface
-  spec: _bmad-output/planning-artifacts/epics.md
-  tracker_key: 2-e-5-render-and-submit-native-choose-explore-actions-for-current
-  product_epic: 7
-  owner: hermes-relay-tui
-  release_scope: later
-  depends_on: []
-  acceptance_overlay: _bmad-output/implementation-artifacts/course-correction-2026-09-23.md
-- id: 2-WK-5
-  title: Validate direct-use typed-choice actions at the server boundary against current state, object freshness, and capability.
-  surface: W/K
-  kind: surface
-  spec: _bmad-output/planning-artifacts/epics.md
-  tracker_key: 2-wk-5-validate-direct-use-typed-choice-actions-at-the-server-bound
-  product_epic: 7
-  owner: hermes-relay-tui
-  release_scope: later
-  depends_on: []
-  acceptance_overlay: _bmad-output/implementation-artifacts/course-correction-2026-09-23.md
-- id: 2-WK-6
-  title: Render accessible native `Choose`/`Explore` actions for current typed choice objects in direct-use mode.
-  surface: W/K
-  kind: surface
-  spec: _bmad-output/planning-artifacts/epics.md
-  tracker_key: 2-wk-6-render-accessible-native-choose-explore-actions-for-current
-  product_epic: 7
-  owner: hermes-relay-tui
-  release_scope: later
-  depends_on: []
-  acceptance_overlay: _bmad-output/implementation-artifacts/course-correction-2026-09-23.md
-- id: 2-T-3
-  title: Render typed choice objects with keyboard `Choose`/`Explore` actions and transcript-visible structured input.
-  surface: T
-  kind: surface
-  spec: _bmad-output/implementation-artifacts/spec-2-t-3-render-typed-choice-objects-with-keyboard-choose-explore-actions.md
-  tracker_key: 2-t-3-render-typed-choice-objects-with-keyboard-choose-explore-act
-  product_epic: 7
-  owner: hermes-relay-tui
-  release_scope: later
-  depends_on: []
-  acceptance_overlay: _bmad-output/implementation-artifacts/course-correction-2026-09-23.md
-- id: TUI-ATTACH-11
-  title: Resolve dragged-image placeholders through supported attachments
-  kind: course-correction
-  product_epic: 9
-  owner: hermes-relay-tui
-  tracker_key: tui-attach-11
-  release_scope: later
-  spec: _bmad-output/implementation-artifacts/spec-tui-attach-11.md
-  depends_on:
-  - home:HOME-NW-14
-  surface: T
-  github_issue: https://github.com/achappell/hermes-relay-tui/issues/11
+  - id: STD-3
+    title: Migrate the terminal client to the Standard Home boundary.
+    surface: T
+    kind: surface
+    spec: _bmad-output/implementation-artifacts/spec-standard-3-tui-migrate-terminal-client.md
+    tracker_key: standard-3-tui-migrate-the-terminal-client
+    product_epic: 1
+    owner: hermes-relay-tui
+    release_scope: migration
+    depends_on: []
+    acceptance_overlay: _bmad-output/implementation-artifacts/course-correction-2026-09-23.md
+  - id: T-1
+    title: Authorized initiation. The historical numeric artifact 1.1 remains its stable local alias.
+    surface: T
+    kind: surface
+    spec: _bmad-output/implementation-artifacts/spec-1-1-start-an-authorized-hermes-turn.md
+    tracker_key: 1-1-start-an-authorized-hermes-turn
+    product_epic: 1
+    owner: hermes-relay-tui
+    release_scope: migration
+    depends_on: []
+    acceptance_overlay: _bmad-output/implementation-artifacts/course-correction-2026-09-23.md
+  - id: T-2
+    title: Honest phases and response delivery. The historical numeric artifact 1.2 remains its stable local alias.
+    surface: T
+    kind: surface
+    spec: _bmad-output/implementation-artifacts/spec-1-2-render-honest-turn-phases-and-response-delivery.md
+    tracker_key: 1-2-render-honest-turn-phases-and-response-delivery
+    product_epic: 1
+    owner: hermes-relay-tui
+    release_scope: migration
+    depends_on: []
+    acceptance_overlay: _bmad-output/implementation-artifacts/course-correction-2026-09-23.md
+  - id: T-3
+    title: Bounded follow-up and exact `stop`. The historical numeric artifact 1.3 remains its stable local alias.
+    surface: T
+    kind: surface
+    spec: _bmad-output/implementation-artifacts/spec-1-3-continue-with-bounded-follow-up-and-exact-stop.md
+    tracker_key: 1-3-continue-with-bounded-follow-up-and-exact-stop
+    product_epic: 1
+    owner: hermes-relay-tui
+    release_scope: migration
+    depends_on: []
+    acceptance_overlay: _bmad-output/implementation-artifacts/course-correction-2026-09-23.md
+  - id: T-4
+    title: Recovery without replay. The historical numeric artifact 1.4 remains its stable local alias.
+    surface: T
+    kind: surface
+    spec: _bmad-output/implementation-artifacts/spec-1-4-recover-without-replaying-an-uncertain-turn.md
+    tracker_key: 1-4-recover-without-replaying-an-uncertain-turn
+    product_epic: 1
+    owner: hermes-relay-tui
+    release_scope: migration
+    depends_on: []
+    acceptance_overlay: _bmad-output/implementation-artifacts/course-correction-2026-09-23.md
+  - id: T-5
+    title: Non-blocking wake-listener and microphone teardown during recovery, reload, disarm, and quit.
+    surface: T
+    kind: surface
+    spec: _bmad-output/planning-artifacts/epics.md
+    tracker_key: 1-t-5-non-blocking-wake-listener-and-microphone-teardown-during-re
+    product_epic: 1
+    owner: hermes-relay-tui
+    release_scope: migration
+    depends_on: []
+    acceptance_overlay: _bmad-output/implementation-artifacts/course-correction-2026-09-23.md
+  - id: T-6
+    title: Detect idle relay loss and present honest recovery without replaying an uncertain turn.
+    surface: T
+    kind: surface
+    spec: _bmad-output/implementation-artifacts/spec-1-t-6-detect-idle-relay-loss-and-present-honest-recovery-without-replaying-an-uncertain-turn.md
+    tracker_key: 1-t-6-detect-idle-relay-loss-and-present-honest-recovery-without-r
+    product_epic: 1
+    owner: hermes-relay-tui
+    release_scope: migration
+    depends_on: []
+    acceptance_overlay: _bmad-output/implementation-artifacts/course-correction-2026-09-23.md
+  - id: 2-T-1
+    title: Keep the direct TUI doorway's capture and phase state visible while a Room Display may mirror separately.
+    surface: T
+    kind: surface
+    spec: _bmad-output/planning-artifacts/epics.md
+    tracker_key: 2-t-1-keep-the-direct-tui-doorway-s-capture-and-phase-state-visibl
+    product_epic: 1
+    owner: hermes-relay-tui
+    release_scope: migration
+    depends_on: []
+    acceptance_overlay: _bmad-output/implementation-artifacts/course-correction-2026-09-23.md
+  - id: 2-T-2
+    title: Keep TUI disconnect/recovery presentation honest without replaying an uncertain turn.
+    surface: T
+    kind: surface
+    spec: _bmad-output/implementation-artifacts/spec-2-t-2-keep-tui-disconnect-recovery-presentation-honest-without-replaying-an-uncertain-turn.md
+    tracker_key: 2-t-2-keep-tui-disconnect-recovery-presentation-honest-without-rep
+    product_epic: 1
+    owner: hermes-relay-tui
+    release_scope: migration
+    depends_on: []
+    acceptance_overlay: _bmad-output/implementation-artifacts/course-correction-2026-09-23.md
+  - id: 5-T-1
+    title: Use the TUI as an independent direct voice-chat gateway with inline response rendering, diagnostics, and deliberate local history.
+    surface: T
+    kind: surface
+    spec: _bmad-output/planning-artifacts/epics.md
+    tracker_key: 5-t-1-use-the-tui-as-an-independent-direct-voice-chat-gateway-with
+    product_epic: 1
+    owner: hermes-relay-tui
+    release_scope: migration
+    depends_on: []
+    acceptance_overlay: _bmad-output/implementation-artifacts/course-correction-2026-09-23.md
+  - id: TUI-HOME-01
+    title: Pair with Home and own the session lifecycle
+    surface: T
+    kind: surface
+    spec: _bmad-output/implementation-artifacts/spec-tui-home-01-pair-with-home-and-own-sessions.md
+    tracker_key: tui-home-01-pair-with-home-and-own-sessions
+    product_epic: 1
+    owner: hermes-relay-tui
+    release_scope: migration
+    depends_on:
+      - home:HOME-NW-17
+    acceptance_overlay: _bmad-output/implementation-artifacts/course-correction-2026-09-23.md
+    github_issue: https://github.com/achappell/hermes-relay-tui/issues/205
+  - id: TUI-DEFECT-102
+    title: Resolve first-turn wake failure
+    kind: course-correction
+    product_epic: 1
+    owner: hermes-relay-tui
+    tracker_key: tui-defect-102
+    release_scope: migration
+    spec: _bmad-output/implementation-artifacts/spec-tui-defect-102.md
+    depends_on: []
+    surface: T
+    github_issue: https://github.com/achappell/hermes-relay-tui/issues/102
+  - id: TUI-DEFECT-104
+    title: Resolve truncated microphone capture
+    kind: course-correction
+    product_epic: 1
+    owner: hermes-relay-tui
+    tracker_key: tui-defect-104
+    release_scope: migration
+    spec: _bmad-output/implementation-artifacts/spec-tui-defect-104.md
+    depends_on: []
+    surface: T
+    github_issue: https://github.com/achappell/hermes-relay-tui/issues/104
+  - id: TUI-STD-01
+    title: Offer explicit Standard-only terminal setup
+    kind: course-correction
+    product_epic: 2
+    owner: hermes-relay-tui
+    tracker_key: tui-std-01
+    release_scope: migration
+    spec: _bmad-output/implementation-artifacts/spec-tui-std-01.md
+    depends_on:
+      - tui:TUI-HOME-01
+    surface: T
+    github_issue: https://github.com/achappell/hermes-relay-tui/issues/207
+  - id: P-1
+    title: Authorized wake and capture.
+    surface: P
+    kind: surface
+    spec: _bmad-output/implementation-artifacts/spec-1-p-1-authorized-wake-and-capture.md
+    tracker_key: 1-p-1-authorized-wake-and-capture
+    product_epic: 3
+    owner: hermes-relay-tui
+    release_scope: migration
+    depends_on: []
+    acceptance_overlay: _bmad-output/implementation-artifacts/course-correction-2026-09-23.md
+  - id: P-2
+    title: Status and response-audio delivery.
+    surface: P
+    kind: surface
+    spec: _bmad-output/implementation-artifacts/spec-1-p-2-status-and-response-audio-delivery.md
+    tracker_key: 1-p-2-status-and-response-audio-delivery
+    product_epic: 3
+    owner: hermes-relay-tui
+    release_scope: migration
+    depends_on: []
+    acceptance_overlay: _bmad-output/implementation-artifacts/course-correction-2026-09-23.md
+  - id: P-3
+    title: Bounded follow-up and exact `stop`.
+    surface: P
+    kind: surface
+    spec: _bmad-output/implementation-artifacts/spec-1-p-3-bounded-follow-up-and-exact-stop.md
+    tracker_key: 1-p-3-bounded-follow-up-and-exact-stop
+    product_epic: 3
+    owner: hermes-relay-tui
+    release_scope: migration
+    depends_on: []
+    acceptance_overlay: _bmad-output/implementation-artifacts/course-correction-2026-09-23.md
+  - id: P-4
+    title: Recovery without replay.
+    surface: P
+    kind: surface
+    spec: _bmad-output/implementation-artifacts/spec-1-p-4-recovery-without-replay.md
+    tracker_key: 1-p-4-recovery-without-replay
+    product_epic: 3
+    owner: hermes-relay-tui
+    release_scope: migration
+    depends_on: []
+    evidence_note: 'PR #204 merged; tracker remains in-progress and calibrated proximity provider remains absent. Preserve outstanding Home physical acceptance.'
+    acceptance_overlay: _bmad-output/implementation-artifacts/course-correction-2026-09-23.md
+  - id: P-5
+    title: Complete streamed response playback without underrun.
+    surface: P
+    kind: surface
+    spec: _bmad-output/implementation-artifacts/spec-1-p-5-complete-streamed-response-playback-without-underrun.md
+    tracker_key: 1-p-5-complete-streamed-response-playback-without-underrun
+    product_epic: 3
+    owner: hermes-relay-tui
+    release_scope: migration
+    depends_on: []
+    acceptance_overlay: _bmad-output/implementation-artifacts/course-correction-2026-09-23.md
+  - id: P-6
+    title: Graceful bridge-service shutdown and entry-point coverage.
+    surface: P
+    kind: surface
+    spec: _bmad-output/implementation-artifacts/spec-1-p-6-graceful-bridge-service-shutdown-and-entry-point-coverage.md
+    tracker_key: 1-p-6-graceful-bridge-service-shutdown-and-entry-point-coverage
+    product_epic: 3
+    owner: hermes-relay-tui
+    release_scope: migration
+    depends_on: []
+    acceptance_overlay: _bmad-output/implementation-artifacts/course-correction-2026-09-23.md
+  - id: P-7
+    title: Make raw PCM diagnostics explicitly opt-in and bounded.
+    surface: P
+    kind: surface
+    spec: _bmad-output/planning-artifacts/epics.md
+    tracker_key: 1-p-7-make-raw-pcm-diagnostics-explicitly-opt-in-and-bounded
+    product_epic: 3
+    owner: hermes-relay-tui
+    release_scope: migration
+    depends_on: []
+    acceptance_overlay: _bmad-output/implementation-artifacts/course-correction-2026-09-23.md
+  - id: P-8
+    title: Make the vendored reSpeaker audio-format boundary deterministic and testable.
+    surface: P
+    kind: surface
+    spec: _bmad-output/planning-artifacts/epics.md
+    tracker_key: 1-p-8-make-the-vendored-respeaker-audio-format-boundary-determinis
+    product_epic: 3
+    owner: hermes-relay-tui
+    release_scope: migration
+    depends_on: []
+    acceptance_overlay: _bmad-output/implementation-artifacts/course-correction-2026-09-23.md
+  - id: P-9
+    title: Make ReSpeaker I2S channel startup and teardown fail-safe.
+    surface: P
+    kind: surface
+    spec: _bmad-output/planning-artifacts/epics.md
+    tracker_key: 1-p-9-make-respeaker-i2s-channel-startup-and-teardown-fail-safe
+    product_epic: 3
+    owner: hermes-relay-tui
+    release_scope: migration
+    depends_on: []
+    acceptance_overlay: _bmad-output/implementation-artifacts/course-correction-2026-09-23.md
+  - id: P-10
+    title: Keep internal wake models out of ordinary capture routing.
+    surface: P
+    kind: surface
+    spec: _bmad-output/planning-artifacts/epics.md
+    tracker_key: 1-p-10-keep-internal-wake-models-out-of-ordinary-capture-routing
+    product_epic: 3
+    owner: hermes-relay-tui
+    release_scope: migration
+    depends_on: []
+    acceptance_overlay: _bmad-output/implementation-artifacts/course-correction-2026-09-23.md
+  - id: P-11
+    title: Surface runtime audio-output failures honestly and recoverably.
+    surface: P
+    kind: surface
+    spec: _bmad-output/planning-artifacts/epics.md
+    tracker_key: 1-p-11-surface-runtime-audio-output-failures-honestly-and-recoverab
+    product_epic: 3
+    owner: hermes-relay-tui
+    release_scope: migration
+    depends_on: []
+    acceptance_overlay: _bmad-output/implementation-artifacts/course-correction-2026-09-23.md
+  - id: E-1
+    title: Authorized voice capture.
+    surface: E
+    kind: surface
+    spec: _bmad-output/implementation-artifacts/spec-1-e-1-authorized-voice-capture.md
+    tracker_key: 1-e-1-authorized-voice-capture
+    product_epic: 3
+    owner: hermes-relay-tui
+    release_scope: migration
+    depends_on: []
+    acceptance_overlay: _bmad-output/implementation-artifacts/course-correction-2026-09-23.md
+  - id: E-2
+    title: Native phases and streamed-response rendering.
+    surface: E
+    kind: surface
+    spec: _bmad-output/planning-artifacts/epics.md
+    tracker_key: 1-e-2-native-phases-and-streamed-response-rendering
+    product_epic: 3
+    owner: hermes-relay-tui
+    release_scope: migration
+    depends_on: []
+    acceptance_overlay: _bmad-output/implementation-artifacts/course-correction-2026-09-23.md
+  - id: E-3
+    title: Response-audio delivery.
+    surface: E
+    kind: surface
+    spec: _bmad-output/planning-artifacts/epics.md
+    tracker_key: 1-e-3-response-audio-delivery
+    product_epic: 3
+    owner: hermes-relay-tui
+    release_scope: migration
+    depends_on: []
+    acceptance_overlay: _bmad-output/implementation-artifacts/course-correction-2026-09-23.md
+  - id: E-4
+    title: Bounded follow-up and exact `stop`.
+    surface: E
+    kind: surface
+    spec: _bmad-output/planning-artifacts/epics.md
+    tracker_key: 1-e-4-bounded-follow-up-and-exact-stop
+    product_epic: 3
+    owner: hermes-relay-tui
+    release_scope: migration
+    depends_on: []
+    acceptance_overlay: _bmad-output/implementation-artifacts/course-correction-2026-09-23.md
+  - id: E-5
+    title: Recovery without replay.
+    surface: E
+    kind: surface
+    spec: _bmad-output/planning-artifacts/epics.md
+    tracker_key: 1-e-5-recovery-without-replay
+    product_epic: 3
+    owner: hermes-relay-tui
+    release_scope: migration
+    depends_on: []
+    acceptance_overlay: _bmad-output/implementation-artifacts/course-correction-2026-09-23.md
+  - id: WK-1
+    title: One shared W/K browser voice-plus-display surface for authorized capture, honest phases, streamed/completed response text, response audio, and delivery/error state, including bounded post-playback hands-free recovery across supported browsers. iPad is a deployment target, not a separate surface.
+    surface: W/K
+    kind: surface
+    spec: _bmad-output/implementation-artifacts/spec-1-wk-1-one-shared-w-k-browser-voice-plus-display-surface-for-author.md
+    tracker_key: 1-wk-1-one-shared-w-k-browser-voice-plus-display-surface-for-author
+    product_epic: 3
+    owner: hermes-relay-tui
+    release_scope: migration
+    depends_on: []
+    acceptance_overlay: _bmad-output/implementation-artifacts/course-correction-2026-09-23.md
+  - id: WK-2
+    title: Isolate concurrent browser voice/display sessions with one server-owned Hermes session, state publisher, prompt-action route, and response-audio stream per browser connection, bounded admission, and fresh no-replay reconnects.
+    surface: W/K
+    kind: surface
+    spec: _bmad-output/planning-artifacts/epics.md
+    tracker_key: 1-wk-2-concurrent-w-k-browser-session-isolation
+    product_epic: 3
+    owner: hermes-relay-tui
+    release_scope: migration
+    depends_on: []
+    acceptance_overlay: _bmad-output/implementation-artifacts/course-correction-2026-09-23.md
+  - id: 2-P-1
+    title: Expose the Puck's local capture, response, and status phases without putting transcript text on the TFT.
+    surface: P
+    kind: surface
+    spec: _bmad-output/planning-artifacts/epics.md
+    tracker_key: 2-p-1-expose-the-puck-s-local-capture-response-and-status-phases-w
+    product_epic: 3
+    owner: hermes-relay-tui
+    release_scope: migration
+    depends_on: []
+    acceptance_overlay: _bmad-output/implementation-artifacts/course-correction-2026-09-23.md
+  - id: 2-P-2
+    title: Fail closed and show unavailable/disconnected status when the Puck or Hermes path is unavailable.
+    surface: P
+    kind: surface
+    spec: _bmad-output/planning-artifacts/epics.md
+    tracker_key: 2-p-2-fail-closed-and-show-unavailable-disconnected-status-when-th
+    product_epic: 3
+    owner: hermes-relay-tui
+    release_scope: migration
+    depends_on: []
+    acceptance_overlay: _bmad-output/implementation-artifacts/course-correction-2026-09-23.md
+  - id: 3-P-1
+    title: Advertise independently identifiable unconfigured state for discovery and connection.
+    surface: P
+    kind: surface
+    spec: _bmad-output/planning-artifacts/epics.md
+    tracker_key: 3-p-1-advertise-independently-identifiable-unconfigured-state-for
+    product_epic: 3
+    owner: hermes-relay-tui
+    release_scope: migration
+    depends_on: []
+    acceptance_overlay: _bmad-output/implementation-artifacts/course-correction-2026-09-23.md
+  - id: 3-P-2
+    title: Apply approved Room, credential, and Wake Mapping configuration without becoming Ready early.
+    surface: P
+    kind: surface
+    spec: _bmad-output/planning-artifacts/epics.md
+    tracker_key: 3-p-2-apply-approved-room-credential-and-wake-mapping-configuratio
+    product_epic: 3
+    owner: hermes-relay-tui
+    release_scope: migration
+    depends_on: []
+    acceptance_overlay: _bmad-output/implementation-artifacts/course-correction-2026-09-23.md
+  - id: 3-P-3
+    title: Enforce the selected Wake Mapping and Profile before capture.
+    surface: P
+    kind: surface
+    spec: _bmad-output/planning-artifacts/epics.md
+    tracker_key: 3-p-3-enforce-the-selected-wake-mapping-and-profile-before-capture
+    product_epic: 3
+    owner: hermes-relay-tui
+    release_scope: migration
+    depends_on: []
+    acceptance_overlay: _bmad-output/implementation-artifacts/course-correction-2026-09-23.md
+  - id: 3-P-4
+    title: Participate in single-winner wake arbitration and remain silent when it loses.
+    surface: P
+    kind: surface
+    spec: _bmad-output/planning-artifacts/epics.md
+    tracker_key: 3-p-4-participate-in-single-winner-wake-arbitration-and-remain-sil
+    product_epic: 3
+    owner: hermes-relay-tui
+    release_scope: migration
+    depends_on: []
+    acceptance_overlay: _bmad-output/implementation-artifacts/course-correction-2026-09-23.md
+  - id: 3-P-5
+    title: Reject revoked, unavailable, or unverified identity before capture or submission.
+    surface: P
+    kind: surface
+    spec: _bmad-output/planning-artifacts/epics.md
+    tracker_key: 3-p-5-reject-revoked-unavailable-or-unverified-identity-before-cap
+    product_epic: 3
+    owner: hermes-relay-tui
+    release_scope: migration
+    depends_on: []
+    acceptance_overlay: _bmad-output/implementation-artifacts/course-correction-2026-09-23.md
+  - id: 3-P-6
+    title: Retire revoked credentials and require the ordered setup flow on re-enrollment.
+    surface: P
+    kind: surface
+    spec: _bmad-output/planning-artifacts/epics.md
+    tracker_key: 3-p-6-retire-revoked-credentials-and-require-the-ordered-setup-flo
+    product_epic: 3
+    owner: hermes-relay-tui
+    release_scope: migration
+    depends_on: []
+    acceptance_overlay: _bmad-output/implementation-artifacts/course-correction-2026-09-23.md
+  - id: STD-6
+    title: Migrate the Puck path to the Standard Home boundary.
+    surface: P
+    kind: surface
+    spec: _bmad-output/implementation-artifacts/spec-standard-6-puck-migrate-respeaker-puck-path.md
+    tracker_key: standard-6-puck-migrate-respeaker-puck-path
+    product_epic: 3
+    owner: hermes-relay-tui
+    release_scope: migration
+    depends_on: []
+    acceptance_overlay: _bmad-output/implementation-artifacts/course-correction-2026-09-23.md
+  - id: STD-7
+    title: Add the Touch Display audio/session adapter on the Standard Home boundary.
+    surface: E
+    kind: surface
+    spec: _bmad-output/planning-artifacts/epics.md
+    tracker_key: standard-7-esp32-add-touch-display-audio-session-adapter
+    product_epic: 3
+    owner: hermes-relay-tui
+    release_scope: migration
+    depends_on: []
+    acceptance_overlay: _bmad-output/implementation-artifacts/course-correction-2026-09-23.md
+  - id: STD-8
+    title: Migrate browser and iPad routes to the Standard Home boundary.
+    surface: W/K
+    kind: surface
+    spec: _bmad-output/planning-artifacts/epics.md
+    tracker_key: standard-8-wk-migrate-browser-and-ipad-routes
+    product_epic: 3
+    owner: hermes-relay-tui
+    release_scope: migration
+    depends_on: []
+    acceptance_overlay: _bmad-output/implementation-artifacts/course-correction-2026-09-23.md
+  - id: TUI-RETIRE-01
+    title: Remove legacy terminal and room-device pairing and fork integration
+    kind: course-correction
+    product_epic: 4
+    owner: hermes-relay-tui
+    tracker_key: tui-retire-01
+    release_scope: migration
+    spec: _bmad-output/implementation-artifacts/spec-tui-retire-01.md
+    depends_on:
+      - tui:TUI-HOME-01
+      - tui:TUI-STD-01
+      - epic:3
+    surface: T
+    github_issue: https://github.com/achappell/hermes-relay-tui/issues/208
+  - id: 2-E-1
+    title: Render the Room-scoped Ambient Surface in native LVGL.
+    surface: E
+    kind: surface
+    spec: _bmad-output/planning-artifacts/epics.md
+    tracker_key: 2-e-1-render-the-room-scoped-ambient-surface-in-native-lvgl
+    product_epic: 5
+    owner: hermes-relay-tui
+    release_scope: later
+    depends_on: []
+    acceptance_overlay: _bmad-output/implementation-artifacts/course-correction-2026-09-23.md
+  - id: 2-E-2
+    title: Render room-local active-turn state, live Transcription, and the touch doorway's observed response state.
+    surface: E
+    kind: surface
+    spec: _bmad-output/planning-artifacts/epics.md
+    tracker_key: 2-e-2-render-room-local-active-turn-state-live-transcription-and-t
+    product_epic: 5
+    owner: hermes-relay-tui
+    release_scope: later
+    depends_on: []
+    acceptance_overlay: _bmad-output/implementation-artifacts/course-correction-2026-09-23.md
+  - id: 2-E-3
+    title: Mirror prompts read-only when the renderer is acting as a passive Room Display.
+    surface: E
+    kind: surface
+    spec: _bmad-output/planning-artifacts/epics.md
+    tracker_key: 2-e-3-mirror-prompts-read-only-when-the-renderer-is-acting-as-a-pa
+    product_epic: 5
+    owner: hermes-relay-tui
+    release_scope: later
+    depends_on: []
+    acceptance_overlay: _bmad-output/implementation-artifacts/course-correction-2026-09-23.md
+  - id: 2-E-4
+    title: Render honest disconnected state and safe cached context on the native Display.
+    surface: E
+    kind: surface
+    spec: _bmad-output/planning-artifacts/epics.md
+    tracker_key: 2-e-4-render-honest-disconnected-state-and-safe-cached-context-on
+    product_epic: 5
+    owner: hermes-relay-tui
+    release_scope: later
+    depends_on: []
+    acceptance_overlay: _bmad-output/implementation-artifacts/course-correction-2026-09-23.md
+  - id: 2-WK-1
+    title: Render the shared Room-scoped Ambient Surface for web and iPad deployment.
+    surface: W/K
+    kind: surface
+    spec: _bmad-output/planning-artifacts/epics.md
+    tracker_key: 2-wk-1-render-the-shared-room-scoped-ambient-surface-for-web-and-ip
+    product_epic: 5
+    owner: hermes-relay-tui
+    release_scope: later
+    depends_on: []
+    acceptance_overlay: _bmad-output/implementation-artifacts/course-correction-2026-09-23.md
+  - id: 2-WK-2
+    title: Render active capture, room-local Transcription, response, and phase state in the browser surface, including live/final user text, streamed/completed response text, explicit audio state, and bounded post-turn response retention.
+    surface: W/K
+    kind: surface
+    spec: _bmad-output/implementation-artifacts/spec-2-wk-2-render-active-capture-room-local-transcription-response-and.md
+    tracker_key: 2-wk-2-render-active-capture-room-local-transcription-response-and
+    product_epic: 5
+    owner: hermes-relay-tui
+    release_scope: later
+    depends_on: []
+    acceptance_overlay: _bmad-output/implementation-artifacts/course-correction-2026-09-23.md
+  - id: 2-WK-3
+    title: Mirror prompts read-only when the browser is acting as a passive Room Display.
+    surface: W/K
+    kind: surface
+    spec: _bmad-output/planning-artifacts/epics.md
+    tracker_key: 2-wk-3-mirror-prompts-read-only-when-the-browser-is-acting-as-a-pas
+    product_epic: 5
+    owner: hermes-relay-tui
+    release_scope: later
+    depends_on: []
+    acceptance_overlay: _bmad-output/implementation-artifacts/course-correction-2026-09-23.md
+  - id: 2-WK-4
+    title: Render honest disconnected state, cached context, and accessible recovery presentation.
+    surface: W/K
+    kind: surface
+    spec: _bmad-output/planning-artifacts/epics.md
+    tracker_key: 2-wk-4-render-honest-disconnected-state-cached-context-and-accessib
+    product_epic: 5
+    owner: hermes-relay-tui
+    release_scope: later
+    depends_on: []
+    acceptance_overlay: _bmad-output/implementation-artifacts/course-correction-2026-09-23.md
+  - id: 4-E-1
+    title: Promote the household-wide Departure Card in native LVGL while preserving Room-local Active Turn precedence.
+    surface: E
+    kind: surface
+    spec: _bmad-output/planning-artifacts/epics.md
+    tracker_key: 4-e-1-promote-the-household-wide-departure-card-in-native-lvgl-whi
+    product_epic: 5
+    owner: hermes-relay-tui
+    release_scope: later
+    depends_on: []
+    acceptance_overlay: _bmad-output/implementation-artifacts/course-correction-2026-09-23.md
+  - id: 4-E-2
+    title: Recompute and clear the native Departure Card on time, location, cancellation, and event-start changes.
+    surface: E
+    kind: surface
+    spec: _bmad-output/planning-artifacts/epics.md
+    tracker_key: 4-e-2-recompute-and-clear-the-native-departure-card-on-time-locati
+    product_epic: 5
+    owner: hermes-relay-tui
+    release_scope: later
+    depends_on: []
+    acceptance_overlay: _bmad-output/implementation-artifacts/course-correction-2026-09-23.md
+  - id: 4-WK-1
+    title: Promote the same Departure Card in the shared web/iPad browser renderer without audio.
+    surface: W/K
+    kind: surface
+    spec: _bmad-output/planning-artifacts/epics.md
+    tracker_key: 4-wk-1-promote-the-same-departure-card-in-the-shared-web-ipad-brows
+    product_epic: 5
+    owner: hermes-relay-tui
+    release_scope: later
+    depends_on: []
+    acceptance_overlay: _bmad-output/implementation-artifacts/course-correction-2026-09-23.md
+  - id: 4-WK-2
+    title: Recompute and clear the browser Departure Card while preserving active-turn precedence and accessible state.
+    surface: W/K
+    kind: surface
+    spec: _bmad-output/planning-artifacts/epics.md
+    tracker_key: 4-wk-2-recompute-and-clear-the-browser-departure-card-while-preserv
+    product_epic: 5
+    owner: hermes-relay-tui
+    release_scope: later
+    depends_on: []
+    acceptance_overlay: _bmad-output/implementation-artifacts/course-correction-2026-09-23.md
+  - id: 2-E-5
+    title: Render and submit native `Choose`/`Explore` actions for current typed choice objects when the touch unit is the active doorway.
+    surface: E
+    kind: surface
+    spec: _bmad-output/planning-artifacts/epics.md
+    tracker_key: 2-e-5-render-and-submit-native-choose-explore-actions-for-current
+    product_epic: 7
+    owner: hermes-relay-tui
+    release_scope: later
+    depends_on: []
+    acceptance_overlay: _bmad-output/implementation-artifacts/course-correction-2026-09-23.md
+  - id: 2-WK-5
+    title: Validate direct-use typed-choice actions at the server boundary against current state, object freshness, and capability.
+    surface: W/K
+    kind: surface
+    spec: _bmad-output/planning-artifacts/epics.md
+    tracker_key: 2-wk-5-validate-direct-use-typed-choice-actions-at-the-server-bound
+    product_epic: 7
+    owner: hermes-relay-tui
+    release_scope: later
+    depends_on: []
+    acceptance_overlay: _bmad-output/implementation-artifacts/course-correction-2026-09-23.md
+  - id: 2-WK-6
+    title: Render accessible native `Choose`/`Explore` actions for current typed choice objects in direct-use mode.
+    surface: W/K
+    kind: surface
+    spec: _bmad-output/planning-artifacts/epics.md
+    tracker_key: 2-wk-6-render-accessible-native-choose-explore-actions-for-current
+    product_epic: 7
+    owner: hermes-relay-tui
+    release_scope: later
+    depends_on: []
+    acceptance_overlay: _bmad-output/implementation-artifacts/course-correction-2026-09-23.md
+  - id: 2-T-3
+    title: Render typed choice objects with keyboard `Choose`/`Explore` actions and transcript-visible structured input.
+    surface: T
+    kind: surface
+    spec: _bmad-output/implementation-artifacts/spec-2-t-3-render-typed-choice-objects-with-keyboard-choose-explore-actions.md
+    tracker_key: 2-t-3-render-typed-choice-objects-with-keyboard-choose-explore-act
+    product_epic: 7
+    owner: hermes-relay-tui
+    release_scope: later
+    depends_on: []
+    acceptance_overlay: _bmad-output/implementation-artifacts/course-correction-2026-09-23.md
+  - id: TUI-ATTACH-11
+    title: Resolve dragged-image placeholders through supported attachments
+    kind: course-correction
+    product_epic: 9
+    owner: hermes-relay-tui
+    tracker_key: tui-attach-11
+    release_scope: later
+    spec: _bmad-output/implementation-artifacts/spec-tui-attach-11.md
+    depends_on:
+      - home:HOME-NW-14
+    surface: T
+    github_issue: https://github.com/achappell/hermes-relay-tui/issues/11
 epic_scheme: hermes-home-2026-09-23
 epics:
   1: Connect personal clients through HomeBridge
