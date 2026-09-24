@@ -133,3 +133,43 @@ def test_saved_credential_can_recover_missing_public_config_without_reenrollment
     assert result == 0
     assert len(client.calls) == calls_before
     assert yaml.safe_load(path.read_text())["profiles"]["household"]["home_grant"] == "grant-approved"
+
+
+PASTED_CODE = "SECRETCODE7"
+PASTED_LINK = f"hermes-home://pair?home=https%3A%2F%2Fhome.example&code={PASTED_CODE}"
+
+
+@pytest.mark.parametrize("outcome", ["paired", "config_save_failed", "interrupted"])
+def test_pasted_pairing_link_never_prints_its_enrollment_code(tmp_path, monkeypatch, enrollment, outcome):
+    """Guard the property behind CodeQL's clear-text-logging alerts.
+
+    The whole link, code included, arrives through the hidden prompt. Every
+    printed line (success, the config-save recovery hint, and the interrupt
+    hint) may show the canonical Home origin but never the enrollment code.
+    """
+    path = tmp_path / "config.yaml"
+    output = []
+    if outcome == "config_save_failed":
+        def fail_public_save(*args, **kwargs):
+            raise OSError("synthetic config write failure")
+
+        monkeypatch.setattr(config, "save_home_profile", fail_public_save)
+    if outcome == "interrupted":
+        def interrupt_public_save(*args, **kwargs):
+            raise KeyboardInterrupt
+
+        monkeypatch.setattr(config, "save_home_profile", interrupt_public_save)
+
+    result = run_pairing_command(
+        ["pair", "--profile", "household", "--config", str(path)],
+        secret_fn=lambda _: PASTED_LINK,
+        output_fn=output.append,
+    )
+
+    printed = "\n".join(output)
+    assert result == (0 if outcome == "paired" else 1)
+    assert PASTED_CODE not in printed
+    assert "code=" not in printed
+    assert "https://home.example" in printed or "wss://home.example" in printed
+    if outcome != "paired":
+        assert "restore only the missing public profile" in printed
