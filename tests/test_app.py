@@ -6817,3 +6817,36 @@ async def test_connect_banner_shows_unconfirmed_model_when_relay_omits():
         await pilot.pause()
         text = transcript_of(app)
         assert "Connected to s-custom (chat chat-2, model cli-model (unconfirmed))." in text
+
+
+class UnconfirmedHomeSession(FakeSession):
+    """A Home session whose claim release Home never confirms."""
+
+    def __init__(self, *, raises=False):
+        super().__init__()
+        self.release_calls = 0
+        self.raises = raises
+        self.grant = None
+        self._grant_label = None
+        self.pending_replacement = False
+        self.resumed = False
+
+    async def release_claim(self):
+        self.release_calls += 1
+        if self.raises:
+            raise ConnectionError("home unreachable at quit")
+        return False
+
+
+@pytest.mark.parametrize("raises", [False, True])
+async def test_quit_survives_an_unconfirmed_home_claim_release(monkeypatch, raises):
+    monkeypatch.setattr(app_module, "HomeTextualSession", UnconfirmedHomeSession)
+    session = UnconfirmedHomeSession(raises=raises)
+    app = HermesStreamingApp(args=make_args(), session_factory=lambda: session)
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+
+    assert session.release_calls == 1
+    assert session.closed
+    assert app.return_code in (None, 0)
