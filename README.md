@@ -2,7 +2,7 @@
 
 A small Textual terminal UI for authenticated Hermes voice sessions. Type text, capture a local microphone turn, watch the reply stream into the transcript, and play streamed PCM audio locally.
 
-The TUI supports an explicitly selected HomeBridge connection with Home-owned pairing and approved Profile grants, or the existing direct Standard Hermes `gateway` connection. The legacy voice-session transport remains available pending TUI-RETIRE-01. No connection silently changes mode. This client does not run Hermes or Home, and the new Home pairing/session flow has not yet passed live deployment acceptance.
+The TUI supports an explicitly selected HomeBridge connection with Home-owned pairing and approved Profile grants, or the existing direct Standard Hermes `gateway` connection. The legacy voice-session transport remains available pending TUI-RETIRE-01. No connection silently changes mode. This client does not run Hermes or Home. Live acceptance of Home pairing, text, microphone input, spoken response playback, thinking-event rendering and reconnect has passed on macOS; remaining live edge cases are listed in the [TUI-HOME-01 validation record](_bmad-output/implementation-artifacts/validation-tui-home-01.md).
 
 ## BMAD surface ownership
 
@@ -120,7 +120,7 @@ Session and Profile changes wait until active turns, prompts and capture have fi
 
 Quit and switching attempt a bounded claim close while preserving the Standard session for later resume. Network loss keeps the claim for recovery within Home’s configured grace (NW-17 defaults to 120 seconds); loss of the process loses this in-memory recovery binding. Claim expiry, revocation, and failed release stay explicit. Before a new claim the credential renews in its final 14 days, under a per-Home lock shared by windows, and configuration is fetched again. Renewal on Home can invalidate older-generation claims in other windows; those windows must report failed recovery and make a deliberate session choice.
 
-Live prerequisites: deploy compatible Home NW-17 HTTP and bridge routes behind a valid HTTPS/WSS certificate, configure unmodified Standard Hermes and its session directory, and enable enrollment/approval on Home. The implementation was inspected against Home commit `d2447f684a143817f7b5688b597c11aa053bb672`. Secure-store operation, pairing approvals, text/voice, stop, concurrent windows, renewal, revocation, and disconnect recovery still require live acceptance. This implementation does not change a Home deployment or retire legacy clients.
+Live prerequisites: deploy compatible Home NW-17 HTTP and bridge routes behind a valid HTTPS/WSS certificate, configure unmodified Standard Hermes and its session directory, and enable enrollment/approval on Home. The implementation was inspected against Home commit `d2447f684a143817f7b5688b597c11aa053bb672`. Pairing, text, voice, thinking events and reconnect have live macOS acceptance. Linux Secret Service and remaining enrollment failure states, real renewal/revocation, session/owner commands, multiple TUI windows and unpair remain deferred live checks; see the validation record. This implementation does not change a Home deployment or retire legacy clients.
 
 ### Python package
 
