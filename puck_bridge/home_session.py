@@ -850,6 +850,8 @@ class HomePuckSession:
         pcm_remainder = b""
         resume_attempts = 0
         audio_lost = False
+        text_terminal = False
+        audio_wait_remaining: float | None = None
         text_state: dict[str, Any] = {
             "committed": "",
             "rendered_preview": "",
@@ -861,7 +863,22 @@ class HomePuckSession:
         try:
             while True:
                 try:
-                    frame = await client.next_frame()
+                    if audio_wait_remaining is None:
+                        frame = await client.next_frame()
+                    else:
+                        # Count network waiting only; rendering/playback happens
+                        # while this generator is suspended at yield.
+                        started_wait = asyncio.get_running_loop().time()
+                        try:
+                            async with asyncio.timeout(max(0, audio_wait_remaining)):
+                                frame = await client.next_frame()
+                        except asyncio.TimeoutError:
+                            try:
+                                yield {"type": "audio_abort", "error": "Home audio completion timed out; text completed. Reconnect before the next prompt.", "text_completed": True}
+                            finally:
+                                await self._close_after_protocol_failure()
+                            return
+                        audio_wait_remaining -= asyncio.get_running_loop().time() - started_wait
                 except HomeBridgeTransportError:
                     if not self._resume_uncertain_turn:
                         self._note_uncertain_transport()
@@ -892,6 +909,14 @@ class HomePuckSession:
                         audio_lost = True
                         pcm_remainder = b""
                         yield {"type": "audio_end"}
+                        if text_terminal:
+                            # The resumed worker may still send unlabelled PCM.
+                            # Retire this socket so its tail cannot enter a new turn.
+                            try:
+                                yield {"type": "audio_abort", "error": "Home audio was interrupted; text completed. Reconnect before the next prompt.", "text_completed": True}
+                            finally:
+                                await self._close_after_protocol_failure()
+                            return
                     continue
                 if isinstance(frame, bytes):
                     if audio_failed or audio_lost:
@@ -900,6 +925,8 @@ class HomePuckSession:
                         raise HomeBridgeAudioError(
                             "Home bridge sent PCM outside an active audio frame"
                         )
+                    if text_terminal and frame:
+                        audio_wait_remaining = self._request_timeout
                     data = pcm_remainder + frame
                     pcm_remainder = data[-1:] if len(data) % 2 else b""
                     if pcm_remainder:
@@ -925,6 +952,8 @@ class HomePuckSession:
                     )
                     if audio_event is None:
                         continue
+                    if text_terminal:
+                        audio_wait_remaining = self._request_timeout
                     kind = audio_event["type"]
                     if kind == "audio_start":
                         audio_started = True
@@ -939,6 +968,8 @@ class HomePuckSession:
                     else:
                         yield audio_event
                         audio_failed = True
+                    if text_terminal and (audio_ended or audio_failed):
+                        return
                     continue
                 if method != "event":
                     # Heartbeat and future Home notifications cannot complete
@@ -1038,10 +1069,13 @@ class HomePuckSession:
                     }:
                         return
                 if _is_terminal_event(event_type, payload):
-                    if audio_started and not audio_ended and not audio_failed:
-                        raise HomeBridgeAudioError(
-                            "Home bridge turn ended before audio.end"
-                        )
+                    # Home pumps text and audio independently. Text completion
+                    # does not end an advertised or already-started audio stream.
+                    if (audio_started or "audio" in self.capabilities) and not audio_ended and not audio_failed:
+                        if not text_terminal:
+                            audio_wait_remaining = self._request_timeout
+                        text_terminal = True
+                        continue
                     return
         except asyncio.CancelledError:
             await self._close_after_uncertain_prompt()

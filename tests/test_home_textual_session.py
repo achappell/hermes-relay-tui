@@ -142,3 +142,65 @@ def test_textual_home_session_marks_recovery_as_reconnect(monkeypatch):
         await session.close()
 
     asyncio.run(recover())
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("terminal", ["message_complete", "error", "turn_interrupted"])
+async def test_textual_normalizes_home_completion_boundary(monkeypatch, terminal):
+    class NativeShapeHome(FakeHomeSession):
+        def send_turn(self, _text, *, stt_source="local"):
+            async def events():
+                yield {"type": "text_delta", "text": "answer"}
+                yield {"type": terminal}
+                if terminal == "message_complete":
+                    yield {"type": "audio_end"}
+            return events()
+
+    monkeypatch.setattr("puck_bridge.home_textual_session.HomeClient", FakeHomeClient)
+    session = HomeTextualSession(SimpleNamespace(url="https://home.example", session_id="local"),
+                                 home_session_factory=NativeShapeHome)
+    await session.connect()
+    try:
+        events = [event async for event in session.send_turn("TEST")]
+        if terminal == "message_complete":
+            assert events[-2:] == [{"type": "audio_end", "final": True}, {"type": "turn_end"}]
+        else:
+            assert events[-1] == {"type": terminal}
+    finally:
+        await session.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("ending", ["end", "fallback", "unavailable"])
+async def test_textual_real_bridge_finishes_text_then_audio(monkeypatch, ending):
+    from puck_bridge.home_session import HomePuckSession
+    from tests.test_puck_home_session import _FakeConnect, _ready_socket, _audio, _event
+
+    class BoundClient(FakeHomeClient):
+        async def claim(self, *args, **kwargs):
+            result = await super().claim(*args, **kwargs)
+            result["conversation_handle"] = "opaque-home-handle"
+            return result
+
+    monkeypatch.setattr("puck_bridge.home_textual_session.HomeClient", BoundClient)
+    socket = _ready_socket(
+        _audio("start", "home-turn-1", sample_rate=24000, channels=1,
+               sample_width=2, byte_order="little"),
+        _event("message.complete", "home-turn-1", {}),
+        b"\x01\x00",
+        _audio(ending, "home-turn-1"),
+    )
+    def factory(*args, **kwargs):
+        return HomePuckSession(*args, connect_factory=_FakeConnect([socket]), **kwargs)
+
+    session = HomeTextualSession(SimpleNamespace(url="https://home.example", session_id="local"),
+                                 home_session_factory=factory)
+    await session.connect()
+    try:
+        events = [event async for event in session.send_turn("TEST")]
+        assert events[-1] == {"type": "turn_end"}
+        assert events[-2] == ({"type": "audio_end", "final": True} if ending == "end" else
+                              {"type": "audio_unavailable", "reason": "Home bridge response audio unavailable"})
+        assert session.active_turn_id is None
+    finally:
+        await session.close()

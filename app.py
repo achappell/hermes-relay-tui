@@ -1648,6 +1648,10 @@ class HermesStreamingApp(App):
                         self._last_prompt = None
                         self._last_prompt_status = None
                         self._pending_profile_transcript_reset = False
+                        switch_notice = getattr(self, "_pending_profile_switch_notice", None)
+                        if switch_notice:
+                            self._append_block(switch_notice)
+                            self._pending_profile_switch_notice = None
                         if isinstance(session, HomeTextualSession):
                             session.pending_replacement = False
                     session_id = (
@@ -3255,6 +3259,7 @@ class HermesStreamingApp(App):
                 detail += f" Discarded {dropped_queue} queued prompt(s); none were replayed."
             if dropped_attachments:
                 detail += f" Cleared {dropped_attachments} staged attachment(s)."
+            self._pending_profile_switch_notice = detail
             self._append_block(detail)
 
         # Keep the lock free while the new hello handshake waits on the relay.
@@ -5025,6 +5030,8 @@ class HermesStreamingApp(App):
                 audio_expected = False
                 reason = str(event.get("reason") or "sidecar unavailable").strip()
                 self._mark_audio_unavailable(reason)
+                await self._close_player(abort=True, player=player)
+                self._append_block(f"[audio unavailable] {reason}")
                 # The sidecar has definitively failed; release any text that
                 # was held behind its first-word pacing bridge immediately.
                 render_assistant()

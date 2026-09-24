@@ -71,7 +71,7 @@ GET `/api/v1/profile-grants/pending` and `/holders`; POST `/api/v1/profile-grant
 
 ## Implementation Notes
 
-Proceed under the user's explicit implementation authorization and previously approved product scope. No new product decision or live credential/configuration mutation is implied. Existing Home deployment is not validated. Do not add or run tests: the session developer instruction requires an explicit user request for testing. Use code/diff inspection, and record runtime acceptance as unverified. Do not claim a fully verified story or mark it done.
+Implementation proceeded under the previously approved product scope. Amanda subsequently explicitly requested testing, supplied the live Home pairing URL, and completed pairing. Automated and live checks are now authorized. Keep remaining runtime acceptance explicit and do not mark the story done prematurely. The Home adapter defect discovered during this trial is repaired in a separate Home branch and validation record; Standard Hermes remains unmodified.
 
 ## Spec Change Log
 
@@ -106,4 +106,17 @@ Additional static inspection found that native Secret Service priority probes ma
 
 ## Verification
 
-Inspect changed code, imports/packaging, contract shapes and secret handling. No tests or live calls without user authorization; list remaining acceptance explicitly.
+Inspect changed code, imports/packaging, contract shapes and secret handling. Under the subsequent explicit testing request, run focused and full repository coverage plus bounded live Home checks without replaying Amanda's prompt. See validation-tui-home-01.md for observed results and remaining acceptance.
+
+## Live-test review follow-up
+
+| Finding | Verdict | Evidence and resolution |
+| --- | --- | --- |
+| Blind: completed text becomes ambiguous if audio times out | medium | A post-terminal audio timeout is a known text outcome. The adapter now emits completion before retiring the audio transport; Textual app regressions retain completed prompt state and require reconnect separately. |
+| Blind: audio fallback disappears without a visible explanation | medium | Textual mapped audio_abort to interruption. It now maps Home audio failures to audio_unavailable and displays the reason while preserving completed text. |
+| Blind: slow local playback exhausts the audio deadline | medium | The original wall-clock deadline included suspended generator time. The budget now measures time waiting for frames; a slow-consumer regression passes and heartbeat traffic cannot extend it. |
+| Blind: recovered audio tail can poison the next turn | medium | A still-running Home audio worker can emit a tail after reattachment. The client retires that transport after known text completion; a regression checks one submission and a clean subsequent turn. |
+| Edge: fallback/unavailable speech failure is hidden | medium | Same verified visible-error defect as the blind finding, corrected through audio_unavailable presentation and real Textual app tests. |
+| Verification gap: text completes before browser audio disconnect | medium | Added explicit completed-text recovery/tail isolation coverage; browser completion is checked without requiring another terminal event. |
+
+The separately owned Home adapter defect and explicit-close race were repaired and deployed under the authorized live troubleshooting task. TUI-HOME-01 remains in review while broader user acceptance is outstanding.

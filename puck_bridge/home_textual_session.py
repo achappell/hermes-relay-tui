@@ -174,11 +174,28 @@ class HomeTextualSession(HermesSession):
         events = home.send_turn(text, stt_source=stt_source)
 
         async def relay_events() -> AsyncIterator[dict[str, Any]]:
+            completed = False
+            failed = False
+            text_completed = False
             try:
                 async for event in events:
                     self.active_turn_id = home.active_turn_id
                     self.turn_index = home.turn_index
-                    yield event
+                    kind = event.get("type")
+                    completed = completed or kind == "turn_end"
+                    failed = failed or kind in {"error", "turn_interrupted"}
+                    text_completed = text_completed or bool(event.get("text_completed"))
+                    if kind == "audio_abort" and event.get("error"):
+                        yield {"type": "audio_unavailable", "reason": event["error"]}
+                    else:
+                        yield {**event, "final": True} if kind == "audio_end" else event
+                    if text_completed and not completed and not failed:
+                        # Commit known text before the shared adapter retires
+                        # the failed audio socket and publishes disconnection.
+                        completed = True
+                        yield {"type": "turn_end"}
+                if not completed and not failed:
+                    yield {"type": "turn_end"}
             finally:
                 self.active_turn_id = home.active_turn_id
                 self.turn_index = home.turn_index
