@@ -1,5 +1,68 @@
 # Changelog
 
+## 0.11.0 (2026-09-24)
+
+<!-- Release notes generated using configuration in .github/release.yml at main -->
+
+## What's Changed
+### Dependencies
+* deps(deps-dev): update jsonschema requirement from <5,>=4.23 to >=4.26.0,<5 by @dependabot[bot] in https://github.com/achappell/hermes-relay-tui/pull/179
+* deps(deps-dev): update build requirement from <2,>=1.6.0 to >=1.6.1,<2 by @dependabot[bot] in https://github.com/achappell/hermes-relay-tui/pull/180
+### Other Changes
+* docs: formalize Android as an iOS-parity surface by @achappell in https://github.com/achappell/hermes-relay-tui/pull/152
+* feat(tui): polish conversation surface by @achappell in https://github.com/achappell/hermes-relay-tui/pull/151
+* fix(puck): bound turn responsiveness, not turn duration (1-p-2 task 6) by @achappell in https://github.com/achappell/hermes-relay-tui/pull/150
+* docs(bmad): reconcile post-merge sprint status by @achappell in https://github.com/achappell/hermes-relay-tui/pull/154
+* fix(puck): bound playback writes and surface dropped turns by @achappell in https://github.com/achappell/hermes-relay-tui/pull/155
+* fix(tui): keep disconnect recovery presentation honest by @achappell in https://github.com/achappell/hermes-relay-tui/pull/157
+* feat(puck): the Puck speaks Hermes' answers (1-p-2 tasks 3-5) by @achappell in https://github.com/achappell/hermes-relay-tui/pull/156
+* fix(tui): close disconnect recovery review findings by @achappell in https://github.com/achappell/hermes-relay-tui/pull/159
+* fix(puck): close the remaining code-review findings by @achappell in https://github.com/achappell/hermes-relay-tui/pull/158
+* feat: make TUI an independent voice gateway by @achappell in https://github.com/achappell/hermes-relay-tui/pull/160
+* fix(puck): prevent phantom playback stops and recover failed turns by @achappell in https://github.com/achappell/hermes-relay-tui/pull/161
+* fix(tui): shut down voice resources off the event loop by @achappell in https://github.com/achappell/hermes-relay-tui/pull/162
+* docs(home): add shared wake arbitration contract by @achappell in https://github.com/achappell/hermes-relay-tui/pull/164
+* feat(puck): harden wake-to-response audio delivery by @achappell in https://github.com/achappell/hermes-relay-tui/pull/163
+* docs: move home service ownership out of tui by @achappell in https://github.com/achappell/hermes-relay-tui/pull/165
+* docs: amend FR5 to describe continuously reopening follow-up windows by @achappell in https://github.com/achappell/hermes-relay-tui/pull/167
+* feat(tui): detect idle relay loss without replay by @achappell in https://github.com/achappell/hermes-relay-tui/pull/166
+* docs: mirror BMad status on GitHub Project by @achappell in https://github.com/achappell/hermes-relay-tui/pull/168
+* fix(tui): close T-6 idle-loss review gate by @achappell in https://github.com/achappell/hermes-relay-tui/pull/169
+* docs: record Android device-session findings and where deferred work lives by @achappell in https://github.com/achappell/hermes-relay-tui/pull/170
+* feat(puck): complete streamed response playback without underrun by @achappell in https://github.com/achappell/hermes-relay-tui/pull/172
+* feat(tui): render typed choice prompts with Choose/Explore actions by @achappell in https://github.com/achappell/hermes-relay-tui/pull/173
+* feat(puck): complete streamed response playback by @achappell in https://github.com/achappell/hermes-relay-tui/pull/171
+* refactor: move portfolio coordination to coordinator by @achappell in https://github.com/achappell/hermes-relay-tui/pull/174
+* feat(web): route browser hands-free turns through profile catalog by @achappell in https://github.com/achappell/hermes-relay-tui/pull/176
+* docs: record Android 5-A-3 emulator evidence by @achappell in https://github.com/achappell/hermes-relay-tui/pull/177
+* docs: reconcile Home next-wave architecture planning by @achappell in https://github.com/achappell/hermes-relay-tui/pull/178
+* chore(bmad): add unattended story loop and reconcile Story 3 by @achappell in https://github.com/achappell/hermes-relay-tui/pull/181
+* fix: reconcile Story 3 with Home bridge boundary by @achappell in https://github.com/achappell/hermes-relay-tui/pull/186
+* chore: standardize project-local worktrees by @achappell in https://github.com/achappell/hermes-relay-tui/pull/187
+* docs: register Standard Home next-wave story roster by @achappell in https://github.com/achappell/hermes-relay-tui/pull/188
+* feat(puck): migrate ReSpeaker path to Standard Home boundary by @achappell in https://github.com/achappell/hermes-relay-tui/pull/189
+* fix(std-3): preserve durable session title identity by @achappell in https://github.com/achappell/hermes-relay-tui/pull/190
+* docs(std-3): mark merged story complete by @achappell in https://github.com/achappell/hermes-relay-tui/pull/191
+* feat(std-8): migrate W/K browser route to Standard Hermes by @achappell in https://github.com/achappell/hermes-relay-tui/pull/192
+* chore: configure BMAD issue tracking by @achappell in https://github.com/achappell/hermes-relay-tui/pull/193
+* fix(tui): reconnect Puck and TUI to Home turns by @achappell in https://github.com/achappell/hermes-relay-tui/pull/195
+* Harden TUI BMAD issue tracking by @achappell in https://github.com/achappell/hermes-relay-tui/pull/194
+* feat(2-E-5): render and submit native Choose/Explore actions on ESP32 Touch by @achappell in https://github.com/achappell/hermes-relay-tui/pull/196
+* chore(status): mark merged Puck story complete by @achappell in https://github.com/achappell/hermes-relay-tui/pull/197
+* feat(std-7): add ESP32 Touch audio and session adapter by @achappell in https://github.com/achappell/hermes-relay-tui/pull/198
+* feat(touch): add authorized physical voice capture (1-E-1) by @achappell in https://github.com/achappell/hermes-relay-tui/pull/199
+* fix(puck): gracefully shut down bridge service by @achappell in https://github.com/achappell/hermes-relay-tui/pull/201
+* docs(status): reconcile 2-E-5 and defer physical acceptance by @achappell in https://github.com/achappell/hermes-relay-tui/pull/200
+* fix(puck): harden bounded follow-up and exact stop by @achappell in https://github.com/achappell/hermes-relay-tui/pull/202
+* chore(status): reconcile merged Puck stories by @achappell in https://github.com/achappell/hermes-relay-tui/pull/203
+* feat(puck): recover Home claims without replay by @achappell in https://github.com/achappell/hermes-relay-tui/pull/204
+* docs(tui): specify TUI-HOME-01 Home pairing and CLI-style sessions by @achappell in https://github.com/achappell/hermes-relay-tui/pull/206
+* docs(planning): apply approved nine-epic course correction by @achappell in https://github.com/achappell/hermes-relay-tui/pull/209
+* Feat/hermes home 2026 09 23/prd by @achappell in https://github.com/achappell/hermes-relay-tui/pull/211
+
+
+**Full Changelog**: https://github.com/achappell/hermes-relay-tui/compare/v0.10.0...v0.11.0
+
 ## 0.10.0 (2026-09-11)
 
 <!-- Release notes generated using configuration in .github/release.yml at main -->
