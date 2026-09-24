@@ -1,5 +1,10 @@
 # AGENTS.md
 
+## Approved course correction — 2026-09-23
+
+For new planning and acceptance, read `_bmad-output/implementation-artifacts/course-correction-2026-09-23.md` and the local `story-index.yaml`. They supersede historical five-epic, fork-protocol, pairing and always-fresh-session planning clauses below. Current runtime descriptions remain implementation evidence until their migration stories deliver replacements. Use the nine-epic parent metadata, preserve story IDs, and start with the first incomplete required epic. The local tracker owns status; board views are mirrors.
+
+
 ## Project
 
 This repository contains a small Python/Textual terminal UI for the Hermes voice-session WebSocket channel. It keeps the user interface, protocol client, audio playback, microphone loading, and configuration in separate modules:

@@ -1,49 +1,29 @@
-# STATUS DEFINITIONS:
-# ==================
-# Epic Status:
-#   - backlog: Epic not yet started
-#   - in-progress: Epic actively being worked on
-#   - done: All stories in epic completed
-
-# Story Status:
-#   - backlog: Story only exists in epic file
-#   - ready-for-dev: Story file created, ready for development
-#   - in-progress: Developer actively working on implementation
-#   - review: Implementation complete, ready for review
-#   - done: Story completed
-
-# Retrospective Status:
-#   - optional: Can be completed but not required
-#   - done: Retrospective has been completed
-
-# Action Item Status:
-#   - open: Committed during a retrospective, not yet addressed
-#   - in-progress: Actively being worked on
-#   - done: Completed
-
-# WORKFLOW NOTES:
-# ===============
-# - Epic transitions to 'in-progress' automatically when its first story starts (via build's sprint sync)
-# - Stories can be worked in parallel if team capacity allows
-# - Developer typically creates the next story after the previous one is 'done' to incorporate learnings
-# - Dev moves story to 'review', then runs code-review (fresh context, different LLM recommended)
-# - Retrospective appends its action items to action_items; the status view surfaces open ones
+# Active epic parents are in story-index.yaml; numeric story prefixes remain historical.
 generated: 09-08-2026 00:00
-last_updated: 09-23-2026 19:09
+last_updated: '2026-09-23'
 project: hermes-relay-tui
 project_key: NOKEY
 tracking_system: file-system
 status_authority: local
 story_location: _bmad-output/implementation-artifacts
 development_status:
-  # Upstream next-wave Story 3; distinct from the historical Puck Story 3 keys below.
-  # Implementation, live direct-Standard gate, review, and merge are complete.
-  standard-3-tui-migrate-the-terminal-client: done
   epic-1: in-progress
+  standard-3-tui-migrate-the-terminal-client: done
   1-1-start-an-authorized-hermes-turn: done
   1-2-render-honest-turn-phases-and-response-delivery: done
   1-3-continue-with-bounded-follow-up-and-exact-stop: done
   1-4-recover-without-replaying-an-uncertain-turn: done
+  1-t-5-non-blocking-wake-listener-and-microphone-teardown-during-re: backlog
+  1-t-6-detect-idle-relay-loss-and-present-honest-recovery-without-r: done
+  2-t-1-keep-the-direct-tui-doorway-s-capture-and-phase-state-visibl: done
+  2-t-2-keep-tui-disconnect-recovery-presentation-honest-without-rep: done
+  5-t-1-use-the-tui-as-an-independent-direct-voice-chat-gateway-with: done
+  tui-home-01-pair-with-home-and-own-sessions: backlog
+  tui-defect-102: backlog
+  tui-defect-104: backlog
+  epic-2: backlog
+  tui-std-01: backlog
+  epic-3: in-progress
   1-p-1-authorized-wake-and-capture: done
   1-p-2-status-and-response-audio-delivery: done
   1-p-3-bounded-follow-up-and-exact-stop: done
@@ -60,59 +40,51 @@ development_status:
   1-e-3-response-audio-delivery: backlog
   1-e-4-bounded-follow-up-and-exact-stop: backlog
   1-e-5-recovery-without-replay: backlog
-  1-wk-1-one-shared-w-k-browser-voice-plus-display-surface-for-author:
-    review
-  1-t-5-non-blocking-wake-listener-and-microphone-teardown-during-re: backlog
-  1-t-6-detect-idle-relay-loss-and-present-honest-recovery-without-r: done
+  1-wk-1-one-shared-w-k-browser-voice-plus-display-surface-for-author: review
   1-wk-2-concurrent-w-k-browser-session-isolation: review
-  epic-1-retrospective: optional
-
-  epic-2: in-progress
   2-p-1-expose-the-puck-s-local-capture-response-and-status-phases-w: backlog
   2-p-2-fail-closed-and-show-unavailable-disconnected-status-when-th: backlog
-  2-e-1-render-the-room-scoped-ambient-surface-in-native-lvgl: backlog
-  2-e-2-render-room-local-active-turn-state-live-transcription-and-t: backlog
-  2-e-3-mirror-prompts-read-only-when-the-renderer-is-acting-as-a-pa: backlog
-  2-e-4-render-honest-disconnected-state-and-safe-cached-context-on: backlog
-  # PR #196 merged; native interaction and physical acceptance remain outstanding.
-  # Hardware assembly is pending; see validation-2-e-5-native-choose-explore.md.
-  2-e-5-render-and-submit-native-choose-explore-actions-for-current: review
-  2-wk-1-render-the-shared-room-scoped-ambient-surface-for-web-and-ip: backlog
-  2-wk-2-render-active-capture-room-local-transcription-response-and: done
-  2-wk-3-mirror-prompts-read-only-when-the-browser-is-acting-as-a-pas: backlog
-  2-wk-4-render-honest-disconnected-state-cached-context-and-accessib: backlog
-  2-wk-5-validate-direct-use-typed-choice-actions-at-the-server-bound: backlog
-  2-wk-6-render-accessible-native-choose-explore-actions-for-current: backlog
-  2-t-1-keep-the-direct-tui-doorway-s-capture-and-phase-state-visibl: done
-  2-t-2-keep-tui-disconnect-recovery-presentation-honest-without-rep: done
-  2-t-3-render-typed-choice-objects-with-keyboard-choose-explore-act: review
-  epic-2-retrospective: optional
-
-  epic-3: backlog
   3-p-1-advertise-independently-identifiable-unconfigured-state-for: backlog
   3-p-2-apply-approved-room-credential-and-wake-mapping-configuratio: backlog
   3-p-3-enforce-the-selected-wake-mapping-and-profile-before-capture: backlog
   3-p-4-participate-in-single-winner-wake-arbitration-and-remain-sil: backlog
   3-p-5-reject-revoked-unavailable-or-unverified-identity-before-cap: backlog
   3-p-6-retire-revoked-credentials-and-require-the-ordered-setup-flo: backlog
-  epic-3-retrospective: optional
-
+  standard-6-puck-migrate-respeaker-puck-path: done
+  standard-7-esp32-add-touch-display-audio-session-adapter: review
+  standard-8-wk-migrate-browser-and-ipad-routes: done
   epic-4: backlog
+  tui-retire-01: backlog
+  epic-5: in-progress
+  2-e-1-render-the-room-scoped-ambient-surface-in-native-lvgl: backlog
+  2-e-2-render-room-local-active-turn-state-live-transcription-and-t: backlog
+  2-e-3-mirror-prompts-read-only-when-the-renderer-is-acting-as-a-pa: backlog
+  2-e-4-render-honest-disconnected-state-and-safe-cached-context-on: backlog
+  2-wk-1-render-the-shared-room-scoped-ambient-surface-for-web-and-ip: backlog
+  2-wk-2-render-active-capture-room-local-transcription-response-and: done
+  2-wk-3-mirror-prompts-read-only-when-the-browser-is-acting-as-a-pas: backlog
+  2-wk-4-render-honest-disconnected-state-cached-context-and-accessib: backlog
   4-e-1-promote-the-household-wide-departure-card-in-native-lvgl-whi: backlog
   4-e-2-recompute-and-clear-the-native-departure-card-on-time-locati: backlog
   4-wk-1-promote-the-same-departure-card-in-the-shared-web-ipad-brows: backlog
   4-wk-2-recompute-and-clear-the-browser-departure-card-while-preserv: backlog
+  epic-7: in-progress
+  2-e-5-render-and-submit-native-choose-explore-actions-for-current: review
+  2-wk-5-validate-direct-use-typed-choice-actions-at-the-server-bound: backlog
+  2-wk-6-render-accessible-native-choose-explore-actions-for-current: backlog
+  2-t-3-render-typed-choice-objects-with-keyboard-choose-explore-act: review
+  epic-9: backlog
+  tui-attach-11: backlog
+historical_epic_status:
+  epic-1: in-progress
+  epic-1-retrospective: optional
+  epic-2: in-progress
+  epic-2-retrospective: optional
+  epic-3: backlog
+  epic-3-retrospective: optional
+  epic-4: backlog
   epic-4-retrospective: optional
-
   epic-5: done
-  # Android owns 5-A-3; its authoritative status lives in hermes-relay-android.
-  5-t-1-use-the-tui-as-an-independent-direct-voice-chat-gateway-with: done
   epic-5-retrospective: optional
-
   next-wave: in-progress
-  standard-3-tui-migrate-the-terminal-client: done
-  standard-6-puck-migrate-respeaker-puck-path: done
-  standard-7-esp32-add-touch-display-audio-session-adapter: review
-  standard-8-wk-migrate-browser-and-ipad-routes: done
-  # Blocked on HOME-NW-17 (hermes-relay-home#52).
-  tui-home-01-pair-with-home-and-own-sessions: backlog
+epic_scheme: hermes-home-2026-09-23
