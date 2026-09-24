@@ -144,6 +144,25 @@ Verification on 2026-09-23: focused bridge, Home, firmware, HandsFree, and confi
 - `verification-gap/home-turn-recovery-integration` — resolved 2026-09-23: an integration test submits one uncertain Home turn, verifies a fresh claim, then proves a later capture is submitted once through the replacement session.
 - `verification-gap/follow-up-capture-admission` — resolved 2026-09-23: compiled firmware coverage requires an admitted matching response sequence before `start_follow_up()` can open capture.
 
+### Review Findings
+
+- [x] [Review][Patch] Preserve Direct Hermes capture when bridge admission is unavailable [firmware/respeaker-lite/respeaker-lite.yaml:586] — direct remains the default build mode; Home builds opt into the fail-closed gate.
+- [x] [Review][Patch] Recheck the active Home session after mapping lookup [puck_bridge/turn.py:676] — a disconnect during the asynchronous mapping query retires the claim and denies capture.
+- [x] [Review][Patch] Retry unconfirmed Home retirement on a later physical wake [puck_bridge/turn.py:703] — retries one bounded control-only close while capture remains closed.
+- [x] [Review][Patch] Align the outer Home retirement timeout with its bounded control path [puck_bridge/home_admission.py:368] — caller budget now includes connection cleanup after the ten-second control attempt.
+- [x] [Review][Patch] Reject blank wake-mapping IDs before matching and inference [puck_bridge/home_admission.py:464]
+- [x] [Review][Patch] Cover the firmware admission response callback [tests/test_puck_firmware.py:523] — source regression assertion covers both response and transport-failure callbacks.
+- [x] [Review][Defer] Define calibrated proximity qualification semantics [puck_bridge/home_admission.py:475] — deferred: the trusted hardware provider contract must define what the normalized score means and which values establish sufficient proximity; no production provider is installed, and Home re-claims remain fail-closed until that contract exists.
+
+#### Rejected
+
+- `false` — Production `evidence_provider=None` is deliberate: P-4 requires no claim without calibrated evidence, the accepted spec says not to enable re-claims before the trusted provider contract exists, and the implementation documents this fail-closed state.
+- `false` — Requiring `calibration_id` in the Home claim payload is not supported by the Home contract; P-4 explicitly leaves evidence encoding to the hardware contract, and the bridge trusts its injected provider as the source of calibrated evidence.
+- `low` — A POST worker can outlive its asyncio waiter, but a granted Home claim that is never opened expires after 90 seconds; this requires a delayed response and would need API-level reconciliation, so it is an uncommon bounded reservation rather than an everyday defect.
+- `false` — `HermesSession.connect()` closes its partially opened websocket on every exception or cancellation before re-raising, and a successful production connect returns only after `hello_ack` is verified.
+- `low` — The recovery-state collision requires deliberately reusing one device ID against another Home service; startup fails closed, and fixing this uncommon reconfiguration case requires adding and migrating service identity in the recovery schema.
+- `false` — The firmware identity rejection is sticky until reboot, and the only Home admission callback that can reject that authority clears the grant itself; no supported runtime path restores identity while leaving a stale grant that blocks otherwise authorized wakes.
+
 ## Spec Change Log
 
 - 2026-09-22: Home transport included; abandon interrupted turns and require calibrated proximity evidence for fresh claims.

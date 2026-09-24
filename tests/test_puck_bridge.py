@@ -1073,15 +1073,73 @@ def test_home_connected_claim_rejects_a_different_wake_mapping():
         runner.stop()
 
 
-def test_unconfirmed_home_claim_close_survives_restart_and_denies_factory_call(tmp_path):
+def test_home_wake_denies_if_session_disconnects_during_mapping_lookup():
+    from concurrent.futures import ThreadPoolExecutor
+
+    class HomeSession(FakeSession):
+        conversation_handle = "current-handle"
+        wake_mapping_id = "hey-missy"
+
+        def __init__(self):
+            super().__init__()
+            self.retirement_calls = 0
+
+        async def retire_uncertain_claim(self):
+            self.retirement_calls += 1
+            self.connected = False
+            return True
+
+    class BlockingClaimFactory:
+        def __init__(self):
+            self.lookup_started = threading.Event()
+            self.release_lookup = threading.Event()
+            self.claim_calls = []
+
+        async def current_mapping_id(self, _wake_phrase, mapping_id):
+            self.lookup_started.set()
+            assert await asyncio.to_thread(self.release_lookup.wait, 5)
+            return mapping_id
+
+        async def admit_wake(self, *args, **kwargs):
+            self.claim_calls.append((args, kwargs))
+            pytest.fail("a disconnected current claim must not open capture")
+
+    session = HomeSession()
+    factory = BlockingClaimFactory()
+    runner = TurnRunner(session, home_claim_factory=factory)
+    runner.start()
+    try:
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            admission = pool.submit(runner.admit_wake, "hey missy", 59)
+            assert factory.lookup_started.wait(2)
+            session.connected = False
+            factory.release_lookup.set()
+            assert admission.result(timeout=5) == "denied"
+        assert session.retirement_calls == 1
+        assert factory.claim_calls == []
+    finally:
+        factory.release_lookup.set()
+        runner.stop()
+
+
+def test_unconfirmed_home_claim_close_is_retried_after_restart(tmp_path):
     from puck_bridge.home_admission import HomeClaimRecoveryState
 
     class UnconfirmedHomeSession(FakeSession):
         conversation_handle = "old-home-handle"
 
+        def __init__(self):
+            super().__init__()
+            self.retry_calls = 0
+
         async def retire_uncertain_claim(self):
             self.connected = False
             return False
+
+        async def retry_uncertain_claim(self):
+            self.retry_calls += 1
+            self.connected = False
+            return True
 
     class ClaimFactory:
         def __init__(self):
@@ -1116,8 +1174,9 @@ def test_unconfirmed_home_claim_close_survives_restart_and_denies_factory_call(t
         runner.stop()
 
     restarted_factory = ClaimFactory()
+    restarted_session = UnconfirmedHomeSession()
     restarted = TurnRunner(
-        UnconfirmedHomeSession(),
+        restarted_session,
         home_claim_factory=restarted_factory,
         home_claim_recovery_state=state,
         home_claim_retired=True,
@@ -1126,7 +1185,10 @@ def test_unconfirmed_home_claim_close_survives_restart_and_denies_factory_call(t
     restarted.start(connect=False)
     try:
         assert restarted.admit_wake("hey missy", seq=44) == "denied"
-        assert restarted_factory.calls == []
+        assert restarted_session.retry_calls == 1
+        assert restarted_factory.calls == [("hey missy", "old-home-handle")]
+        record = state.load()
+        assert record is not None and record.status == "retired"
     finally:
         restarted.stop()
 

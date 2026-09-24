@@ -23,12 +23,14 @@
 # firmware/esp32-s3-touch-lcd-7/platformio.ini of keeping installation
 # values out of version control.
 
+# `puck_home_transport` is a build mode, not a credential. It defaults to
+# Direct Hermes; set it to `true` for Home firmware builds.
 # Story 5: where the host bridge (puck_bridge/, a standalone process on the
 # dev/household Mac) listens, and the hardcoded shared token this story
-# stands in for Story 4's real per-device credential system. All three are
-# installation-specific and gitignored via secrets.yaml, per this file's
-# existing convention for WiFi/API/OTA values below.
+# stands in for Story 4's real per-device credential system. The bridge host,
+# port, and token are installation-specific and gitignored via secrets.yaml.
 substitutions:
+  puck_home_transport: "false"
   puck_bridge_host: !secret puck_bridge_host
   puck_bridge_port: !secret puck_bridge_port
   puck_device_token: !secret puck_device_token
@@ -575,9 +577,9 @@ micro_wake_word:
   # capture window still has to close (see the fast interval below) before
   # there is anything to upload.
   on_wake_word_detected:
-    # Every physical wake must be authorized before the microphone opens.
-    # A response-status flag is only a hint; it can be lost during an idle
-    # disconnect or reboot. Refuse duplicate callbacks while one wake is in flight.
+    # Refuse duplicate callbacks while one wake is in flight. Only Home
+    # builds require a bridge admission response before opening the mic;
+    # Direct Hermes keeps its existing capture behavior during bridge loss.
     - if:
         condition:
           lambda: |-
@@ -589,30 +591,64 @@ micro_wake_word:
         then:
           - if:
               condition:
-                lambda: return puck_response::begin_home_admission(
-                    pcm_capture::wake_capture::pending_sequence());
+                lambda: return ${puck_home_transport};
               then:
+                # Every Home physical wake is checked before the microphone
+                # opens. The status latch is only a hint; idle disconnects
+                # and reboots can outlive it.
+                - if:
+                    condition:
+                      lambda: return puck_response::begin_home_admission(
+                          pcm_capture::wake_capture::pending_sequence());
+                    then:
+                      - micro_wake_word.stop
+                      - http_request.get:
+                          id: http_client
+                          url: !lambda |-
+                            return std::string("http://${puck_bridge_host}:${puck_bridge_port}/wake-admission?seq=") +
+                                   std::to_string(pcm_capture::wake_capture::pending_sequence()) +
+                                   "&wake=" + puck_response::url_encode(wake_word) +
+                                   "&token=" + puck_response::url_encode("${puck_device_token}");
+                          capture_response: true
+                          max_response_buffer_size: 128
+                          on_response:
+                            then:
+                              - lambda: puck_response::note_home_admission(response->status_code, body);
+                          on_error:
+                            then:
+                              - lambda: puck_response::note_home_admission_transport_failure();
+                      - lambda: |-
+                          puck_response::dispatch_wake_capture(
+                              puck_response::can_start_wake_capture(),
+                              [&]() { pcm_capture::wake_capture::prepare(wake_word); },
+                              [&]() { pcm_capture::wake_capture::cancel_pending(); });
+                      - if:
+                          condition:
+                            lambda: return pcm_capture::wake_capture::last_wake_refused;
+                          then:
+                            - media_player.play_media:
+                                id: puck_media_player
+                                media_url: "audio-file://refused_sound"
+                                announcement: true
+                          else:
+                            # Keep VAD running during capture, but only after the
+                            # admission response and wake acknowledgement are complete.
+                            - if:
+                                condition:
+                                  lambda: return pcm_capture::wake_capture::wake_pending;
+                                then:
+                                  - media_player.play_media:
+                                      id: puck_media_player
+                                      media_url: "audio-file://heard_sound"
+                                      announcement: true
+                                  - delay: 150ms
+                                  - lambda: pcm_capture::wake_capture::start_pending();
+                                  - micro_wake_word.start
+              else:
+                # Direct Hermes does not need Home claim admission. Keep the
+                # established capture path usable through bridge outages.
                 - micro_wake_word.stop
-                - http_request.get:
-                    id: http_client
-                    url: !lambda |-
-                      return std::string("http://${puck_bridge_host}:${puck_bridge_port}/wake-admission?seq=") +
-                             std::to_string(pcm_capture::wake_capture::pending_sequence()) +
-                             "&wake=" + puck_response::url_encode(wake_word) +
-                             "&token=" + puck_response::url_encode("${puck_device_token}");
-                    capture_response: true
-                    max_response_buffer_size: 128
-                    on_response:
-                      then:
-                        - lambda: puck_response::note_home_admission(response->status_code, body);
-                    on_error:
-                      then:
-                        - lambda: puck_response::note_home_admission_transport_failure();
-                - lambda: |-
-                    puck_response::dispatch_wake_capture(
-                        puck_response::can_start_wake_capture(),
-                        [&]() { pcm_capture::wake_capture::prepare(wake_word); },
-                        [&]() { pcm_capture::wake_capture::cancel_pending(); });
+                - lambda: pcm_capture::wake_capture::prepare(wake_word);
                 - if:
                     condition:
                       lambda: return pcm_capture::wake_capture::last_wake_refused;
@@ -622,8 +658,6 @@ micro_wake_word:
                           media_url: "audio-file://refused_sound"
                           announcement: true
                     else:
-                      # Keep VAD running during capture, but only after the
-                      # admission response and wake acknowledgement are complete.
                       - if:
                           condition:
                             lambda: return pcm_capture::wake_capture::wake_pending;

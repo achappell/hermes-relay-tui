@@ -34,6 +34,14 @@ HOME_BRIDGE_CONNECT_TIMEOUT = 10.0
 HOME_BRIDGE_REQUEST_TIMEOUT = 15.0
 HOME_BRIDGE_CLOSE_TIMEOUT = 3.0
 HOME_CLAIM_RETIRE_TIMEOUT = 10.0
+# Claim retirement closes the old reader, performs a bounded control reconnect,
+# then closes that control client. Bound all three phases at their outer callsite.
+HOME_CLAIM_RETIRE_CALL_TIMEOUT_SECONDS = (
+    (2 * HOME_BRIDGE_CLOSE_TIMEOUT)
+    + HOME_CLAIM_RETIRE_TIMEOUT
+    + HOME_BRIDGE_CLOSE_TIMEOUT
+    + 1.0
+)
 HOME_BRIDGE_MAX_SIZE = 256 * 1024
 HOME_BRIDGE_QUEUE_MAX = 128
 HOME_BRIDGE_MAX_SAMPLE_RATE = 384_000
@@ -641,6 +649,7 @@ class HomePuckSession:
         self._pending_prompt: dict[str, Any] | None = None
         self._turn_lock = asyncio.Lock()
         self._prompt_response_lock = asyncio.Lock()
+        self._retirement_lock = asyncio.Lock()
         self._capabilities: frozenset[str] = frozenset()
         self._timing_capability: str | None = None
         self.turn_index = 0
@@ -1303,6 +1312,18 @@ class HomePuckSession:
         The temporary reader may queue old response frames while the close
         RPC is in flight. This method never consumes or forwards that queue.
         """
+        async with self._retirement_lock:
+            return await self._retire_uncertain_claim_once()
+
+    async def retry_uncertain_claim(self) -> bool:
+        """Make one fresh control-only close attempt on a later physical wake."""
+        async with self._retirement_lock:
+            if self._retirement_confirmed:
+                return True
+            self._retirement_attempted = False
+            return await self._retire_uncertain_claim_once()
+
+    async def _retire_uncertain_claim_once(self) -> bool:
         if self._retirement_attempted:
             return self._retirement_confirmed
         self._retirement_attempted = True

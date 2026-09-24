@@ -553,17 +553,28 @@ mappings it is required. Each physical wake checks that its phrase still maps
 to the active claim before capture. Each wake-free follow-up checks the live
 bridge session before its microphone window opens.
 
+The firmware defaults to Direct Hermes so a local bridge outage does not
+disable capture. Build Home firmware with the explicit mode substitution so
+every physical wake stays closed until the bridge confirms admission:
+
+```bash
+venv-firmware/bin/esphome -s puck_home_transport true compile firmware/respeaker-lite/respeaker-lite.yaml
+venv-firmware/bin/esphome -s puck_home_transport true upload firmware/respeaker-lite/respeaker-lite.yaml --device respeaker-lite.local
+```
+
 The bridge stores the current opaque handle and mapping ID in
 `~/.hermes-relay-tui/home-claim-state/` with owner-only permissions. After a
-process restart it never reopens the saved handle as an active conversation; it
-retires an uncertain active claim through the bounded control path and then
-requires fresh calibrated proximity evidence for a replacement. The Puck has
-no production evidence provider yet, so new Home claims remain denied after a
-restart or claim loss. Home transport fails closed when required pairing is
-absent and never falls back to the direct Hermes bearer path. The public Home
-route is not live in this checkout, so the bridge contract is covered by
-fake-bridge tests; live-route and hardware round trips remain integration
-gates.
+process restart it never reopens the saved handle as an active conversation.
+On the next physical wake, it attempts a bounded control-only close for an
+active or unconfirmed marker. If closure remains unconfirmed, later physical
+wakes may retry that close while capture stays closed. A verified close still
+requires fresh calibrated proximity evidence before Home grants a replacement.
+The Puck has no production evidence provider yet, so new Home claims remain
+denied after a restart or claim loss. Home transport fails closed when required
+pairing is absent and never falls back to the direct Hermes bearer path. The
+public Home route is not live in this checkout, so the bridge contract is
+covered by fake-bridge tests; live-route and hardware round trips remain
+integration gates.
 
 Raw Puck audio stays transient end-to-end (NFR3): the receiver's in-memory
 chunk buffer for a capture is discarded as soon as it is reassembled, and

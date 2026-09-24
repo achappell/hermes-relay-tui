@@ -537,11 +537,32 @@ def test_wake_acknowledgement_finishes_before_capture_opens():
     assert "puck_response::begin_home_admission(" in wake
     assert "puck_response::dispatch_wake_capture(" in wake
     assert "puck_response::can_start_wake_capture()" in wake
+    assert 'puck_home_transport: "false"' in yaml_source
+    assert "lambda: return ${puck_home_transport};" in wake
+    assert wake.count("wake_capture::prepare(wake_word)") == 2
     assert "puck_response::needs_home_admission()" not in wake
     assert "!pcm_capture::wake_capture::capturing" in wake
     assert "!pcm_capture::wake_capture::capture_pending_upload" in wake
     assert "[&]() { pcm_capture::wake_capture::cancel_pending(); }" in wake
     assert "puck_response::upload_failed(" in yaml_source
+
+
+def test_home_admission_automation_wires_response_and_transport_failure_callbacks():
+    yaml_source = (Path(__file__).resolve().parents[1] / "firmware/respeaker-lite/respeaker-lite.yaml").read_text()
+    wake = yaml_source.split("  on_wake_word_detected:\n", 1)[1].split(
+        "# Lightweight health telemetry", 1
+    )[0]
+    callback_block = (
+        "on_response:\n"
+        "                            then:\n"
+        "                              - lambda: puck_response::note_home_admission(response->status_code, body);\n"
+        "                          on_error:\n"
+        "                            then:\n"
+        "                              - lambda: puck_response::note_home_admission_transport_failure();"
+    )
+
+    assert "/wake-admission?seq=" in wake
+    assert callback_block in wake
 
 
 def test_wake_capture_acknowledgement_signal_covers_both_close_paths():

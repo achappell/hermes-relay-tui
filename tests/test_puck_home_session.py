@@ -1793,6 +1793,37 @@ async def test_retired_puck_claim_uses_one_control_only_close_without_replay():
 
 
 @pytest.mark.asyncio
+async def test_unconfirmed_puck_claim_can_retry_control_close_once():
+    class _FailedCloseSocket(_FakeSocket):
+        async def send(self, raw: str) -> None:
+            payload = json.loads(raw)
+            if payload["method"] == "conversation.close":
+                self.sent.append(payload)
+                self.incoming.put_nowait(ConnectionError("close not confirmed"))
+                return
+            await super().send(raw)
+
+    first = _FakeSocket()
+    failed_control = _FailedCloseSocket()
+    confirmed_control = _FakeSocket()
+    factory = _FakeConnect([first, failed_control, confirmed_control])
+    session = _session(factory)
+    await session.connect()
+
+    assert not await session.retire_uncertain_claim()
+    assert not session._retirement_confirmed
+    assert await session.retry_uncertain_claim()
+    assert session._retirement_confirmed
+    assert [
+        frame["method"] for frame in failed_control.sent
+    ] == ["conversation.reconnect", "conversation.close"]
+    assert [
+        frame["method"] for frame in confirmed_control.sent
+    ] == ["conversation.reconnect", "conversation.close"]
+    await session.close()
+
+
+@pytest.mark.asyncio
 async def test_home_fresh_claim_denies_before_home_request_without_evidence():
     calls = []
     factory = HomePuckSessionFactory(
@@ -1998,6 +2029,40 @@ async def test_home_active_claim_admits_only_its_current_authorized_mapping():
     assert await factory.current_mapping_id("Hey Other", "hey-missy") is None
     # An unbound initial handle cannot borrow one of several active mappings.
     assert await factory.current_mapping_id("Hey Missy") is None
+
+
+@pytest.mark.asyncio
+async def test_home_active_mapping_does_not_infer_a_blank_mapping_id():
+    config = {
+        "schema": 1,
+        "snapshot": {
+            "revision": 10,
+            "wake_mappings": [
+                {"id": "   ", "phrase": "Hey Missy"},
+                {"id": "hey-other", "phrase": "Hey Other"},
+            ],
+        },
+    }
+    factory = HomePuckSessionFactory(
+        f"wss://home.example{HOME_BRIDGE_PATH}",
+        "device-secret",
+        "puck-1",
+        request_json=lambda *_args, **_kwargs: config,
+    )
+
+    assert await factory.current_mapping_id("Hey Missy") is None
+
+
+def test_home_claim_retirement_outer_budget_covers_control_close_cleanup():
+    from puck_bridge.home_session import (
+        HOME_BRIDGE_CLOSE_TIMEOUT,
+        HOME_CLAIM_RETIRE_CALL_TIMEOUT_SECONDS,
+        HOME_CLAIM_RETIRE_TIMEOUT,
+    )
+
+    assert HOME_CLAIM_RETIRE_CALL_TIMEOUT_SECONDS >= (
+        HOME_CLAIM_RETIRE_TIMEOUT + (3 * HOME_BRIDGE_CLOSE_TIMEOUT)
+    )
 
 
 def test_home_claim_recovery_state_survives_restart_and_records_unconfirmed_close(tmp_path):

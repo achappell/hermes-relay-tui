@@ -32,6 +32,8 @@ from handsfree import (
     is_local_stop_command,
 )
 
+from .home_admission import HOME_WAKE_ADMISSION_TIMEOUT_SECONDS
+from .home_session import HOME_CLAIM_RETIRE_CALL_TIMEOUT_SECONDS
 from .response import MAX_QUEUED_PCM_BYTES, ResponseStreamError
 
 logger = logging.getLogger("hermes_relay_tui.puck_bridge.turn")
@@ -587,9 +589,8 @@ class TurnRunner:
         if self._stopping.is_set():
             return "unavailable"
         if self._home_claim_factory is None:
-            # Direct Hermes has no Home claim to renew. The local bridge still
-            # answers this check so every device wake uses the same pre-capture
-            # handshake without changing direct-mode transport recovery.
+            # Compatibility for older Direct firmware that still asks this
+            # endpoint; current Direct builds bypass the Home-only gate.
             return "admitted"
         if self._loop is None:
             return "unavailable"
@@ -603,7 +604,15 @@ class TurnRunner:
                 self._admit_home_wake(wake_phrase, seq), self._loop
             )
             try:
-                return str(future.result(timeout=25.0))
+                return str(
+                    future.result(
+                        timeout=(
+                            HOME_CLAIM_RETIRE_CALL_TIMEOUT_SECONDS
+                            + HOME_WAKE_ADMISSION_TIMEOUT_SECONDS
+                            + 1.0
+                        )
+                    )
+                )
             except Exception as exc:
                 future.cancel()
                 logger.warning(
@@ -682,6 +691,10 @@ class TurnRunner:
                     "Puck Home wake mapping check failed (%s)", type(exc).__name__
                 )
                 return "denied"
+            if self._home_claim_retired or not self._session_is_connected():
+                if not self._home_claim_retired:
+                    await self._retire_home_claim()
+                return "denied"
             if not resolved:
                 return "denied"
             if not mapping_id:
@@ -702,6 +715,8 @@ class TurnRunner:
 
         if not self._home_claim_retired:
             await self._retire_home_claim()
+        elif not self._home_claim_close_confirmed:
+            await self._retry_home_claim_retirement()
         if not self._home_claim_close_confirmed:
             return (
                 "identity_rejected"
@@ -761,7 +776,7 @@ class TurnRunner:
             try:
                 confirmed = bool(
                     await asyncio.wait_for(
-                        retire(), timeout=RECONNECT_TIMEOUT_SECONDS
+                        retire(), timeout=HOME_CLAIM_RETIRE_CALL_TIMEOUT_SECONDS
                     )
                 )
             except Exception as exc:
@@ -793,7 +808,7 @@ class TurnRunner:
             return False
         try:
             closed = await asyncio.wait_for(
-                retire(), timeout=RECONNECT_TIMEOUT_SECONDS
+                retire(), timeout=HOME_CLAIM_RETIRE_CALL_TIMEOUT_SECONDS
             )
         except Exception as exc:
             logger.warning(
@@ -805,6 +820,34 @@ class TurnRunner:
         self._home_claim_close_confirmed = confirmed and persisted
         if not self._home_claim_close_confirmed:
             logger.error("Puck Home claim close was not confirmed; capture stays closed")
+        return self._home_claim_close_confirmed
+
+    async def _retry_home_claim_retirement(self) -> bool:
+        """Retry an unconfirmed claim close only when a new physical wake arrives."""
+        session = self._session
+        handle = str(getattr(session, "conversation_handle", ""))
+        mapping_id = str(getattr(session, "wake_mapping_id", ""))
+        if not self._record_home_retirement(handle, mapping_id, False):
+            logger.error("Puck Home claim recovery state could not be refreshed")
+            return False
+        retry = getattr(session, "retry_uncertain_claim", None)
+        if not callable(retry):
+            logger.error("Puck Home claim cannot retry retirement; capture stays closed")
+            return False
+        try:
+            closed = await asyncio.wait_for(
+                retry(), timeout=HOME_CLAIM_RETIRE_CALL_TIMEOUT_SECONDS
+            )
+        except Exception as exc:
+            logger.warning(
+                "Puck Home claim retirement retry failed (%s)", type(exc).__name__
+            )
+            closed = False
+        confirmed = bool(closed)
+        persisted = self._record_home_retirement(handle, mapping_id, confirmed)
+        self._home_claim_close_confirmed = confirmed and persisted
+        if not self._home_claim_close_confirmed:
+            logger.error("Puck Home claim close remains unconfirmed; capture stays closed")
         return self._home_claim_close_confirmed
 
     def _record_home_retirement(

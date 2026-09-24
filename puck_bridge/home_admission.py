@@ -26,14 +26,16 @@ import uuid
 import unicodedata
 from typing import Any, Callable
 
-from .home_session import HomePuckSession
+from .home_session import (
+    HOME_CLAIM_RETIRE_CALL_TIMEOUT_SECONDS,
+    HomePuckSession,
+)
 
 logger = logging.getLogger("hermes_relay_tui.puck_bridge.home_admission")
 
 HOME_WAKE_ADMISSION_TIMEOUT_SECONDS = 10.0
 HOME_HTTP_REQUEST_TIMEOUT_SECONDS = 3.0
 HOME_EVIDENCE_TIMEOUT_SECONDS = 1.0
-HOME_CLAIM_CLOSE_TIMEOUT_SECONDS = 3.0
 HOME_MAX_RESPONSE_BYTES = 16 * 1024
 HOME_MAX_EVIDENCE_AGE_MS = 1000
 
@@ -332,7 +334,7 @@ class HomePuckSessionFactory:
                 try:
                     await asyncio.wait_for(
                         asyncio.shield(cleanup),
-                        timeout=HOME_CLAIM_CLOSE_TIMEOUT_SECONDS + 0.5,
+                        timeout=HOME_CLAIM_RETIRE_CALL_TIMEOUT_SECONDS + 0.5,
                     )
                 except asyncio.CancelledError:
                     raise
@@ -367,7 +369,7 @@ class HomePuckSessionFactory:
             confirmed = bool(
                 await asyncio.wait_for(
                     session.retire_uncertain_claim(),
-                    timeout=HOME_CLAIM_CLOSE_TIMEOUT_SECONDS,
+                    timeout=HOME_CLAIM_RETIRE_CALL_TIMEOUT_SECONDS,
                 )
             )
         except Exception as exc:
@@ -464,6 +466,7 @@ def _matching_mapping(
         for mapping in mappings
         if isinstance(mapping, dict)
         and isinstance(mapping.get("id"), str)
+        and mapping["id"].strip()
         and isinstance(mapping.get("phrase"), str)
         and _normalize_phrase(mapping["phrase"]) == wanted
     ]
