@@ -17,6 +17,7 @@ import sys
 import time
 import threading
 import socket
+import ssl
 from typing import Any
 from urllib.parse import urlsplit, quote
 import uuid
@@ -319,6 +320,10 @@ class HomeClient:
             return payload
         except HomeError:
             raise
+        except ssl.SSLError:
+            # Certificate verification errors also inherit ValueError; they
+            # describe a failed secure connection, not malformed Home JSON.
+            raise HomeError("transport") from None
         except (ValueError, UnicodeError):
             raise HomeError("invalid_response") from None
         except Exception:

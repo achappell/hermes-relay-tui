@@ -1,0 +1,50 @@
+{
+  "schema_version": "0.1.0",
+  "evaluated_at": "2026-09-26T19:25:10.390175+00:00",
+  "repo": "hermes-relay-tui",
+  "target": {
+    "type": "story",
+    "id": "TUI-HOME-01",
+    "label": "Pair with Home and own the session lifecycle"
+  },
+  "collection_status": "COLLECTED",
+  "gate_basis": "priority_thresholds",
+  "gate_status": "PASS",
+  "rationale": "All six formal acceptance criteria have appropriate executable evidence: P0 5/5, P1 1/1. Requirement-mapping thresholds are met; no criterion relies only on a recorded live observation. This is a testing gate for the documented working tree, with review and branch integration still pending.",
+  "p0_status": "MET",
+  "p1_status": "MET",
+  "overall_status": "MET",
+  "critical_open": 0,
+  "links": {
+    "trace_report_path": "_bmad-output/test-artifacts/traceability-matrix.md",
+    "trace_report_url": "",
+    "artifact_url": "",
+    "journey_evidence_url": ""
+  },
+  "story_status": "review",
+  "integration_status": "pending",
+  "source_state": {
+    "commit": "ef2bc57f228245b8172092fabf77ebb68adbd55a",
+    "uncommitted_acceptance_artifacts": true,
+    "uncommitted_runtime_fix": "home_client.py SSL error classification",
+    "files_sha256": {
+      "app.py": "11a4e21deafecb5a7bcdbc6a2956c1a9f51c8cb1093322627f974cd0f36e42c1",
+      "home_client.py": "04cbfdcbfd5792f4b36001c4b3e949627b7eb755d803873ea172f5f7ba700c6b",
+      "home_pairing_cli.py": "269854d528492fbd0b30f8a41560aa3dd80019c119f873d51bcf2628599cd601",
+      "puck_bridge/home_session.py": "7d35e4023a92d4e36b472a3470751d7d1aec7bccff06d26ae271c0f4fbb2a23a",
+      "puck_bridge/home_textual_session.py": "1138601f394864546e2b8eb4d4bda4b39ededa0d4dc1df587ae2342d5c9cd828",
+      "scripts/qa_home01_live_quit.py": "37590bb0726057f0ebdf6f2c5ee83ccceefbae0c96100b57e5b5028e30022ce2",
+      "scripts/qa_home01_secure_store.py": "5c4179ccd8e1b4df9bfbc4bfd74a82fdb82a84f0b3c3b02aa52f3efb74b9cf47",
+      "scripts/qa_home01_service.py": "233dd2c2944949717c76c0e7e971b421caf2b42f087d9abf70aeeb83b93e7711",
+      "tests/test_app.py": "29c337f7f79c0a78f577f8c9ab81ed4729fbea23bde8b262316be166b3d415ad",
+      "tests/test_home01_acceptance.py": "fea816a8ef0fd4c6f684fd5bf2170b582d213eea4da1e167792919686d7417ff",
+      "tests/test_home_client.py": "0e47a567ece5fee74a0e2c4a8ed9f541628715b63a4458475952933803c6d23a",
+      "tests/test_home_disconnect.py": "603154b69e343cccb54b4eb16a5c8e60503b37202be01c7cbfc7483609e2181d",
+      "tests/test_home_pairing_cli.py": "65bcb2dee9ccbeeaef2c9c2bd1fd29f668e28e8829f08ab495f799fb4eb89652",
+      "tests/test_home_textual_session.py": "ee3965206eac0bcb7b143ab8533a8345316c17655e1c0ecad80c62f540a81350",
+      "tests/test_profile_app.py": "0b97d81c1d962be185f46fcf8b43a2850ccb6fc0e7c01c9e30e5d81ae293e1b3",
+      "tests/test_profile_cli.py": "c56fc73d6dc5ce44ccf5b3c1717a8f4d13ccc767e4f081c8c7da65673e888efa",
+      "tests/test_puck_home_session.py": "a13352565d8c7957cb72c260bf4497d46cbeec92c2e3172df5eb92fa2a54d5b5"
+    }
+  }
+}
