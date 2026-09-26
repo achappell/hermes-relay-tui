@@ -52,6 +52,7 @@ def lab():
         h.service._clock = lambda: clock[0]
         server = create_server(h.app, host="127.0.0.1", port=0)
         context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        context.minimum_version = ssl.TLSVersion.TLSv1_2
         context.load_cert_chain(cert, key)
         server.socket = context.wrap_socket(server.socket, server_side=True)
         thread = threading.Thread(target=server.serve_forever, daemon=True)
