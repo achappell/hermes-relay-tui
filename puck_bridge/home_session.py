@@ -880,6 +880,14 @@ class HomePuckSession:
                             return
                         audio_wait_remaining -= asyncio.get_running_loop().time() - started_wait
                 except HomeBridgeTransportError:
+                    if text_terminal and not self._resume_uncertain_turn:
+                        # Text has an authoritative terminal event. Losing its
+                        # audio tail must not turn that answer into uncertainty.
+                        try:
+                            yield {"type": "audio_abort", "error": "Home audio was interrupted; text completed. Choose a conversation before the next prompt.", "text_completed": True}
+                        finally:
+                            await self._close_after_protocol_failure()
+                        return
                     if not self._resume_uncertain_turn:
                         self._note_uncertain_transport()
                         raise

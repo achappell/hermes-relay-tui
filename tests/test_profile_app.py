@@ -248,3 +248,174 @@ async def test_named_profile_scopes_prompt_history_and_default_transcript_export
         assert "export this transcript" in saved_lines[0].read_text(encoding="utf-8")
         assert app._history.path != config.DEFAULT_CONFIG_PATH
         assert "profiles" in str(app._history.path)
+
+
+def test_home_prompt_history_is_scoped_by_canonical_home_and_granted_identity(
+    tmp_path,
+):
+    history_path = tmp_path / "prompts.jsonl"
+    args = make_args(
+        transport="home",
+        profile_name="amanda",
+        url="wss://home.example/api/v1/bridge/ws",
+        history_path=history_path,
+    )
+    app = HermesStreamingApp(args=args, session_factory=SessionFactory())
+
+    args.home_history_identity = "grant-amanda"
+    amanda_home = app._history_path_for_args(args)
+    args.url = "https://home.example/"
+    canonical_same_home = app._history_path_for_args(args)
+
+    args.home_history_identity = "grant-jensen"
+    jensen_home = app._history_path_for_args(args)
+    args.url = "https://other-home.example"
+    same_grant_other_home = app._history_path_for_args(args)
+
+    voice_args = make_args(
+        transport="voice-session",
+        profile_name="amanda",
+        profiles_configured=True,
+        url="wss://home.example/voice-session",
+        history_path=history_path,
+    )
+    voice_profile = app._history_path_for_args(voice_args)
+
+    assert amanda_home == canonical_same_home
+    assert len({amanda_home, jensen_home, same_grant_other_home, voice_profile}) == 4
+
+
+def _home_app(tmp_path, monkeypatch):
+    from puck_bridge.home_textual_session import HomeTextualSession
+    from tests.test_home_textual_session import FakeHomeClient, FakeHomeSession
+
+    class Bridge(FakeHomeSession):
+        release_ok = True
+
+        async def wait_for_disconnect(self):
+            await asyncio.Event().wait()
+
+        async def close_claim(self):
+            if self.release_ok:
+                await self.close()
+            return self.release_ok
+
+    monkeypatch.setattr("puck_bridge.home_textual_session.HomeClient", FakeHomeClient)
+    args = make_args(transport="home", url="https://home.example", home_grant="Amanda",
+                     history_path=tmp_path / "prompts.jsonl", config=tmp_path / "config.yaml")
+    return HermesStreamingApp(args=args, session_factory=lambda args: HomeTextualSession(args, home_session_factory=Bridge))
+
+
+@pytest.mark.asyncio
+async def test_home_reload_keeps_granted_artifact_and_history_scope(tmp_path, monkeypatch):
+    from copy import copy
+
+    app = _home_app(tmp_path, monkeypatch)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        scope, history = app._artifact_profile_name(), app._history.path
+        replacement = copy(app.args)
+        del replacement.home_history_identity
+        replacement.home_grant = "Amanda"
+        assert app.args.home_grant == "Amanda"
+        class ReloadParser:
+            def parse_args(self, _argv):
+                return replacement
+        monkeypatch.setattr(config, "build_arg_parser", lambda _argv: ReloadParser())
+        app._handle_reload_command()
+        await pilot.pause()
+        assert app.session.home_client.claim_count == 1
+        assert app.args.home_grant == "Amanda"
+        assert app.args.home_history_identity == "grant-1"
+        assert app._artifact_profile_name() == scope
+        assert app._history.path == history
+
+
+@pytest.mark.asyncio
+async def test_home_failed_release_refuses_reload_and_new_without_losing_transcript(tmp_path, monkeypatch):
+    from copy import copy
+
+    app = _home_app(tmp_path, monkeypatch)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        old_args, old_session = app.args, app.session
+        app._append_block("Keep this conversation")
+        app.session._home_session.release_ok = False
+        target = copy(app.args)
+        target.url = "https://another-home.example"
+        target.profile_name = "other"
+        await app._reload_profile_after_config(target)
+        assert app.args is old_args
+        assert app.session is old_session
+        assert "Keep this conversation" in transcript_of(app)
+        await app._handle_command(parse_slash_command("/new"))
+        assert app.session is old_session
+        assert app.session.home_client.claim_count == 1
+        assert "Keep this conversation" in transcript_of(app)
+        app.session._home_session.release_ok = True
+
+
+@pytest.mark.asyncio
+async def test_failed_profile_switch_exports_retained_transcript_under_original_profile(tmp_path, monkeypatch):
+    args, argv, _ = _profile_args(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    app = HermesStreamingApp(args=args, session_factory=SessionFactory(fail_names={"jensen"}), argv=argv)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app._append_block("Amanda private transcript")
+        await app._handle_command(parse_slash_command("/profile select jensen"))
+        await app._handle_command(parse_slash_command("/save"))
+        saved = list((tmp_path / "profiles" / "amanda").glob("hermes-transcript-*.txt"))
+        assert len(saved) == 1
+        assert "Amanda private transcript" in saved[0].read_text()
+        assert not list((tmp_path / "profiles" / "jensen").glob("hermes-transcript-*.txt"))
+
+
+@pytest.mark.asyncio
+async def test_home_leave_requires_successful_replacement_before_next_prompt(tmp_path, monkeypatch):
+    from app import PROMPT_AMBIGUOUS
+
+    app = _home_app(tmp_path, monkeypatch)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app._last_prompt_status = PROMPT_AMBIGUOUS
+        await app._handle_command(parse_slash_command("/home leave"))
+        composer = app.query_one("#composer", Composer)
+        composer.text = "keep this draft"
+        await app._submit_text(composer.text, composer=composer)
+        assert composer.text == "keep this draft"
+        assert app.session.turn_index == 0
+        assert not await app._run_turn("must not reach old claim")
+        def forbidden_capture():
+            raise AssertionError("microphone must remain closed")
+        monkeypatch.setattr(app.session, "capture_voice", forbidden_capture)
+        await app._capture_voice_turn()
+        await app._arm_wake()
+        assert not app.wake_armed
+        assert "before opening the microphone" in transcript_of(app)
+        app.session._home_session.release_ok = False
+        await app._handle_command(parse_slash_command("/new"))
+        assert app.session.conversation_replacement_required
+        app.session._home_session.release_ok = True
+        await app._handle_command(parse_slash_command("/new"))
+        assert not app.session.conversation_replacement_required
+        assert app.session.home_client.claim_count == 2
+
+
+@pytest.mark.asyncio
+async def test_failed_home_to_legacy_switch_preserves_transcript_export_scope(tmp_path, monkeypatch):
+    app = _home_app(tmp_path, monkeypatch)
+    monkeypatch.chdir(tmp_path)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        scope = app._artifact_profile_name()
+        app._append_block("Home private transcript")
+        app._session_factory = lambda _args: FakeSession(connected=False)
+        target = make_args(transport="voice-session", profiles_configured=False,
+                           url="wss://legacy.example/voice-session", connect_retries=0)
+        assert not await app._switch_to_args(target, reason="test")
+        await app._handle_command(parse_slash_command("/save"))
+        saved = list((tmp_path / "profiles" / scope).glob("hermes-transcript-*.txt"))
+        assert len(saved) == 1
+        assert "Home private transcript" in saved[0].read_text()
+        assert not list(tmp_path.glob("hermes-transcript-*.txt"))

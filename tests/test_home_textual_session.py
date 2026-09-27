@@ -204,3 +204,162 @@ async def test_textual_real_bridge_finishes_text_then_audio(monkeypatch, ending)
         assert session.active_turn_id is None
     finally:
         await session.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("audio_started", [False, True])
+async def test_textual_completed_text_survives_audio_disconnect_without_replaying_tail(monkeypatch, audio_started):
+    import json
+    from puck_bridge.home_session import HomePuckSession
+    from session import SessionNotReadyError
+    from tests.test_puck_home_session import _FakeConnect, _FakeSocket, _ready_socket, _audio, _event, _reply, READY as BRIDGE_READY
+
+    class BoundClient(FakeHomeClient):
+        async def claim(self, *args, **kwargs):
+            result = await super().claim(*args, **kwargs)
+            result["conversation_handle"] = "opaque-home-handle"
+            return result
+
+    class TailSocket(_FakeSocket):
+        async def send(self, raw):
+            request = json.loads(raw)
+            if request["method"] != "conversation.reconnect":
+                return await super().send(raw)
+            self.sent.append(request)
+            self.incoming.put_nowait(_reply(request["id"], BRIDGE_READY))
+            self.incoming.put_nowait(b"\x02\x00")
+            self.incoming.put_nowait(_audio("end", "home-turn-1"))
+
+    monkeypatch.setattr("puck_bridge.home_textual_session.HomeClient", BoundClient)
+    frames = []
+    if audio_started:
+        frames.append(_audio("start", "home-turn-1", sample_rate=24000, channels=1,
+                             sample_width=2, byte_order="little"))
+    frames.extend([
+        _event("message.delta", "home-turn-1", {"text": "Confirmed answer."}),
+        _event("message.complete", "home-turn-1", {}),
+    ])
+    first, recovered = _ready_socket(*frames), TailSocket()
+    fresh = _ready_socket(_event("message.complete", "home-turn-1", {}))
+    connector = _FakeConnect([first, recovered, fresh])
+
+    def factory(*args, **kwargs):
+        assert kwargs["resume_uncertain_turn"] is False
+        return HomePuckSession(*args, connect_factory=connector, **kwargs)
+
+    session = HomeTextualSession(SimpleNamespace(url="https://home.example", session_id="local"),
+                                 home_session_factory=factory)
+    await session.connect()
+    session._home_session._capabilities |= {"audio"}
+    try:
+        events = []
+        async for event in session.send_turn("First question"):
+            events.append(event)
+            if event["type"] == "message_complete":
+                first.incoming.put_nowait(ConnectionError("audio transport dropped"))
+        assert {"type": "text_delta", "text": "Confirmed answer."} in events
+        assert events[-1] == {"type": "turn_end"}
+        assert events[-2]["type"] == "audio_unavailable"
+        assert "text completed" in events[-2]["reason"]
+        assert not session.is_connected()
+        assert connector.contexts[0].closed
+        assert len(connector.calls) == 1  # No automatic recovery or replay.
+        assert session.conversation_replacement_required
+
+        await session.connect()
+        with pytest.raises(SessionNotReadyError, match="Choose /new"):
+            session.send_turn("Must not consume the old audio tail")
+        assert all(request["method"] != "prompt.submit" for request in recovered.sent)
+
+        await session.new_session()
+        assert connector.contexts[1].closed
+        assert not session.conversation_replacement_required
+        next_events = [event async for event in session.send_turn("Deliberate new question")]
+        assert [event["type"] for event in next_events] == ["message_complete", "turn_end"]
+        assert sum(request["method"] == "prompt.submit" for socket in (first, recovered, fresh) for request in socket.sent) == 2
+    finally:
+        await session.close()
+
+
+@pytest.mark.asyncio
+async def test_leaving_uncertain_turn_requires_successful_replacement(monkeypatch):
+    from session import SessionNotReadyError
+
+    class ClosableHome(FakeHomeSession):
+        async def close_claim(self):
+            await self.close()
+            return True
+
+    monkeypatch.setattr("puck_bridge.home_textual_session.HomeClient", FakeHomeClient)
+    session = HomeTextualSession(SimpleNamespace(url="https://home.example", session_id="local"),
+                                 home_session_factory=ClosableHome)
+    await session.connect()
+    session.leave_uncertain_turn()
+    try:
+        with pytest.raises(SessionNotReadyError, match="Choose /new"):
+            session.send_turn("Blocked", stt_source="voice")
+        original = session.home_client.configuration
+
+        async def unavailable(_record):
+            raise ConnectionError("Home unavailable")
+
+        session.home_client.configuration = unavailable
+        with pytest.raises(ConnectionError):
+            await session.new_session()
+        assert session.conversation_replacement_required
+        session.home_client.configuration = original
+        await session.new_session()
+        assert not session.conversation_replacement_required
+        events = [event async for event in session.send_turn("New question", stt_source="voice")]
+        assert events[-1] == {"type": "turn_end"}
+    finally:
+        await session.close()
+
+
+@pytest.mark.asyncio
+async def test_explicit_replacement_handshake_retry_unblocks_without_another_claim(monkeypatch):
+    class RetryHome(FakeHomeSession):
+        async def close_claim(self):
+            await self.close()
+            return True
+
+    created = []
+
+    def factory(*args, **kwargs):
+        home = RetryHome(*args, **kwargs)
+        connect = home.connect
+
+        async def fail_first_replacement_connect():
+            home.connect = connect
+            raise ConnectionError("Replacement handshake failed")
+
+        if created:
+            home.connect = fail_first_replacement_connect
+        created.append(home)
+        return home
+
+    monkeypatch.setattr("puck_bridge.home_textual_session.HomeClient", FakeHomeClient)
+    session = HomeTextualSession(SimpleNamespace(url="https://home.example", session_id="local"),
+                                 home_session_factory=factory)
+    await session.connect()
+    session.leave_uncertain_turn()
+    try:
+        with pytest.raises(ConnectionError, match="Replacement handshake failed"):
+            await session.new_session()
+        assert session.conversation_replacement_required
+        assert session.home_client.claim_count == 2
+        replacement = session._home_session
+        await session.connect()
+        assert session._home_session is replacement
+        assert session.home_client.claim_count == 2
+        assert not session.conversation_replacement_required
+        events = [event async for event in session.send_turn("Deliberate question", stt_source="voice")]
+        assert events[-1] == {"type": "turn_end"}
+        # The app's presentation flag can remain set until it paints. It must
+        # not authorize reusing this claim after a later explicit abandonment.
+        assert session.pending_replacement
+        session.leave_uncertain_turn()
+        await session.connect()
+        assert session.conversation_replacement_required
+    finally:
+        await session.close()
