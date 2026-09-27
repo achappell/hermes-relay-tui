@@ -126,3 +126,8 @@ The 1656-pass run above remains evidence for its recorded pre-PR working tree. M
 ## PR security-review follow-up — 2026-09-26 (CDT)
 
 CodeQL flagged the disposable service harness because its server TLS context did not explicitly constrain protocol versions. The tested Python environment already reported a TLS 1.2 minimum, but the harness now sets `context.minimum_version = ssl.TLSVersion.TLSv1_2` before wrapping the socket, making that requirement explicit across environments. No production client or service TLS setting changed. The real disposable Home service probe passed all 11 scenario groups again after this change, including cleanup. The earlier full-suite and source-hash records retain their original run provenance.
+
+
+## Formal closure — 2026-09-26 (CDT)
+
+TUI-HOME-01 is done following Amanda's explicit closeout instruction. Acceptance follow-up PR #213 merged into `main` on 2026-09-26 at 22:53:39 UTC as `d16b17e5f22554d0b34fbcf406f3b02022fc435d`. GitHub reports successful Test and package, all four CodeQL analysis jobs, and the CodeQL gate for final head `7f22a623b4df96dbcd5ef792f45f413ccc5060d2`. The CodeQL TLS finding is fixed. All six approved criteria are satisfied by the evidence above; no acceptance-test blocker remains. The owning specification and sprint tracker now record done. This final disposition supersedes earlier review/integration-pending statements without changing their historical test provenance.
