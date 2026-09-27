@@ -3,7 +3,7 @@ id: TUI-HOME-01
 title: Pair the TUI with Home and use personal sessions
 type: feature
 created: 2026-09-23
-status: in-review
+status: done
 route: dispatch
 baseline_commit: 81cfc0a16684b3dfdd51d5d51929f21b31f3c3bb
 review_loop_iteration: 0
@@ -120,3 +120,8 @@ Inspect changed code, imports/packaging, contract shapes and secret handling. Un
 | Verification gap: text completes before browser audio disconnect | medium | Added explicit completed-text recovery/tail isolation coverage; browser completion is checked without requiring another terminal event. |
 
 The separately owned Home adapter defect and explicit-close race were repaired and deployed under the authorized live troubleshooting task. TUI-HOME-01 remains in review while broader user acceptance is outstanding.
+
+
+## Formal closure — 2026-09-26
+
+Amanda accepted closeout after the acceptance follow-up [PR #213](https://github.com/achappell/hermes-relay-tui/pull/213) merged into `main` at `d16b17e5f22554d0b34fbcf406f3b02022fc435d`. Its final head `7f22a623b4df96dbcd5ef792f45f413ccc5060d2` passed Test and package, all four CodeQL analysis jobs, and the CodeQL gate. All six approved acceptance criteria have passing evidence in [the validation record](validation-tui-home-01.md) and [acceptance trace](../test-artifacts/traceability-matrix.md). This disposition supersedes the historical pending-review and deferred-test statements above. TUI-HOME-01 is done; the recorded product limits remain explicit, and TUI-STD-01 and legacy retirement retain their separate scope.
