@@ -34,4 +34,4 @@ Amanda confirmed `/reload` and `/reconnect` both remained responsive and left th
 
 Amanda confirmed Ctrl+Q during wake capture exited promptly and a wake request succeeded after relaunch. Candidate physical acceptance now covers first-turn text/spoken reply, complete wake-free second turn, full sustained-utterance ending, responsive disarm/re-arm, reload/reconnect leaving the microphone closed, and quit/relaunch. Actual unexpected connection loss during physical capture was not induced; the automated connection-loss/cancellation coverage remains the evidence for that path.
 
-T-5, TUI-DEFECT-102 and TUI-DEFECT-104 are in local review pending merge/release. No remote issue closure is claimed. Home pairing/session story TUI-HOME-01 retains its separately documented Linux, enrollment, owner-decision, renewal, multiple-Home and transient-failure acceptance limits.
+T-5, TUI-DEFECT-102 and TUI-DEFECT-104 are in local review pending merge/release. No remote issue closure is claimed. Home pairing/session story TUI-HOME-01 retains its accepted closure from main; PR #213 supplied the native/disposable-service evidence and PR #215 formally closed it.

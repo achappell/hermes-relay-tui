@@ -1,0 +1,196 @@
+{
+  "schema_version": "0.2.0",
+  "snapshot_at": "2026-09-26T19:25:10.390175+00:00",
+  "repo": "hermes-relay-tui",
+  "collection_mode": "contract_static",
+  "collection_status": "COLLECTED",
+  "inventory_basis": "acceptance_criteria",
+  "gate_basis": "priority_thresholds",
+  "source_sha": "ef2bc57f228245b8172092fabf77ebb68adbd55a",
+  "source_state": {
+    "commit": "ef2bc57f228245b8172092fabf77ebb68adbd55a",
+    "uncommitted_acceptance_artifacts": true,
+    "uncommitted_runtime_fix": "home_client.py SSL error classification",
+    "files_sha256": {
+      "app.py": "11a4e21deafecb5a7bcdbc6a2956c1a9f51c8cb1093322627f974cd0f36e42c1",
+      "home_client.py": "04cbfdcbfd5792f4b36001c4b3e949627b7eb755d803873ea172f5f7ba700c6b",
+      "home_pairing_cli.py": "269854d528492fbd0b30f8a41560aa3dd80019c119f873d51bcf2628599cd601",
+      "puck_bridge/home_session.py": "7d35e4023a92d4e36b472a3470751d7d1aec7bccff06d26ae271c0f4fbb2a23a",
+      "puck_bridge/home_textual_session.py": "1138601f394864546e2b8eb4d4bda4b39ededa0d4dc1df587ae2342d5c9cd828",
+      "scripts/qa_home01_live_quit.py": "37590bb0726057f0ebdf6f2c5ee83ccceefbae0c96100b57e5b5028e30022ce2",
+      "scripts/qa_home01_secure_store.py": "5c4179ccd8e1b4df9bfbc4bfd74a82fdb82a84f0b3c3b02aa52f3efb74b9cf47",
+      "scripts/qa_home01_service.py": "233dd2c2944949717c76c0e7e971b421caf2b42f087d9abf70aeeb83b93e7711",
+      "tests/test_app.py": "29c337f7f79c0a78f577f8c9ab81ed4729fbea23bde8b262316be166b3d415ad",
+      "tests/test_home01_acceptance.py": "fea816a8ef0fd4c6f684fd5bf2170b582d213eea4da1e167792919686d7417ff",
+      "tests/test_home_client.py": "0e47a567ece5fee74a0e2c4a8ed9f541628715b63a4458475952933803c6d23a",
+      "tests/test_home_disconnect.py": "603154b69e343cccb54b4eb16a5c8e60503b37202be01c7cbfc7483609e2181d",
+      "tests/test_home_pairing_cli.py": "65bcb2dee9ccbeeaef2c9c2bd1fd29f668e28e8829f08ab495f799fb4eb89652",
+      "tests/test_home_textual_session.py": "ee3965206eac0bcb7b143ab8533a8345316c17655e1c0ecad80c62f540a81350",
+      "tests/test_profile_app.py": "0b97d81c1d962be185f46fcf8b43a2850ccb6fc0e7c01c9e30e5d81ae293e1b3",
+      "tests/test_profile_cli.py": "c56fc73d6dc5ce44ccf5b3c1717a8f4d13ccc767e4f081c8c7da65673e888efa",
+      "tests/test_puck_home_session.py": "a13352565d8c7957cb72c260bf4497d46cbeec92c2e3172df5eb92fa2a54d5b5"
+    }
+  },
+  "target": {
+    "type": "story",
+    "id": "TUI-HOME-01",
+    "label": "Pair with Home and own the session lifecycle"
+  },
+  "decision_mode": "deterministic",
+  "evaluator": "Codex testarch-trace",
+  "confidence": "high",
+  "oracle": {
+    "resolution_mode": "formal_requirements",
+    "confidence": "high",
+    "sources": [
+      "_bmad-output/implementation-artifacts/spec-tui-home-01-pair-with-home-and-own-sessions.md"
+    ],
+    "external_pointer_status": "not_used",
+    "synthetic": false
+  },
+  "coverage": {
+    "inventory": {
+      "covered": 6,
+      "total": 6,
+      "pct": 100
+    },
+    "priority_breakdown": {
+      "P0": {
+        "total": 5,
+        "covered": 5,
+        "pct": 100
+      },
+      "P1": {
+        "total": 1,
+        "covered": 1,
+        "pct": 100
+      },
+      "P2": {
+        "total": 0,
+        "covered": 0,
+        "pct": 100
+      },
+      "P3": {
+        "total": 0,
+        "covered": 0,
+        "pct": 100
+      }
+    },
+    "by_level": {
+      "e2e": {
+        "tests": 0,
+        "criteria_covered": 0
+      },
+      "api": {
+        "tests": 13,
+        "criteria_covered": 6
+      },
+      "component": {
+        "tests": 28,
+        "criteria_covered": 6
+      },
+      "unit": {
+        "tests": 16,
+        "criteria_covered": 3
+      },
+      "live": {
+        "tests": 0,
+        "criteria_covered": 0
+      },
+      "other": {
+        "tests": 0,
+        "criteria_covered": 0
+      }
+    }
+  },
+  "tests": {
+    "files": 12,
+    "cases": 57,
+    "skipped_cases": 0,
+    "fixme_cases": 0,
+    "pending_cases": 0
+  },
+  "risk_summary": {
+    "critical_open": 0,
+    "high_open": 0,
+    "medium_open": 0,
+    "low_open": 0
+  },
+  "heuristics": {
+    "endpoint_gaps": 0,
+    "auth_negative_path_status": "present",
+    "error_path_status": "present",
+    "ui_journey_status": "not_applicable",
+    "ui_state_status": "not_applicable"
+  },
+  "live_evidence": {
+    "present": false,
+    "results_file": "",
+    "freshness": "not_present",
+    "recorded_source_sha": "",
+    "current_source_sha": "ef2bc57f228245b8172092fabf77ebb68adbd55a",
+    "producer": "",
+    "counted": 0,
+    "stale": 0,
+    "unverifiable": 0,
+    "failed": 0,
+    "contradicted": 0,
+    "blocked": 0,
+    "skipped": 0,
+    "unmatched": 0,
+    "invalid": 0,
+    "requirements_live_only": 0
+  },
+  "blockers": [],
+  "recommendations": [
+    {
+      "priority": "LOW",
+      "action": "Complete implementation review and integrate the tested fix and acceptance artifacts through the owning branch workflow; retain local review status until that disposition.",
+      "requirements": [
+        "AC1",
+        "AC2",
+        "AC3",
+        "AC4",
+        "AC5",
+        "AC6"
+      ]
+    }
+  ],
+  "links": {
+    "trace_report_path": "_bmad-output/test-artifacts/traceability-matrix.md",
+    "trace_report_url": "",
+    "artifact_url": "",
+    "journey_evidence_url": ""
+  },
+  "gate_status": "PASS",
+  "gate_criteria": {
+    "p0_coverage_required": "100%",
+    "p0_coverage_actual": "100%",
+    "p0_status": "MET",
+    "p1_coverage_target": "90%",
+    "p1_coverage_minimum": "80%",
+    "p1_coverage_actual": "100%",
+    "p1_status": "MET",
+    "overall_coverage_minimum": "80%",
+    "overall_coverage_actual": "100%",
+    "overall_status": "MET"
+  },
+  "environment_limits": [
+    "Coverage percentages count the six approved acceptance criteria only; no line, branch or exhaustive input coverage measurement was performed.",
+    "Native Linux checks ran in an isolated unlocked Secret Service session on ops; the absent-service case also failed closed. This does not assert that an ordinary headless SSH login already has an unlocked keyring.",
+    "Isolated Home HTTP checks use real Home source b51d289 with SQLite and native secure storage, but a synthetic Standard session-directory fixture; deployed Standard generation is supported by earlier text/voice observations.",
+    "Deployed quit probes use the actual Textual app test driver and Amanda QA conversation; early quit deliberately holds the accepted claim response. The test verifies the saved conversation is still listed inactive after close and explicitly cleans up its known claim; it does not assert historical message loading, which Home does not supply.",
+    "Historical text/voice/new/continue/list/resume/title/reconnect/two-window observations remain dated validation context. Deployed Home/Standard revision was not independently established; this is a provenance limitation, not an independent blocker for this TUI test gate.",
+    "The formal story remains review/in-review. Testing PASS does not complete review, commit unpublished artifacts, merge the fix/program branch, or authorize release."
+  ],
+  "execution_evidence": {
+    "focused_pytest": "32 passed in 0.60s: tests/test_home_client.py, tests/test_home01_acceptance.py, tests/test_home_textual_session.py; confirmed by parent agent.",
+    "final_full_pytest": "1656 passed, 1 skipped, 6 warnings in 293.85s on the tested working tree; confirmed by parent agent and /tmp/home01-final-pytest.log.",
+    "full_suite_skip": "tests/test_puck_firmware.py::test_respeaker_yaml_passes_esphome_config_generation (line 311): firmware ESPHome environment is not installed. Outside TUI-HOME-01; no mapped story test skipped.",
+    "native_secure_storage": "Six named storage checks passed on macOS native Keychain and six on Linux Secret Service at ops. Absent Secret Service failed closed. Synthetic origins were removed; temporary Linux lab removed and verified. Confirmed by parent agent.",
+    "isolated_home_service": "All 11 named groups passed again after the TLS error-classification fix: pending/reject/expire/code/link enrollment; cross-Profile reference; stale configuration; claim limit; owner approve/reject including non-owner denial; persisted renewal response-loss retry plus two concurrent clients; native unpair versus explicit server revocation. Home source b51d289a680229dfb14c6f2ae8f0f1396dadd430; synthetic Standard directory. Confirmed by parent agent.",
+    "deployed_quit": "Post-fix ready quit confirmed claim release and normal exit, saved QA conversation remained listed inactive, held-claim early quit exited normally without transcript exception, and cleanup explicitly retired the known claim. No prompt sent. Confirmed by parent agent.",
+    "historical_checkpoint": "Earlier unchanged source suite: 1640 passed, 1 skipped, 6 warnings. Earlier focused selection: 347 passed. These remain historical results, superseded by the current full run.",
+    "dated_live_context": "Validation records earlier deployed text/voice, new/continue/list/search/resume/title, reconnect with one claim and two sockets, and two-window busy behavior. They are historical narrative observations, not newly generated live-manifest records."
+  }
+}

@@ -3,7 +3,7 @@ id: TUI-HOME-01
 title: Pair the TUI with Home and use personal sessions
 type: feature
 created: 2026-09-23
-status: in-review
+status: done
 route: dispatch
 baseline_commit: 81cfc0a16684b3dfdd51d5d51929f21b31f3c3bb
 review_loop_iteration: 0
@@ -121,6 +121,11 @@ Inspect changed code, imports/packaging, contract shapes and secret handling. Un
 
 The separately owned Home adapter defect and explicit-close race were repaired and deployed under the authorized live troubleshooting task. TUI-HOME-01 remains in review while broader user acceptance is outstanding.
 
+
+## Formal closure — 2026-09-26
+
+Amanda accepted closeout after the acceptance follow-up [PR #213](https://github.com/achappell/hermes-relay-tui/pull/213) merged into `main` at `d16b17e5f22554d0b34fbcf406f3b02022fc435d`. Its final head `7f22a623b4df96dbcd5ef792f45f413ccc5060d2` passed Test and package, all four CodeQL analysis jobs, and the CodeQL gate. All six approved acceptance criteria have passing evidence in [the validation record](validation-tui-home-01.md) and [acceptance trace](../test-artifacts/traceability-matrix.md). This disposition supersedes the historical pending-review and deferred-test statements above. TUI-HOME-01 is done; the recorded product limits remain explicit, and TUI-STD-01 and legacy retirement retain their separate scope.
+
 ## Acceptance review — 2026-09-27
 
 Resumed the existing in-review story under the approved acceptance contract. The implementation is now on main (program merge `f1807570bc3024bc150ffae30286b881a254f483`); work is isolated on fix/epic-1-tui-acceptance. Earlier local validation and history regression edits were copied into this worktree without changing their source checkout.
@@ -136,9 +141,8 @@ Resumed the existing in-review story under the approved acceptance contract. The
 | Edge: completed text becomes uncertain on audio drop | medium | Same verified transport path as Blind audio finding; grouped into its patch. |
 | Verification: failed claim release has no replacement regression | medium | Existing tests do not exercise `/new` through actual Home adapter retirement refusal. Patch focused regression; no new behavior required. |
 | Verification: HTTP response parser bypassed by fakes | medium | Existing request stubs bypass status/schema checks. Patch focused actual parser tests with fake HTTPSConnection. |
-
 | Follow-up: replacement retry retains submission guard | medium | A newly created replacement claim can fail its first handshake, then connect on retry while the guard remains set. Patch: clear only after successful connection of the pending explicit replacement; keep old-claim recovery blocked. |
 
 Preserve the approved Home contract, native credentials, independent history, and no replay. These are corrections to observed existing paths, not new product scope. Live title dispatch and explicit claim closure passed on September 27; remaining evidence belongs in the validation record.
 
-The three-layer review and follow-up review are complete. The dedicated replacement-connect flag passed its focused regression and the verification reviewer confirmed no remaining blockers in this continuation's delta. The owner story intentionally remains in-review: environment and physical acceptance gates are still open.
+The three-layer review and follow-up review are complete. The dedicated replacement-connect flag passed its focused regression and the verification reviewer confirmed no remaining blockers in this continuation's delta. This follow-up does not reopen the accepted TUI-HOME-01 closure on main. Its earlier local assessment lacked the PR #213 acceptance disposition; that disposition remains authoritative.

@@ -104,6 +104,65 @@ async def test_request_rejects_another_homes_credential_before_http(monkeypatch)
     assert error.value.code == "not_paired"
 
 
+@pytest.mark.parametrize("case,expected", [
+    ("redirect", "transport"), ("tls", "transport"), ("deadline", "transport"),
+    ("malformed", "invalid_response"), ("boolean-schema", "invalid_response"),
+    ("string-schema", "invalid_response"), ("oversized", "invalid_response"),
+    ("error-body", "unauthorized"),
+])
+def test_http_boundary_refuses_unsafe_responses_and_closes_connection(monkeypatch, case, expected):
+    import ssl
+    from types import SimpleNamespace
+
+    clock = [0.0]
+    requests = []
+    secret = "synthetic-private-response-detail"
+    bodies = {
+        "malformed": b"not-json",
+        "boolean-schema": b'{"schema":true}',
+        "string-schema": b'{"schema":"1"}',
+        "oversized": b"x" * 129,
+        "error-body": json.dumps({"schema": 1, "error": {"code": "unauthorized", "detail": secret}}).encode(),
+    }
+
+    class Response:
+        status = 302 if case == "redirect" else 401 if case == "error-body" else 200
+        data = bodies.get(case, b'{"schema":1}')
+
+        def read1(self, limit):
+            if case == "deadline":
+                clock[0] += home_client.HTTP_TIMEOUT + 1
+            result, self.data = self.data[:limit], self.data[limit:]
+            return result
+
+    class Connection:
+        closed = False
+        sock = SimpleNamespace(settimeout=lambda seconds: None, shutdown=lambda how: None)
+
+        def request(self, *args, **kwargs):
+            requests.append((args, kwargs))
+            if case == "tls":
+                raise ssl.SSLCertVerificationError("synthetic certificate refusal")
+
+        def getresponse(self):
+            return Response()
+
+        def close(self):
+            self.closed = True
+
+    connection = Connection()
+    monkeypatch.setattr(home_client.http.client, "HTTPSConnection", lambda *a, **kw: connection)
+    monkeypatch.setattr(home_client, "time", SimpleNamespace(monotonic=lambda: clock[0]))
+    monkeypatch.setattr(home_client, "MAX_RESPONSE", 128)
+    client = HomeClient(HOME, store=MemoryPairings())
+    with pytest.raises(HomeError) as caught:
+        client._request("GET", "/api/v1/configuration", None, None)
+    assert caught.value.code == expected
+    assert secret not in str(caught.value)
+    assert connection.closed
+    assert len(requests) == 1  # Includes redirects: no second host/request.
+
+
 @pytest.fixture
 def home_http(monkeypatch):
     """Replace only the socket boundary, leaving HTTP response handling real."""
