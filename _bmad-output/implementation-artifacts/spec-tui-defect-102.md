@@ -1,6 +1,6 @@
 ---
 id: TUI-DEFECT-102
-status: in-review
+status: done
 product_epic: 1
 created: 2026-09-23
 ---
@@ -31,3 +31,7 @@ Candidate physical acceptance is recorded below against the supported Home path.
 The original report concerns capture failing after the first spoken response. During this acceptance run, a real listener/UI lock cycle first blocked wake submission entirely; T-5's correction removes it. Amanda then confirmed the candidate captured and spoke the first turn, followed by a complete second request and spoken response without another wake phrase. This is physical evidence on macOS in Home mode with Sherpa, not closure inferred from related unit tests. See [T-5 validation](validation-1-t-5-nonblocking-wake-callback.md). Candidate delivery and final regression verification are pending; retain the original issue identity.
 
 Candidate full regression suite passed 1670 tests with one ESPHome environment skip. Local status is review pending delivery; the original GitHub issue was not closed.
+
+## Accepted closure — 2026-09-27
+
+PR #216 merged as `457009b`, delivering the reviewed correction and acceptance evidence to main. Amanda confirmed that a tagged or published release is not a story-closure requirement. The completed physical checks and merged-tree regression result (1686 passed, 1 skipped, 6 warnings) satisfy this acceptance record; status is done. Earlier references to pending merge/release describe the pre-merge checkpoint and do not impose a release gate. Physical evidence is scoped to macOS Home mode with Sherpa; no additional Standard-mode physical run is claimed.

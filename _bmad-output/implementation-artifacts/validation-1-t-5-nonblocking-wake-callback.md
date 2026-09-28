@@ -35,3 +35,7 @@ Amanda confirmed `/reload` and `/reconnect` both remained responsive and left th
 Amanda confirmed Ctrl+Q during wake capture exited promptly and a wake request succeeded after relaunch. Candidate physical acceptance now covers first-turn text/spoken reply, complete wake-free second turn, full sustained-utterance ending, responsive disarm/re-arm, reload/reconnect leaving the microphone closed, and quit/relaunch. Actual unexpected connection loss during physical capture was not induced; the automated connection-loss/cancellation coverage remains the evidence for that path.
 
 T-5, TUI-DEFECT-102 and TUI-DEFECT-104 are in local review pending merge/release. No remote issue closure is claimed. Home pairing/session story TUI-HOME-01 retains its accepted closure from main; PR #213 supplied the native/disposable-service evidence and PR #215 formally closed it.
+
+## Accepted closure — 2026-09-27
+
+PR #216 merged as `457009b`, delivering the reviewed correction and acceptance evidence to main. Amanda confirmed that a tagged or published release is not a story-closure requirement. The completed physical checks and merged-tree regression result (1686 passed, 1 skipped, 6 warnings) satisfy this acceptance record; status is done. Earlier references to pending merge/release describe the pre-merge checkpoint and do not impose a release gate. Physical evidence is scoped to macOS Home mode with Sherpa; no additional Standard-mode physical run is claimed.
