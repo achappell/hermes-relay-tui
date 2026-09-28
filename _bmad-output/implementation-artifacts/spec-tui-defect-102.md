@@ -1,6 +1,6 @@
 ---
 id: TUI-DEFECT-102
-status: backlog
+status: in-review
 product_epic: 1
 created: 2026-09-23
 ---
@@ -24,4 +24,10 @@ No additional story prerequisite; refine the implementation contract before deve
 
 ## Readiness
 
-Approved backlog scope. Owning BMAD specification/readiness review must settle API details and a bounded execution plan before implementation. No implementation or runtime acceptance is claimed.
+Candidate physical acceptance is recorded below against the supported Home path. The shared T-5 lock correction has focused, full-suite and independent-review evidence. This report remains in review until delivery; it requires no separate protocol or recorder change based on the observed candidate results.
+
+## Candidate acceptance — 2026-09-27
+
+The original report concerns capture failing after the first spoken response. During this acceptance run, a real listener/UI lock cycle first blocked wake submission entirely; T-5's correction removes it. Amanda then confirmed the candidate captured and spoke the first turn, followed by a complete second request and spoken response without another wake phrase. This is physical evidence on macOS in Home mode with Sherpa, not closure inferred from related unit tests. See [T-5 validation](validation-1-t-5-nonblocking-wake-callback.md). Candidate delivery and final regression verification are pending; retain the original issue identity.
+
+Candidate full regression suite passed 1670 tests with one ESPHome environment skip. Local status is review pending delivery; the original GitHub issue was not closed.

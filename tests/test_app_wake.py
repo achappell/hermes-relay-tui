@@ -1843,3 +1843,108 @@ def test_the_launch_flag_is_honored_by_the_tui(monkeypatch):
 
     assert code == 0
     assert started == [True]
+
+
+async def _real_listener_textual_follow_up_scenario(history_path):
+    """Run in a child: a regressed UI lock must not strand pytest's loop."""
+    from app import Composer
+    from wake import WakeListener
+
+    class Detector:
+        def feed(self, _frame):
+            return "hey hermes"
+
+        def reset(self):
+            pass
+
+    class RealListenerFakes(WakeFakes):
+        def __init__(self):
+            super().__init__()
+            self.callback_finished = threading.Event()
+
+        def build(self, session, args, **kwargs):
+            _, coordinator = super().build(session, args, **kwargs)
+
+            def on_wake(phrase):
+                try:
+                    coordinator.on_wake(phrase)
+                finally:
+                    self.callback_finished.set()
+
+            self.listener = WakeListener(Detector(), on_wake=on_wake)
+            return self.listener, coordinator
+
+    class GatedSession(FakeSession):
+        def __init__(self):
+            super().__init__()
+            self.entered = [asyncio.Event(), asyncio.Event()]
+            self.release = [asyncio.Event(), asyncio.Event()]
+            self.capture_results = iter(["wake request", "follow-up request", "stop"])
+
+        def send_turn(self, text, *, stt_source="local"):
+            index = len(self.sent_turns)
+            self.sent_turns.append((text, stt_source))
+            self.turn_index += 1
+
+            async def stream():
+                self.entered[index].set()
+                yield {"type": "text_delta", "text": f"reply {index + 1}"}
+                await self.release[index].wait()
+                yield {"type": "turn_end"}
+
+            return stream()
+
+    fakes = RealListenerFakes()
+    session = GatedSession()
+    app, _, _ = make_app(fakes=fakes, session=session, no_earcons=True,
+                         history_path=history_path)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await app._handle_wake_command("on")
+        recorder = fakes.recorders[0]
+        recorder.emit([1])  # Enter through the real worker queue exactly once.
+        for index, key in enumerate(("x", "y")):
+            await asyncio.wait_for(session.entered[index].wait(), 2)
+            await pilot.press(key)
+            assert app.query_one("#composer", Composer).text == "xy"[:index + 1]
+            assert app._turn_in_flight
+            session.release[index].set()
+        assert await asyncio.to_thread(fakes.callback_finished.wait, 2)
+        await pilot.pause()
+        assert session.sent_turns == [("wake request", "local"), ("follow-up request", "local")]
+        assert session.capture_calls == 3
+        assert "wake request" in transcript_text(app)
+        assert "follow-up request" in transcript_text(app)
+        assert "reply 1" in transcript_text(app)
+        assert "reply 2" in transcript_text(app)
+        assert fakes.coordinator.state == handsfree.IDLE
+        assert app.wake_armed
+        assert recorder.listening
+        await app._handle_wake_command("off")
+        await app._wait_for_cleanup_tasks()
+        assert not recorder.listening
+        assert recorder.shutdowns == 1
+
+
+def test_real_listener_worker_keeps_textual_responsive_through_wake_and_follow_up(tmp_path):
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    # asyncio timeouts cannot fire when the UI thread blocks acquiring the
+    # listener's lock. A child process gives this regression a hard deadline;
+    # subprocess.run kills and reaps it even if both threads are deadlocked.
+    script = (
+        "import asyncio, sys\n"
+        "from pathlib import Path\n"
+        "from tests.test_app_wake import _real_listener_textual_follow_up_scenario\n"
+        "asyncio.run(_real_listener_textual_follow_up_scenario(Path(sys.argv[1])))\n"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", script, str(tmp_path / "history.jsonl")],
+        cwd=Path(__file__).resolve().parents[1],
+        capture_output=True,
+        text=True,
+        timeout=12,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr

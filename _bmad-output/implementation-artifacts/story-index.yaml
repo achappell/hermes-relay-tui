@@ -60,7 +60,7 @@ stories:
     title: Non-blocking wake-listener and microphone teardown during recovery, reload, disarm, and quit.
     surface: T
     kind: surface
-    spec: _bmad-output/planning-artifacts/epics.md
+    spec: _bmad-output/implementation-artifacts/spec-1-t-5-nonblocking-wake-callback.md
     tracker_key: 1-t-5-non-blocking-wake-listener-and-microphone-teardown-during-re
     product_epic: 1
     owner: hermes-relay-tui

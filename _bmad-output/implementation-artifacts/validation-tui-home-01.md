@@ -101,3 +101,7 @@ A read-only live credential check confirms it is still outside the fourteen-day 
 The physical runbook is [TUI Epic 1 physical voice acceptance](../../docs/testing/tui-epic-1-physical-acceptance.md); none of its physical steps was performed during this continuation.
 
 Final automated verification for the continuation: `../../venv/bin/pytest -q -rs` passed **1667 tests, 1 skipped, 6 warnings in 306.94 seconds**. The skip is `tests/test_puck_firmware.py:311` because the ESPHome firmware environment is not installed; warnings are existing websockets deprecations. This run includes the replacement-handshake retry correction and supersedes the intermediate 1666-pass run. `git diff --check` passed. No physical voice result has yet been recorded.
+
+## Physical acceptance follow-up — 2026-09-27
+
+The later voice run exposed a real listener/UI lock cycle despite the earlier fake-listener tests. T-5 corrects callback lock ownership and adds a real-worker Textual regression. Amanda confirmed first and second wake-free spoken turns, complete sustained capture, disarm/re-arm, reload/reconnect microphone release, and quit/relaunch on the corrected candidate. See [T-5 validation](validation-1-t-5-nonblocking-wake-callback.md). This supersedes the physical-tests-not-started checkpoint above; it does not close the remaining Home enrollment/renewal/environment gates. Latest complete suite: 1670 passed, 1 ESPHome environment skip, 6 existing warnings.

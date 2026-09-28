@@ -387,11 +387,12 @@ class WakeListener:
     def _notify(self, callback: Callable[..., Any] | None, *args: Any) -> None:
         if callback is None:
             return
-        # Keep the fail-closed check and callback invocation in one critical
-        # section. ``stop`` can therefore not begin after this check and
-        # leave an already-disarmed listener able to call its old consumer.
-        # The callback may block for the duration of a turn; stop() is never
-        # called on the Textual loop and has its own bounded join.
+        # Admit callbacks under the lifecycle lock, but never hold that lock
+        # across client code. A wake callback waits for the UI's turn, and the
+        # UI pauses this listener before sending: holding the lock there
+        # deadlocks both threads. An admitted callback is in flight; the owner
+        # cancels its capture/turn during teardown. Queued callbacks still fail
+        # closed once the listener is paused, quiesced, or stopped.
         with self._state_lock:
             if (
                 not self._accepting.is_set()
@@ -399,17 +400,17 @@ class WakeListener:
                 or self._stopping.is_set()
             ):
                 return
-            try:
-                if args:
-                    try:
-                        callback(*args)
-                    except TypeError:
-                        callback()
-                else:
+        try:
+            if args:
+                try:
+                    callback(*args)
+                except TypeError:
                     callback()
-            except Exception:
-                # A broken consumer must not take the listener down with it.
-                logger.debug("wake callback failed", exc_info=True)
+            else:
+                callback()
+        except Exception:
+            # A broken consumer must not take the listener down with it.
+            logger.debug("wake callback failed", exc_info=True)
 
     def _drain(self) -> None:
         """Throw away everything queued but not yet scored.

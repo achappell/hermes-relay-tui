@@ -1,6 +1,6 @@
 ---
 id: TUI-DEFECT-104
-status: backlog
+status: in-review
 product_epic: 1
 created: 2026-09-23
 ---
@@ -24,4 +24,10 @@ No additional story prerequisite; refine the implementation contract before deve
 
 ## Readiness
 
-Approved backlog scope. Owning BMAD specification/readiness review must settle API details and a bounded execution plan before implementation. No implementation or runtime acceptance is claimed.
+Candidate physical acceptance is recorded below against the supported Home path. The shared T-5 lock correction has focused, full-suite and independent-review evidence. This report remains in review until delivery; it requires no separate protocol or recorder change based on the observed candidate results.
+
+## Candidate acceptance — 2026-09-27
+
+Amanda exercised a sustained wake-captured utterance on the corrected macOS Home/Sherpa candidate and confirmed its complete distinctive ending, “purple umbrella beside the kitchen window,” appeared without truncation. This directly exercises the report's missing-tail reproduction on the supported path. No separate recorder/VAD correction is claimed; retain this as current supersession evidence, with candidate merge/release separate. See [T-5 validation](validation-1-t-5-nonblocking-wake-callback.md).
+
+Candidate full regression suite passed 1670 tests with one ESPHome environment skip. Local status is review pending delivery; the original GitHub issue was not closed.
