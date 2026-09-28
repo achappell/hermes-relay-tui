@@ -1,6 +1,6 @@
 ---
 id: T-5
-status: in-review
+status: done
 product_epic: 1
 created: 2026-09-27
 baseline_commit: 7d089389a91cfdc608b3e0c1e0da3d042f2d3950
@@ -39,3 +39,7 @@ Run the focused wake and Textual wake modules, independent concurrency review, t
 Independent concurrency review found no verified regression: callback invocation stays synchronous on the single worker, state changes remain locked, and stop joins outside the lock. The real-worker Textual regression proves initial turn, wake-free follow-up, UI responsiveness, and recorder teardown; reinstating the old lock produces a bounded subprocess failure. Focused wake coverage passed 95 tests and the complete suite passed 1670 tests with one environment skip. See [validation](validation-1-t-5-nonblocking-wake-callback.md) for physical evidence and remaining gates.
 
 Amanda completed the candidate physical checklist, including quit during capture and successful relaunch. Local implementation and acceptance are ready for delivery review; status remains in-review pending merge/release.
+
+## Accepted closure — 2026-09-27
+
+PR #216 merged as `457009b`, delivering the reviewed correction and acceptance evidence to main. Amanda confirmed that a tagged or published release is not a story-closure requirement. The completed physical checks and merged-tree regression result (1686 passed, 1 skipped, 6 warnings) satisfy this acceptance record; status is done. Earlier references to pending merge/release describe the pre-merge checkpoint and do not impose a release gate. Physical evidence is scoped to macOS Home mode with Sherpa; no additional Standard-mode physical run is claimed.
