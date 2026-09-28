@@ -35,6 +35,8 @@ class HomeTextualSession(HermesSession):
         self._closed_explicitly = False
         self.resumed = False
         self.pending_replacement = False
+        self._replacement_connect_pending = False
+        self._conversation_replacement_required = False
         self._picker_refs: dict[str, str] = {}
         self._session_mode = "resume" if getattr(args, "home_resume", None) else ("most_recent" if getattr(args, "home_continue", False) else "new")
         self._resume_ref = getattr(args, "home_resume", None)
@@ -136,6 +138,9 @@ class HomeTextualSession(HermesSession):
             self._capabilities = home.capabilities
             self._hello_verified = True
             self.turn_index = home.turn_index
+            if self._replacement_connect_pending:
+                self._conversation_replacement_required = False
+                self._replacement_connect_pending = False
             return ready
 
     def is_connected(self) -> bool:
@@ -161,12 +166,22 @@ class HomeTextualSession(HermesSession):
         finally:
             await super().close()
 
+    @property
+    def conversation_replacement_required(self) -> bool:
+        return self._conversation_replacement_required
+
+    def leave_uncertain_turn(self) -> None:
+        """Leave presentation uncertainty without reusing the old event stream."""
+        self._conversation_replacement_required = True
+
     def send_turn(
         self,
         text: str,
         *,
         stt_source: str = "local",
     ) -> AsyncIterator[dict[str, Any]]:
+        if self.conversation_replacement_required:
+            raise SessionNotReadyError("Choose /new, /continue, or /sessions before sending another Home turn")
         if not self.is_connected():
             raise SessionNotReadyError("Home bridge is not connected")
         home = self._home_session
@@ -186,7 +201,11 @@ class HomeTextualSession(HermesSession):
                     failed = failed or kind in {"error", "turn_interrupted"}
                     text_completed = text_completed or bool(event.get("text_completed"))
                     if kind == "audio_abort" and event.get("error"):
-                        yield {"type": "audio_unavailable", "reason": event["error"]}
+                        reason = event["error"]
+                        if event.get("text_completed"):
+                            self._conversation_replacement_required = True
+                            reason = "Home audio was interrupted; text completed. Choose /new, /continue, or /sessions before another prompt."
+                        yield {"type": "audio_unavailable", "reason": reason}
                     else:
                         yield {**event, "final": True} if kind == "audio_end" else event
                     if text_completed and not completed and not failed:
@@ -257,6 +276,7 @@ class HomeTextualSession(HermesSession):
             if not await self.release_claim():
                 raise SessionNotReadyError("Home did not confirm closing the previous claim. Transcript retained; reconnect or try again before switching.")
         self.pending_replacement = True
+        self._replacement_connect_pending = True
         self._home_session = None
         self._closed_explicitly = False
         self._claim_request_uncertain = False
@@ -274,6 +294,7 @@ class HomeTextualSession(HermesSession):
             raise
         self.active_turn_id = None
         self.confirmed_title = None
+        self._conversation_replacement_required = False
         return {"history": [], "resumed": self.resumed, "history_available": False}
 
     async def new_session(self, *, session_id: str | None = None, **_kwargs: Any) -> dict[str, Any]:

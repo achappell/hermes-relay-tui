@@ -125,3 +125,24 @@ The separately owned Home adapter defect and explicit-close race were repaired a
 ## Formal closure — 2026-09-26
 
 Amanda accepted closeout after the acceptance follow-up [PR #213](https://github.com/achappell/hermes-relay-tui/pull/213) merged into `main` at `d16b17e5f22554d0b34fbcf406f3b02022fc435d`. Its final head `7f22a623b4df96dbcd5ef792f45f413ccc5060d2` passed Test and package, all four CodeQL analysis jobs, and the CodeQL gate. All six approved acceptance criteria have passing evidence in [the validation record](validation-tui-home-01.md) and [acceptance trace](../test-artifacts/traceability-matrix.md). This disposition supersedes the historical pending-review and deferred-test statements above. TUI-HOME-01 is done; the recorded product limits remain explicit, and TUI-STD-01 and legacy retirement retain their separate scope.
+
+## Acceptance review — 2026-09-27
+
+Resumed the existing in-review story under the approved acceptance contract. The implementation is now on main (program merge `f1807570bc3024bc150ffae30286b881a254f483`); work is isolated on fix/epic-1-tui-acceptance. Earlier local validation and history regression edits were copied into this worktree without changing their source checkout.
+
+| Finding | Verdict | Evidence and route |
+| --- | --- | --- |
+| Blind: rejected reload replaces settings | high | `_switch_to_args` returns False before installing args on failed claim release, but `_reload_profile_after_config` unconditionally applies destination args. Patch: apply only when that namespace was installed; test refusal. |
+| Blind: reload loses grant history identity | high | `_apply_reload_settings` replaces the namespace carrying `home_history_identity`; artifact paths then use unselected. Patch: retain actual bound identity and test same-target reload. |
+| Blind: leave reuses uncertain stream | high | `/home leave` clears ambiguity without retiring or blocking the old stream. Patch: block submission until deliberate replacement succeeds. |
+| Blind: completed text becomes uncertain on audio drop | medium | Transport exception precedes the known-text completion path with resume disabled. Patch: preserve text completion, report audio failure, retire stream. |
+| Blind: failed switch changes transcript ownership | high | Destination args install before handshake while old transcript remains visible, and save derives scope from args. Patch: preserve visible transcript ownership until successful replacement. |
+| Edge: leave reuses uncertain stream | high | Same verified guard gap as Blind leave finding; grouped into its patch. |
+| Edge: completed text becomes uncertain on audio drop | medium | Same verified transport path as Blind audio finding; grouped into its patch. |
+| Verification: failed claim release has no replacement regression | medium | Existing tests do not exercise `/new` through actual Home adapter retirement refusal. Patch focused regression; no new behavior required. |
+| Verification: HTTP response parser bypassed by fakes | medium | Existing request stubs bypass status/schema checks. Patch focused actual parser tests with fake HTTPSConnection. |
+| Follow-up: replacement retry retains submission guard | medium | A newly created replacement claim can fail its first handshake, then connect on retry while the guard remains set. Patch: clear only after successful connection of the pending explicit replacement; keep old-claim recovery blocked. |
+
+Preserve the approved Home contract, native credentials, independent history, and no replay. These are corrections to observed existing paths, not new product scope. Live title dispatch and explicit claim closure passed on September 27; remaining evidence belongs in the validation record.
+
+The three-layer review and follow-up review are complete. The dedicated replacement-connect flag passed its focused regression and the verification reviewer confirmed no remaining blockers in this continuation's delta. This follow-up does not reopen the accepted TUI-HOME-01 closure on main. Its earlier local assessment lacked the PR #213 acceptance disposition; that disposition remains authoritative.

@@ -319,3 +319,52 @@ def test_quiescing_the_listener_rejects_queued_frames():
     listener.run_pending()
 
     assert fired == []
+
+
+def test_wake_callback_does_not_hold_state_lock_while_waiting_for_ui_pause():
+    """The worker may wait for the UI, whose turn setup pauses detection."""
+    import threading
+
+    paused = threading.Event()
+    callback_done = threading.Event()
+    pause_finished_in_callback = []
+    ui_threads = []
+
+    def on_wake():
+        def pause_on_ui():
+            listener.pause()
+            paused.set()
+
+        ui = threading.Thread(target=pause_on_ui, daemon=True)
+        ui_threads.append(ui)
+        ui.start()
+        # A bounded wait exposes the cycle without deadlocking pytest itself.
+        pause_finished_in_callback.append(paused.wait(1))
+        callback_done.set()
+
+    detector = wake.WakeDetector(FakeEngine([1.0]), confirmation_frames=1)
+    listener = wake.WakeListener(detector, on_wake=on_wake)
+    listener.start()
+    try:
+        listener.submit([1])
+        assert callback_done.wait(2)
+        assert pause_finished_in_callback == [True]
+    finally:
+        listener.stop()
+        for ui in ui_threads:
+            ui.join(2)
+        assert all(not ui.is_alive() for ui in ui_threads)
+
+
+def test_stopped_listener_rejects_callback_dispatch():
+    fired = []
+    listener = wake.WakeListener(
+        wake.WakeDetector(FakeEngine([1.0]), confirmation_frames=1),
+        on_wake=lambda: fired.append(True),
+    )
+    listener.stop()
+    listener._notify(listener._on_wake)
+    listener.submit([1])
+    listener.run_pending()
+    listener.stop()
+    assert fired == []

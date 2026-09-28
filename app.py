@@ -1644,6 +1644,7 @@ class HermesStreamingApp(App):
 
                     if getattr(self, "_pending_profile_transcript_reset", False) or getattr(session, "pending_replacement", False):
                         self.transcript.clear()
+                        self._retained_transcript_scope = None
                         self._refresh_transcript()
                         self._last_prompt = None
                         self._last_prompt_status = None
@@ -2002,6 +2003,9 @@ class HermesStreamingApp(App):
         self._append_block(f"wake mode: on — listening · {detail}")
 
     async def _arm_wake(self) -> None:
+        if isinstance(self.session, HomeTextualSession) and self.session.conversation_replacement_required:
+            self._append_block("Choose /new, /continue, or /sessions before arming the microphone.")
+            return
         if self._reconnect_in_flight:
             return
         if self.wake_armed:
@@ -2966,6 +2970,7 @@ class HermesStreamingApp(App):
             await self.action_show_help(invocation.args)
         elif command.name == "clear":
             self.transcript.clear()
+            self._retained_transcript_scope = None
             self._refresh_transcript()
         elif command.name == "status":
             session_id = (
@@ -3067,7 +3072,6 @@ class HermesStreamingApp(App):
         session = self.session
         if isinstance(session, HomeTextualSession) and session.grant is not None:
             self.args.home_history_identity = session.grant.grant_id
-            self.args.home_grant = session._grant_label or session.grant.grant_id
             self._history = self._prompt_history_for_args(self.args)
             self._history_index = None
             self._history_draft = ""
@@ -3114,6 +3118,7 @@ class HermesStreamingApp(App):
             self._last_prompt = None
             self._last_prompt_status = None
             self.transcript.clear()
+            self._retained_transcript_scope = None
             self._refresh_transcript()
             self._set_connection_state(CONNECTION_CONNECTED)
             self._set_voice_state(VOICE_READY)
@@ -3145,6 +3150,8 @@ class HermesStreamingApp(App):
                     self._append_block("Finish the active turn or capture before leaving its uncertainty behind.")
                     return
                 if self._last_prompt_status == PROMPT_AMBIGUOUS:
+                    self.session.leave_uncertain_turn()
+                    self._disarm_wake("wake mode off — choose another Home conversation before arming again.")
                     self._last_prompt_status = PROMPT_UNDONE
                     self._last_prompt = None
                     self._append_block("Left the uncertain turn behind by explicit choice. Nothing was replayed. Choose /new, /continue, or /sessions.")
@@ -3239,6 +3246,11 @@ class HermesStreamingApp(App):
                     ),
                 )
 
+            if getattr(self, "_retained_transcript_scope", None) is None:
+                self._retained_transcript_scope = (
+                    self._artifact_profile_name(),
+                    not self._profiles_configured and getattr(self.args, "transport", "") != "home",
+                )
             self.args = new_args
             self._sync_profile_metadata(new_args)
             self._install_session(
@@ -3411,6 +3423,7 @@ class HermesStreamingApp(App):
             self._append_block(f"[error] Failed to start new session: {exc}")
             return
         self.transcript.clear()
+        self._retained_transcript_scope = None
         self.domain.reset_session(getattr(self.session, "session_id", None))
         self._refresh_transcript()
         self._refresh_connection_status()
@@ -3471,6 +3484,7 @@ class HermesStreamingApp(App):
             self._append_block(f"[error] Failed to resume session {sid}: {exc}")
             return
         self.transcript.clear()
+        self._retained_transcript_scope = None
         self.domain.reset_session(getattr(self.session, "session_id", None))
         history = res.get("history") or []
         if history:
@@ -3573,11 +3587,11 @@ class HermesStreamingApp(App):
         path = Path(raw_path).expanduser() if raw_path else Path.cwd() / (
             f"hermes-transcript-{datetime.now():%Y%m%d-%H%M%S}.txt"
         )
-        path = artifact_path_for_profile(
-            path,
+        scope = getattr(self, "_retained_transcript_scope", None) or (
             self._artifact_profile_name(),
-            legacy=not self._profiles_configured and getattr(self.args, "transport", "") != "home",
-        ) or path
+            not self._profiles_configured and getattr(self.args, "transport", "") != "home",
+        )
+        path = artifact_path_for_profile(path, scope[0], legacy=scope[1]) or path
         try:
             await asyncio.to_thread(_write_new_text_file, path, text)
         except FileExistsError:
@@ -3733,6 +3747,7 @@ class HermesStreamingApp(App):
                 "Run /wake on to arm again."
             )
         self.args = new_args
+        self._bind_home_history()
         self._sync_profile_metadata(new_args)
         self._refresh_connection_status()
         skipped: list[str] = []
@@ -3772,6 +3787,9 @@ class HermesStreamingApp(App):
     async def _reload_profile_after_config(self, new_args: Any) -> None:
         """Apply a config-selected profile by replacing its session."""
         connected = await self._switch_to_args(new_args, reason="config reload")
+        if self.args is not new_args:
+            self._append_block("Config profile change was refused; the previous connection settings remain active.")
+            return
         # `_switch_to_args` installs the new args even when its handshake fails;
         # apply the ordinary reload rules in both cases and report the actual
         # connection state through the normal connection banner.
@@ -3896,6 +3914,9 @@ class HermesStreamingApp(App):
         )
 
     async def _capture_voice_turn(self, *, history: Optional[PromptHistory] = None) -> None:
+        if isinstance(self.session, HomeTextualSession) and self.session.conversation_replacement_required:
+            self._append_block("Choose /new, /continue, or /sessions before opening the microphone.")
+            return
         history = self._history if history is None else history
         if self._turn_in_flight:
             self._append_block("[a turn is already in flight]")
@@ -4110,6 +4131,9 @@ class HermesStreamingApp(App):
         history: Optional[PromptHistory] = None,
     ) -> None:
         """Prepare local references, then apply the busy-turn policy."""
+        if isinstance(self.session, HomeTextualSession) and self.session.conversation_replacement_required:
+            self._append_block("Choose /new, /continue, or /sessions before sending another turn. Your draft remains here.")
+            return
         if isinstance(self.session, HomeTextualSession) and self._last_prompt_status == PROMPT_AMBIGUOUS:
             self._append_block("The prior Home turn is still uncertain. Use /reconnect or /home leave; your draft remains here.")
             return
@@ -4232,6 +4256,9 @@ class HermesStreamingApp(App):
     # --- the turn loop --------------------------------------------------------
 
     async def _run_turn(self, text: str, *, stt_source: str = "local") -> bool:
+        if isinstance(self.session, HomeTextualSession) and self.session.conversation_replacement_required:
+            self._append_block("Choose /new, /continue, or /sessions before sending another turn.")
+            return False
         if isinstance(self.session, HomeTextualSession) and self._last_prompt_status == PROMPT_AMBIGUOUS:
             self._append_block("The prior Home turn is still uncertain. Use /reconnect without replay or /home leave before sending another turn.")
             return False

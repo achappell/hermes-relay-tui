@@ -161,3 +161,122 @@ def test_http_boundary_refuses_unsafe_responses_and_closes_connection(monkeypatc
     assert secret not in str(caught.value)
     assert connection.closed
     assert len(requests) == 1  # Includes redirects: no second host/request.
+
+
+@pytest.fixture
+def home_http(monkeypatch):
+    """Replace only the socket boundary, leaving HTTP response handling real."""
+    connections = []
+
+    class Response:
+        def __init__(self, status, body):
+            self.status = status
+            self.body = body
+            self.reads = 0
+
+        def read1(self, size):
+            self.reads += 1
+            chunk, self.body = self.body[:size], self.body[size:]
+            return chunk
+
+        def getheader(self, name, default=None):
+            return "https://other.example/credential-trap" if name.lower() == "location" else default
+
+    def install(status, body):
+        response = Response(status, body)
+
+        class Connection:
+            sock = None
+
+            def __init__(self, host, port, *, timeout):
+                self.host = host
+                self.requests = []
+                self.closed = False
+                connections.append(self)
+
+            def request(self, method, path, *, body, headers):
+                self.requests.append((method, path, body, headers))
+
+            def getresponse(self):
+                return response
+
+            def close(self):
+                self.closed = True
+
+        monkeypatch.setattr(home_client.http.client, "HTTPSConnection", Connection)
+        return response, connections
+
+    return install
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("status", "remote_code", "expected_code"),
+    [(401, "unauthorized", "unauthorized"), (403, "forbidden", "forbidden"),
+     (403, "private-server-error", "service_unavailable")],
+)
+async def test_home_http_rejects_error_responses(home_http, capsys, status, remote_code, expected_code):
+    secret = "synthetic-http-device-secret"
+    private_detail = "private upstream response details"
+    body = json.dumps({"schema": 1, "error": {"code": remote_code, "message": private_detail + secret}}).encode()
+    _, connections = home_http(status, body)
+    client = HomeClient(HOME, store=MemoryPairings())
+    record = PairingRecord(HOME, "device", secret, 1, NOW)
+
+    with pytest.raises(HomeError) as error:
+        await client.request("POST", "/api/v1/profile-grants/grant/approve", {"schema": 1}, record=record)
+
+    assert error.value.code == expected_code
+    assert str(error.value) == str(HomeError(expected_code))
+    captured = capsys.readouterr()
+    public = str(error.value) + repr(error.value) + captured.out + captured.err
+    assert secret not in public
+    assert private_detail not in public
+    assert "private-server-error" not in public
+    assert len(connections) == 1
+    assert connections[0].requests[0][3]["Authorization"] == "Device " + secret
+    assert connections[0].closed
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("body", [
+    b"not JSON: synthetic-private-response",
+    b'{"schema":',
+    b'[]',
+    b'{"detail":"synthetic-private-response"}',
+    b'{"schema":true,"detail":"synthetic-private-response"}',
+    b'{"schema":2,"detail":"synthetic-private-response"}',
+    b'\xff',
+])
+async def test_home_http_rejects_malformed_or_invalid_schema(home_http, body):
+    _, connections = home_http(200, body)
+    client = HomeClient(HOME, store=MemoryPairings())
+
+    with pytest.raises(HomeError) as error:
+        await client.request("GET", "/api/v1/devices/device/configuration")
+
+    assert error.value.code == "invalid_response"
+    assert str(error.value) == "Home returned an invalid response."
+    assert "synthetic-private-response" not in repr(error.value)
+    assert connections[0].closed
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", [301, 302, 307, 308])
+async def test_home_http_rejects_redirect_without_following_or_reading_body(home_http, status):
+    response, connections = home_http(status, b"synthetic-private-redirect-body")
+    client = HomeClient(HOME, store=MemoryPairings())
+    record = PairingRecord(HOME, "device", "synthetic-redirect-secret", 1, NOW)
+
+    with pytest.raises(HomeError) as error:
+        await client.request("GET", "/api/v1/devices/device/configuration", record=record)
+
+    assert error.value.code == "transport"
+    assert str(error.value) == str(HomeError("transport"))
+    assert len(connections) == 1
+    assert connections[0].host == "home.example"
+    assert len(connections[0].requests) == 1
+    assert response.reads == 0
+    assert connections[0].closed
+    assert "synthetic-redirect-secret" not in repr(error.value)
+    assert "synthetic-private-redirect-body" not in repr(error.value)
