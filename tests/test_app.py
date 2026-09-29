@@ -260,6 +260,23 @@ def make_args(**overrides):
     return args
 
 
+@pytest.mark.asyncio
+async def test_no_play_shutdown_does_not_start_executor_workers(monkeypatch):
+    app = HermesStreamingApp(args=make_args())
+    app._shutting_down = True
+
+    def unexpected_worker(*_args, **_kwargs):
+        pytest.fail("an inactive PCM player has no blocking device operation")
+
+    monkeypatch.setattr(app_module.asyncio, "to_thread", unexpected_worker)
+
+    await app._abort_earcon()
+    await app._close_player()
+
+    assert app._earcons._abort_requested.is_set()
+    assert app.player._abort_requested.is_set()
+
+
 def test_gateway_transport_selects_the_gateway_session_without_changing_default():
     app = HermesStreamingApp(args=make_args(transport="gateway"))
 
@@ -1633,7 +1650,7 @@ async def test_reconnect_does_not_replay_an_uncertain_turn_or_hide_partial_text(
     fresh_session = FakeSession(session_id="fresh-session")
     sessions = iter((old_session, fresh_session))
     app = HermesStreamingApp(
-        args=make_args(),
+        args=make_args(transport="gateway"),
         session_factory=lambda: next(sessions),
     )
 
@@ -1644,14 +1661,56 @@ async def test_reconnect_does_not_replay_an_uncertain_turn_or_hide_partial_text(
         assert "partial answer" in transcript_of(app)
 
         await app._handle_command(parse_slash_command("/reconnect"))
+        assert app._last_prompt_status == app_module.PROMPT_AMBIGUOUS
+        reconnected = transcript_of(app)
+        assert "earlier turn remains uncertain" in reconnected
+        assert "partial answer" in reconnected
+
+        composer = app.query_one("#composer", Composer)
+        composer.text = "new prompt"
+        await app._submit_text("new prompt", composer=composer)
+        assert composer.text == "new prompt"
+        assert fresh_session.sent_turns == []
+
+        await app._handle_command(parse_slash_command("/session new"))
         rendered = transcript_of(app)
 
     assert old_session.sent_turns == [("possibly sent", "local")]
     assert fresh_session.sent_turns == []
-    assert app._last_prompt == "possibly sent"
-    assert app._last_prompt_status == app_module.PROMPT_AMBIGUOUS
-    assert "partial answer" in rendered
+    assert app._last_prompt is None
+    assert app._last_prompt_status is None
+    assert "Started new session session-new." in rendered
     assert app.connection_state == app_module.CONNECTION_CONNECTED
+
+
+async def test_failed_standard_session_new_keeps_uncertainty_and_blocks_prompt():
+    session = FakeSession()
+
+    async def fail_new_session(*, session_id=None, title=None):
+        raise RuntimeError("session.create failed")
+
+    session.new_session = fail_new_session
+    app = HermesStreamingApp(
+        args=make_args(transport="gateway"),
+        session_factory=lambda: session,
+    )
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app._last_prompt = "possibly delivered"
+        app._last_prompt_status = app_module.PROMPT_AMBIGUOUS
+        await app._handle_command(parse_slash_command("/session new"))
+
+        composer = app.query_one("#composer", Composer)
+        composer.text = "must remain unsent"
+        await app._submit_text("must remain unsent", composer=composer)
+
+        assert app._last_prompt == "possibly delivered"
+        assert app._last_prompt_status == app_module.PROMPT_AMBIGUOUS
+        assert composer.text == "must remain unsent"
+        assert session.sent_turns == []
+        assert "Failed to start new session" in transcript_of(app)
+        assert "then /session new" in transcript_of(app)
 
 
 async def test_transport_failure_uses_disconnected_presentation_and_keeps_partial_text():
@@ -5157,6 +5216,27 @@ async def test_wake_voice_prompt_is_recorded_in_prompt_history(tmp_path):
         assert await asyncio.to_thread(app._send_wake_turn, "wake words") is True
 
     assert PromptHistory(history_path).entries == ["wake words"]
+
+
+async def test_standard_uncertainty_blocks_wake_microphone_startup():
+    session = FakeSession()
+    app = HermesStreamingApp(
+        args=make_args(transport="gateway"),
+        session_factory=lambda: session,
+    )
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app._last_prompt = "possibly delivered"
+        app._last_prompt_status = app_module.PROMPT_AMBIGUOUS
+
+        await app._handle_command(parse_slash_command("/wake on"))
+
+        assert app.wake_armed is False
+        assert app._wake_starting is False
+        assert app._wake_listener is None
+        assert session.capture_calls == 0
+        assert "Use /session new" in transcript_of(app)
 
 
 async def test_named_profile_migrates_legacy_prompt_history(tmp_path):

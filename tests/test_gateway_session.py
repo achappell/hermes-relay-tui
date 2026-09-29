@@ -204,6 +204,9 @@ async def test_connect_waits_for_gateway_session_and_keeps_runtime_history(fake_
     assert session.is_connected() is True
     assert session.session_id == "runtime-1"
     assert session.initial_history[0]["content"] == "old question"
+    assert session.supports_interrupt is True
+    assert session.supports_structured_prompts is False
+    assert session.capabilities == frozenset({"interrupt"})
     assert gateway.requests == [
         ("session.create", {"source": "tui", "profile": "amanda"})
     ]
