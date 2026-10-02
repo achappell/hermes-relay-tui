@@ -8,7 +8,7 @@ Fresh setup requires an explicit HomeBridge or Standard Hermes choice, and both 
 
 Standard mode and its effective Hermes Profile appear in connection status, `/status`, and `/profile list`; Standard setup no longer asks for legacy IDs that `session.create` ignores. Profile changes are rejected before `active_profile` is written when work is active, queued, attached, or uncertain. Reconnect preserves Standard uncertainty and sends no prompt; failed `/session new` preserves it, successful `/session new` clears it and the retry candidate, and wake startup remains blocked while uncertainty is unresolved.
 
-Standard prompt history is scoped by transport, endpoint, local profile, and effective Hermes Profile. Credential query values and URL user information are excluded from history path hashes, token rotation does not move history, blank Hermes Profile values use the effective `default`, and the legacy path helper still resolves its pre-scope location. Older Standard history files remain untouched and are not loaded because they cannot prove which Hermes Profile owns their prompts.
+Prompt history is scoped by transport, endpoint, local profile, and effective Hermes Profile. Unscoped legacy history remains untouched instead of being copied into a named profile; Standard history additionally separates endpoint and Hermes Profile identities. Credential query values and URL user information are excluded from history path hashes, token rotation does not move history, blank Hermes Profile values use the effective `default`, and the legacy path helper still resolves its pre-scope location.
 
 ## Matrix coverage
 
@@ -17,7 +17,7 @@ Standard prompt history is scoped by transport, endpoint, local profile, and eff
 | FIRST_SETUP | Missing and invalid choices leave config untouched; fresh HomeBridge pairing, Standard setup, optional model setup, root-only connection preservation, named catalog preservation, and connection-failure retention tests passed. |
 | CAPABILITIES | `test_text_turn_is_inline_ignores_other_sessions_and_ends_once`, gateway audio/interrupt tests, `test_unsupported_prompt_is_cancelled_without_collecting_a_value`, and both optional Standard speech setup tests passed. |
 | MODE_CHANGE | Standard uncertainty, failed and successful session replacement, queued prompt, staged attachment, successful cross-identity switch, reconnect, and wake-start blocking tests passed. |
-| HISTORY_SCOPE | Endpoint and credential query handling, token rotation, Hermes Profile/default normalization, old-path lookup, and no-migration cases in `tests/test_history.py` and `tests/test_profile_app.py` passed. |
+| HISTORY_SCOPE | Endpoint and credential query handling, token rotation, Hermes Profile/default normalization, old-path lookup, and unscoped-history isolation in `tests/test_history.py`, `tests/test_profile_app.py`, and `tests/test_app.py` passed. |
 
 ## Automated verification
 

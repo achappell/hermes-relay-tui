@@ -5239,7 +5239,7 @@ async def test_standard_uncertainty_blocks_wake_microphone_startup():
         assert "Use /session new" in transcript_of(app)
 
 
-async def test_named_profile_migrates_legacy_prompt_history(tmp_path):
+async def test_named_profile_keeps_legacy_prompt_history_unmigrated(tmp_path):
     from history import PromptHistory, history_path_for_profile
 
     legacy = tmp_path / "history"
@@ -5259,15 +5259,13 @@ async def test_named_profile_migrates_legacy_prompt_history(tmp_path):
             "amanda",
             configured_path=legacy,
         )
-        assert app._history.entries == ["old prompt"]
+        assert app._history.entries == []
         assert app._history.path == destination
-        assert PromptHistory(destination).entries == ["old prompt"]
+        assert PromptHistory(destination).entries == []
         assert legacy.read_text(encoding="utf-8") == '"old prompt"\n"old prompt"\n42\n'
 
 
-async def test_named_profile_migrates_endpoint_history_when_history_path_is_absent(
-    tmp_path, monkeypatch
-):
+async def test_named_profile_does_not_import_endpoint_history(tmp_path, monkeypatch):
     import history as history_module
     from history import PromptHistory, history_path_for_profile, history_path_for_url
 
@@ -5288,8 +5286,8 @@ async def test_named_profile_migrates_endpoint_history_when_history_path_is_abse
     async with app.run_test() as pilot:
         await pilot.pause()
         destination = history_path_for_profile(url, "amanda")
-        assert app._history.entries == ["endpoint prompt"]
-        assert PromptHistory(destination).entries == ["endpoint prompt"]
+        assert app._history.entries == []
+        assert PromptHistory(destination).entries == []
 
     assert legacy.read_text(encoding="utf-8") == original
 
