@@ -2,7 +2,7 @@
 
 A small Textual terminal UI for authenticated Hermes voice sessions. Type text, capture a local microphone turn, watch the reply stream into the transcript, and play streamed PCM audio locally.
 
-The TUI supports an explicitly selected HomeBridge connection with Home-owned pairing and approved Profile grants, or the existing direct Standard Hermes `gateway` connection. The legacy voice-session transport remains available pending TUI-RETIRE-01. No connection silently changes mode. This client does not run Hermes or Home. Live acceptance of Home pairing, text, microphone input, spoken response playback, thinking-event rendering and reconnect has passed on macOS; remaining live edge cases are listed in the [TUI-HOME-01 validation record](_bmad-output/implementation-artifacts/validation-tui-home-01.md).
+The TUI offers two setup choices: HomeBridge with Home-owned pairing and approved Profile grants, or direct Standard Hermes. The older `voice-session` transport remains available when selected explicitly while TUI-RETIRE-01 is pending. A failed connection never changes modes or falls back to another endpoint. This client does not run Hermes or Home. Live acceptance of Home pairing, text, microphone input, spoken response playback, thinking-event rendering and reconnect has passed on macOS; remaining live edge cases are listed in the [TUI-HOME-01 validation record](_bmad-output/implementation-artifacts/validation-tui-home-01.md).
 
 ## BMAD surface ownership
 
@@ -35,8 +35,7 @@ here.
 - Connection, timeout, and turn errors shown in the UI instead of crashing the app.
 - Local image staging and `@path` attachment previews with an explicit text-only relay boundary.
 - Opt-in bounded local `!command` execution and `{!command}` prompt interpolation.
-- Opt-in direct Standard Hermes `/api/ws` text turns with a separate PCM speech
-  sidecar. Home uses its own Device authentication and bridge adapter.
+- Direct Standard Hermes `/api/ws` text turns with a separate PCM speech sidecar. Home uses its own Device authentication and bridge adapter.
 
 ## Requirements
 
@@ -45,7 +44,7 @@ here.
 - For Home: a working macOS Keychain or Linux Secret Service, plus approval on Home’s pairing page. For direct connections: their existing bearer-token setup.
 - A working audio input/output device for voice and playback
 
-The base install includes the typed client and configuration support. Local microphone capture and speech-to-text are optional extras, so a package or Homebrew install stays quick; `hermes-relay install` adds them with visible pip progress when you want voice.
+The base install includes the typed client and configuration support. Local microphone capture and speech-to-text are optional extras, so a package or Homebrew install stays quick; `hermes-relay install voice` adds them with visible pip progress when you want local speech input.
 
 ## Install
 
@@ -61,10 +60,7 @@ installed package, use the same explicit, visible step instead:
 hermes-relay install voice
 ```
 
-`hermes-relay install` installs all optional voice and household-appliance
-dependencies. It does not download a speech model; `hermes-relay setup`
-prepares the selected Faster-Whisper model separately so the first microphone
-turn does not perform setup inside the TUI.
+`hermes-relay install` installs all optional voice and household-appliance dependencies. It does not download a speech model. Legacy voice-session setup prepares its selected Faster-Whisper model; Standard setup skips that download unless `--stt-model` is supplied.
 
 ### Homebrew install
 
@@ -89,13 +85,15 @@ hermes-relay setup
 hermes-relay
 ```
 
-It asks for the direct Hermes WebSocket endpoint, bearer token, and client/device
-names, session name. It writes editable connection
-defaults to `~/.hermes-relay-tui/config.yaml` and keeps the token in the
-private `~/.hermes-relay-tui/.env`. Those credentials are for the direct
-legacy/Standard path only; they are not the Home Device-credential flow. Use
-`hermes-relay setup` again to change them. See [`docs/packaging/jensen-trial.md`](docs/packaging/jensen-trial.md)
-for the server-side setup and smoke-test steps.
+On a fresh setup it asks you to choose HomeBridge or Standard Hermes. HomeBridge continues through the Home pairing flow. Standard setup asks for its direct `/api/ws` endpoint, Hermes Profile, and bearer token; its session creation does not use the legacy client or session IDs. The token stays in the owner-only `~/.hermes-relay-tui/.env`; YAML stores only the private environment-variable name. Keep credentials out of the endpoint URL; remove query parameters such as `token` or `access_token` from a copied URL and enter the token at the hidden prompt. When adding a different transport to an existing root-only setup, setup keeps the old connection as the `default` profile and creates the new connection alongside it. If a named profile catalog already exists, use `--profile NAME` to add or update one profile without replacing the others. Fresh setup no longer offers the legacy route; pass `--transport voice-session` to configure it. A launch without a configured transport still defaults to `voice-session` for compatibility.
+
+Standard Hermes support is pinned to upstream 0.21.1 at commit `2237be355906fbe6065ce1815711eee52b2d646e`, using `/api/ws`. Typed streaming, response audio, and remote interruption are verified for that baseline. Structured prompts are unavailable and are cancelled with an explanation; they are never sent as ordinary text. Local microphone capture and speech to text are optional. Standard setup does not install voice packages or download a speech model unless `--stt-model` is supplied; install the voice dependencies first with `hermes-relay install voice`.
+
+The default setup check calls Standard's `session.create`, which creates a remote session even though its session ID is not saved. Pass `--no-check` to save the profile without creating that session. Setup or connection failure keeps the selected mode; it never offers another mode as recovery. `/status`, `/profile list`, and the connection line show Standard Hermes and its Hermes Profile. Prompt history stays scoped to transport, endpoint, local profile, and Hermes Profile; setup does not migrate history from Home, the legacy transport, or another Standard identity.
+
+`/reconnect` restores transport without replaying a possibly delivered prompt or resolving its uncertain outcome. After reconnect, use `/session new` to deliberately leave that Standard conversation behind before switching profiles. For an uncertain Home conversation, use `/home leave` before choosing its replacement. Neither path carries session references or transcript text into a different mode. Explicit `/save` transcript export remains available.
+
+See [`docs/packaging/jensen-trial.md`](docs/packaging/jensen-trial.md) for the server-side setup and smoke-test steps.
 
 ### Pair this TUI with Home
 
@@ -212,9 +210,7 @@ Two upgrades are worth knowing about:
   After a Homebrew upgrade, rerun `hermes-relay install voice` (or
   `hermes-relay install` for the appliance) if the new keg needs its optional
   packages rebuilt.
-- If `stt_model` is absent from `config.yaml` (installs predating guided model
-  setup), the first `Ctrl+R` after upgrading downloads the model. Run
-  `hermes-relay setup` once to move that download out of the TUI.
+- If `stt_model` is absent from `config.yaml` (installs predating guided model setup), the first legacy `Ctrl+R` after upgrading downloads the model. Run `hermes-relay setup --transport voice-session` once to move that download out of the TUI. For Standard Hermes, install the voice dependencies with `hermes-relay install voice` first, then run `hermes-relay setup --transport gateway --stt-model base` to prepare a model for local speech.
 
 ### Uninstall
 
@@ -459,22 +455,9 @@ act as launch-time overrides.
 Without `profiles:`, the root-level connection keys continue to support the
 legacy single-profile configuration.
 
-Inside the TUI, `/profile list` inspects the catalog and `/profile select
-<name>` switches deliberately. The old session closes before the new one
-connects; a current turn, capture, or structured prompt blocks the switch.
-The composer draft survives, while the old visible transcript and queued
-prompts are discarded so an uncertain prompt cannot cross accounts. A failed
-target remains selected and visibly disconnected; the client does not silently
-fall back to the old relay. `/reload` applies the same replacement when the
-selected profile or its endpoint identity changes.
+Inside the TUI, `/profile list` inspects the catalog and `/profile select <name>` switches deliberately. The old session closes before the new one connects; a current turn, capture, structured prompt, queued prompt, or staged attachment blocks the switch. The composer draft survives. An uncertain turn must first be deliberately left behind using the operation for its current mode. A failed target remains selected and visibly disconnected; the client does not silently fall back to the old relay. `/reload` applies the same replacement when the selected profile or its endpoint identity changes.
 
-Prompt history, default transcript exports, and response-audio fallbacks live
-under a profile namespace once named profiles are active, so local continuity
-cannot mix Amanda's and Jensen's prompts. Prompt history retains only bounded,
-de-duplicated prompt text, including successful voice transcripts; it never
-archives assistant responses or raw audio. When a named profile is first used,
-an older flat or endpoint-scoped prompt history is copied oldest-first into its
-profile file without deleting the source.
+Prompt history, default transcript exports, and response-audio fallbacks live under a profile namespace once named profiles are active, so local continuity cannot mix Amanda's and Jensen's prompts. Standard history also separates the endpoint and Hermes Profile identity. Older Standard history files remain untouched and are not loaded automatically because they may contain prompts from more than one Hermes Profile. Prompt history retains only bounded, de-duplicated prompt text, including successful voice transcripts; it never archives assistant responses or raw audio. Existing files remain in place; prompts are never copied automatically across transports or identities.
 
 Richer gateway-style events are normalized when the relay sends them. Thinking
 deltas accumulate into one replaceable detail line while a turn is active and
@@ -645,7 +628,7 @@ never replayed automatically.
 | Option | Purpose |
 | --- | --- |
 | `--url URL` | Override the voice-session WebSocket URL |
-| `--transport {voice-session,gateway}` | Select the channel; `voice-session` remains the default |
+| `--transport {voice-session,gateway,home}` | Select the channel; fresh setup asks for HomeBridge or Standard Hermes |
 | `--profile NAME` | Select a named relay profile for this launch |
 | `--hermes-profile NAME` | Select the Hermes server profile in gateway mode; also `HERMES_PROFILE` |
 | `--token TOKEN` | Supply the bearer token explicitly |

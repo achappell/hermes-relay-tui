@@ -1,6 +1,6 @@
 # Active epic parents are in story-index.yaml; numeric story prefixes remain historical.
 generated: 09-08-2026 00:00
-last_updated: '2026-09-27'
+last_updated: '2026-09-29'
 project: hermes-relay-tui
 project_key: NOKEY
 tracking_system: file-system
@@ -21,8 +21,8 @@ development_status:
   tui-home-01-pair-with-home-and-own-sessions: done
   tui-defect-102: done
   tui-defect-104: done
-  epic-2: backlog
-  tui-std-01: backlog
+  epic-2: in-progress
+  tui-std-01: review
   epic-3: in-progress
   1-p-1-authorized-wake-and-capture: done
   1-p-2-status-and-response-audio-delivery: done

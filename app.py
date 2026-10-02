@@ -84,7 +84,6 @@ from puck_bridge.home_textual_session import HomeTextualSession
 from history import (
     PromptHistory,
     artifact_path_for_profile,
-    legacy_history_path_for_profile,
     history_path_for_profile,
 )
 from help_screen import HelpModal
@@ -473,6 +472,14 @@ PROMPT_AMBIGUOUS = "ambiguous"
 PROMPT_COMPLETED = "completed"
 PROMPT_UNDONE = "undone"
 VOICE_GATEWAY_COMMANDS = frozenset({"on", "off", "tts", "status"})
+
+
+def _transport_display_name(transport: str) -> str:
+    return {
+        "gateway": "Standard Hermes",
+        "home": "HomeBridge",
+        "voice-session": "Legacy voice-session",
+    }.get(str(transport or "").strip().lower(), "Unknown transport")
 
 
 def _write_new_text_file(path: Path, text: str) -> None:
@@ -1020,31 +1027,16 @@ class HermesStreamingApp(App):
                 and getattr(args, "transport", "voice-session") != "gateway"
             ),
             transport=getattr(args, "transport", "voice-session"),
+            hermes_profile=getattr(args, "hermes_profile", None),
         )
 
     def _prompt_history_for_args(self, args: Any) -> PromptHistory:
-        """Open profile-local prompt history and migrate its old local file."""
+        """Open prompt history for this exact transport and profile identity."""
         path = self._history_path_for_args(args)
-        legacy_paths: tuple[Path, ...] = ()
-        if getattr(args, "transport", "") != "home" and (bool(getattr(args, "profiles_configured", False)) or getattr(
-            args, "transport", "voice-session"
-        ) == "gateway"):
-            legacy_transport = (
-                "voice-session"
-                if getattr(args, "transport", "voice-session") == "gateway"
-                else getattr(args, "transport", "voice-session")
-            )
-            legacy_path = legacy_history_path_for_profile(
-                getattr(args, "url", None),
-                getattr(args, "profile_name", None)
-                or getattr(args, "profile", None)
-                or "default",
-                configured_path=getattr(args, "history_path", None),
-                transport=legacy_transport,
-            )
-            if legacy_path != path:
-                legacy_paths = (legacy_path,)
-        return PromptHistory(path, legacy_paths=legacy_paths)
+        # An older file cannot prove that its prompts belong to this
+        # transport, local profile, or Standard Hermes Profile. Never copy it
+        # into a different or unknown identity scope automatically.
+        return PromptHistory(path)
 
     @staticmethod
     def _doorway_session_args(args: Any) -> Any:
@@ -1304,13 +1296,27 @@ class HermesStreamingApp(App):
             if getattr(self.session, "confirmed_model", None)
             else ""
         )
+        transport = getattr(self.args, "transport", "voice-session")
+        mode_part = (
+            f" · {_transport_display_name(transport)}"
+            if transport != "voice-session"
+            else ""
+        )
         profile_part = (
             f" · Profile: {self._active_profile_display_name}"
             if self._active_profile_display_name
             else ""
         )
-        line = f"{symbol} {self.connection_state}{profile_part} · session {session_id}{model_part}"
-        self.sub_title = f"{self.connection_state}{profile_part} · session {session_id}{model_part}"
+        if transport == "gateway":
+            hermes_profile = (
+                str(getattr(self.args, "hermes_profile", None) or "").strip()
+                or "default"
+            )
+            mode_part += f" · Hermes Profile: {hermes_profile}"
+        elif transport == "home" and getattr(self.args, "home_grant", None):
+            mode_part += f" · Home Profile: {self.args.home_grant}"
+        line = f"{symbol} {self.connection_state}{profile_part}{mode_part} · session {session_id}{model_part}"
+        self.sub_title = f"{self.connection_state}{profile_part}{mode_part} · session {session_id}{model_part}"
         try:
             widget = self.query_one("#connection-status", Static)
         except (NoMatches, ScreenStackError):
@@ -1685,6 +1691,16 @@ class HermesStreamingApp(App):
                             self._append_block("Home transport recovered, but the earlier turn remains unresolved. Its events were not consumed or replayed. Use /home leave before deliberately sending another turn or changing conversations.")
                         elif session.resumed and not reconnecting:
                             self._append_block("Hermes context resumed. Home has no transcript retrieval API; earlier messages were not loaded.")
+                    elif (
+                        reconnecting
+                        and getattr(self.args, "transport", "") == "gateway"
+                        and self._last_prompt_status == PROMPT_AMBIGUOUS
+                    ):
+                        self._append_block(
+                            "Standard Hermes transport recovered, but the earlier turn "
+                            "remains uncertain. Nothing was replayed. Use /session new "
+                            "to deliberately leave it behind before sending or switching."
+                        )
                     if (
                         hydrate_history
                         and not reconnecting
@@ -1767,7 +1783,6 @@ class HermesStreamingApp(App):
             if connected:
                 self._append_block(
                     "Transport reconnected; no prompt was sent and queued prompts remain pending."
-                    + (" The earlier Home turn is still unresolved; /home leave is required before a deliberate next action." if isinstance(self.session, HomeTextualSession) and self._last_prompt_status == PROMPT_AMBIGUOUS else "")
                 )
             else:
                 self._append_block(
@@ -1959,6 +1974,9 @@ class HermesStreamingApp(App):
         """Stop a courtesy tone before waiting for the wake worker to exit."""
         abort = getattr(self._earcons, "abort", None)
         if callable(abort):
+            if not bool(getattr(self._earcons, "enabled", True)):
+                abort()
+                return
             await asyncio.to_thread(abort)
 
     # --- wake mode ------------------------------------------------------
@@ -2005,6 +2023,15 @@ class HermesStreamingApp(App):
     async def _arm_wake(self) -> None:
         if isinstance(self.session, HomeTextualSession) and self.session.conversation_replacement_required:
             self._append_block("Choose /new, /continue, or /sessions before arming the microphone.")
+            return
+        if (
+            getattr(self.args, "transport", "") == "gateway"
+            and self._last_prompt_status == PROMPT_AMBIGUOUS
+        ):
+            self._append_block(
+                "The previous Standard Hermes turn remains uncertain. Use /session new "
+                "after reconnecting before arming the microphone."
+            )
             return
         if self._reconnect_in_flight:
             return
@@ -2987,8 +3014,23 @@ class HermesStreamingApp(App):
             caps_label = f" · caps: {','.join(caps)}" if caps else ""
             config_path = getattr(self.args, "config", None)
             endpoint = str(getattr(self.args, "url", "")).split("?", 1)[0] or "-"
+            transport = getattr(self.args, "transport", "voice-session")
+            identity = (
+                " · Hermes Profile: "
+                + (
+                    str(getattr(self.args, "hermes_profile", None) or "").strip()
+                    or "default"
+                )
+                if transport == "gateway"
+                else (
+                    f" · Home Profile: {getattr(self.args, 'home_grant', None)}"
+                    if transport == "home" and getattr(self.args, "home_grant", None)
+                    else ""
+                )
+            )
             self._append_block(
-                f"profile: {self._active_profile_name} · endpoint: {endpoint} · "
+                f"mode: {_transport_display_name(transport)} · "
+                f"relay profile: {self._active_profile_name}{identity} · endpoint: {endpoint} · "
                 f"session: {session_id} · {self.connection_state} · model: {model_label}{chat_label}{ver_label}{caps_label} "
                 f"· busy-mode: {self.busy_mode} · queued: {len(self._queued_prompts)} "
                 f"· history: {self._history.path} · config: {config_path}"
@@ -3085,6 +3127,41 @@ class HermesStreamingApp(App):
             return True
         if self._queued_prompts or self._staged_attachments:
             self._append_block("Unsent prompts or attachments are still pending. Remove them deliberately before changing conversations.")
+            return True
+        return False
+
+    def _connection_change_blocked(self) -> bool:
+        """Keep local mode/profile changes behind explicit turn resolution."""
+        if self._profile_switch_is_busy():
+            self._append_block(self._profile_switch_busy_message())
+            return True
+        if (
+            self._reconnect_in_flight
+            or self._connection_loss_in_flight
+            or self._connection_lock.locked()
+        ):
+            self._append_block(
+                "[busy] Finish the current turn, prompt, capture, or connection operation before changing profiles."
+            )
+            return True
+        if self._last_prompt_status == PROMPT_AMBIGUOUS:
+            transport = getattr(self.args, "transport", "voice-session")
+            if transport == "home":
+                resolution = "/home leave"
+            elif transport == "gateway":
+                resolution = "a successful /session new"
+            else:
+                resolution = "a supported deliberate session replacement"
+            self._append_block(
+                "The previous turn may have reached Hermes. /reconnect restores "
+                "transport without resolving that outcome; complete "
+                f"{resolution} before changing profiles. Nothing was replayed."
+            )
+            return True
+        if self._queued_prompts or self._staged_attachments:
+            self._append_block(
+                "Unsent prompts or attachments are still pending. Remove them deliberately before changing profiles."
+            )
             return True
         return False
 
@@ -3190,11 +3267,7 @@ class HermesStreamingApp(App):
 
     async def _switch_to_args(self, new_args: Any, *, reason: str) -> bool:
         """Replace the relay session only after the old target is closed."""
-        if self._profile_switch_is_busy():
-            self._append_block(self._profile_switch_busy_message())
-            return False
-
-        if isinstance(self.session, HomeTextualSession) and self._home_change_blocked():
+        if self._connection_change_blocked():
             return False
         old_args = self.args
         old_name = self._active_profile_name
@@ -3303,10 +3376,21 @@ class HermesStreamingApp(App):
                     continue
                 marker = "*" if profile.name == self._active_profile_name else " "
                 state = ("platform pairing; grant " + (profile.home_grant or "not selected")) if profile.transport == "home" else ("token configured" if profile.token_configured else "token missing")
+                identity = (
+                    f" · Hermes Profile {profile.hermes_profile or 'default'}"
+                    if profile.transport == "gateway"
+                    else ""
+                )
                 endpoint = profile.url.split("?", 1)[0]
                 lines.append(
                     f"{marker} {profile.name} — {profile.display_name} · {endpoint} · "
-                    f"client {profile.client_id} · session {profile.session_id} · {state}"
+                    f"{_transport_display_name(profile.transport)}{identity} · "
+                    + (
+                        f"client {profile.client_id} · session {profile.session_id} · "
+                        if profile.transport != "gateway"
+                        else ""
+                    )
+                    + state
                 )
             if len(lines) == 1:
                 self._append_block(f"[error] unknown relay profile: {sub_args}")
@@ -3328,10 +3412,9 @@ class HermesStreamingApp(App):
             if profile.name == self._active_profile_name:
                 self._append_block(f"profile already active: {profile.name}")
                 return
-            if self._profile_switch_is_busy():
-                self._append_block(self._profile_switch_busy_message())
-                return
-            if isinstance(self.session, HomeTextualSession) and self._home_change_blocked():
+            # This guard must run before select_relay_profile writes
+            # active_profile; a rejected switch leaves the local choice alone.
+            if self._connection_change_blocked():
                 return
             config_path = getattr(self.args, "config", None)
             if config_path is not None:
@@ -3425,6 +3508,8 @@ class HermesStreamingApp(App):
         self.transcript.clear()
         self._retained_transcript_scope = None
         self.domain.reset_session(getattr(self.session, "session_id", None))
+        self._last_prompt = None
+        self._last_prompt_status = None
         self._refresh_transcript()
         self._refresh_connection_status()
         new_sid = self.session.session_id
@@ -3917,6 +4002,15 @@ class HermesStreamingApp(App):
         if isinstance(self.session, HomeTextualSession) and self.session.conversation_replacement_required:
             self._append_block("Choose /new, /continue, or /sessions before opening the microphone.")
             return
+        if (
+            getattr(self.args, "transport", "") == "gateway"
+            and self._last_prompt_status == PROMPT_AMBIGUOUS
+        ):
+            self._append_block(
+                "The previous Standard Hermes turn remains uncertain. Use /session new "
+                "after reconnecting before opening the microphone."
+            )
+            return
         history = self._history if history is None else history
         if self._turn_in_flight:
             self._append_block("[a turn is already in flight]")
@@ -4137,6 +4231,15 @@ class HermesStreamingApp(App):
         if isinstance(self.session, HomeTextualSession) and self._last_prompt_status == PROMPT_AMBIGUOUS:
             self._append_block("The prior Home turn is still uncertain. Use /reconnect or /home leave; your draft remains here.")
             return
+        if (
+            getattr(self.args, "transport", "") == "gateway"
+            and self._last_prompt_status == PROMPT_AMBIGUOUS
+        ):
+            self._append_block(
+                "The previous Standard Hermes turn may have completed. Use /reconnect "
+                "to restore transport, then /session new to leave it behind; your draft remains here."
+            )
+            return
         if isinstance(self.session, HomeTextualSession) and not self._connection_is_ready():
             self._append_block("Connect an approved Home Profile before sending a prompt. Your draft remains here.")
             return
@@ -4261,6 +4364,15 @@ class HermesStreamingApp(App):
             return False
         if isinstance(self.session, HomeTextualSession) and self._last_prompt_status == PROMPT_AMBIGUOUS:
             self._append_block("The prior Home turn is still uncertain. Use /reconnect without replay or /home leave before sending another turn.")
+            return False
+        if (
+            getattr(self.args, "transport", "") == "gateway"
+            and self._last_prompt_status == PROMPT_AMBIGUOUS
+        ):
+            self._append_block(
+                "The previous Standard Hermes turn remains uncertain. Use /session new "
+                "after reconnecting before sending another turn."
+            )
             return False
         if self._reconnect_in_flight or self._connection_loss_in_flight:
             self._last_prompt = text
@@ -4577,6 +4689,12 @@ class HermesStreamingApp(App):
                 close = player.close
         else:
             close = player.close
+        if isinstance(player, PCMPlayer) and not player.active:
+            # With no native stream, abort only clears a few in-memory fields.
+            # Keep this path out of the executor, especially during Textual
+            # shutdown when the app's message loop is already closing.
+            close()
+            return
         await asyncio.to_thread(close)
 
     async def _stop_caption_clock(self) -> None:

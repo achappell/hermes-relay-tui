@@ -7,6 +7,7 @@ failing the whole load.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -15,7 +16,7 @@ import threading
 from collections.abc import Iterable
 from pathlib import Path
 from typing import Optional
-from urllib.parse import urlsplit
+from urllib.parse import parse_qsl, urlencode, urlsplit
 
 DEFAULT_APP_DIR = Path.home() / ".hermes-relay-tui"
 DEFAULT_HISTORY_PATH = DEFAULT_APP_DIR / "history.jsonl"
@@ -69,6 +70,43 @@ def _profile_slug(name: str) -> str:
     return slug or "default"
 
 
+def _hermes_profile_slug(name: str) -> str:
+    """Keep Standard Hermes Profile identities distinct and path-safe."""
+    identity = str(name or "").strip() or "default"
+    readable = re.sub(r"[^A-Za-z0-9_-]+", "_", identity).strip("_").lower()
+    readable = (readable or "profile")[:32]
+    digest = hashlib.sha256(identity.encode("utf-8")).hexdigest()[:12]
+    return f"{readable}-{digest}"
+
+
+def _gateway_endpoint_slug(url: Optional[str]) -> str:
+    """Hash the direct endpoint without storing URL credentials or auth tokens."""
+    raw = str(url or "").strip()
+    parsed = urlsplit(raw) if raw else None
+    if parsed and parsed.scheme and parsed.netloc:
+        safe_query = urlencode(
+            [
+                (key, value)
+                for key, value in parse_qsl(
+                    parsed.query,
+                    keep_blank_values=True,
+                )
+                if key.casefold() != "token"
+            ]
+        )
+        endpoint = "\0".join(
+            (
+                parsed.scheme.lower(),
+                parsed.netloc.rsplit("@", 1)[-1].lower(),
+                parsed.path.rstrip("/") or "/",
+                safe_query,
+            )
+        )
+    else:
+        endpoint = raw
+    return hashlib.sha256(endpoint.encode("utf-8")).hexdigest()[:12]
+
+
 def artifact_path_for_profile(
     base: Optional[Path],
     profile_name: str,
@@ -89,6 +127,7 @@ def history_path_for_profile(
     configured_path: Optional[Path] = None,
     legacy: bool = False,
     transport: Optional[str] = None,
+    hermes_profile: Optional[str] = None,
 ) -> Path:
     """Return prompt history isolated from every other named profile."""
     base = (
@@ -107,6 +146,16 @@ def history_path_for_profile(
             base = base.with_name(f"{base.stem}_home{base.suffix}")
         elif selected_transport == "gateway" or standard_path:
             base = base.with_name(f"{base.stem}_gateway{base.suffix}")
+    selected_transport = str(transport or "").strip().lower()
+    if selected_transport == "gateway" and not legacy:
+        base = base.with_name(
+            f"{base.stem}_endpoint-{_gateway_endpoint_slug(url)}{base.suffix}"
+        )
+    if selected_transport == "gateway" and not legacy:
+        base = base.with_name(
+            f"{base.stem}_hermes-"
+            f"{_hermes_profile_slug(hermes_profile or 'default')}{base.suffix}"
+        )
     scoped = artifact_path_for_profile(base, profile_name, legacy=legacy)
     return Path(scoped) if scoped is not None else base
 

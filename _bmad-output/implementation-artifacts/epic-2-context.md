@@ -1,98 +1,36 @@
-# Epic 2 Context: See and trust what the room is doing
+# Epic 2 Context: Use personal clients with Standard Hermes alone
 
 <!-- Compiled from planning artifacts. Edit freely. Regenerate with compile-epic-context if planning docs change. -->
 
 ## Goal
 
-Epic 2 gives household Displays a calm, room-scoped view of ambient context
-and the active conversation, including live capture, response, prompts, typed
-choice objects, and honest recovery. It makes the room legible without turning
-a passive Display into another assistant: the selected doorway owns capture,
-Hermes authority, response audio, and supported structured actions, while other
-Displays only mirror the owning Room's state.
+Epic 2 lets a personal client connect directly to unmodified Standard Hermes without HomeBridge, using only the connection, authentication, session, and response features verified for its supported upstream baseline. In the approved nine-epic plan, Epic 2 is “Use personal clients with Standard Hermes alone”; the imported planning file’s older room-display Epic 2 is historical, not the active parent. The local story index assigns TUI-STD-01 here, while historical numeric story prefixes remain stable aliases rather than current epic assignments.
 
 ## Stories
 
-- Story 2.1: Keep each Display in its Room-scoped Ambient Surface
-- Story 2.2: Show live capture state and transcription
-- Story 2.3: Mirror only the owning Room's Active Turn
-- Story 2.4: Mirror Hermes prompts without becoming another assistant
-- Story 2.5: Stay useful and honest when disconnected
-- Surface story 2-A-1: Show the Android doorway's capture acknowledgement and live Transcription participant state
-- Surface story 2-A-2: Show honest Android disconnected/unavailable state without stale-turn replay
-- Surface story 2-WK-1: Render the shared Room-scoped Ambient Surface for web and iPad
-- Surface story 2-WK-2: Render active capture, transcription, response, and phase state in W/K
-- Surface story 2-WK-3: Mirror prompts read-only when the browser is acting as a passive renderer
-- Surface story 2-WK-4: Render honest disconnected state, cached context, and accessible recovery
-- Surface story 2-E-5: Render and submit native Choose/Explore actions on the active ESP32 Touch Display
-- Surface story 2-WK-5: Validate direct-use typed-choice actions at the server boundary
-- Surface story 2-WK-6: Render accessible native Choose/Explore actions in direct-use W/K
-- Surface story 2-T-3: Render typed choice objects with keyboard actions and transcript-visible structured input
+- Story TUI-STD-01: Offer explicit Standard-only terminal setup
 
 ## Requirements & Constraints
 
-- The active Puck, ESP32 Touch Display, W/K browser, iOS Client, Android Client, or TUI shows
-  its own capture state; the owning Room Display may mirror live Transcription
-  and the canonical Turn Phase.
-- W/K is one Web/iPad voice-plus-display surface. When its voice capability is
-  active, it owns browser capture, response rendering, and response audio; it
-  is not a passive mirror of itself.
-- Active-turn text and typed choice objects are room-local. Other Rooms receive
-  no conversation text, prompts, or stale events. Passive Displays never
-  capture, speak, create a Hermes Session, or offer prompt/choice actions.
-- Capture, response, and recovery must show the observed phase honestly:
-  heard, listening, transcribing, thinking, buffering, speaking, complete, or
-  Disconnected/Unavailable. No indefinite Thinking, false Speaking, or stale
-  Listening state is allowed.
-- Raw audio and transient transcription are not retained by the Puck, Display,
-  or Media Server. Reconnect is explicit and never replays an uncertain turn.
-- Idle Displays may show Room-scoped ambient or clearly marked cached content;
-  higher-priority Active Turn and Departure Card state takes precedence.
-- Active ESP32 Touch, direct-use W/K, and TUI surfaces render the approved
-  `choose` and `explore` semantics natively. `choose` commits; `explore` asks
-  for detail without committing. The Puck remains status/audio-only.
+- Standard Hermes means an unmodified upstream agent at a recorded supported release or commit, using its supported configuration and interfaces. Do not require an agent patch, fork-only endpoint, or custom protocol extension.
+- Standard mode must connect without HomeBridge pairing or Home credentials, using Standard’s supported authentication. Required personal-client behavior includes typed conversation and streamed response text. Microphone input and spoken responses are optional for the initial reduced release and may be offered only when verified for both the TUI and upstream baseline.
+- Offer only capabilities verified for this TUI and baseline. Direct mode does not provide Home Profile grants, room-session access, or cross-device history. Missing optional listing or resume support must be reported truthfully; basic text conversation remains available.
+- Keep history intentional and scoped to the direct connection and identity under the existing privacy rules. Do not carry credentials, session references, or transcripts into another mode or endpoint automatically.
+- A new TUI launch starts a new session by default; continuing or resuming is deliberate. Reconnect recovers the existing conversation. If continuity cannot be established, say so and offer a deliberate new conversation. Never resend a turn that may have reached Hermes.
+- Local stop always applies to enabled capture and playback. Offer remote interruption only when the supported channel advertises and verifies it. Unsupported prompts or interactions must end, cancel through a supported operation, or report the block visibly and safely; never silently approve, leak protected input into ordinary chat, or leave the turn appearing usable.
+- Record setup, capability limits, privacy, failure, and recovery against the actual unmodified baseline. A client control or fake-server test alone does not prove upstream support. Detailed execution/API decisions and a bounded plan remain a readiness gate before implementation.
 
 ## Technical Decisions
 
-- The shared `DisplaySnapshot`/action contract, reducer, Room filtering, and
-  normalized event feed are prerequisites. Surface presentation state belongs
-  to the owning renderer; do not add a second database, broker, transcript
-  store, or browser-side Hermes authority.
-- The first typed-choice slice extends the normalized action boundary with
-  operation, object/option identity, Session/turn context, advertised
-  capability, freshness, and idempotency. Exact schema changes belong to the
-  implementation slice; no surface may invent arbitrary Hermes-authored UI.
-- The DOM-first Svelte renderer is the supported accessible W/K path; WASM is
-  optional. Web/iPad and native LVGL share semantics but may adapt layout.
-- The Python appliance owns authenticated Hermes sessions and sends normalized
-  browser events through the same-origin channel. Browser code receives no
-  bearer token and must not invent or replay answers.
-- Use fake Hermes/WebSocket sessions and local fixtures for automated checks;
-  reserve a live endpoint for the explicit text/voice smoke path. Shared
-  contract changes require schema, fixture, Python, TypeScript, and target
-  adapter coverage together.
+- Reuse the verified direct adapter from STD-3 and preserve the normalized session/event contract. Hermes wire parsing and supported operations stay behind the client/session adapter; Textual presentation must not invent frames or Hermes behavior.
+- Keep Standard and HomeBridge endpoint/auth configuration separate in appropriate local storage. Secrets must not enter ordinary logs or history. Treat the Standard endpoint, identity, credential source, and supported capabilities as connection-specific runtime state.
+- Keep session ownership and history bound to the selected mode, endpoint, and identity. Before changing any of them, resolve or explicitly leave an active or uncertain conversation; switching modes never implies that a session continues there.
 
 ## UX & Interaction Patterns
 
-The browser surface distinguishes live user Transcription from streamed and
-completed Hermes response text. Active state is visually and semantically
-clear, with accessible DOM/live-region behavior and no reliance on color alone.
-After a terminal turn, a completed response may remain visible where supported;
-the surface then returns to the Room's Ambient Surface without archiving the
-conversation. Ambient imagery stays quiet and never competes with load-bearing
-capture, response, prompt, choice, or disconnected state. A passive mirror may
-show the choice object but never presents it as actionable; active surfaces
-keep Profile and current Session context visible while an action is pending.
+Present HomeBridge and Standard Hermes as an explicit setup choice and keep the selected mode visible in connection settings. Standard setup asks only for the supported direct connection and authentication details; it must not request a Home pairing code or Home credential. Explain unavailable features without offering controls that cannot work. A HomeBridge outage remains a disconnected HomeBridge connection, with no automatic switch or fallback suggestion. Mode changes are deliberate settings actions, and recovery controls reconnect only; they never resemble replay or send.
 
 ## Cross-Story Dependencies
 
-- All Epic 2 surfaces depend on the shared snapshot/reducer, Room ownership,
-  normalized events, and honest phase semantics.
-- W/K `2-WK-2` consumes the Epic 1 W/K doorway's capture, response-text, audio,
-  and terminal lifecycle. The merged browser audio repair is foundation; the
-  follow-on `WK-1` recovery slice remains separately tracked.
-- W/K `2-WK-5` is the server-authority prerequisite for `2-WK-6`; the browser
-  must not rely on reducer-only client validation for direct-use actions.
-- W/K prompt, choice, and disconnected stories use the same presentation and
-  cleanup boundaries. No calendar or Device-administration prerequisite is
-  required.
+- The local story index lists TUI-HOME-01 as the formal dependency. TUI-STD-01 also reuses STD-3’s verified direct adapter; retain that adapter’s session contract and evidence.
+- This repository’s current Epic 2 delivery is TUI-STD-01. Other clients’ direct Standard setup remains owned by their respective repositories.

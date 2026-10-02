@@ -7,6 +7,7 @@ import pytest
 import yaml
 from textual.widgets import Static
 
+from attachments import Attachment
 import config
 from history import history_path_for_profile
 from app import Composer, HermesStreamingApp
@@ -59,6 +60,45 @@ def _profile_args(tmp_path: Path):
     return args, argv, config_path
 
 
+def _standard_profile_args(tmp_path: Path):
+    config_path = tmp_path / "standard-config.yaml"
+    env_path = tmp_path / "standard.env"
+    common = {
+        "display_name": "Standard",
+        "client_id": "standard-client",
+        "device_id": "standard-device",
+        "session_id": "standard-session",
+        "profile_env": env_path,
+    }
+    config.save_relay_profile(
+        config_path,
+        name="standard",
+        url="wss://standard.example/api/ws",
+        token="standard-secret",
+        transport="gateway",
+        hermes_profile="amanda",
+        **common,
+    )
+    config.save_relay_profile(
+        config_path,
+        name="fork",
+        display_name="Legacy",
+        url="wss://legacy.example/voice-session",
+        token="fork-secret",
+        client_id="legacy-client",
+        device_id="legacy-device",
+        session_id="legacy-session",
+        profile_env=env_path,
+        transport="voice-session",
+    )
+    argv = ["--config", str(config_path)]
+    args = config.build_arg_parser(argv).parse_args(argv)
+    args.no_play = True
+    args.connect_retries = 0
+    args.connect_retry_delay = 0
+    return args, argv, config_path
+
+
 class SessionFactory:
     def __init__(self, *, fail_names: set[str] | None = None):
         self.fail_names = fail_names or set()
@@ -100,7 +140,6 @@ async def test_profile_switch_closes_old_session_preserves_draft_and_scopes_stat
         old_session = app.session
         composer = app.query_one("#composer", Composer)
         composer.text = "draft for Jensen"
-        app._queued_prompts.append("must not cross profiles")
         app._append_block("Amanda private transcript")
 
         await app._handle_command(parse_slash_command("/profile select jensen"))
@@ -124,7 +163,155 @@ async def test_profile_switch_closes_old_session_preserves_draft_and_scopes_stat
 
 
 @pytest.mark.asyncio
-async def test_profile_switch_migrates_legacy_prompt_history_without_deleting_source(
+async def test_pending_prompt_blocks_profile_switch_before_active_profile_write(tmp_path):
+    args, argv, config_path = _profile_args(tmp_path)
+    app = HermesStreamingApp(args=args, session_factory=SessionFactory(), argv=argv)
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        old_session = app.session
+        app._append_block("Amanda private transcript")
+        app._queued_prompts.append("still unsent")
+        app._refresh_queue_shelf()
+
+        await app._handle_command(parse_slash_command("/profile select jensen"))
+
+        assert app.session is old_session
+        assert old_session.closed is False
+        assert app.args.profile_name == "amanda"
+        assert app._queued_prompts == ["still unsent"]
+        assert "Amanda private transcript" in transcript_of(app)
+        assert "Unsent prompts or attachments" in transcript_of(app)
+        assert yaml.safe_load(config_path.read_text(encoding="utf-8"))["active_profile"] == "amanda"
+
+
+@pytest.mark.asyncio
+async def test_standard_mode_and_hermes_profile_are_visible_in_status_surfaces(tmp_path):
+    args, argv, _config_path = _standard_profile_args(tmp_path)
+    app = HermesStreamingApp(args=args, session_factory=SessionFactory(), argv=argv)
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        assert "Standard Hermes" in app.sub_title
+        assert "Hermes Profile: amanda" in app.sub_title
+
+        await app._handle_command(parse_slash_command("/status"))
+        await app._handle_command(parse_slash_command("/profile list"))
+        rendered = transcript_of(app)
+
+        assert "mode: Standard Hermes" in rendered
+        assert "Hermes Profile: amanda" in rendered
+        assert "Standard Hermes · Hermes Profile amanda" in rendered
+        assert "standard-secret" not in rendered
+
+        app.args.hermes_profile = "   "
+        app._refresh_connection_status()
+        await app._handle_command(parse_slash_command("/status"))
+        assert "Hermes Profile: default" in app.sub_title
+        assert "Hermes Profile: default" in transcript_of(app)
+
+
+@pytest.mark.asyncio
+async def test_standard_uncertainty_blocks_profile_switch_without_changing_active_profile(
+    tmp_path,
+):
+    args, argv, config_path = _standard_profile_args(tmp_path)
+    factory = SessionFactory()
+    app = HermesStreamingApp(args=args, session_factory=factory, argv=argv)
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        old_session = app.session
+        app._last_prompt = "may have reached Hermes"
+        app._last_prompt_status = "ambiguous"
+        app._append_block("Standard partial response")
+
+        await app._handle_command(parse_slash_command("/profile select fork"))
+
+        saved = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+        assert saved["active_profile"] == "standard"
+        assert app.args.profile_name == "standard"
+        assert app.session is old_session
+        assert old_session.closed is False
+        assert "Standard partial response" in transcript_of(app)
+        assert "successful /session new" in transcript_of(app)
+        assert "switching profile" not in transcript_of(app)
+
+
+@pytest.mark.asyncio
+async def test_staged_attachment_blocks_profile_switch_before_active_profile_write(
+    tmp_path,
+):
+    args, argv, config_path = _standard_profile_args(tmp_path)
+    app = HermesStreamingApp(args=args, session_factory=SessionFactory(), argv=argv)
+    staged = Attachment(tmp_path / "question.png", "question.png", "image/png", 12)
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        old_session = app.session
+        app._staged_attachments.append(staged)
+
+        await app._handle_command(parse_slash_command("/profile select fork"))
+
+        saved = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+        assert saved["active_profile"] == "standard"
+        assert app.session is old_session
+        assert old_session.closed is False
+        assert app._staged_attachments == [staged]
+        assert "Unsent prompts or attachments" in transcript_of(app)
+
+
+@pytest.mark.asyncio
+async def test_successful_standard_profile_switch_clears_transcript_and_scopes_history(
+    tmp_path, monkeypatch
+):
+    import history as history_module
+
+    monkeypatch.setattr(history_module, "DEFAULT_HISTORY_DIR", tmp_path / "history")
+    args, argv, config_path = _standard_profile_args(tmp_path)
+    env_path = tmp_path / "standard.env"
+    config.save_relay_profile(
+        config_path,
+        name="standard_jensen",
+        display_name="Jensen Standard",
+        url="wss://standard.example/api/ws",
+        token="jensen-standard-secret",
+        client_id="jensen-client",
+        device_id="jensen-device",
+        session_id="jensen-session",
+        transport="gateway",
+        hermes_profile="jensen",
+        profile_env=env_path,
+    )
+    factory = SessionFactory()
+    app = HermesStreamingApp(args=args, session_factory=factory, argv=argv)
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        old_session = app.session
+        app._append_block("Amanda Standard transcript")
+        old_history_path = app._history.path
+        app._history.append("Amanda Standard prompt")
+
+        await app._handle_command(
+            parse_slash_command("/profile select standard_jensen")
+        )
+        await pilot.pause()
+
+        assert old_session.closed is True
+        assert app.args.profile_name == "standard_jensen"
+        assert app.args.hermes_profile == "jensen"
+        assert app.args.session_id == "jensen-session"
+        assert "Amanda Standard transcript" not in transcript_of(app)
+        assert app._history.path != old_history_path
+        assert app._history.entries == []
+        assert history_module.PromptHistory(old_history_path).entries == [
+            "Amanda Standard prompt"
+        ]
+
+
+@pytest.mark.asyncio
+async def test_profile_switch_does_not_migrate_unscoped_prompt_history(
     tmp_path, monkeypatch
 ):
     import history as history_module
@@ -143,7 +330,7 @@ async def test_profile_switch_migrates_legacy_prompt_history_without_deleting_so
         await app._handle_command(parse_slash_command("/profile select jensen"))
         await pilot.pause()
 
-        assert app._history.entries == ["Jensen legacy prompt"]
+        assert app._history.entries == []
 
     assert legacy.read_text(encoding="utf-8") == original
 
@@ -248,6 +435,53 @@ async def test_named_profile_scopes_prompt_history_and_default_transcript_export
         assert "export this transcript" in saved_lines[0].read_text(encoding="utf-8")
         assert app._history.path != config.DEFAULT_CONFIG_PATH
         assert "profiles" in str(app._history.path)
+
+
+def test_standard_prompt_history_uses_the_selected_hermes_profile(tmp_path, monkeypatch):
+    import history as history_module
+
+    monkeypatch.setattr(history_module, "DEFAULT_HISTORY_DIR", tmp_path / "history")
+    args = make_args(
+        transport="gateway",
+        profile_name="standard",
+        profiles_configured=True,
+        url="wss://relay.example/api/ws",
+        hermes_profile="Amanda",
+    )
+    app = HermesStreamingApp(args=args, session_factory=SessionFactory())
+
+    amanda = app._history_path_for_args(args)
+    args.hermes_profile = "Jensen"
+    jensen = app._history_path_for_args(args)
+
+    assert amanda != jensen
+    assert "amanda-" in amanda.name
+    assert "jensen-" in jensen.name
+
+
+def test_standard_prompt_history_does_not_import_legacy_transport_prompts(
+    tmp_path, monkeypatch
+):
+    import history as history_module
+    from history import history_path_for_url
+
+    monkeypatch.setattr(history_module, "DEFAULT_HISTORY_DIR", tmp_path / "history")
+    legacy = history_path_for_url("wss://relay.example/voice-session")
+    legacy.parent.mkdir(parents=True)
+    legacy.write_text('"legacy prompt"\n', encoding="utf-8")
+    args = make_args(
+        transport="gateway",
+        profile_name="standard",
+        profiles_configured=True,
+        url="wss://relay.example/api/ws",
+        hermes_profile="amanda",
+    )
+    app = HermesStreamingApp(args=args, session_factory=SessionFactory())
+
+    standard_history = app._prompt_history_for_args(args)
+
+    assert standard_history.entries == []
+    assert legacy.read_text(encoding="utf-8") == '"legacy prompt"\n'
 
 
 def test_home_prompt_history_is_scoped_by_canonical_home_and_granted_identity(

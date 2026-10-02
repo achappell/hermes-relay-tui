@@ -187,7 +187,108 @@ def test_configured_history_path_is_separated_for_standard_gateway(tmp_path):
 
     assert fork != standard
     assert fork.name == "history.jsonl"
-    assert standard.name == "history_gateway.jsonl"
+    assert standard.name.startswith("history_gateway_endpoint-")
+
+
+def test_standard_history_hashes_endpoint_path_and_query_without_exposing_them(
+    tmp_path,
+):
+    configured = tmp_path / "history.jsonl"
+    amanda_endpoint = history_path_for_profile(
+        "wss://relay.example/api/ws?tenant=amanda&token=secret-one",
+        "standard",
+        configured_path=configured,
+        transport="gateway",
+        hermes_profile="amanda",
+    )
+    jensen_endpoint = history_path_for_profile(
+        "wss://relay.example/api/ws?tenant=jensen&token=secret-two",
+        "standard",
+        configured_path=configured,
+        transport="gateway",
+        hermes_profile="amanda",
+    )
+    rotated_token = history_path_for_profile(
+        "wss://relay.example/api/ws?tenant=amanda&token=secret-three",
+        "standard",
+        configured_path=configured,
+        transport="gateway",
+        hermes_profile="amanda",
+    )
+
+    assert amanda_endpoint != jensen_endpoint
+    assert amanda_endpoint == rotated_token
+    assert "secret-one" not in str(amanda_endpoint)
+    assert "secret-two" not in str(jensen_endpoint)
+    assert "secret-three" not in str(rotated_token)
+
+
+def test_standard_history_is_scoped_by_hermes_profile_identity(tmp_path):
+    configured = tmp_path / "history.jsonl"
+    amanda = history_path_for_profile(
+        "wss://relay.example/api/ws",
+        "standard",
+        configured_path=configured,
+        transport="gateway",
+        hermes_profile="Amanda",
+    )
+    jensen = history_path_for_profile(
+        "wss://relay.example/api/ws",
+        "standard",
+        configured_path=configured,
+        transport="gateway",
+        hermes_profile="Jensen",
+    )
+    default_profile = history_path_for_profile(
+        "wss://relay.example/api/ws",
+        "standard",
+        configured_path=configured,
+        transport="gateway",
+    )
+    explicit_default = history_path_for_profile(
+        "wss://relay.example/api/ws",
+        "standard",
+        configured_path=configured,
+        transport="gateway",
+        hermes_profile="default",
+    )
+
+    assert default_profile == explicit_default
+    assert len({amanda, jensen, default_profile}) == 3
+    assert "amanda-" in amanda.name
+    assert "jensen-" in jensen.name
+
+
+def test_blank_hermes_profile_uses_the_default_history_identity(tmp_path):
+    configured = tmp_path / "history.jsonl"
+    default_profile = history_path_for_profile(
+        "wss://relay.example/api/ws",
+        "standard",
+        configured_path=configured,
+        transport="gateway",
+    )
+    whitespace_profile = history_path_for_profile(
+        "wss://relay.example/api/ws",
+        "standard",
+        configured_path=configured,
+        transport="gateway",
+        hermes_profile="   ",
+    )
+
+    assert whitespace_profile == default_profile
+
+
+def test_legacy_standard_history_lookup_keeps_its_pre_scope_path(tmp_path):
+    from history import legacy_history_path_for_profile
+
+    configured = tmp_path / "history.jsonl"
+
+    assert legacy_history_path_for_profile(
+        "wss://relay.example/api/ws",
+        "standard",
+        configured_path=configured,
+        transport="gateway",
+    ) == configured
 
 
 def test_history_path_for_url_falls_back_without_a_host():
