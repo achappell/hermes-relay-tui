@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.12.0 (2026-10-03)
+
+<!-- Release notes generated using configuration in .github/release.yml at main -->
+
+## What's Changed
+### Dependencies
+* chore(deps): bump undici from 8.10.1 to 8.11.2 in /home_display/web by @dependabot[bot] in https://github.com/achappell/hermes-relay-tui/pull/218
+* chore(deps-dev): bump devalue from 5.9.2 to 5.9.4 in /home_display/web by @dependabot[bot] in https://github.com/achappell/hermes-relay-tui/pull/220
+### Other Changes
+* fix(home): complete TUI-HOME-01 acceptance and correct TLS errors by @achappell in https://github.com/achappell/hermes-relay-tui/pull/213
+* docs(status): close TUI-HOME-01 after accepted verification by @achappell in https://github.com/achappell/hermes-relay-tui/pull/215
+* fix(tui): unblock wake turns and preserve Home session ownership by @achappell in https://github.com/achappell/hermes-relay-tui/pull/216
+* docs(status): close accepted TUI Epic 1 wake work by @achappell in https://github.com/achappell/hermes-relay-tui/pull/217
+* feat(tui): offer explicit Standard-only terminal setup by @achappell in https://github.com/achappell/hermes-relay-tui/pull/219
+* docs: record TUI-STD-01 merge status by @achappell in https://github.com/achappell/hermes-relay-tui/pull/221
+* docs: mark TUI-STD-01 done on owner acceptance by @achappell in https://github.com/achappell/hermes-relay-tui/pull/222
+
+
+**Full Changelog**: https://github.com/achappell/hermes-relay-tui/compare/v0.11.0...v0.12.0
+
 ## 0.11.0 (2026-09-24)
 
 <!-- Release notes generated using configuration in .github/release.yml at main -->
