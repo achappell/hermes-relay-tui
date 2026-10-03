@@ -1,6 +1,6 @@
 # Validation: TUI-STD-01
 
-Updated: 2026-09-29
+Updated: 2026-10-03
 
 ## Implementation evidence
 
@@ -59,6 +59,10 @@ The required full-suite attempt, `timeout 45s venv/bin/pytest -vv -o faulthandle
 
 `git diff --check` passed.
 
+## Merge record
+
+PR [#219](https://github.com/achappell/hermes-relay-tui/pull/219) merged into `main` on 2026-10-02 at 19:14 UTC as `5baa776696d0dfcf40d6ebe4d97bfb8c808de78c`, from head `16a049f87425cb5311d7e39411f8def1daa1bfcd`. GitHub reports successful Test and package, CodeQL analysis for Actions, C/C++, JavaScript/TypeScript, and Python, and the CodeQL gate.
+
 ## External gates
 
-No live Standard Hermes endpoint was configured. Live typed text, response audio, interrupt, unsupported-prompt, connection-failure, and recovery checks remain untested. The change is not merged or pushed; merge validation remains pending.
+No live Standard Hermes endpoint was configured. Live typed text, response audio, interrupt, unsupported-prompt, connection-failure, and recovery checks remain untested. The merged code and successful CI do not establish these live behaviors; `tui-std-01` remains in review pending that evidence.
