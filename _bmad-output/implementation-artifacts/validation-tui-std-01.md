@@ -65,4 +65,8 @@ PR [#219](https://github.com/achappell/hermes-relay-tui/pull/219) merged into `m
 
 ## External gates
 
-No live Standard Hermes endpoint was configured. Live typed text, response audio, interrupt, unsupported-prompt, connection-failure, and recovery checks remain untested. The merged code and successful CI do not establish these live behaviors; `tui-std-01` remains in review pending that evidence.
+No live Standard Hermes endpoint was configured. Live typed text, response audio, interrupt, unsupported-prompt, connection-failure, and recovery checks remain untested. The merged code and successful CI do not establish these live behaviors.
+
+## Acceptance
+
+Amanda accepted TUI-STD-01 as done on 2026-10-03 and the tracker moved `tui-std-01` from `review` to `done`. No live-gate evidence is recorded in this file; the External gates section above stays as written.
