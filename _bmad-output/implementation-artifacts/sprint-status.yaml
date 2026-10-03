@@ -27,7 +27,7 @@ development_status:
   1-p-1-authorized-wake-and-capture: done
   1-p-2-status-and-response-audio-delivery: done
   1-p-3-bounded-follow-up-and-exact-stop: done
-  1-p-4-recovery-without-replay: in-progress
+  1-p-4-recovery-without-replay: done
   1-p-5-complete-streamed-response-playback-without-underrun: done
   1-p-6-graceful-bridge-service-shutdown-and-entry-point-coverage: done
   1-p-7-make-raw-pcm-diagnostics-explicitly-opt-in-and-bounded: backlog
@@ -51,7 +51,7 @@ development_status:
   3-p-5-reject-revoked-unavailable-or-unverified-identity-before-cap: backlog
   3-p-6-retire-revoked-credentials-and-require-the-ordered-setup-flo: backlog
   standard-6-puck-migrate-respeaker-puck-path: done
-  standard-7-esp32-add-touch-display-audio-session-adapter: review
+  standard-7-esp32-add-touch-display-audio-session-adapter: done
   standard-8-wk-migrate-browser-and-ipad-routes: done
   epic-4: backlog
   tui-retire-01: backlog
@@ -72,7 +72,7 @@ development_status:
   2-e-5-render-and-submit-native-choose-explore-actions-for-current: review
   2-wk-5-validate-direct-use-typed-choice-actions-at-the-server-bound: backlog
   2-wk-6-render-accessible-native-choose-explore-actions-for-current: backlog
-  2-t-3-render-typed-choice-objects-with-keyboard-choose-explore-act: review
+  2-t-3-render-typed-choice-objects-with-keyboard-choose-explore-act: done
   epic-9: backlog
   tui-attach-11: backlog
 historical_epic_status:
