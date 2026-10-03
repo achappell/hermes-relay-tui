@@ -2,7 +2,7 @@
 title: 'Puck recovery without replay'
 type: 'feature'
 created: '2026-09-22'
-status: 'in-progress'
+status: 'done'
 route: 'dispatch'
 review_loop_iteration: 3
 baseline_commit: '08c22634506e0dc79e3be94ebffb885183920d67'
