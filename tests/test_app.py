@@ -2989,7 +2989,7 @@ async def test_ctrl_c_key_cancels_an_active_microphone_capture():
         assert capture_task is not None
 
         stop_press = asyncio.create_task(pilot.press("ctrl+c"))
-        await asyncio.sleep(0.05)
+        await wait_until(lambda: session.cancel_voice_calls == 1)
         assert session.cancel_voice_calls == 1
         await asyncio.wait_for(capture_task, 1)
         await asyncio.wait_for(stop_press, 1)
