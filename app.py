@@ -4151,6 +4151,16 @@ class HermesStreamingApp(App):
         if not self._turn_in_flight:
             return False
 
+        if (
+            isinstance(self.session, HomeTextualSession)
+            and self.domain.state.phase is TurnPhase.COMPLETE
+            and self.session.active_turn_id is None
+        ):
+            # Home has retired the remote turn; only local PCM is draining.
+            # Decide before awaiting abort, which can release the next turn.
+            await self._close_player(abort=True)
+            return True
+
         self._set_voice_state(VOICE_INTERRUPTED)
         await self._close_player(abort=True)
         active_task = self._active_turn_task

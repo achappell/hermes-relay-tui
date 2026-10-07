@@ -3172,6 +3172,238 @@ async def test_ctrl_c_uses_remote_interrupt_confirmation_without_closing_session
         assert voice_status_of(app) == "● interrupted"
 
 
+@pytest.mark.parametrize(
+    "stop_boundary", ["local_drain", "local_late_audio", "remote_tail", "rejected", "rpc_error"]
+)
+async def test_home_ctrl_c_preserves_confirmed_session_without_replaying_old_audio(
+    monkeypatch, stop_boundary
+):
+    import json
+
+    from puck_bridge.home_session import HomePuckSession
+    from puck_bridge.home_textual_session import HomeTextualSession
+    from tests.test_home_textual_session import FakeHomeClient
+    from tests.test_puck_home_session import (
+        _FakeConnect, _FakeSocket, _audio, _event, _reply, _rpc_error,
+    )
+
+    class BoundClient(FakeHomeClient):
+        async def claim(self, *args, **kwargs):
+            result = await super().claim(*args, **kwargs)
+            result["conversation_handle"] = "opaque-home-handle"
+            return result
+
+    class StopSocket(_FakeSocket):
+        def __init__(self):
+            super().__init__()
+            self.prompts = []
+            self.interrupt_requested = asyncio.Event()
+            self.late_frames_consumed = asyncio.Event()
+            self.expect_late_audio = False
+
+        async def send(self, raw):
+            request = json.loads(raw)
+            method = request["method"]
+            if method == "session.interrupt":
+                self.sent.append(request)
+                if stop_boundary == "rpc_error":
+                    response = _rpc_error(request["id"], "request_rejected")
+                else:
+                    accepted = stop_boundary == "remote_tail"
+                    response = _reply(
+                        request["id"],
+                        {"accepted": accepted, "status": "accepted" if accepted else "rejected"},
+                    )
+                self.incoming.put_nowait(response)
+                self.interrupt_requested.set()
+            elif method == "prompt.submit":
+                self.sent.append(request)
+                self.prompts.append(request)
+                turn_id = f"home-turn-{len(self.prompts)}"
+                self.incoming.put_nowait(_reply(request["id"], {
+                    "conversation_handle": "opaque-home-handle",
+                    "turn_id": turn_id,
+                    "status": "submitted",
+                }))
+                self.incoming.put_nowait(_audio(
+                    "start", turn_id, sample_rate=24000, channels=1,
+                    sample_width=2, byte_order="little",
+                ))
+                self.incoming.put_nowait(
+                    b"\x01\x00" if len(self.prompts) == 1 else b"\x02\x00"
+                )
+                self.incoming.put_nowait(_event(
+                    "message.delta", turn_id, {"text": f"answer {len(self.prompts)}"}
+                ))
+                self.incoming.put_nowait(_event("message.complete", turn_id))
+                if stop_boundary in {"local_drain", "local_late_audio"} or len(self.prompts) == 2:
+                    self.incoming.put_nowait(_audio("end", turn_id))
+            else:
+                await super().send(raw)
+
+        def queue_old_audio(self):
+            self.expect_late_audio = True
+            self.late_frames_consumed.clear()
+            self.incoming.put_nowait(_audio(
+                "start", "home-turn-1", sample_rate=24000, channels=1,
+                sample_width=2, byte_order="little",
+            ))
+            self.incoming.put_nowait(b"\x7f\x00")
+            self.incoming.put_nowait(_audio("end", "home-turn-1"))
+
+        async def recv(self):
+            frame = await super().recv()
+            if frame == _audio("end", "home-turn-1") and self.expect_late_audio:
+                self.late_frames_consumed.set()
+            return frame
+
+    close_started = threading.Event()
+    release_close = threading.Event()
+
+    class BlockingPlayer:
+        active = False
+        failure = None
+        playback_position = 1.0
+
+        def __init__(self):
+            self.starts = 0
+            self.chunks = []
+            self.aborts = 0
+
+        def start(self, audio_format):
+            self.starts += 1
+            self.active = True
+
+        def write(self, chunk):
+            self.chunks.append(chunk)
+
+        def close(self):
+            if self.starts == 1 and stop_boundary in {"local_drain", "local_late_audio"}:
+                close_started.set()
+                release_close.wait(timeout=5)
+            self.active = False
+
+        def abort(self):
+            self.aborts += 1
+            self.active = False
+            release_close.set()
+
+    monkeypatch.setattr("puck_bridge.home_textual_session.HomeClient", BoundClient)
+    socket = StopSocket()
+    connector = _FakeConnect([socket])
+
+    def factory(*args, **kwargs):
+        return HomePuckSession(*args, connect_factory=connector, **kwargs)
+
+    args = make_args(
+        no_play=False, transport="home",
+        url="wss://home.example/api/v1/bridge/ws",
+    )
+    session = HomeTextualSession(args, home_session_factory=factory)
+    app = HermesStreamingApp(args=args, session_factory=lambda: session)
+    player = BlockingPlayer()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.player = player
+        original_home = session._home_session
+        first = asyncio.create_task(app._run_turn("first"))
+        stop = None
+        try:
+            if stop_boundary in {"local_drain", "local_late_audio"}:
+                assert await asyncio.to_thread(close_started.wait, 1)
+                assert original_home.active_turn_id is None
+            else:
+                await wait_until(lambda: app.domain.state.response_text == "answer 1")
+                await pilot.pause()
+                assert original_home.active_turn_id == "home-turn-1"
+            assert app._turn_in_flight
+            assert player.chunks == [b"\x01\x00"]
+
+            stop = asyncio.create_task(pilot.press("ctrl+c"))
+            if stop_boundary == "remote_tail":
+                await asyncio.wait_for(socket.interrupt_requested.wait(), 1)
+                await pilot.pause()
+                # An accepted RPC alone is not terminal confirmation.
+                assert app._turn_in_flight
+                assert not first.done()
+                # PCM already in flight remains valid for the active remote
+                # audio stream, but must not reach the locally stopped player.
+                socket.incoming.put_nowait(b"\x7f\x00")
+                socket.incoming.put_nowait(_event(
+                    "turn.interrupted", "home-turn-1", {"status": "interrupted"}
+                ))
+            await asyncio.wait_for(stop, 2)
+            await wait_until(lambda: not app._turn_in_flight)
+            if stop_boundary in {"rejected", "rpc_error"}:
+                with pytest.raises(asyncio.CancelledError):
+                    await asyncio.wait_for(first, 1)
+            else:
+                assert not first.cancelled()
+                await asyncio.wait_for(first, 1)
+            assert player.aborts >= 1
+            assert not player.active
+            assert player.chunks == [b"\x01\x00"]
+            interrupts = [r for r in socket.sent if r["method"] == "session.interrupt"]
+            if stop_boundary in {"local_drain", "local_late_audio"}:
+                assert interrupts == []
+            else:
+                assert len(interrupts) == 1
+                assert interrupts[0]["params"] == {
+                    "conversation_handle": "opaque-home-handle",
+                    "turn_id": "home-turn-1",
+                }
+
+            if stop_boundary in {"rejected", "rpc_error"}:
+                assert connector.contexts[0].closed
+                assert not session.is_connected()
+                assert app._needs_reconnect
+                return
+
+            assert app.session is session
+            assert session._home_session is original_home
+            assert session.is_connected()
+            assert not app._needs_reconnect
+            assert not connector.contexts[0].closed
+            if stop_boundary in {"local_late_audio", "remote_tail"}:
+                # Old audio while idle cannot restart playback. If a subsequent
+                # turn encounters it, the shared adapter rejects its wrong ID.
+                socket.queue_old_audio()
+                await asyncio.wait_for(socket.late_frames_consumed.wait(), 1)
+                await pilot.pause()
+                assert player.starts == 1
+                assert player.chunks == [b"\x01\x00"]
+            if stop_boundary in {"local_drain", "local_late_audio"}:
+                composer = app.query_one("#composer", Composer)
+                composer.text = "second"
+                await pilot.press("enter")
+                await wait_until(lambda: len(socket.prompts) == 2 and not app._turn_in_flight)
+                assert len(socket.prompts) == 2
+                if stop_boundary == "local_late_audio":
+                    assert player.starts == 1
+                    assert player.chunks == [b"\x01\x00"]
+                    assert not session.is_connected()
+                    assert connector.contexts[0].closed
+                    assert "answer 2" not in transcript_of(app)
+                    assert len(connector.calls) == 1
+                    return
+                assert player.starts == 2
+                assert player.chunks == [b"\x01\x00", b"\x02\x00"]
+                assert "answer 2" in transcript_of(app)
+            assert len(connector.calls) == 1
+            assert session.home_client.claim_count == 1
+            assert not connector.contexts[0].closed
+            assert not any(
+                request["method"] in {"conversation.close", "conversation.reconnect"}
+                for request in socket.sent
+            )
+        finally:
+            release_close.set()
+            for task in (stop, first):
+                if task is not None and not task.done():
+                    task.cancel()
+                    await asyncio.gather(task, return_exceptions=True)
+
+
 async def test_audio_abort_stops_playback_without_rendering_an_error_event():
     class RecordingPlayer:
         failure = None
