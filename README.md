@@ -615,6 +615,12 @@ turn are discarded. Older endpoints without that capability retain the safe
 close-and-reconnect fallback; the client does not claim remote cancellation in
 that case.
 
+In Home mode, once the remote turn and its audio stream have finished,
+`Ctrl+C` stops any remaining local playback without disconnecting the
+conversation. The next prompt uses the same connection. A still-active
+remote turn continues to use the scoped interrupt and existing failure
+recovery behavior.
+
 Connection setup retries up to three additional times by default, using an
 exponential delay capped at eight seconds. Override this with
 `--connect-retries` and `--connect-retry-delay`. If a connection is unavailable,

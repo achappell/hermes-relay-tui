@@ -214,6 +214,7 @@ class HomeTextualSession(HermesSession):
                         completed = True
                         yield {"type": "turn_end"}
                 if not completed and not failed:
+                    self.active_turn_id = home.active_turn_id
                     yield {"type": "turn_end"}
             finally:
                 self.active_turn_id = home.active_turn_id

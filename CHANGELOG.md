@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Bug fixes
+
+- Keep the Home conversation connected when Ctrl+C stops only the remaining local response audio; preserve remote-turn interruption and failure recovery.
+
 ## 0.11.0 (2026-09-24)
 
 <!-- Release notes generated using configuration in .github/release.yml at main -->

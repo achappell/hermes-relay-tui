@@ -197,7 +197,13 @@ async def test_textual_real_bridge_finishes_text_then_audio(monkeypatch, ending)
                                  home_session_factory=factory)
     await session.connect()
     try:
-        events = [event async for event in session.send_turn("TEST")]
+        events = []
+        async for event in session.send_turn("TEST"):
+            events.append(event)
+            if event["type"] == "turn_end":
+                # The app may block draining PCM before requesting another event.
+                assert session._home_session.active_turn_id is None
+                assert session.active_turn_id is None
         assert events[-1] == {"type": "turn_end"}
         assert events[-2] == ({"type": "audio_end", "final": True} if ending == "end" else
                               {"type": "audio_unavailable", "reason": "Home bridge response audio unavailable"})
