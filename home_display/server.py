@@ -4,6 +4,7 @@ import asyncio
 import contextlib
 import ipaddress
 import json
+import logging
 import mimetypes
 import ssl
 import uuid
@@ -20,6 +21,8 @@ from websockets.http11 import Request, Response
 
 from .state import DisplayStatePublisher
 from .touch import MAX_CAPTURE_ID_LENGTH, MAX_PCM_CHUNK_BYTES
+
+logger = logging.getLogger("hermes_relay_tui.server")
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -723,6 +726,10 @@ class DisplayServer:
                     return_when=asyncio.FIRST_COMPLETED,
                 )
                 if not done:
+                    logger.warning(
+                        "browser context setup timed out after %.0fs",
+                        BROWSER_CONTEXT_SETUP_TIMEOUT,
+                    )
                     factory_task.cancel()
                     await asyncio.gather(factory_task, return_exceptions=True)
                     with contextlib.suppress(ConnectionClosed, OSError):
@@ -859,7 +866,10 @@ class DisplayServer:
             return
         except asyncio.CancelledError:
             raise
-        except Exception:
+        except Exception as error:
+            logger.warning(
+                "browser context setup failed: %s", type(error).__name__
+            )
             with contextlib.suppress(ConnectionClosed, OSError):
                 await websocket.close(code=1011, reason="browser session unavailable")
             return

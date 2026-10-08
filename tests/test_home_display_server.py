@@ -1,5 +1,6 @@
 import asyncio
 import json
+import logging
 import shutil
 import ssl
 import subprocess
@@ -963,3 +964,61 @@ async def test_a_browser_server_ignores_touch_control_frames(tmp_path):
 
     assert turns == ["hello"]
     assert actions == []
+
+
+@pytest.mark.asyncio
+async def test_browser_factory_failure_is_logged_without_changing_the_close(
+    tmp_path, caplog
+):
+    (tmp_path / "index.html").write_text("ok", encoding="utf-8")
+
+    async def create_binding(_connection_id, _sender):
+        raise RuntimeError("https://upstream.example/secret-token")
+
+    server = DisplayServer(
+        DisplayStatePublisher(), tmp_path, on_browser_connect=create_binding
+    )
+    info = await server.start()
+    socket = await connect(info.websocket_url)
+    try:
+        with caplog.at_level(logging.WARNING, logger="hermes_relay_tui.server"):
+            with pytest.raises(ConnectionClosed) as error:
+                await socket.recv()
+        assert error.value.rcvd.code == 1011
+        assert error.value.rcvd.reason == "browser session unavailable"
+        messages = [r.getMessage() for r in caplog.records]
+        assert messages == ["browser context setup failed: RuntimeError"]
+    finally:
+        await socket.close()
+        await server.close()
+
+
+@pytest.mark.asyncio
+async def test_browser_factory_timeout_is_logged_without_changing_the_close(
+    tmp_path, monkeypatch, caplog
+):
+    (tmp_path / "index.html").write_text("ok", encoding="utf-8")
+    monkeypatch.setattr(server_module, "BROWSER_CONTEXT_SETUP_TIMEOUT", 0.01)
+    release = asyncio.Event()
+
+    async def create_binding(_connection_id, _sender):
+        await release.wait()
+
+    server = DisplayServer(
+        DisplayStatePublisher(), tmp_path, on_browser_connect=create_binding
+    )
+    info = await server.start()
+    socket = await connect(info.websocket_url)
+    try:
+        with caplog.at_level(logging.WARNING, logger="hermes_relay_tui.server"):
+            with pytest.raises(ConnectionClosed) as error:
+                await socket.recv()
+        assert error.value.rcvd.code == 1011
+        assert error.value.rcvd.reason == "browser session unavailable"
+        assert [r.getMessage() for r in caplog.records] == [
+            "browser context setup timed out after 0s"
+        ]
+    finally:
+        release.set()
+        await socket.close()
+        await server.close()

@@ -201,6 +201,7 @@ class HermesSession:
                 getattr(self.args, "profile_env", None) or config.DEFAULT_PROFILE_ENV,
             )
         if not token:
+            diagnostic_logger.error("connect.failed type=NoToken")
             raise RuntimeError(
                 "No voice-session token found. Run `hermes-relay setup`, "
                 "set VOICE_SESSION_TOKEN, or configure the profile .env."
