@@ -1,6 +1,6 @@
 # Active epic parents are in story-index.yaml; numeric story prefixes remain historical.
 generated: 09-08-2026 00:00
-last_updated: '2026-10-03'
+last_updated: '2026-10-08'
 project: hermes-relay-tui
 project_key: NOKEY
 tracking_system: file-system
@@ -53,6 +53,7 @@ development_status:
   standard-6-puck-migrate-respeaker-puck-path: done
   standard-7-esp32-add-touch-display-audio-session-adapter: done
   standard-8-wk-migrate-browser-and-ipad-routes: done
+  wk-home-01-migrate-production-browser-to-homebridge: backlog
   epic-4: backlog
   tui-retire-01: backlog
   epic-5: in-progress

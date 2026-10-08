@@ -492,6 +492,22 @@ stories:
       - epic:3
     surface: T
     github_issue: https://github.com/achappell/hermes-relay-tui/issues/208
+  - id: WK-HOME-01
+    title: Migrate the production W/K browser and iPad appliance to HomeBridge with claim-based admission
+    kind: course-correction
+    product_epic: 3
+    owner: hermes-relay-tui
+    tracker_key: wk-home-01-migrate-production-browser-to-homebridge
+    release_scope: migration
+    spec: _bmad-output/implementation-artifacts/spec-wk-home-01-migrate-production-browser-to-homebridge.md
+    depends_on:
+      - home:HOME-NW-17
+      - home:HOME-NW-18
+      - home:HOME-NW-17-browser-admission
+      - tui:TUI-HOME-01
+      - tui:STD-8
+    surface: W/K
+    evidence_note: Draft spec only (2026-10-08); every design choice is a PROPOSED owner question. WK-1 and WK-2 remain in review; gating their acceptance on this story's Home-mode deployment and real-browser evidence is a PROPOSED owner decision, not yet made.
   - id: 2-E-1
     title: Render the Room-scoped Ambient Surface in native LVGL.
     surface: E
