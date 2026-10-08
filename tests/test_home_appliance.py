@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import io
 import json
+import logging
 import threading
 import types
 import wave
@@ -3921,3 +3922,40 @@ async def test_mic_start_opens_a_home_browser_session_with_the_granted_handle(
     ]
 
     await appliance._close_touch_contexts()
+
+
+@pytest.mark.asyncio
+async def test_browser_admission_logs_each_unavailable_profile_and_the_final_error(
+    monkeypatch, caplog
+):
+    class RefusedSession(FakeSession):
+        def __init__(self, args):
+            super().__init__()
+            self.args = args
+
+        async def connect(self):
+            raise ConnectionRefusedError("wss://secret.example/voice?token=hunter2")
+
+    monkeypatch.setattr(appliance_module, "HermesSession", RefusedSession)
+    appliance = Appliance(
+        _args(browser_voice=True),
+        publisher=RecordingPublisher(),
+        profiles=_catalog_profiles(),
+    )
+
+    with caplog.at_level(logging.WARNING, logger="hermes_relay_tui.appliance"):
+        with pytest.raises(RuntimeError, match="no household profile could connect"):
+            await appliance._create_browser_context("browser-one", FakeServer())
+
+    records = [(r.levelname, r.getMessage()) for r in caplog.records]
+    assert records == [
+        ("WARNING", "browser profile unavailable during admission: amanda (ConnectionRefusedError)"),
+        ("WARNING", "browser profile unavailable during admission: jensen (ConnectionRefusedError)"),
+        ("WARNING", "browser profile unavailable during admission: spark (ConnectionRefusedError)"),
+        (
+            "ERROR",
+            "browser admission failed: no household profile could connect "
+            "(candidates=3, last_error=ConnectionRefusedError)",
+        ),
+    ]
+    assert "hunter2" not in caplog.text and "secret.example" not in caplog.text

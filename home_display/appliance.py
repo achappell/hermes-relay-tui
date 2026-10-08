@@ -2062,10 +2062,11 @@ class Appliance:
                 raise
             except Exception as error:
                 last_error = error
-                logger.debug(
-                    "browser profile unavailable during admission: %s",
+                logger.warning(
+                    "browser profile unavailable during admission: %s (%s)",
                     profile.name,
-                    exc_info=True,
+                    type(error).__name__,
+                    exc_info=logger.isEnabledFor(logging.DEBUG),
                 )
                 if child is not None:
                     with contextlib.suppress(BaseException):
@@ -2075,6 +2076,12 @@ class Appliance:
                         await session.close()
 
         if last_error is not None:
+            logger.error(
+                "browser admission failed: no household profile could connect "
+                "(candidates=%d, last_error=%s)",
+                len(candidates),
+                type(last_error).__name__,
+            )
             raise RuntimeError("no household profile could connect") from last_error
         raise RuntimeError("no household profile is configured")
 

@@ -1,5 +1,6 @@
 import asyncio
 import json
+import logging
 import types
 
 import pytest
@@ -592,3 +593,15 @@ async def test_session_switch_session_updates_session_id_and_returns_history(mon
     assert session.confirmed_title == "Target Chat"
     assert session.confirmed_server_version == "0.8.0"
     assert result["history"] == history
+
+
+async def test_missing_token_is_logged_before_connect_raises(monkeypatch, caplog):
+    monkeypatch.delenv("VOICE_SESSION_TOKEN", raising=False)
+    monkeypatch.setattr(config, "connect_factory", lambda: lambda *a, **k: None)
+    session = HermesSession(make_args(token="", profile_env=None))
+
+    with caplog.at_level(logging.ERROR):
+        with pytest.raises(RuntimeError, match="No voice-session token"):
+            await session.connect()
+
+    assert [r.getMessage() for r in caplog.records] == ["connect.failed type=NoToken"]
