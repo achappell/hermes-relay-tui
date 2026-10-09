@@ -1012,6 +1012,11 @@ export interface AudioContextLike {
   createBufferSource(): AudioBufferSourceLike;
 }
 
+/** Safari reports an iOS-interrupted context as "interrupted", not "suspended". */
+function needsResume(context: AudioContextLike): boolean {
+  return context.state === "suspended" || context.state === "interrupted";
+}
+
 export type AudioContextFactory = () => AudioContextLike;
 
 export interface PcmAudioPlayerOptions {
@@ -1057,10 +1062,33 @@ export class PcmAudioPlayer {
     return this.sources.size > 0;
   }
 
+  /**
+   * Unlock audio from inside a user gesture without waiting on the outcome.
+   *
+   * Safari only lets a context start from a gesture, and it would otherwise be
+   * created lazily on `audio_start`, which arrives from the WebSocket and is
+   * not a gesture. Call this synchronously from click/touch/key handlers.
+   */
+  unlock(): void {
+    try {
+      const context = this.ensureContext();
+      if (!needsResume(context)) return;
+      this.resumeQuietly(context);
+      // iOS Safari also wants a silent source started inside the gesture.
+      const silence = context.createBuffer(1, 1, 22050);
+      const source = context.createBufferSource();
+      source.buffer = silence;
+      source.connect(context.destination);
+      source.start(0);
+    } catch {
+      // Unlocking is best-effort; playback reports its own failure.
+    }
+  }
+
   async resume(): Promise<boolean> {
     try {
       const context = this.ensureContext();
-      if (context.state === "suspended") {
+      if (needsResume(context)) {
         await context.resume();
       }
       return true;
@@ -1074,6 +1102,8 @@ export class PcmAudioPlayer {
     this.stop();
     try {
       const context = this.ensureContext();
+      // Safari can suspend or interrupt a context between turns.
+      if (needsResume(context)) this.resumeQuietly(context);
       this.activeTurnId = event.turn_id;
       this.sampleRate = event.sample_rate;
       this.channels = event.channels;
@@ -1173,5 +1203,13 @@ export class PcmAudioPlayer {
       this.context = this.audioContextFactory();
     }
     return this.context;
+  }
+
+  private resumeQuietly(context: AudioContextLike): void {
+    try {
+      void Promise.resolve(context.resume()).catch(() => {});
+    } catch {
+      // A context that cannot resume outside a gesture is retried on the next one.
+    }
   }
 }

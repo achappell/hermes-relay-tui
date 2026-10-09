@@ -6697,6 +6697,9 @@ function followUpRecoveryFailureMessage(category, deadline = false) {
 function positiveSeconds(value) {
   return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : DEFAULT_HANDS_FREE_SECONDS;
 }
+function needsResume(context) {
+  return context.state === "suspended" || context.state === "interrupted";
+}
 function defaultAudioContextFactory() {
   const windowWithAudio = window;
   const Constructor = windowWithAudio.AudioContext ?? windowWithAudio.webkitAudioContext;
@@ -6727,10 +6730,30 @@ class PcmAudioPlayer {
   get hasPendingPlayback() {
     return this.sources.size > 0;
   }
+  /**
+   * Unlock audio from inside a user gesture without waiting on the outcome.
+   *
+   * Safari only lets a context start from a gesture, and it would otherwise be
+   * created lazily on `audio_start`, which arrives from the WebSocket and is
+   * not a gesture. Call this synchronously from click/touch/key handlers.
+   */
+  unlock() {
+    try {
+      const context = this.ensureContext();
+      if (!needsResume(context)) return;
+      this.resumeQuietly(context);
+      const silence = context.createBuffer(1, 1, 22050);
+      const source2 = context.createBufferSource();
+      source2.buffer = silence;
+      source2.connect(context.destination);
+      source2.start(0);
+    } catch {
+    }
+  }
   async resume() {
     try {
       const context = this.ensureContext();
-      if (context.state === "suspended") {
+      if (needsResume(context)) {
         await context.resume();
       }
       return true;
@@ -6743,6 +6766,7 @@ class PcmAudioPlayer {
     this.stop();
     try {
       const context = this.ensureContext();
+      if (needsResume(context)) this.resumeQuietly(context);
       this.activeTurnId = event2.turn_id;
       this.sampleRate = event2.sample_rate;
       this.channels = event2.channels;
@@ -6831,6 +6855,13 @@ class PcmAudioPlayer {
     }
     return this.context;
   }
+  resumeQuietly(context) {
+    try {
+      void Promise.resolve(context.resume()).catch(() => {
+      });
+    } catch {
+    }
+  }
 }
 var root = /* @__PURE__ */ from_html(`<option> </option>`);
 var root_1 = /* @__PURE__ */ from_html(`<p role="alert"> </p>`);
@@ -6869,7 +6900,7 @@ function App($$anchor, $$props) {
   let handsFreeError = /* @__PURE__ */ mutable_source(null);
   let voiceController = null;
   let handsFreeController = null;
-  let audioPlayer = null;
+  let audioPlayer = /* @__PURE__ */ mutable_source(null);
   let dispatchAction = /* @__PURE__ */ mutable_source(async () => false);
   let responseHasAudio = false;
   let playbackFinished = false;
@@ -7024,28 +7055,32 @@ function App($$anchor, $$props) {
         handsFreeController == null ? void 0 : handsFreeController.abort("Display data unavailable — hands-free is off");
       },
       onAudioEvent: (event2) => {
+        var _a2, _b2, _c, _d;
         if (event2.type === "audio_start") {
           responseHasAudio = true;
           playbackFinished = false;
           pendingAudioTurnId = event2.turn_id;
           set(audioPlaybackFailed, false);
           clearResponseRetentionTimer();
-          audioPlayer == null ? void 0 : audioPlayer.start(event2);
+          (_a2 = get(audioPlayer)) == null ? void 0 : _a2.start(event2);
         } else if (event2.type === "audio_end") {
-          audioPlayer == null ? void 0 : audioPlayer.end(event2.turn_id);
-          if (pendingAudioTurnId === event2.turn_id && !(audioPlayer == null ? void 0 : audioPlayer.hasPendingPlayback)) {
+          (_b2 = get(audioPlayer)) == null ? void 0 : _b2.end(event2.turn_id);
+          if (pendingAudioTurnId === event2.turn_id && !((_c = get(audioPlayer)) == null ? void 0 : _c.hasPendingPlayback)) {
             playbackFinished = true;
           }
           maybeCompleteHandsFreeTurn();
         } else {
-          audioPlayer == null ? void 0 : audioPlayer.abort(event2.turn_id);
+          (_d = get(audioPlayer)) == null ? void 0 : _d.abort(event2.turn_id);
           if (pendingAudioTurnId !== event2.turn_id) return;
           clearConversationPresentation();
           resetPlayback();
           handsFreeController == null ? void 0 : handsFreeController.abort("Response interrupted — hands-free is off");
         }
       },
-      onAudioChunk: (chunk) => audioPlayer == null ? void 0 : audioPlayer.append(chunk),
+      onAudioChunk: (chunk) => {
+        var _a2;
+        return (_a2 = get(audioPlayer)) == null ? void 0 : _a2.append(chunk);
+      },
       onVoiceError: () => {
         clearConversationPresentation();
         set(voiceError, "Turn could not be sent");
@@ -7078,7 +7113,7 @@ function App($$anchor, $$props) {
       }
       return (bridge == null ? void 0 : bridge.dispatchAction(action)) ?? Promise.resolve(false);
     });
-    audioPlayer = new PcmAudioPlayer({
+    set(audioPlayer, new PcmAudioPlayer({
       onError: (message) => {
         resetPlayback();
         set(audioPlaybackFailed, true);
@@ -7093,7 +7128,7 @@ function App($$anchor, $$props) {
         updateResponsePresentation(get(displayView));
         maybeCompleteHandsFreeTurn();
       }
-    });
+    }));
     voiceController = new BrowserVoiceController({
       sendText: (text, wakePhrase) => wakePhrase === void 0 ? (bridge == null ? void 0 : bridge.sendVoiceTurn(text)) ?? false : (bridge == null ? void 0 : bridge.sendVoiceTurn(text, wakePhrase)) ?? false,
       onState: (state2) => {
@@ -7139,11 +7174,16 @@ function App($$anchor, $$props) {
     };
   });
   function resetPlayback() {
-    audioPlayer == null ? void 0 : audioPlayer.stop();
+    var _a2;
+    (_a2 = get(audioPlayer)) == null ? void 0 : _a2.stop();
     responseHasAudio = false;
     playbackFinished = false;
     pendingAudioTurnId = null;
     set(audioPlaybackFailed, false);
+  }
+  function unlockAudio() {
+    var _a2;
+    (_a2 = get(audioPlayer)) == null ? void 0 : _a2.unlock();
   }
   async function toggleVoice() {
     if (voiceController === null || get(voiceState) === "submitting" || get(handsFreeArmed)) return;
@@ -7153,7 +7193,7 @@ function App($$anchor, $$props) {
     }
     if (!get(displayReady) || !get(browserVoiceEnabled)) return;
     set(voiceError, null);
-    if (audioPlayer !== null && !await audioPlayer.resume()) return;
+    if (get(audioPlayer) !== null && !await get(audioPlayer).resume()) return;
     if (!isDisplayReady() || (handsFreeController == null ? void 0 : handsFreeController.isArmed)) return;
     beginCapturePresentation();
     await voiceController.start();
@@ -7166,7 +7206,7 @@ function App($$anchor, $$props) {
     }
     if (!get(displayReady) || !get(browserHandsFreeEnabled)) return;
     set(handsFreeError, null);
-    if (audioPlayer !== null && !await audioPlayer.resume()) return;
+    if (get(audioPlayer) !== null && !await get(audioPlayer).resume()) return;
     if (!isDisplayReady() || !get(browserHandsFreeEnabled)) return;
     await handsFreeController.arm();
   }
@@ -7229,6 +7269,9 @@ function App($$anchor, $$props) {
   legacy_pre_effect_reset();
   init();
   var fragment = root_15();
+  event("click", $window, unlockAudio);
+  event("touchend", $window, unlockAudio);
+  event("keydown", $window, unlockAudio);
   var div = first_child(fragment);
   var node = child(div);
   StateSurface(node, {
@@ -7351,6 +7394,8 @@ function App($$anchor, $$props) {
           bind_value(input, () => get(typedText), ($$value) => set(typedText, $$value));
           event("click", button_1, () => get(interruptTurn)());
           event("submit", form, preventDefault(async () => {
+            var _a2;
+            (_a2 = get(audioPlayer)) == null ? void 0 : _a2.unlock();
             const text = get(typedText).trim();
             if (!text || !get(displayReady) || get(selectingProfile)) return;
             set(typedText, "");

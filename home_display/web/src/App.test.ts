@@ -2,7 +2,7 @@
 import "@testing-library/jest-dom/vitest";
 import { fireEvent, render, screen } from "@testing-library/svelte";
 import { tick } from "svelte";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi, type Mock } from "vitest";
 
 import type { DisplayAction, DisplayAudioEvent } from "./state/protocol";
 import type { DisplayView } from "./state/reducer";
@@ -82,6 +82,51 @@ describe("App", () => {
     vi.useRealTimers();
     bridges.instances.length = 0;
     bridges.options.length = 0;
+  });
+
+  it("unlocks browser audio from a typed send and any later gesture, not only on audio_start", async () => {
+    const contexts: Array<{ state: string; resume: Mock }> = [];
+    class FakeAudioContext {
+      state = "suspended";
+      currentTime = 0;
+      destination = {};
+      resume = vi.fn(async () => {});
+      createBuffer = vi.fn(() => ({ duration: 0, copyToChannel: vi.fn() }));
+      createBufferSource = vi.fn(() => ({ connect: vi.fn(), start: vi.fn(), stop: vi.fn() }));
+      constructor() {
+        contexts.push(this);
+      }
+    }
+    Object.defineProperty(window, "AudioContext", { configurable: true, value: FakeAudioContext });
+
+    const { container, unmount } = render(App);
+    await tick();
+    const options = bridges.options.at(-1)!;
+    const token = "a".repeat(32);
+    options.onConnectionState("connected");
+    options.onView({
+      type: "snapshot", schema: 1, sequence: 1, state: "idle", response_text: "",
+      status_text: null, media: null, prompt: null, is_busy: false, connection_healthy: true,
+      can_choose: false, can_explore: false, can_dismiss: false,
+      capabilities: { actions: [], features: ["browser_voice", "browser_profiles"],
+        profiles: [{ selector_id: token, label: "First", available: true }], selected_profile: token },
+    });
+    await tick();
+    expect(contexts).toHaveLength(0);
+
+    const input = container.querySelector<HTMLInputElement>("#typed-turn")!;
+    await fireEvent.input(input, { target: { value: "hello" } });
+    await fireEvent.submit(input.closest("form")!);
+
+    expect(contexts).toHaveLength(1);
+    expect(contexts[0].resume).toHaveBeenCalledOnce();
+
+    await fireEvent.click(document.body);
+    expect(contexts).toHaveLength(1);
+    expect(contexts[0].resume).toHaveBeenCalledTimes(2);
+
+    unmount();
+    delete (window as Window & { AudioContext?: unknown }).AudioContext;
   });
 
   it("starts and stops the same-origin state channel with the DOM reducer", async () => {

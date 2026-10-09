@@ -366,6 +366,12 @@
     audioPlaybackFailed = false;
   }
 
+  // Safari starts audio only from a user gesture; replies arrive from the
+  // WebSocket, so unlock the player on any tap/click/key instead of on audio_start.
+  function unlockAudio(): void {
+    audioPlayer?.unlock();
+  }
+
   async function toggleVoice(): Promise<void> {
     if (voiceController === null || voiceState === "submitting" || handsFreeArmed) return;
     if (voiceState === "listening") {
@@ -410,6 +416,12 @@
   }
 </script>
 
+<svelte:window
+  on:click={unlockAudio}
+  on:touchend={unlockAudio}
+  on:keydown={unlockAudio}
+/>
+
 <div aria-hidden={promptVisible ? "true" : undefined}>
   <StateSurface
     snapshot={surfaceView}
@@ -445,6 +457,7 @@
       </select>
       {#if selectionError}<p role="alert">{selectionError}</p>{/if}
       <form on:submit|preventDefault={async () => {
+        audioPlayer?.unlock();
         const text = typedText.trim();
         if (!text || !displayReady || selectingProfile) return;
         typedText = "";

@@ -948,6 +948,75 @@ describe("BrowserHandsFreeController", () => {
 });
 
 describe("PcmAudioPlayer", () => {
+  function makeAudioContext(state: string) {
+    const source = {
+      buffer: null as AudioBufferLike | null,
+      onended: null as (() => void) | null,
+      connect: vi.fn(),
+      start: vi.fn(),
+      stop: vi.fn(),
+    };
+    const context = {
+      state,
+      currentTime: 0,
+      destination: {},
+      resume: vi.fn(async () => {}),
+      createBuffer: vi.fn(() => ({ duration: 1, copyToChannel: vi.fn() })),
+      createBufferSource: vi.fn(() => source),
+    };
+    return { context, source };
+  }
+
+  it("unlocks a suspended context synchronously inside a gesture, before any audio_start", () => {
+    const { context, source } = makeAudioContext("suspended");
+    const factory = vi.fn(() => context);
+    const player = new PcmAudioPlayer({ audioContextFactory: factory });
+
+    player.unlock();
+
+    expect(factory).toHaveBeenCalledOnce();
+    expect(context.resume).toHaveBeenCalledOnce();
+    expect(source.start).toHaveBeenCalledWith(0);
+  });
+
+  it("does not touch a running context when unlocking", () => {
+    const { context } = makeAudioContext("running");
+    const player = new PcmAudioPlayer({ audioContextFactory: () => context });
+
+    player.unlock();
+
+    expect(context.resume).not.toHaveBeenCalled();
+    expect(context.createBufferSource).not.toHaveBeenCalled();
+  });
+
+  it("treats an iOS interrupted context like a suspended one", async () => {
+    const { context } = makeAudioContext("interrupted");
+    const player = new PcmAudioPlayer({ audioContextFactory: () => context });
+
+    await expect(player.resume()).resolves.toBe(true);
+
+    expect(context.resume).toHaveBeenCalledOnce();
+  });
+
+  it("re-resumes a suspended context on audio_start without blocking or surfacing errors", () => {
+    const { context } = makeAudioContext("suspended");
+    context.resume.mockRejectedValueOnce(new Error("needs a gesture"));
+    const onError = vi.fn();
+    const player = new PcmAudioPlayer({ audioContextFactory: () => context, onError });
+
+    player.start({
+      type: "audio_start",
+      schema: 1,
+      turn_id: "turn-1",
+      sample_rate: 24000,
+      channels: 1,
+      sample_width: 2,
+    });
+
+    expect(context.resume).toHaveBeenCalledOnce();
+    expect(onError).not.toHaveBeenCalled();
+  });
+
   it("converts signed 16-bit little-endian chunks into scheduled browser audio", async () => {
     const source = {
       buffer: null as AudioBufferLike | null,
@@ -982,7 +1051,8 @@ describe("PcmAudioPlayer", () => {
     player.start(start);
     player.append(new Uint8Array([0x00, 0x80, 0xff, 0x7f]).buffer);
 
-    expect(context.resume).toHaveBeenCalledOnce();
+    // The fake never leaves "suspended", so audio_start re-resumes it too.
+    expect(context.resume).toHaveBeenCalledTimes(2);
     expect(context.createBuffer).toHaveBeenCalledWith(1, 2, 24000);
     expect(buffer.copyToChannel).toHaveBeenCalledWith(
       new Float32Array([-1, 32767 / 32768]),

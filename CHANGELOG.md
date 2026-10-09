@@ -10,6 +10,7 @@
 
 - Keep the Home conversation connected when Ctrl+C stops only the remaining local response audio; preserve remote-turn interruption and failure recovery.
 - Validate the deployment smoke probe's malformed-action JSON error shape instead of legacy wording, so the Home browser's valid HTTP 400 response passes.
+- Unlock Home browser audio inside a user gesture (typed Send, tap, or key press) instead of only creating the audio context when a reply starts, resume contexts Safari reports as `interrupted`, and re-resume on `audio_start`, so spoken replies are no longer silent on Safari after a typed turn, page reload, or an iOS interruption. Verified in headless WebKit only; audible output on real Safari is not yet confirmed.
 
 ## 0.12.0 (2026-10-09)
 
