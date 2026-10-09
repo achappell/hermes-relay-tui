@@ -52,6 +52,7 @@ from timing import (
     visible_text,
 )
 
+from .origin import validate_public_origin
 from .server import BrowserProfileRouteResult, DisplayServer, load_tls_context
 from .touch import (
     HttpTouchClaimClient,
@@ -1934,23 +1935,14 @@ class Appliance:
         # The supported appliance is loopback behind tailnet Serve. An Origin
         # allowlist is not network authentication and cannot secure a public bind.
         import ipaddress
-        from urllib.parse import urlsplit
         if not ipaddress.ip_address(getattr(self.args, "display_host", "127.0.0.1")).is_loopback:
             raise RuntimeError("Home browser backend must bind loopback behind Tailscale Serve")
         origin = getattr(self.args, "display_public_origin", None)
-        if origin:
-            parsed = urlsplit(origin)
-            tailnet_host = parsed.hostname or ""
-            tailnet_origin = (
-                parsed.scheme == "https"
-                and tailnet_host.endswith(".ts.net")
-                and "*" not in tailnet_host
-            )
-            if origin != "https://home.chappell-home.dev" and not tailnet_origin:
-                raise RuntimeError(
-                    "Home browser public Origin must be an exact household Tailscale HTTPS name "
-                    "or https://home.chappell-home.dev"
-                )
+        if origin is not None:
+            try:
+                validate_public_origin(origin)
+            except ValueError as error:
+                raise RuntimeError(str(error)) from error
         return url, Path(path)
 
     def _create_session_for_profile(self, profile: config.HouseholdProfile) -> Any:
@@ -3012,7 +3004,7 @@ def build_arg_parser(argv: list[str] | None = None) -> argparse.ArgumentParser:
         metavar="URL",
         help=(
             "additional exact browser Origin allowed behind a reverse proxy "
-            "(for example, https://hermes-home.chappell-home.dev)"
+            "(for example, https://home.example.com; Home requires one exact HTTPS DNS origin)"
         ),
     )
     parser.add_argument(

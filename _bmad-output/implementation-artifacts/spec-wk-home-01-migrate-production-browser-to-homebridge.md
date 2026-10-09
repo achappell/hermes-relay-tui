@@ -33,7 +33,7 @@ context:
 
 **Approach.** Pair the appliance with Home once as one Device holding grants for every Home-authorized Profile, with later exact grants added through Home administration without re-pairing. There is no separate browser sign-in: anyone who can reach the page can use those authorized Profiles. The current Home grant list drives a Profile selector; optional local wake phrases are shortcuts, not an allow-list. Each browser tab gets an independent claim and conversation; page/socket and bridge reconnects begin fresh conversations with no prompt replay. Add an honest unavailable state, a Home-admission health signal, and Ops evidence without claiming unmeasured idle Hermes health. Switch the managed deployment to Home, bake for 24 hours, then hand off R7 legacy removal to its separate owner.
 
-**Success.** `WK-1` and `WK-2` can be accepted on the supported path: two real browsers (Mac Chrome and iPad Safari) hold independent Home conversations through the deployed appliance, Home and active Hermes failures show an honest reason, and nothing in the managed deployment depends on a modified agent or `voice-*.chappell-home.dev` gateways. The original monitoring obligations remain distinct **OPEN acceptance dependencies**: a pre-expiry `credential_expiring` signal and a traffic-free Grafana `probe_success` alert for Home admission; idle Hermes outage visibility within minutes is a separate gap. The checked-in Home dashboards do not evidence idle Standard readiness, H5 is unapproved, and S7 cannot claim these requirements until existing approved evidence is identified and demonstrated or any missing source is separately authorized.
+**Success.** `WK-1` and `WK-2` can be accepted on the supported path: two real browsers (Mac Chrome and iPad Safari) hold independent Home conversations through the deployed appliance, Home and active Hermes failures show an honest reason, and nothing in the managed deployment depends on a modified agent or `voice-*.example.com` gateways. The original monitoring obligations remain distinct **OPEN acceptance dependencies**: a pre-expiry `credential_expiring` signal and a traffic-free Grafana `probe_success` alert for Home admission; idle Hermes outage visibility within minutes is a separate gap. The checked-in Home dashboards do not evidence idle Standard readiness, H5 is unapproved, and S7 cannot claim these requirements until existing approved evidence is identified and demonstrated or any missing source is separately authorized.
 
 ## Current state inventory
 
@@ -45,7 +45,7 @@ context:
 | Default transport | `legacy` unless flag, `HERMES_RELAY_TUI_BROWSER_TRANSPORT` or config says `home` | `home_display/appliance.py:347,2860-2871,2957-2964` |
 | Docs | "The managed service's `ExecStart` intentionally remains on `legacy` until the Home route has passed its deployment gate" | `docs/ops-web-deployment.md:14-17,134-138` |
 | Deployed build | wheel `0.9.0`, commit `43abe8ae…`, 2026-09-13; predates STD-8 (`4165da7`, first released in `v0.11.0`) and PR #225 | [OPS]; `pyproject.toml:7` (`0.11.0` on main) |
-| Legacy upstream | Caddy on Ops proxies `voice-{amanda,jensen,spark}.chappell-home.dev` to the Mac mini `:8792/8793/8794`; all three refuse TCP → HTTP 502 → `connect.failed type=InvalidStatus` → `/state` closes `1011` | [OPS] |
+| Legacy upstream | Caddy on Ops proxies `voice-{one,two,three}.example.com` to the Mac mini `:8792/8793/8794`; all three refuse TCP → HTTP 502 → `connect.failed type=InvalidStatus` → `/state` closes `1011` | [OPS] |
 | Cause of the listeners being down | UNKNOWN. A 2026-09-27 gateway consolidation is a candidate; no artifact records the listeners being stopped on purpose | [OPS]; no vault or repo record |
 | Health signal today | None. `/` returns `200` while every session fails; Prometheus has no `probe_success` for these hosts; the appliance logged nothing for `1011` before PR #225 | [OPS] |
 
@@ -146,7 +146,7 @@ Allowlisted reason tokens, produced by the appliance from typed errors, never fr
 | Area | Change | Evidence |
 |---|---|---|
 | Unit | Home mode adds `--browser-transport home --home-bridge-url wss://<Home tailnet host>/api/v1/bridge/ws`, preserves a private credential file across releases, removes the legacy token source only at R7, and configures the browser Origin to the chosen tailnet hostname. Backend listener/proxy boundary must not permit direct bypass. Exact host/listener and file-permission mechanics are **PROPOSED/UNKNOWN**, not observed host settings. | `deploy/systemd/hermes-relay-home.service:3-5,11-12` |
-| Home host name | The Home tailnet name is not recorded in either repo (only the example `caticornqueen.example.ts.net`, Home `NW-17 spec :65`). UNKNOWN; Ops must establish the actual Serve route and tailnet reachability before rollout. | — |
+| Home host name | The Home tailnet name is not recorded in either repo (only the example `home.household.ts.net`, Home `NW-17 spec :65`). UNKNOWN; Ops must establish the actual Serve route and tailnet reachability before rollout. | — |
 | Env file | `/etc/hermes-relay/home.env` currently holds legacy session variables and three profile tokens (names only, [OPS]); Home mode needs none. Removal is R7 work, not part of the switch or bake. | `docs/ops-web-deployment.md:55-71` |
 | Profile catalog | Keep only optional local wake-shortcut mapping; Home's current `client_grants` drives the selector. No static allow-list, fixed three-profile schema, or required local entry per authorized Profile. Bind each configured `home_grant` shortcut to a stable `grant_id`, not the display label; validate wake-phrase labels uniquely, and have Home reject duplicate active grant labels. | `deploy/ops/hermes-home-profile-config.yaml.example`; `validate_ops_profile_config.py:15-70` |
 | Deploy script | Home mode does not need `--profile-env-source` or token merging; it preserves the approved private credential file and any optional wake shortcuts across releases. | `scripts/deploy_ops_web.sh:68-69,202,596-631` |
@@ -154,7 +154,7 @@ Allowlisted reason tokens, produced by the appliance from typed errors, never fr
 | Network boundary | **APPROVED 2026-10-08:** page, WebSocket, and every appliance backend path are reachable only over household Tailscale, never public; backend bypass protection is required. No separate browser sign-in; anyone reaching the page may use authorized Profiles. | Owner decision Q16 |
 | Tailnet route and backend ACL | **PROPOSED rollout gate:** document the actual tailnet DNS name, Caddy/Tailscale listener and ACL, and Home Serve route. Bind backend to loopback or a tailnet-only interface and firewall/restrict it so neither direct public access nor a proxy/backend bypass works. No host configuration was inspected; do not treat the arrangement as deployed until proven. | Ops discovery required |
 | Origin security | Preserve the existing exact Origin validation on WebSocket `/state` and POST `/action`. Allowed tailnet page Origin succeeds; wrong and explicit `Origin: null` fail on both routes. Preserve the existing no-Origin non-browser exception only where already intended; `/healthz`'s non-mutating exception must not spread to either protected route. | `home_display/server.py:545-560,671-687` |
-| Ordering | Home runs on CaticornQueen (Windows), not Ops (`validation-home-mig-09-readiness.md:41-62`), so there is no systemd ordering against Home. Ops → Serve route/tailnet grant remains **UNKNOWN** (only `tag:home` → `tag:ops tcp:3100` is recorded, Home `validation-home-nw-06-diagnostics-exporter.md:140`). | — |
+| Ordering | Home runs on the Home host (Windows), not Ops (`validation-home-mig-09-readiness.md:41-62`), so there is no systemd ordering against Home. Ops → Serve route/tailnet grant remains **UNKNOWN** (only `tag:home` → `tag:ops tcp:3100` is recorded, Home `validation-home-nw-06-diagnostics-exporter.md:140`). | — |
 | Health evidence | `/healthz` is only Home-admission health. Preserve the traffic-free Grafana `probe_success` alert and pre-expiry `credential_expiring` signal as OPEN acceptance obligations until their existing approved sources are demonstrated; no new monitoring is approved here. Checked-in Home dashboards/metrics still do not evidence idle Standard readiness; H5 remains unapproved. | See [Ops-observable health](#7-ops-observable-health-q12-a6) |
 | Recovery | **PROPOSED:** if a compatible prior Home-mode release exists, rollback only to that build and verify it. On the first Home release there is no compatible rollback target; do not restore the dead legacy fork. Instead keep the appliance page serving an explicit typed unavailable state, keep `/healthz` degraded, and do not replay/promote a failed turn. Smoke must distinguish “deployment/package valid, Home unavailable” from “Home healthy”; the former is not a successful health acceptance. | `course-correction-2026-09-23.md:71`; `deploy_ops_web.sh:1023-1063` |
 | Legacy default | R6 default switch, 24-hour bake, and R7 removal are separate phases; see [Legacy retirement](#legacy-retirement). | — |
@@ -213,13 +213,13 @@ Not accepted until the real-browser rows have dated evidence from the named buil
 
 | # | Slice | Repo | Depends on | Size | Needs Ops access / hardware |
 |---|---|---|---|---|---|
-| S1 | Home stub `HOME-NW-17-browser-admission`: proposed browser kind, owner-approver exclusion, attestation binding, H6 grant-add contract; H5 remains optional and unapproved | Home | Q3-Q5; H6 contract | S | None to build. Deploy to CaticornQueen needs Windows host access |
+| S1 | Home stub `HOME-NW-17-browser-admission`: proposed browser kind, owner-approver exclusion, attestation binding, H6 grant-add contract; H5 remains optional and unapproved | Home | Q3-Q5; H6 contract | S | None to build. Deploy to the Home host needs Windows host access |
 | S2 | Appliance Home client: approved private-file credential, serialized renewal, pairing, NW-18 authenticated HTTP claim list/close, bounded startup reconciliation | TUI | S1 | M | None to build; pairing on Ops needs Ops shell |
 | S3 | Dynamic Home-grant selector/routing, per-connection claim lifecycle, stale-config handling, fresh conversations, uncertainty/capacity accounting | TUI | S2; Q6-Q10; H6 | L | None to build |
 | S4 | Honest unavailable: reason tokens, close reason, browser UI mapping/text, structured logs | TUI | Q11; independent of S1/S2 | S-M | None to build; real-browser check needs Mac and iPad |
 | S5 | Home-admission `/healthz`, pre-expiry credential signal, and traffic-free Grafana `probe_success` alert evidence; no idle Hermes readiness claim or unapproved new monitoring | TUI + Ops | S2; Q12 | S | Existing Ops/Grafana sources must be demonstrated |
 | S6 | Deployment, optional-catalog validator, dynamic smoke, named tailnet/proxy/Origin gates, safe unavailable recovery and runbook | TUI | S3, S5 | M | Dry run needs Ops access |
-| S7 | Ops rollout: Home acceptance of S1, pair once, deploy, real-browser AC-1…AC-10, record evidence and owner acceptance | Ops + TUI | S1, S3-S6; tailnet grant Ops → Home | M | **Ops (SSH, sudo), CaticornQueen/Home admin, Mac Chrome, iPad Safari** |
+| S7 | Ops rollout: Home acceptance of S1, pair once, deploy, real-browser AC-1…AC-10, record evidence and owner acceptance | Ops + TUI | S1, S3-S6; tailnet grant Ops → Home | M | **Ops (SSH, sudo), the Home host/Home admin, Mac Chrome, iPad Safari** |
 | S8 | R6: switch managed/code default to Home after S7 acceptance; record build and bake start | TUI + Ops | S7; HOME-MIG-09 R6 | S | Ops release access |
 | S9 | Complete and evidence the 24-hour bake; hand off R7 removal inventory to existing retirement owner | TUI + Ops | S8; HOME-MIG-09 bake | S | Ops evidence access |
 
@@ -242,11 +242,11 @@ Not accepted until the real-browser rows have dated evidence from the named buil
 ## Unknowns
 
 - Whether anything listens on the Mac-mini ports and why they stopped (Ops/mini access).
-- The actual Home tailnet hostname, Serve route, Caddy/Tailscale listener/backend ACL, and Ops → CaticornQueen tailnet grant.
+- The actual Home tailnet hostname, Serve route, Caddy/Tailscale listener/backend ACL, and Ops → the Home host tailnet grant.
 - The deployed per-device claim limit and whether Home `configuration` exposes all active client grants in the required dynamic form.
 - Whether Ops has an existing blackbox exporter/alert for Home admission; no checked-in Home metric/dashboard evidences idle Standard readiness.
 - Whether Secret Service exists on Ops is no longer a pairing alternative under the approved private-file policy.
-- Whether the deployed Home on CaticornQueen includes `HOME-NW-18` routes (validation records say deployed; this was not re-read on the host).
+- Whether the deployed Home on the Home host includes `HOME-NW-18` routes (validation records say deployed; this was not re-read on the host).
 
 ## Out of scope
 

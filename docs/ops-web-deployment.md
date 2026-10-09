@@ -2,7 +2,7 @@
 
 Use the supported Home path below for the paired appliance integration.
 The later legacy sections retain the existing Caddy deployment at
-`https://hermes-home.chappell-home.dev`, with its `127.0.0.1:8765` backend,
+`https://hermes-home.example.com`, with its `127.0.0.1:8765` backend,
 only until separately authorized rollout and post-bake retirement.
 
 ## Supported Home browser path
@@ -133,13 +133,19 @@ without waiting for Home HTTP; checks must not mistake a reachable page for
 healthy admission or claim Hermes/audio health. No new Ops monitoring is
 installed here.
 
-### Optional named Caddy ingress: `home.chappell-home.dev`
+### Optional named Caddy ingress: `home.example.com`
 
-This is an alternate URL, **not** the legacy `hermes-home.chappell-home.dev`
+This is an alternate URL, **not** the legacy `hermes-home.example.com`
 default switch, R6 bake, or R7 retirement. Leave legacy sites, gateways,
-units, tokens, and unrelated services unchanged. The only supported named
-origin is exactly `https://home.chappell-home.dev`; no trailing path, alias,
-additional public Origin, or proxy-rewritten Origin is accepted. The existing
+units, tokens, and unrelated services unchanged. The operator chooses one exact
+HTTPS DNS origin; `https://home.example.com` is only a placeholder, not a
+hardcoded hostname allowlist. Use a lower-case ASCII DNS hostname, with no IP
+literal (including browser numeric/hex IP forms), wildcard, trailing dot,
+userinfo, path (even `/`), query, fragment, whitespace, or multiple origins.
+Ports must be valid decimal numbers without leading zeros. Explicit `:443`
+is accepted. Runtime preserves valid `.ts.net` nondefault ports, but Caddy
+deployment and the default Serve/Home URL contract require HTTPS port443.
+No additional public Origin or proxy-rewritten Origin is accepted. The existing
 local-listener Origin and missing-Origin native-client behavior are unchanged.
 Keep the backend bound only to `127.0.0.1:8875`.
 
@@ -171,14 +177,16 @@ household Tailscale TCP443 ACL -> Serve raw TCP443 -> 127.0.0.1:443 Caddy
     -> 127.0.0.1:8875 hermes-home-browser.service
 ```
 
-Ops already has Porkbun wildcard DNS `*.chappell-home.dev` pointing to its
-Tailscale address and the `porkbun_tls` DNS-01 TLS snippet. Reconfirm DNS
-before cutover; no record edit is necessary while this remains true. Public
-DNS pointing to a tailnet IP alone is **not** an access boundary: Caddy also
-listens on LAN. Use `deploy/ops/home-browser.caddy.example` verbatim as the
-new `/srv/ops/caddy/sites-enabled/home.chappell-home.dev.caddy`. It imports
-the existing TLS automation; do not copy private keys, read credential values,
-add new public ingress, trust forwarded IP headers, or enable PROXY protocol.
+Configure the chosen hostname's DNS to resolve to the Ops Tailscale address,
+and use the operator's existing DNS-01 TLS automation. All hosts and SSH targets
+in this runbook are examples. Public DNS pointing to a tailnet IP alone is
+**not** an access boundary: Caddy also listens on LAN. Before installing
+`deploy/ops/home-browser.caddy.example`, substitute the exact chosen hostname
+and replace `household_tls` with the existing TLS snippet's name (or retain it
+if that is its actual name). Use a matching site filename, for example
+`/srv/ops/caddy/sites-enabled/home.example.com.caddy`; do not install the
+placeholder verbatim. Do not copy private keys, read credential values, add new
+public ingress, trust forwarded IP headers, or enable PROXY protocol.
 The first handler denies every non-loopback immediate peer with403, before
 any page, health, action, or WebSocket can reach the appliance.
 
@@ -191,7 +199,7 @@ ACL or prove LAN/WAN denial; the following operator evidence is mandatory.
 
 #### Stage B prerequisites, backup, and inventory
 
-1. Use strict SSH: `ssh -oBatchMode=yes -oStrictHostKeyChecking=yes jensen@ops`.
+1. Use strict SSH: `ssh -oBatchMode=yes -oStrictHostKeyChecking=yes HOUSEHOLD_OPS`.
    Reconfirm the approved household owner set on Ops TCP443; do not broaden
    ACLs. Confirm Serve/Funnel state, loopback backend, service/private-file
    metadata, Home admission health, and the published release provenance.
@@ -206,7 +214,7 @@ ACL or prove LAN/WAN denial; the following operator evidence is mandatory.
 4. On Ops, create a new root-owned0700 backup directory under
    `/var/backups/hermes-home-browser` (unique name; never overwrite an older
    backup). With root-only access, preserve Caddyfile, `sites-enabled`, Caddy
-   unit/drop-ins and `/srv/ops/caddy/porkbun.env`, the browser systemd unit/
+   unit/drop-ins and `/srv/ops/caddy/household-tls.env`, the browser systemd unit/
    drop-ins and any EnvironmentFiles, Serve JSON, and current/previous link
    targets. Capture the browser pairing file's checksum privately plus its
    owner/mode and directory mode; do not print/copy it into evidence.
@@ -238,9 +246,9 @@ ACL or prove LAN/WAN denial; the following operator evidence is mandatory.
 3. From the published tagged checkout, in the agreed idle maintenance window:
 
    ```bash
-   python scripts/deploy_home_browser.py deploy --ops-host jensen@ops \
-     --ingress caddy --origin https://home.chappell-home.dev \
-     --home https://caticornqueen.taila59979.ts.net --port 8875 --tag vX.Y.Z
+   python scripts/deploy_home_browser.py deploy --ops-host HOUSEHOLD_OPS \
+     --ingress caddy --origin https://home.example.com \
+     --home https://home.household.ts.net --port 8875 --tag vX.Y.Z
    ```
 
    Substitute the actually published tag, not a locally invented one. The
@@ -277,7 +285,7 @@ sudo tailscale serve --bg --https=443 http://127.0.0.1:8875
 
 Confirm the saved Serve JSON's HTTPS443 root route and no Funnel, then run the
 current reviewed helper's `rollback` with `--ingress serve`,
-`--origin https://ops.taila59979.ts.net`, the same Home URL and port8875.
+`--origin https://display.household.ts.net`, the same Home URL and port8875.
 It checks the saved prior unit matches before restoring it and the prior Home
 release. If the deploy never advanced `current`, retain that prior release and
 restore its backed-up unit instead; do not invoke a rollback to an unrelated
@@ -291,7 +299,7 @@ for diagnosis. The legacy8765 path is **not** a supported rollback.
 Only after the new origin passes Stage B, back up Homepage's existing
 `/srv/ops/homepage/config/services.yaml` with original metadata and add an
 `Agents` tile following its existing conventions: `Hermes Home`, destination
-`https://home.chappell-home.dev/`, `icon: mdi-robot`, a short description.
+`https://home.example.com/`, `icon: mdi-robot`, a short description.
 Do not add monitoring or alter existing legacy tiles. Validate YAML and verify
 the portal renders the tile and clicking it opens the verified appliance.
 Follow the Ops repository's ownership/commit conventions and update the
@@ -375,7 +383,7 @@ it differs:
 import /etc/caddy/sites-enabled/*.caddy
 ```
 
-Make sure DNS for `hermes-home.chappell-home.dev` reaches the ops box and that
+Make sure DNS for `hermes-home.example.com` reaches the ops box and that
 Caddy can complete its certificate flow. For a private CA, keep the CA bundle
 available to the operator and pass `--ca-file` to the smoke check; the browser
 must trust that CA separately.
@@ -425,7 +433,7 @@ Useful overrides:
 
 ```bash
 OPS_HOST=ops.example ./scripts/deploy_ops_web.sh deploy \
-  --origin https://hermes-home.chappell-home.dev \
+  --origin https://hermes-home.example.com \
   --base-dir /opt/hermes-relay-home \
   --profile-config /secure/ops/hermes-home-profile-config.yaml \
   --profile-env-source /secure/ops/home.env

@@ -17,7 +17,7 @@ from urllib.request import Request, urlopen
 from websockets.asyncio.client import connect
 
 
-DEFAULT_ORIGIN = "https://hermes-home.chappell-home.dev"
+DEFAULT_ORIGIN = "https://hermes-home.example.com"
 DEFAULT_TIMEOUT = 10.0
 EXPECTED_STATES = {
     "idle",

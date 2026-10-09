@@ -23,11 +23,14 @@ from check_ops_web import run_check
 from validate_ops_profile_config import read_home_catalog
 
 ROOT = Path(__file__).resolve().parents[1]
-NAMED_ORIGIN = "https://home.chappell-home.dev"
+sys.path.insert(0, str(ROOT))
+from home_display.origin import validate_public_origin
+
 SSH_OPTIONS = ["-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=yes", "-o", "ConnectTimeout=15"]
 
 
 def tailnet_origin(value: str) -> str:
+    validate_public_origin(value, allow_tailnet_port=False)
     if not re.fullmatch(r"https://[a-z0-9-]+\.[a-z0-9-]+\.ts\.net(?::443)?", value):
         raise ValueError("expected an exact household Tailscale HTTPS origin")
     return value
@@ -36,9 +39,9 @@ def tailnet_origin(value: str) -> str:
 def public_origin(value: str, ingress: str) -> str:
     if ingress == "serve":
         return tailnet_origin(value)
-    if ingress != "caddy" or value != NAMED_ORIGIN:
-        raise ValueError("Caddy ingress requires the exact approved household origin")
-    return value
+    if ingress != "caddy":
+        raise ValueError("unsupported browser ingress")
+    return validate_public_origin(value, allow_tailnet_port=False)
 
 
 def unit(origin: str, home: str, port: int) -> str:
@@ -236,7 +239,7 @@ def main(argv=None):
     parser.add_argument("--ops-host", required=True)
     parser.add_argument("--origin", required=True)
     parser.add_argument("--ingress", choices=("serve", "caddy"), default="serve",
-                        help="preconfigured HTTPS Serve (default) or approved named Caddy site via raw TCP Serve")
+                        help="preconfigured HTTPS Serve (default) or operator-selected exact HTTPS Caddy site via raw TCP Serve")
     parser.add_argument("--home", required=True)
     parser.add_argument("--tag", help="existing release tag; required for deploy")
     parser.add_argument("--port", type=int, default=8875, help="dedicated loopback port; legacy 8765 is prohibited")

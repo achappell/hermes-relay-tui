@@ -1,4 +1,4 @@
-# Non-secret Ops catalog for hermes-home.chappell-home.dev.
+# Non-secret Ops catalog for hermes-home.example.com.
 # Keep the real file outside Git and pass it with --profile-config.
 version: 1
 profiles:

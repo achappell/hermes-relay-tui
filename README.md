@@ -804,7 +804,7 @@ physical iPad gate.
 ### Ops deployment behind Caddy
 
 The repeatable legacy W/K deployment targets the ops Linux box at
-`https://hermes-home.chappell-home.dev`. The appliance binds to loopback on
+`https://hermes-home.example.com`. The appliance binds to loopback on
 the ops host; Caddy owns HTTPS and proxies the page, `/state` WebSocket, and
 `/action` route. The per-profile Hermes bearer tokens stay in the ops systemd
 environment and are never sent to the browser. The Home bridge transport is

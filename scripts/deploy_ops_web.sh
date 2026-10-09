@@ -3,7 +3,7 @@
 set -Eeuo pipefail
 shopt -s nullglob
 
-readonly DEFAULT_ORIGIN="https://hermes-home.chappell-home.dev"
+readonly DEFAULT_ORIGIN="https://hermes-home.example.com"
 readonly DEFAULT_BASE_DIR="/opt/hermes-relay-home"
 readonly DEFAULT_SERVICE="hermes-relay-home"
 readonly DEFAULT_SERVICE_USER="hermes-home"
@@ -332,7 +332,7 @@ bootstrap_remote() {
 	local caddy_upload="/tmp/hermes-relay-home-bootstrap-${BASHPID}.caddy"
 	mkdir -p "$temp_root"
 	render_template "$REPO_ROOT/deploy/systemd/hermes-relay-home.service" "$unit_local"
-	render_template "$REPO_ROOT/deploy/caddy/hermes-home.chappell-home.dev.caddy" "$caddy_local"
+	render_template "$REPO_ROOT/deploy/caddy/hermes-home.example.com.caddy" "$caddy_local"
 	scp "${SSH_OPTIONS[@]}" "$unit_local" "$ops_host:$unit_upload"
 	scp "${SSH_OPTIONS[@]}" "$caddy_local" "$ops_host:$caddy_upload"
 	ssh "${SSH_OPTIONS[@]}" "$ops_host" bash -s -- \
