@@ -1,17 +1,38 @@
 # W/K browser deployment
 
-Use the supported Home path below for the paired appliance integration.
-The later legacy sections retain the existing Caddy deployment at
-`https://hermes-home.example.com`, with its `127.0.0.1:8765` backend,
-only until separately authorized rollout and post-bake retirement.
+HomeBridge is the default for `hermes-relay-home --browser-voice` (R6).
+The paired Home appliance uses household-only ingress at an operator-selected
+origin, such as `https://home.example.com` or the `.ts.net` route below.
+Non-browser appliance defaults are unchanged. Explicit `--browser-transport legacy`
+(or the corresponding configuration/environment override) remains available until R7.
 
 ## Supported Home browser path
 
-This is the repository-supported, explicitly selected Home appliance path.
-The remaining Caddy/three-token sections below document the retained legacy
-deployment only. They are not Home prerequisites or a supported Home rollback.
-S7 host/iPad acceptance, the R6 default switch and bake, and R7 legacy retirement
-remain separate authorized work; this implementation does not mark W/K deployed.
+This is the repository-supported, default Home browser appliance path.
+The remaining Caddy/three-token sections document legacy deployment retained
+until R7 only, not Home prerequisites or a supported Home rollback. R6 changes
+the browser default; it does not stop legacy units, revoke tokens, remove
+`voice-*` routes, or delete browser code. R7 requires the bake to pass and
+separate owner authorization; this code change alone does not mark W/K deployed.
+
+### R6 bake and R7 gate
+
+Record the published build version and bake start time in the operator record.
+The approved R6 bake is 72 hours (the specification minimum is 24 hours), with
+manual checks at start, +2h, +12h, +24h, then daily; no new monitoring is required.
+Check Home `/healthz`, admission failures, unplanned unit restarts, ingress 5xx
+and connection failures, claims returning to zero after tabs close, and at least
+one evening iPad session and one Mac session without disconnections. Compare the
+complete ingress hostname matrix against the protected pre-change baseline.
+
+The separately authorized R6 removal of the old `hermes-home.example.com` Caddy
+site has no redirect: old bookmarks must be repointed and the unconfigured name
+should return plain HTTP 404. Back up the site and validate/reload the shared
+Caddy configuration without restarting it. Retain the legacy service, tokens,
+`voice-*` routes, and code until R7; old-host 404s are informational during the
+bake. Repair Home admission on failure rather than reviving legacy. Use the
+Home-only rollback below when needed. A passing bake and explicit owner sign-off
+are required before any browser retirement at R7.
 
 ### Boundary and one-time pairing
 
@@ -135,9 +156,10 @@ installed here.
 
 ### Optional named Caddy ingress: `home.example.com`
 
-This is an alternate URL, **not** the legacy `hermes-home.example.com`
-default switch, R6 bake, or R7 retirement. Leave legacy sites, gateways,
-units, tokens, and unrelated services unchanged. The operator chooses one exact
+This is an alternate Home URL, not a prerequisite for the R6 default or an
+authorization for R7 retirement. Named-ingress setup alone leaves legacy sites,
+gateways, units, tokens, and unrelated services unchanged; the separately
+authorized R6 old-site removal is described above. The operator chooses one exact
 HTTPS DNS origin; `https://home.example.com` is only a placeholder, not a
 hardcoded hostname allowlist. Use a lower-case ASCII DNS hostname, with no IP
 literal (including browser numeric/hex IP forms), wildcard, trailing dot,
@@ -331,7 +353,12 @@ then launches that interpreter outside the checkout and repeats the same real
 Home API/bridge smoke. No extra appliance test dependency is installed into
 the wheel environment.
 
-## Legacy-only one-time ops preparation
+## Legacy-only one-time ops preparation — retained until R7
+
+These procedures preserve explicit legacy operation only; do not use them to
+deploy or roll back the default Home browser. The retained unit selects
+`--browser-transport legacy`. This deployment and its configuration are retired
+at R7, not by the R6 default switch.
 
 The SSH account used by the deployment command must be able to write the
 release root. The service user must already exist; it does not need shell
@@ -401,7 +428,7 @@ repository. It refuses to overwrite an unrelated Caddy site, validates the
 complete Caddyfile, enables the service, and reloads Caddy. It does not start
 the appliance until the first deploy.
 
-## Routine deploy
+## Routine deploy — legacy only, retained until R7
 
 Run from a clean worktree containing the commit you want to serve. A complete
 catalog deploy takes both private inputs; the script validates the catalog,
@@ -443,7 +470,7 @@ The public-origin option is passed to the appliance as an exact Origin allow
 entry. Caddy does not rewrite the browser's Origin header. The private
 listener origin remains accepted for direct testing.
 
-## Rollback
+## Rollback — legacy only, retained until R7
 
 Rollback uses the previous installed release; it does not rebuild or contact a
 package index:
@@ -470,7 +497,7 @@ OPS_HOST=ops.example OPS_CHECK_CA_FILE=/path/to/ops-ca.pem \
 Use `--insecure-health-check` only for a controlled diagnostic. It changes
 certificate verification for the local probe, not for the browser or Caddy.
 
-## Failure handling
+## Failure handling — legacy only, retained until R7
 
 - A dirty worktree, missing build tool, failed browser check, generated asset
   drift, invalid catalog, or missing profile token stops before SSH upload.

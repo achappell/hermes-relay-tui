@@ -659,6 +659,7 @@ def test_bootstrap_renders_and_installs_the_managed_service_and_caddy_site(fake_
     assert result.returncode == 0, result.stderr
     unit = Path(fake_ops["etc"]) / "systemd/system/hermes-relay-home.service"
     site = site_dir / "hermes-home.example.com.caddy"
+    assert "--browser-voice --browser-transport legacy" in unit.read_text()
     assert "--display-host 127.0.0.1" in unit.read_text()
     assert "--display-public-origin https://hermes-home.example.com" in unit.read_text()
     assert "hermes-home.example.com {" in site.read_text()

@@ -229,6 +229,8 @@ def _args(**overrides):
         "wake_followup_seconds": 6.0,
         "wake_barge_in": False,
         "browser_voice": False,
+        # Existing voice-session fixtures exercise the retained legacy path.
+        "browser_transport": "legacy",
         "display_public_origin": None,
     }
     values.update(overrides)
@@ -2515,6 +2517,7 @@ def test_browser_session_limit_is_configurable():
     assert limited.display_max_browser_sessions == 3
 
 
+@pytest.mark.parametrize("explicit_transport", [False, True])
 @pytest.mark.parametrize("public_origin", [
     None,
     "https://display.household.ts.net",
@@ -2525,7 +2528,9 @@ def test_browser_session_limit_is_configurable():
     "https://other.example.com",
     "https://display.nested.example.com",
 ])
-def test_home_browser_transport_uses_private_pairing_and_lazy_per_tab_sessions(tmp_path, public_origin):
+def test_home_browser_transport_uses_private_pairing_and_lazy_per_tab_sessions(
+    tmp_path, monkeypatch, public_origin, explicit_transport,
+):
     from home_display.home_admission import BrowserSession
     from home_display.home_store import PrivatePairings
     from home_client import PairingRecord
@@ -2537,11 +2542,17 @@ def test_home_browser_transport_uses_private_pairing_and_lazy_per_tab_sessions(t
     PrivatePairings(credential_file).save(PairingRecord(
         "https://home.example", "device-test", "device-secret", 1, time.time() + 86400 * 90,
     ))
-    args = appliance_module.build_arg_parser([]).parse_args([
-        "--browser-voice", "--browser-transport", "home",
+    config_path = tmp_path / "home.yaml"
+    config_path.write_text("{}\n", encoding="utf-8")
+    monkeypatch.delenv("HERMES_RELAY_TUI_BROWSER_TRANSPORT", raising=False)
+    argv = [
+        "--config", str(config_path), "--browser-voice",
         "--home-bridge-url", "wss://home.example/api/v1/bridge/ws",
         "--home-device-credential-file", str(credential_file),
-    ])
+    ]
+    if explicit_transport:
+        argv.extend(["--browser-transport", "home"])
+    args = appliance_module.build_arg_parser(argv).parse_args(argv)
     args.display_public_origin = public_origin
     relay = Appliance(args, profiles=_catalog_profiles(), publisher=RecordingPublisher())
     relay._build()
@@ -2589,11 +2600,66 @@ def test_home_browser_startup_rejects_invalid_public_origins(tmp_path, origin):
     assert relay._server is None
 
 
-def test_home_browser_parser_does_not_resolve_legacy_profile_tokens(tmp_path, monkeypatch):
+@pytest.mark.parametrize(
+    ("browser_voice", "configured", "environment", "explicit", "expected"),
+    [
+        (True, None, None, None, "home"),
+        (False, None, None, None, "legacy"),
+        (True, "legacy", None, None, "legacy"),
+        (True, "home", "legacy", None, "legacy"),
+        (True, "legacy", "home", None, "home"),
+        (True, "home", "home", "legacy", "legacy"),
+        (True, "legacy", "legacy", "home", "home"),
+    ],
+)
+def test_browser_transport_default_and_override_precedence(
+    tmp_path, monkeypatch, browser_voice, configured, environment, explicit, expected,
+):
+    config_path = tmp_path / "transport.yaml"
+    config_path.write_text(
+        f"browser_transport: {configured}\n" if configured else "{}\n",
+        encoding="utf-8",
+    )
+    monkeypatch.delenv("HERMES_RELAY_TUI_BROWSER_TRANSPORT", raising=False)
+    if environment is not None:
+        monkeypatch.setenv("HERMES_RELAY_TUI_BROWSER_TRANSPORT", environment)
+    argv = ["--config", str(config_path)]
+    if browser_voice:
+        argv.append("--browser-voice")
+    if explicit is not None:
+        argv.extend(["--browser-transport", explicit])
+    resolve_tokens = []
+    original_parser = config.build_arg_parser
+
+    def record_parser(*args, **kwargs):
+        resolve_tokens.append(kwargs["resolve_relay_profile_tokens"])
+        return original_parser(*args, **kwargs)
+
+    monkeypatch.setattr(config, "build_arg_parser", record_parser)
+    args = appliance_module.build_arg_parser(argv).parse_args(argv)
+
+    assert args.browser_transport == expected
+    assert resolve_tokens == [expected == "legacy"]
+    relay = Appliance(args, session=FakeSession())
+    assert relay._uses_home_browser_transport is (expected == "home")
+
+
+@pytest.mark.parametrize("browser_voice", [False, True])
+def test_browser_transport_fallback_is_scoped_to_browser_voice(browser_voice):
+    args = _args(browser_voice=browser_voice)
+    del args.browser_transport
+    relay = Appliance(args, session=FakeSession())
+
+    assert relay._uses_home_browser_transport is browser_voice
+
+
+@pytest.mark.parametrize("configured", [False, True])
+def test_home_browser_parser_does_not_resolve_legacy_profile_tokens(
+    tmp_path, monkeypatch, configured,
+):
     config_path = tmp_path / "home.yaml"
     config_path.write_text(
-        """
-browser_transport: home
+        ("browser_transport: home\n" if configured else "") + """
 profiles:
   amanda:
     display_name: Amanda
@@ -2602,6 +2668,7 @@ profiles:
 """,
         encoding="utf-8",
     )
+    monkeypatch.delenv("HERMES_RELAY_TUI_BROWSER_TRANSPORT", raising=False)
 
     def fail_if_resolved(*_args, **_kwargs):
         raise AssertionError("Home parser resolved a legacy bearer token")

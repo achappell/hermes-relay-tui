@@ -104,11 +104,12 @@ chmod 600 ~/.hermes-relay-tui/certs/display-ca-key.pem \
     ~/.hermes-relay-tui/certs/display-key.pem
 ```
 
-Build and launch the browser-enabled appliance:
+Build and launch the explicitly selected legacy browser appliance for this
+retained LAN test (HomeBridge is the browser default; legacy retirement is R7):
 
 ```bash
 npm --prefix home_display/web run build
-venv/bin/python -m home_display.appliance --browser-voice \
+venv/bin/python -m home_display.appliance --browser-voice --browser-transport legacy \
     --display-host 192.168.0.35 --display-remote --display-port 8765 \
     --display-tls-cert ~/.hermes-relay-tui/certs/display-cert.pem \
     --display-tls-key ~/.hermes-relay-tui/certs/display-key.pem
