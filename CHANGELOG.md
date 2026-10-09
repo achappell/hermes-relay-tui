@@ -13,6 +13,21 @@
 - Validate the deployment smoke probe's malformed-action JSON error shape instead of legacy wording, so the Home browser's valid HTTP 400 response passes.
 - Unlock Home browser audio inside a user gesture (typed Send, tap, or key press) instead of only creating the audio context when a reply starts, resume contexts Safari reports as `interrupted`, and re-resume on `audio_start`, so spoken replies are no longer silent on Safari after a typed turn, page reload, or an iOS interruption. Verified in headless WebKit only; audible output on real Safari is not yet confirmed.
 
+## 0.13.0 (2026-10-09)
+
+<!-- Release notes generated using configuration in .github/release.yml at main -->
+
+## What's Changed
+### Other Changes
+* docs(ops): record v0.12.0 Home browser production rollout by @achappell in https://github.com/achappell/hermes-relay-tui/pull/229
+* fix(ops): accept Home malformed-action contract in browser smoke by @achappell in https://github.com/achappell/hermes-relay-tui/pull/231
+* docs: mark WK-1 and WK-2 done on owner acceptance by @achappell in https://github.com/achappell/hermes-relay-tui/pull/232
+* fix(home-browser): unlock Web Audio inside user gestures for Safari by @achappell in https://github.com/achappell/hermes-relay-tui/pull/233
+* feat(ops): support guarded named Home browser ingress by @achappell in https://github.com/achappell/hermes-relay-tui/pull/234
+
+
+**Full Changelog**: https://github.com/achappell/hermes-relay-tui/compare/v0.12.0...v0.13.0
+
 ## 0.12.0 (2026-10-09)
 
 <!-- Release notes generated using configuration in .github/release.yml at main -->
