@@ -721,11 +721,12 @@ is how the real loop gets validated — including
 tested with no Hermes at all.
 
 The browser and iPad tab are one W/K surface. Pass `--browser-voice` with the
-remote display options; the served page owns microphone permission, browser
-speech recognition, and speaker playback, while the appliance receives only
-recognized turn text and does not open a local audio device. The default
-`legacy` browser transport still uses configured per-profile bearer sessions
-until the separately accepted R6 rollout. A recognized wake phrase selects a profile, the
+Home pairing and loopback display options below; the served page owns microphone
+permission, browser speech recognition, and speaker playback, while the appliance
+receives only recognized turn text and does not open a local audio device.
+HomeBridge (`home`) is the browser default at R6; explicit `--browser-transport legacy`
+retains per-profile bearer sessions until R7. Non-browser defaults are unchanged.
+A recognized wake phrase selects a profile, the
 browser discards ambient speech, and a phrase-plus-question is sent as one
 turn. After each completed answer it opens an eight-second wake-free follow-up
 window and reopens it after every non-empty follow-up. Exactly `stop` is a
@@ -773,18 +774,18 @@ Timing is explicitly absent.
 The old static conversation-handle flags and credential environment fallback
 are removed from the Home path. `scripts/deploy_home_browser.py` is the isolated
 tagged Home deployment/rollback path; it never rolls back into legacy services.
-No deployment, R6 default switch/bake, or R7 legacy retirement is implied by
-this repository implementation.
+The R6 default switch does not itself deploy a release or complete the 72-hour
+bake. R7 browser retirement requires a passing bake and separate owner sign-off.
 
 After the display is connected and idle in the legacy path, tap **Enable
 hands-free** to grant permission and listen for the configured profile catalog.
 In Home mode, a configured wake shortcut selects its exact currently usable
 grant, while the selector remains available without shortcuts. The browser
 reconnects only its local state channel after a service restart. The following
-LAN/TLS example is **legacy-only**, not the supported Home deployment boundary:
+LAN/TLS example is **legacy-only, retained until R7**, not the supported Home deployment boundary:
 
 ```bash
-hermes-relay-home --browser-voice \
+hermes-relay-home --browser-voice --browser-transport legacy \
   --display-host 192.168.1.20 --display-remote --display-port 8765 \
   --display-tls-cert ~/.hermes-relay-tui/certs/display-cert.pem \
   --display-tls-key ~/.hermes-relay-tui/certs/display-key.pem
@@ -803,8 +804,10 @@ physical iPad gate.
 
 ### Ops deployment behind Caddy
 
-The repeatable legacy W/K deployment targets the ops Linux box at
-`https://hermes-home.example.com`. The appliance binds to loopback on
+The repeatable legacy W/K deployment is **retained until R7**, targeting the ops
+Linux box at `https://hermes-home.example.com`. For the default Home browser use
+`scripts/deploy_home_browser.py` and the [Home runbook](docs/ops-web-deployment.md#supported-home-browser-path).
+The legacy unit explicitly selects `--browser-transport legacy`. The appliance binds to loopback on
 the ops host; Caddy owns HTTPS and proxies the page, `/state` WebSocket, and
 `/action` route. The per-profile Hermes bearer tokens stay in the ops systemd
 environment and are never sent to the browser. The Home bridge transport is

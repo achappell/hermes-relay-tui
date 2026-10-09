@@ -1918,7 +1918,11 @@ class Appliance:
     @property
     def _uses_home_browser_transport(self) -> bool:
         return (
-            str(getattr(self.args, "browser_transport", "legacy") or "")
+            str(getattr(
+                self.args,
+                "browser_transport",
+                "home" if getattr(self.args, "browser_voice", False) else "legacy",
+            ) or "")
             .strip()
             .lower()
             == "home"
@@ -2875,15 +2879,16 @@ def build_arg_parser(argv: list[str] | None = None) -> argparse.ArgumentParser:
     raw_argv = list(sys.argv[1:] if argv is None else argv)
     explicit_transport = config._option_value(raw_argv, "--browser-transport")
     environment_transport = os.getenv("HERMES_RELAY_TUI_BROWSER_TRANSPORT")
+    default_transport = "home" if "--browser-voice" in raw_argv else "legacy"
     browser_transport_default = str(
         explicit_transport
         if explicit_transport is not None
         else (
             environment_transport
             if environment_transport is not None
-            else settings.get("browser_transport", "legacy")
+            else settings.get("browser_transport", default_transport)
         )
-        or "legacy"
+        or default_transport
     ).strip().lower()
     if browser_transport_default not in HOME_BROWSER_TRANSPORTS:
         raise SystemExit(
@@ -2974,8 +2979,8 @@ def build_arg_parser(argv: list[str] | None = None) -> argparse.ArgumentParser:
         choices=HOME_BROWSER_TRANSPORTS,
         default=browser_transport_default,
         help=(
-            "browser session boundary: legacy uses direct profile bearers; "
-            "home uses the approved Device-credential bridge"
+            "browser session boundary: home (default with --browser-voice) uses "
+            "the approved Device-credential bridge; legacy uses direct profile bearers until R7"
         ),
     )
     parser.add_argument(

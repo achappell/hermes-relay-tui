@@ -1,4 +1,5 @@
-# Non-secret Ops catalog for hermes-home.example.com.
+# Non-secret legacy Ops catalog, retained until browser retirement at R7.
+# HomeBridge is the browser default; this catalog requires --browser-transport legacy.
 # Keep the real file outside Git and pass it with --profile-config.
 version: 1
 profiles:
