@@ -1,6 +1,6 @@
 # Active epic parents are in story-index.yaml; numeric story prefixes remain historical.
 generated: 09-08-2026 00:00
-last_updated: '2026-10-08'
+last_updated: '2026-10-09'
 project: hermes-relay-tui
 project_key: NOKEY
 tracking_system: file-system
@@ -40,8 +40,8 @@ development_status:
   1-e-3-response-audio-delivery: backlog
   1-e-4-bounded-follow-up-and-exact-stop: backlog
   1-e-5-recovery-without-replay: backlog
-  1-wk-1-one-shared-w-k-browser-voice-plus-display-surface-for-author: review
-  1-wk-2-concurrent-w-k-browser-session-isolation: review
+  1-wk-1-one-shared-w-k-browser-voice-plus-display-surface-for-author: done
+  1-wk-2-concurrent-w-k-browser-session-isolation: done
   2-p-1-expose-the-puck-s-local-capture-response-and-status-phases-w: backlog
   2-p-2-fail-closed-and-show-unavailable-disconnected-status-when-th: backlog
   3-p-1-advertise-independently-identifiable-unconfigured-state-for: backlog
@@ -53,7 +53,7 @@ development_status:
   standard-6-puck-migrate-respeaker-puck-path: done
   standard-7-esp32-add-touch-display-audio-session-adapter: done
   standard-8-wk-migrate-browser-and-ipad-routes: done
-  wk-home-01-migrate-production-browser-to-homebridge: in-progress # repo integration; S7/R6/R7 remain unaccepted/undeployed
+  wk-home-01-migrate-production-browser-to-homebridge: in-progress # typed-browser rollout deployed and verified; R6/R7 retirement remain open
   epic-4: backlog
   tui-retire-01: backlog
   epic-5: in-progress
