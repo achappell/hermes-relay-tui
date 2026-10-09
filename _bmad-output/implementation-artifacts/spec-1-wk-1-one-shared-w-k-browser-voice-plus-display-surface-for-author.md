@@ -2,7 +2,7 @@
 title: 'Recover W/K hands-free after response playback'
 type: 'bugfix'
 created: '2026-09-10'
-status: 'in-review'
+status: 'done'
 route: 'correct-course'
 review_loop_iteration: 0
 baseline_commit: '959dc2b7ea89c83d4d1908560ef9f4115ed84b81'

@@ -21,7 +21,7 @@ context:
   - '{project-root}/docs/ops-web-deployment.md'
 ---
 
-> **Status: in review — repository implementation, not deployed.** The authorized S2/S3/S4 and repo-local S5/S6 work is recorded in [implementation validation](validation-wk-home-browser-integration.md). `WK-1` and `WK-2` remain in `review`; S7 host/hardware acceptance, R6 default switch/bake, and R7 retirement are not completed here. The owner-approved decisions dated 2026-10-08 and subsequent authorized implementation scope govern the consumer path; historical inventory below is not deployment evidence.
+> **Status: in review — repository implementation, not deployed.** The authorized S2/S3/S4 and repo-local S5/S6 work is recorded in [implementation validation](validation-wk-home-browser-integration.md). `WK-1` and `WK-2` moved to `done` on owner acceptance (2026-10-09; see the Acceptance section of the validation record); R6 default switch/bake and R7 retirement are not completed here. The owner-approved decisions dated 2026-10-08 and subsequent authorized implementation scope govern the consumer path; historical inventory below is not deployment evidence.
 >
 > Evidence tags: **[FACT]** cites a file and line on `origin/main` (TUI `9afdd51`, Home `71539fc`). **[INFERENCE]** is my conclusion from facts. **UNKNOWN** is not established by any artifact I could read. Host facts come from the 2026-10-08 read-only Ops diagnosis (a session artifact, not committed here); they are tagged **[OPS]**.
 

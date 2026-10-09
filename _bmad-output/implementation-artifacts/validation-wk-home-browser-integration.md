@@ -151,3 +151,15 @@ Managed Chromium exercised the built application with independent reviewer `brow
 - Two witnesses completed seven successful benign typed turns total (first3, second4 including post-restart). Witness2 independently verified same-Profile tab isolation, reload receiving only a snapshot/no voice-send before explicit action, browser credential absence, backend refusals and legacy-host separation. Final shared report `local://browser-production-verification.md` now contains witness2's report; the first report's completed results were preserved in the summary above before replacement.
 - Witness2 observed one initial Spark Profile-switch error stating Hermes was not responding/no replay; a subsequent Spark selection and real turn succeeded. Cause undetermined. This observation and the deploy-checker400-wording defect remain explicit limitations, not hidden by healthy final admission.
 - Final result: **released typed-browser rollout usable at https://ops.taila59979.ts.net, health200ok, no re-pair, no further owner action required**. No independent external-WAN, physical iPad/voice/hardware, bake, broader monitoring or R7 retirement acceptance claimed.
+
+## Owner acceptance — 2026-10-09
+
+Amanda explicitly accepted `WK-1` and `WK-2` as done on 2026-10-09, and the tracker moved `1-wk-1-one-shared-w-k-browser-voice-plus-display-surface-for-author` and `1-wk-2-concurrent-w-k-browser-session-isolation` from `review` to `done`. `WK-1`'s own spec status changed to `done` accordingly (`WK-2`'s spec already read `done`).
+
+Evidence supporting the acceptance, all recorded above:
+
+- Production: released `v0.12.0` (`96efc1b`) deployed on Ops at `https://ops.taila59979.ts.net`, Tailscale-only with no Funnel; Home on `main` `3a0eec0`. Merged PRs: TUI [#226](https://github.com/achappell/hermes-relay-tui/pull/226), [#227](https://github.com/achappell/hermes-relay-tui/pull/227), [#229](https://github.com/achappell/hermes-relay-tui/pull/229), [#231](https://github.com/achappell/hermes-relay-tui/pull/231); Home #102, #103, #104.
+- Two independent witnesses ran seven real typed turns total; dynamic Profiles Amanda, Jensen and Spark; two-tab isolation; fresh reload with no replay; no browser credentials; wrong-Origin rejection; restart persistence (section "Independent production browser and safe restart evidence").
+- Owner-reported: Amanda manually tested typed and real voice turns on her iPad in Safari. This is the owner's report; no instrumented capture of that session is recorded here.
+
+Not claimed by this acceptance: external-WAN probing, Guided Access/kiosk, other-browser or other-hardware validation, broader monitoring, the unexplained one-time Spark Profile-switch error, or the deploy-checker `400` wording mismatch listed above (those limitations stand as written). `WK-HOME-01` stays `in-progress`: R6 default switch/bake and R7 legacy retirement are not done.

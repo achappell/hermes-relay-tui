@@ -507,7 +507,7 @@ stories:
       - tui:TUI-HOME-01
       - tui:STD-8
     surface: W/K
-    evidence_note: Draft spec only (2026-10-08); every design choice is a PROPOSED owner question. WK-1 and WK-2 remain in review; gating their acceptance on this story's Home-mode deployment and real-browser evidence is a PROPOSED owner decision, not yet made.
+    evidence_note: Typed-browser rollout deployed and verified on Ops (v0.12.0, 2026-10-09; see validation-wk-home-browser-integration.md). WK-1 and WK-2 accepted done by the owner on 2026-10-09. R6 default switch/bake and R7 legacy retirement remain open; this story stays in-progress.
   - id: 2-E-1
     title: Render the Room-scoped Ambient Surface in native LVGL.
     surface: E
