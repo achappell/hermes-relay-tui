@@ -800,7 +800,7 @@ async def test_state_accepts_the_server_http_origin(tmp_path):
 @pytest.mark.asyncio
 async def test_state_accepts_the_configured_public_origin(tmp_path):
     (tmp_path / "index.html").write_text("home", encoding="utf-8")
-    public_origin = "https://hermes-home.chappell-home.dev"
+    public_origin = "https://hermes-home.example.com"
     server = DisplayServer(
         DisplayStatePublisher(),
         tmp_path,
@@ -820,11 +820,11 @@ async def test_state_accepts_the_configured_public_origin(tmp_path):
 @pytest.mark.parametrize(
     "origin",
     [
-        "http://hermes-home.chappell-home.dev",
-        "https://hermes-home.chappell-home.dev:444",
-        "https://hermes-home.chappell-home.dev.evil",
-        "https://hermes-home.chappell-home.dev/other",
-        "https://hermes-home.chappell-home.dev/?probe=1",
+        "http://hermes-home.example.com",
+        "https://hermes-home.example.com:444",
+        "https://hermes-home.example.com.evil",
+        "https://hermes-home.example.com/other",
+        "https://hermes-home.example.com/?probe=1",
     ],
 )
 async def test_state_rejects_origins_that_only_resemble_the_public_origin(tmp_path, origin):
@@ -832,7 +832,7 @@ async def test_state_rejects_origins_that_only_resemble_the_public_origin(tmp_pa
     server = DisplayServer(
         DisplayStatePublisher(),
         tmp_path,
-        public_origin="https://hermes-home.chappell-home.dev",
+        public_origin="https://hermes-home.example.com",
     )
     info = await server.start()
     try:
@@ -852,7 +852,7 @@ def test_public_origin_rejects_a_path_or_non_http_scheme(tmp_path):
         DisplayServer(
             DisplayStatePublisher(),
             tmp_path,
-            public_origin="wss://hermes-home.chappell-home.dev/state",
+            public_origin="wss://hermes-home.example.com/state",
         )
 
 
@@ -867,7 +867,7 @@ async def test_public_origin_reaches_action_route_without_dispatching_malformed_
     server = DisplayServer(
         DisplayStatePublisher(),
         tmp_path,
-        public_origin="https://hermes-home.chappell-home.dev",
+        public_origin="https://hermes-home.example.com",
         on_action=on_action,
     )
     info = await server.start()
@@ -875,7 +875,7 @@ async def test_public_origin_reaches_action_route_without_dispatching_malformed_
         request = Request(
             f"http://{info.host}:{info.port}/action",
             method="POST",
-            headers={"Origin": "https://hermes-home.chappell-home.dev"},
+            headers={"Origin": "https://hermes-home.example.com"},
         )
         with pytest.raises(HTTPError) as error:
             await asyncio.to_thread(lambda: urlopen(request))

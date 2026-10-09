@@ -4,12 +4,12 @@
 
 ### Features
 
-- Add opt-in `home.chappell-home.dev` deployment checks for household-only raw-TCP Tailscale Serve through a loopback-peer-gated Caddy site, with strict SSH and matching saved-Origin rollback. Keep the existing `.ts.net` path; named cutover and portal publication require separate operational authorization and a published release.
+- Add opt-in operator-selected HTTPS DNS Origin deployment checks (example: `https://home.example.com`) for household-only raw-TCP443 Tailscale Serve to `127.0.0.1:443` through an all-path loopback-peer-gated Caddy site, with no Funnel, strict SSH and matching saved-Origin rollback. Keep the existing `.ts.net` path; named cutover and portal publication require separate operational authorization and a published release.
 - Add the authorized Home browser appliance path: private durable pairing and renewal, live Home Profile selection, per-tab fresh claims with HTTP cleanup, typed admission failures, and admission-only health. Provide isolated tagged Home deployment/rollback tooling and real local Home integration smoke. Production rollout, iPad acceptance, and post-bake legacy retirement remain separate gates.
 
 ### Bug fixes
 
-- Fix Home appliance startup rejecting the explicitly approved `https://home.chappell-home.dev` Origin even though the deploy helper accepted it. Preserve valid `.ts.net` Origins, reject wildcard/unapproved names, and test generated deployment-unit Origins through the real appliance and display startup path. The failed v0.13.0 cutover was rolled back; another published release is required before retrying.
+- Fix Home appliance startup rejecting a configured named HTTPS DNS Origin even though the deploy helper accepted it. Share strict single-Origin validation without a hardcoded hostname allowlist; reject IP forms, wildcard names and ambiguous URL syntax. Preserve valid `.ts.net` runtime ports; Caddy and default Serve deployments require HTTPS443 (explicit `:443` accepted). Cover generated deployment-unit Origins through the real appliance and display startup path. The failed v0.13.0 cutover was rolled back; another published release is required before retrying. No production rollout or Stage C acceptance is claimed by this fix.
 - Keep the Home conversation connected when Ctrl+C stops only the remaining local response audio; preserve remote-turn interruption and failure recovery.
 - Validate the deployment smoke probe's malformed-action JSON error shape instead of legacy wording, so the Home browser's valid HTTP 400 response passes.
 - Unlock Home browser audio inside a user gesture (typed Send, tap, or key press) instead of only creating the audio context when a reply starts, resume contexts Safari reports as `interrupted`, and re-resume on `audio_start`, so spoken replies are no longer silent on Safari after a typed turn, page reload, or an iOS interruption. Verified in headless WebKit only; audible output on real Safari is not yet confirmed.

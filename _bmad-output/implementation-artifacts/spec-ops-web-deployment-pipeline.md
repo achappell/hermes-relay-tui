@@ -20,7 +20,7 @@ context:
 
 Make the W/K browser display repeatably deployable from a clean checkout to the
 existing ops Linux box, with its own Caddy hostname:
-`hermes-home.chappell-home.dev`.
+`hermes-home.example.com`.
 
 The operator should be able to build, upload, activate, verify, and roll back a
 versioned release with one local command. The appliance remains a normal
@@ -74,7 +74,7 @@ documented service/site files only after validating the rendered configuration.
 | Deployment | `scripts/deploy_ops_web.sh` | Preflight, package, SSH release upload/activation, health check, and rollback. |
 | Public smoke probe | `scripts/check_ops_web.py` | Verify the public static page, `/state` WebSocket handshake, and safe `/action` routing through Caddy. |
 | Ops service | `deploy/systemd/hermes-relay-home.service` | Loopback browser appliance service with an external `EnvironmentFile`. |
-| HTTPS proxy | `deploy/caddy/hermes-home.chappell-home.dev.caddy` | Hostname-scoped reverse proxy for the appliance, including WebSocket traffic. |
+| HTTPS proxy | `deploy/caddy/hermes-home.example.com.caddy` | Hostname-scoped reverse proxy for the appliance, including WebSocket traffic. |
 | Operator runbook | `docs/ops-web-deployment.md`, `README.md` | One-time ops bootstrap, repeatable deploy/rollback commands, DNS/TLS and secret handling. |
 
 ## Tasks & Acceptance
@@ -96,7 +96,7 @@ documented service/site files only after validating the rendered configuration.
 
 ### Acceptance criteria
 
-- [x] A browser served from `https://hermes-home.chappell-home.dev` can load the
+- [x] A browser served from `https://hermes-home.example.com` can load the
   static display, open `/state`, and post `/action` through Caddy; the automated
   smoke gate proves all three paths without dispatching a real household action.
 - [x] A direct deployment with no public-origin option retains current behavior.
@@ -115,7 +115,7 @@ security boundary. The hostname gets its own Caddy site block and no public
 path prefix, which keeps browser-relative asset and WebSocket URLs unchanged.
 The configured origin is parsed as an origin, not compared as a string prefix:
 standard ports are normalized so a browser Origin of
-`https://hermes-home.chappell-home.dev` matches the public site while the
+`https://hermes-home.example.com` matches the public site while the
 backend's private `:8765` remains invisible. Paths, credentials, queries,
 fragments, lookalike hosts, and alternate schemes remain rejected.
 
@@ -124,9 +124,9 @@ fragments, lookalike hosts, and alternate schemes remain rejected.
 The deployment command will accept the ops SSH target explicitly (with an
 `OPS_HOST` environment fallback) and keep the base directory, service name,
 service user, listener port, and public origin overridable without editing the
-script. Its defaults will describe this installation, including
-`hermes-home.chappell-home.dev`, but no machine-specific hostname or secret will
-be required in source. `ssh` and `scp` are the only remote transport
+script. Its defaults use the placeholder `hermes-home.example.com`; operators
+must substitute their actual origin. No machine-specific hostname or secret is
+required in source. `ssh` and `scp` are the only remote transport
 assumptions; the runbook will list the required Python, systemd, Caddy, and
 sudo setup.
 

@@ -658,10 +658,10 @@ def test_bootstrap_renders_and_installs_the_managed_service_and_caddy_site(fake_
 
     assert result.returncode == 0, result.stderr
     unit = Path(fake_ops["etc"]) / "systemd/system/hermes-relay-home.service"
-    site = site_dir / "hermes-home.chappell-home.dev.caddy"
+    site = site_dir / "hermes-home.example.com.caddy"
     assert "--display-host 127.0.0.1" in unit.read_text()
-    assert "--display-public-origin https://hermes-home.chappell-home.dev" in unit.read_text()
-    assert "hermes-home.chappell-home.dev {" in site.read_text()
+    assert "--display-public-origin https://hermes-home.example.com" in unit.read_text()
+    assert "hermes-home.example.com {" in site.read_text()
     assert "reverse_proxy 127.0.0.1:8765" in site.read_text()
     assert (Path(fake_ops["env"]["FAKE_STATE_DIR"]) / "enabled").exists()
     assert (Path(fake_ops["env"]["FAKE_STATE_DIR"]) / "reloads").read_text() == "1\n"
@@ -686,7 +686,7 @@ def test_bootstrap_rejects_a_caddy_directory_only_mentioned_in_a_comment(fake_op
 
     assert result.returncode == 1
     assert "must import the configured site directory" in result.stderr
-    assert not (site_dir / "hermes-home.chappell-home.dev.caddy").exists()
+    assert not (site_dir / "hermes-home.example.com.caddy").exists()
 
 
 def test_generated_asset_drift_stops_before_transport(fake_ops):

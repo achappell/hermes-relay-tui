@@ -7,6 +7,7 @@ import shlex
 import subprocess
 from pathlib import Path
 import sys
+from urllib.parse import urlsplit
 
 import pytest
 
@@ -18,6 +19,12 @@ spec.loader.exec_module(deploy)
 from validate_ops_profile_config import read_home_catalog
 
 ORIGIN = "https://display.household.ts.net"
+CUSTOM_ORIGINS = [
+    "https://home.example.com",
+    "https://display.nested.example.com",
+    "https://other.example.com:443",
+    ORIGIN,
+]
 
 
 def status():
@@ -65,10 +72,10 @@ def test_shortcuts_are_optional_and_bound_to_stable_grants(tmp_path):
         read_home_catalog(path)
 
 
-def caddy_servers():
+def caddy_servers(origin="https://home.example.com"):
     # Native shape produced by Caddy adapt for home-browser.caddy.example.
     return {"srv0": {"listen": [":443"], "routes": [{
-        "match": [{"host": ["home.chappell-home.dev"]}],
+        "match": [{"host": [urlsplit(origin).hostname]}],
         "handle": [{"handler": "subroute", "routes": [{
             "handle": [{"handler": "subroute", "routes": [
                 {
@@ -83,40 +90,42 @@ def caddy_servers():
 
 
 @pytest.mark.parametrize("origin", [
-    "https://home.chappell-home.dev/", "http://home.chappell-home.dev",
-    "https://hermes-home.chappell-home.dev", "https://home.chappell-home.dev:443",
-    "https://home.chappell-home.dev:444", "https://home.chappell-home.dev/state",
-    "https://user@home.chappell-home.dev", "https://home.chappell-home.dev?x=1",
-    "https://home.chappell-home.dev#x", "https://home.chappell-home.dev\n",
-    "https://public.example", "https://HOME.chappell-home.dev", ORIGIN,
+    "https://home.example.com/", "http://home.example.com",
+    "https://home.example.com:444", "https://home.example.com/state",
+    "https://user@home.example.com", "https://home.example.com?x=1",
+    "https://home.example.com#x", "https://home.example.com\n",
+    "https://HOME.example.com", ORIGIN + ":8443",
+    "https://127.0.0.1", "https://[::1]", "https://2130706433",
 ])
-def test_named_ingress_requires_the_exact_approved_origin(origin):
+def test_caddy_ingress_rejects_invalid_or_nondefault_port_origins(origin):
     with pytest.raises(ValueError):
         deploy.public_origin(origin, "caddy")
 
 
-def test_existing_origin_and_named_origin_modes_are_explicit_and_single():
+@pytest.mark.parametrize("origin", CUSTOM_ORIGINS)
+def test_existing_origin_and_custom_origin_modes_are_explicit_and_single(origin):
     assert deploy.public_origin(ORIGIN, "serve") == ORIGIN
     assert deploy.public_origin(ORIGIN + ":443", "serve") == ORIGIN + ":443"
-    assert deploy.public_origin(deploy.NAMED_ORIGIN, "caddy") == deploy.NAMED_ORIGIN
+    assert deploy.public_origin(origin, "caddy") == origin
     with pytest.raises(ValueError):
-        deploy.public_origin(deploy.NAMED_ORIGIN, "serve")
+        deploy.public_origin("https://home.example.com", "serve")
     for ambiguous in (ORIGIN + "\n", "\t" + ORIGIN, ORIGIN + "/"):
         with pytest.raises(ValueError):
             deploy.public_origin(ambiguous, "serve")
-    saved = deploy.unit(deploy.NAMED_ORIGIN, "https://home.household.ts.net", 8875)
+    saved = deploy.unit(origin, "https://home.household.ts.net", 8875)
     assert saved.count("--display-public-origin ") == 1
-    assert "--display-public-origin " + deploy.NAMED_ORIGIN in saved
+    assert "--display-public-origin " + origin in saved
     assert "--display-host 127.0.0.1 --display-port 8875" in saved
     assert "EnvironmentFile" not in saved
 
 
-def test_named_ingress_accepts_only_raw_tcp_to_caddy_with_no_funnel():
+@pytest.mark.parametrize("origin", CUSTOM_ORIGINS)
+def test_custom_ingress_accepts_only_raw_tcp_to_caddy_with_no_funnel(origin):
     raw = {"TCP": {"443": {"TCPForward": "127.0.0.1:443"}}}
-    deploy.validate_serve(raw, deploy.NAMED_ORIGIN, 8875, "caddy")
+    deploy.validate_serve(raw, origin, 8875, "caddy")
     # Unrelated Serve ports are not deleted or repurposed.
     raw["TCP"]["8443"] = {"TCPForward": "127.0.0.1:8443"}
-    deploy.validate_serve(raw, deploy.NAMED_ORIGIN, 8875, "caddy")
+    deploy.validate_serve(raw, origin, 8875, "caddy")
     for changed in (
         {},
         status(),
@@ -128,21 +137,23 @@ def test_named_ingress_accepts_only_raw_tcp_to_caddy_with_no_funnel():
         {**raw, "Web": {"display.household.ts.net:443": {"Handlers": {"/": {}}}}},
     ):
         with pytest.raises(ValueError):
-            deploy.validate_serve(changed, deploy.NAMED_ORIGIN, 8875, "caddy")
+            deploy.validate_serve(changed, origin, 8875, "caddy")
 
 
-def test_live_caddy_gate_is_all_path_immediate_peer_then_exact_backend():
-    deploy.validate_caddy(caddy_servers(), "home.chappell-home.dev", 8875)
+@pytest.mark.parametrize("origin", CUSTOM_ORIGINS)
+def test_live_caddy_gate_is_all_path_immediate_peer_then_exact_backend(origin):
+    deploy.validate_caddy(caddy_servers(origin), urlsplit(origin).hostname, 8875)
 
 
+@pytest.mark.parametrize("origin", CUSTOM_ORIGINS)
 @pytest.mark.parametrize("mutation", [
     "no_gate", "gate_last", "client_ip", "lan_peer", "path_gate", "allow_response",
     "public_backend", "extra_proxy", "wrong_host", "non_terminal", "catch_all_first",
     "wildcard_first", "duplicate_site", "wrong_listener", "header_rewrite",
     "proxy_protocol",
 ])
-def test_caddy_route_bypasses_fail_closed(mutation):
-    servers = caddy_servers()
+def test_caddy_route_bypasses_fail_closed(mutation, origin):
+    servers = caddy_servers(origin)
     server = servers["srv0"]
     route = server["routes"][0]
     rules = route["handle"][0]["routes"][0]["handle"][0]["routes"]
@@ -163,49 +174,51 @@ def test_caddy_route_bypasses_fail_closed(mutation):
     elif mutation == "extra_proxy":
         server["routes"].append({"handle": [{"handler": "reverse_proxy", "upstreams": [{"dial": "localhost:8875"}]}]})
     elif mutation == "wrong_host":
-        route["match"][0]["host"] = ["*.chappell-home.dev"]
+        route["match"][0]["host"] = ["wrong.example.com"]
     elif mutation == "non_terminal":
         route["terminal"] = False
     elif mutation == "catch_all_first":
         server["routes"].insert(0, {"handle": [{"handler": "static_response", "status_code": 200}]})
     elif mutation == "wildcard_first":
-        server["routes"].insert(0, {"match": [{"host": ["*.chappell-home.dev"]}], "handle": []})
+        wildcard = "*." + urlsplit(origin).hostname.split(".", 1)[1]
+        server["routes"].insert(0, {"match": [{"host": [wildcard]}], "handle": []})
     elif mutation == "duplicate_site":
         server["routes"].append(deepcopy(route))
     elif mutation == "wrong_listener":
         server["listen"] = ["192.168.0.4:443"]
     elif mutation == "header_rewrite":
-        rules[1]["handle"][0]["headers"] = {"request": {"set": {"Origin": [deploy.NAMED_ORIGIN]}}}
+        rules[1]["handle"][0]["headers"] = {"request": {"set": {"Origin": [origin]}}}
     elif mutation == "proxy_protocol":
         server["listener_wrappers"] = [{"wrapper": "proxy_protocol"}, {"wrapper": "tls"}]
     with pytest.raises(ValueError):
-        deploy.validate_caddy(servers, "home.chappell-home.dev", 8875)
+        deploy.validate_caddy(servers, urlsplit(origin).hostname, 8875)
 
 
 def test_other_caddy_names_are_preserved_without_intercepting_named_host():
     servers = caddy_servers()
     original = deepcopy(servers["srv0"]["routes"][0])
     servers["srv0"]["routes"].insert(0, {
-        "match": [{"host": ["portal.chappell-home.dev"]}],
+        "match": [{"host": ["portal.example.com"]}],
         "handle": [{"handler": "reverse_proxy", "upstreams": [{"dial": "127.0.0.1:3005"}]}],
     })
     servers["srv0"]["routes"].append({
-        "match": [{"host": ["*.chappell-home.dev"]}],
+        "match": [{"host": ["*.example.com"]}],
         "handle": [{"handler": "static_response", "status_code": 404}],
     })
     before = deepcopy(servers)
-    deploy.validate_caddy(servers, "home.chappell-home.dev", 8875)
+    deploy.validate_caddy(servers, "home.example.com", 8875)
     assert servers == before
     assert servers["srv0"]["routes"][1] == original
 
 
-def test_caddy_live_check_is_remote_and_does_not_retrieve_private_config(monkeypatch):
+@pytest.mark.parametrize("origin", CUSTOM_ORIGINS)
+def test_caddy_live_check_is_remote_and_does_not_retrieve_private_config(monkeypatch, origin):
     calls = []
     monkeypatch.setattr(deploy.subprocess, "run", lambda *args, **kwargs: calls.append((args, kwargs)))
-    ssh = ["ssh", *deploy.SSH_OPTIONS, "jensen@ops"]
-    deploy.check_caddy(ssh, deploy.NAMED_ORIGIN, 8875)
+    ssh = ["ssh", *deploy.SSH_OPTIONS, "HOUSEHOLD_OPS"]
+    deploy.check_caddy(ssh, origin, 8875)
     command, options = calls[0]
-    assert command[0] == [*ssh, "sudo python3 - home.chappell-home.dev 8875"]
+    assert command[0] == [*ssh, f"sudo python3 - {urlsplit(origin).hostname} 8875"]
     assert options["check"] is True
     assert "127.0.0.1:2019/config/apps/http/servers" in options["input"]
     assert "print(servers" not in options["input"]
@@ -215,7 +228,7 @@ def test_caddy_live_check_is_remote_and_does_not_retrieve_private_config(monkeyp
 
 @pytest.mark.parametrize("saved_origin,saved_home,saved_port,expected", [
     (ORIGIN, "https://home.household.ts.net", 8875, 0),
-    (deploy.NAMED_ORIGIN, "https://home.household.ts.net", 8875, 1),
+    ("https://home.example.com", "https://home.household.ts.net", 8875, 1),
     (ORIGIN, "https://other.household.ts.net", 8875, 1),
     (ORIGIN, "https://home.household.ts.net", 8876, 1),
 ])
@@ -278,7 +291,7 @@ def test_named_cli_rejects_an_older_release_helper_before_build_or_install(monke
     monkeypatch.setattr(deploy.subprocess, "run", run)
     monkeypatch.setattr(deploy, "check_caddy", lambda *args: None)
     assert deploy.main(["deploy", "--ops-host", "ops", "--ingress", "caddy",
-                        "--origin", deploy.NAMED_ORIGIN, "--home", "https://home.household.ts.net",
+                        "--origin", "https://home.example.com", "--home", "https://home.household.ts.net",
                         "--tag", "v0.12.0"]) == 1
     assert len(calls) == 1
 
@@ -289,21 +302,21 @@ def test_invalid_live_named_ingress_never_activates_or_builds(monkeypatch):
     monkeypatch.setattr(deploy.subprocess, "check_output", lambda *args, **kwargs: json.dumps(status()))
     monkeypatch.setattr(deploy.subprocess, "run", lambda *args, **kwargs: pytest.fail("no build/upload/activation allowed"))
     assert deploy.main(["deploy", "--ops-host", "ops", "--ingress", "caddy",
-                        "--origin", deploy.NAMED_ORIGIN, "--home", "https://home.household.ts.net",
+                        "--origin", "https://home.example.com", "--home", "https://home.household.ts.net",
                         "--tag", "v1.0.0"]) == 1
 
 
 @pytest.mark.parametrize("funnel", [{}, {"ops.household.ts.net:443": False}])
 def test_explicit_disabled_funnel_matches_omitted_empty_map(funnel):
     raw = {"TCP": {"443": {"TCPForward": "127.0.0.1:443"}}, "AllowFunnel": funnel}
-    deploy.validate_serve(raw, deploy.NAMED_ORIGIN, 8875, "caddy")
+    deploy.validate_serve(raw, "https://home.example.com", 8875, "caddy")
 
 
 @pytest.mark.parametrize("funnel", [None, [], False, {"host:443": None}, {"host:443": 0}, {"host:443": True}])
 def test_malformed_or_enabled_funnel_is_rejected(funnel):
     raw = {"TCP": {"443": {"TCPForward": "127.0.0.1:443"}}, "AllowFunnel": funnel}
     with pytest.raises(ValueError):
-        deploy.validate_serve(raw, deploy.NAMED_ORIGIN, 8875, "caddy")
+        deploy.validate_serve(raw, "https://home.example.com", 8875, "caddy")
 
 
 @pytest.mark.parametrize("foreground", [
@@ -315,13 +328,13 @@ def test_malformed_or_enabled_funnel_is_rejected(funnel):
 def test_foreground_funnel_or_ingress_override_is_rejected(foreground):
     raw = {"TCP": {"443": {"TCPForward": "127.0.0.1:443"}}, "Foreground": {"session": foreground}}
     with pytest.raises(ValueError):
-        deploy.validate_serve(raw, deploy.NAMED_ORIGIN, 8875, "caddy")
+        deploy.validate_serve(raw, "https://home.example.com", 8875, "caddy")
 
 
 def test_named_nonstandard_backend_is_rejected_before_any_host_contact(monkeypatch):
     monkeypatch.setattr(deploy.subprocess, "check_output", lambda *args, **kwargs: pytest.fail("no SSH allowed"))
     assert deploy.main(["deploy", "--ops-host", "ops", "--ingress", "caddy",
-                        "--origin", deploy.NAMED_ORIGIN, "--home", "https://home.household.ts.net",
+                        "--origin", "https://home.example.com", "--home", "https://home.household.ts.net",
                         "--tag", "v1.0.0", "--port", "8876"]) == 1
 
 
@@ -329,7 +342,7 @@ def test_named_nonstandard_backend_is_rejected_before_any_host_contact(monkeypat
 @pytest.mark.parametrize("ingress,origin", [
     ("serve", ORIGIN),
     ("serve", ORIGIN + ":443"),
-    ("caddy", deploy.NAMED_ORIGIN),
+    *[("caddy", origin) for origin in CUSTOM_ORIGINS],
 ])
 async def test_deployer_origins_start_the_real_home_appliance_and_display(tmp_path, ingress, origin):
     import asyncio
@@ -356,8 +369,10 @@ async def test_deployer_origins_start_the_real_home_appliance_and_display(tmp_pa
     info = await server.start()
     try:
         assert server._origin_is_allowed(accepted)
+        if accepted.endswith(":443"):
+            assert server._origin_is_allowed(accepted.removesuffix(":443"))
         assert not server._origin_is_allowed("https://unrelated.example")
-        other_public_origin = ORIGIN if ingress == "caddy" else deploy.NAMED_ORIGIN
+        other_public_origin = "https://different.example.com"
         assert not server._origin_is_allowed(other_public_origin)
 
         def request_error(path, supplied_origin, *, post=False):
@@ -382,3 +397,18 @@ async def test_deployer_origins_start_the_real_home_appliance_and_display(tmp_pa
         assert payload["status"] == "degraded"
     finally:
         await server.close()
+
+
+@pytest.mark.parametrize("origin", [
+    "https://-display.household.ts.net",
+    "https://display-.household.ts.net",
+    "https://display.house_hold.ts.net",
+    "https://display..ts.net",
+    "https://display.household.ts.net.",
+    "https://display.household.ts.net:0443",
+])
+def test_serve_and_home_origins_reject_invalid_dns_and_port_syntax(origin):
+    with pytest.raises(ValueError):
+        deploy.tailnet_origin(origin)
+    with pytest.raises(ValueError):
+        deploy.public_origin(origin, "serve")

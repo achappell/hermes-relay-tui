@@ -2520,7 +2520,10 @@ def test_browser_session_limit_is_configurable():
     "https://display.household.ts.net",
     "https://display.household.ts.net:443",
     "https://display.household.ts.net:8443",
-    "https://home.chappell-home.dev",
+    "https://home.example.com",
+    "https://home.example.com:443",
+    "https://other.example.com",
+    "https://display.nested.example.com",
 ])
 def test_home_browser_transport_uses_private_pairing_and_lazy_per_tab_sessions(tmp_path, public_origin):
     from home_display.home_admission import BrowserSession
@@ -2553,26 +2556,27 @@ def test_home_browser_transport_uses_private_pairing_and_lazy_per_tab_sessions(t
 
 
 @pytest.mark.parametrize("origin", [
-    "http://home.chappell-home.dev",
-    "wss://home.chappell-home.dev",
-    "https://home.chappell-home.dev/",
-    "https://home.chappell-home.dev:443",
-    "https://home.chappell-home.dev:444",
-    "https://HOME.chappell-home.dev",
-    "https://home.chappell-home.dev.",
-    "https://home.chappell-home.dev/state",
-    "https://home.chappell-home.dev?x=1",
-    "https://home.chappell-home.dev#x",
-    "https://user@home.chappell-home.dev",
-    "https://home.chappell-home.dev\n",
-    "https://home.chappell-home.dev.evil.example",
-    "https://other.chappell-home.dev",
-    "https://hermes-home.chappell-home.dev",
-    "https://*.chappell-home.dev",
+    "",
+    "http://home.example.com",
+    "wss://home.example.com",
+    "https://home.example.com/",
+    "https://home.example.com:444",
+    "https://HOME.example.com",
+    "https://home.example.com.",
+    "https://home.example.com/state",
+    "https://home.example.com?x=1",
+    "https://home.example.com#x",
+    "https://user@home.example.com",
+    "https://home.example.com\n",
+    "https://127.0.0.1",
+    "https://[::1]",
+    "https://2130706433",
+    "https://0x7f000001",
+    "https://*.example.com",
     "https://*.household.ts.net",
     "http://display.household.ts.net",
 ])
-def test_home_browser_startup_rejects_unapproved_public_origins(tmp_path, origin):
+def test_home_browser_startup_rejects_invalid_public_origins(tmp_path, origin):
     args = appliance_module.build_arg_parser([]).parse_args([
         "--browser-voice", "--browser-transport", "home",
         "--home-bridge-url", "wss://home.example/api/v1/bridge/ws",
@@ -3078,11 +3082,11 @@ def test_display_public_origin_is_optional_and_explicit():
 
     defaults = appliance.build_arg_parser([]).parse_args([])
     public = appliance.build_arg_parser([]).parse_args(
-        ["--display-public-origin", "https://hermes-home.chappell-home.dev"]
+        ["--display-public-origin", "https://hermes-home.example.com"]
     )
 
     assert defaults.display_public_origin is None
-    assert public.display_public_origin == "https://hermes-home.chappell-home.dev"
+    assert public.display_public_origin == "https://hermes-home.example.com"
 
 
 def test_browser_display_passes_public_origin_to_server(monkeypatch):
@@ -3098,14 +3102,14 @@ def test_browser_display_passes_public_origin_to_server(monkeypatch):
     relay = Appliance(
         _args(
             browser_voice=True,
-            display_public_origin="https://hermes-home.chappell-home.dev",
+            display_public_origin="https://hermes-home.example.com",
         ),
         session=FakeSession(),
     )
 
     relay._build()
 
-    assert captured["public_origin"] == "https://hermes-home.chappell-home.dev"
+    assert captured["public_origin"] == "https://hermes-home.example.com"
 
 
 def test_browser_display_reports_an_invalid_public_origin(monkeypatch):
@@ -3119,7 +3123,7 @@ def test_browser_display_reports_an_invalid_public_origin(monkeypatch):
     relay = Appliance(
         _args(
             browser_voice=True,
-            display_public_origin="wss://hermes-home.chappell-home.dev/state",
+            display_public_origin="wss://hermes-home.example.com/state",
         ),
         session=FakeSession(),
     )

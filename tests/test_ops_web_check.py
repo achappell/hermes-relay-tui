@@ -10,10 +10,10 @@ from scripts.check_ops_web import check_action_route, origin_urls
 
 
 def test_origin_urls_keep_the_public_origin_and_switch_state_to_wss():
-    assert origin_urls("https://hermes-home.chappell-home.dev/") == (
-        "https://hermes-home.chappell-home.dev",
-        "https://hermes-home.chappell-home.dev/",
-        "wss://hermes-home.chappell-home.dev/state",
+    assert origin_urls("https://hermes-home.example.com/") == (
+        "https://hermes-home.example.com",
+        "https://hermes-home.example.com/",
+        "wss://hermes-home.example.com/state",
     )
 
 
@@ -59,11 +59,11 @@ def test_action_route_accepts_the_expected_safe_malformed_response(monkeypatch, 
 
     monkeypatch.setattr("scripts.check_ops_web.urlopen", fake_urlopen)
 
-    check_action_route("https://hermes-home.chappell-home.dev", timeout=1.0)
+    check_action_route("https://hermes-home.example.com", timeout=1.0)
 
     assert seen == {
-        "url": "https://hermes-home.chappell-home.dev/action",
-        "origin": "https://hermes-home.chappell-home.dev",
+        "url": "https://hermes-home.example.com/action",
+        "origin": "https://hermes-home.example.com",
         "context": None,
     }
 
