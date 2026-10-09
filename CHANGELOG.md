@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Features
+
+- Add the authorized Home browser appliance path: private durable pairing and renewal, live Home Profile selection, per-tab fresh claims with HTTP cleanup, typed admission failures, and admission-only health. Provide isolated tagged Home deployment/rollback tooling and real local Home integration smoke. Production rollout, iPad acceptance, and post-bake legacy retirement remain separate gates.
+
 ### Bug fixes
 
 - Keep the Home conversation connected when Ctrl+C stops only the remaining local response audio; preserve remote-turn interruption and failure recovery.

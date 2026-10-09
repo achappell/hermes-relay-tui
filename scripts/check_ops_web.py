@@ -133,6 +133,7 @@ async def check_state_channel(
     timeout: float,
     tls_context: ssl.SSLContext | None,
     expected_wake_phrases: tuple[str, ...] | None = None,
+    home: bool = False,
 ) -> None:
     connect_kwargs = {
         "origin": origin,
@@ -160,6 +161,13 @@ async def check_state_channel(
         or payload.get("state") not in EXPECTED_STATES
     ):
         raise CheckError("/state returned an invalid initial snapshot")
+    if home:
+        capabilities = payload.get("capabilities", {})
+        profiles = capabilities.get("profiles") if isinstance(capabilities, dict) else None
+        if not isinstance(profiles, list) or "browser_profiles" not in capabilities.get("features", []):
+            raise CheckError("/state does not advertise the Home Profile selector")
+        if any(not isinstance(row, dict) or set(row) != {"selector_id", "label", "available"} for row in profiles):
+            raise CheckError("/state returned an unsafe Profile selector")
     if expected_wake_phrases is not None:
         capabilities = payload.get("capabilities")
         features = capabilities.get("features") if isinstance(capabilities, dict) else None
@@ -182,6 +190,7 @@ async def run_check(
     ca_file: Path | None = None,
     insecure: bool = False,
     expected_wake_phrases: tuple[str, ...] | None = None,
+    home: bool = False,
 ) -> None:
     origin, page_url, websocket_url = origin_urls(origin_url)
     tls_context = _tls_context(ca_file=ca_file, insecure=insecure)
@@ -193,7 +202,16 @@ async def run_check(
         timeout=timeout,
         tls_context=_tls_context(ca_file=ca_file, insecure=insecure),
         expected_wake_phrases=expected_wake_phrases,
+        home=home,
     )
+    if home:
+        request = Request(f"{origin}/healthz")
+        try:
+            with urlopen(request, timeout=timeout, context=tls_context) as response:
+                if response.geturl() != f"{origin}/healthz" or json.load(response) != {"status": "ok"}:
+                    raise CheckError("Home admission health is not healthy (not a Standard readiness check)")
+        except HTTPError:
+            raise CheckError("Package/page available, but Home admission is degraded; this is not a successful health acceptance") from None
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
@@ -214,6 +232,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
         default=[],
         help="require a wake phrase in the advertised browser catalog (repeatable)",
     )
+    parser.add_argument("--home", action="store_true", help="require dynamic Profile selector and admission-only health")
     return parser
 
 
@@ -230,6 +249,7 @@ def main(argv: list[str] | None = None) -> int:
                 ca_file=args.ca_file,
                 insecure=args.insecure,
                 expected_wake_phrases=(tuple(args.require_wake_phrase) or None),
+                home=args.home,
             )
         )
     except (CheckError, OSError, ValueError) as error:

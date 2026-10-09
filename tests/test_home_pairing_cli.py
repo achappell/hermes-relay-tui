@@ -41,7 +41,7 @@ def enrollment(monkeypatch):
         return None
 
     client.request = request
-    monkeypatch.setattr(home_pairing_cli, "HomeClient", lambda _home: client)
+    monkeypatch.setattr(home_pairing_cli, "HomeClient", lambda _home, **_kwargs: client)
     monkeypatch.setattr(home_pairing_cli.time, "time", lambda: NOW)
     monkeypatch.setattr(home_pairing_cli.asyncio, "sleep", no_poll_delay)
     return client, store

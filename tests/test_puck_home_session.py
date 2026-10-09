@@ -2364,21 +2364,26 @@ async def test_home_text_completed_before_audio_disconnect_does_not_replay_or_re
     )
     await session.connect()
     try:
+        if session_type is HomeBrowserSession:
+            events = []
+            with pytest.raises(HomeBridgeTransportError):
+                async for event in session.send_turn("TEST"):
+                    events.append(event)
+            assert not any(event["type"] == "turn_end" for event in events)
+            assert not session.is_connected()
+            assert resumed.sent == []
+            assert sum(request["method"] == "prompt.submit" for request in first.sent) == 1
+            return
         events = [event async for event in session.send_turn("TEST")]
         assert {"type": "text_delta", "text": "Confirmed answer."} in events
         assert any(event["type"] == "audio_end" for event in events)
         assert any(event.get("text_completed") is True for event in events)
-        if session_type is HomeBrowserSession:
-            assert events[-1] == {"type": "turn_end"}
-            assert {"type": "audio_end", "final": True} in events
         assert session.active_turn_id is None
         assert not session.is_connected()
         assert sum(request["method"] == "prompt.submit" for sock in (first, resumed) for request in sock.sent) == 1
         await session.connect()
         next_events = [event async for event in session.send_turn("TEST")]
         expected = ["message_complete"]
-        if session_type is HomeBrowserSession:
-            expected.append("turn_end")
         assert [event["type"] for event in next_events] == expected
     finally:
         await session.close()

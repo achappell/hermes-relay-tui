@@ -724,46 +724,64 @@ The browser and iPad tab are one W/K surface. Pass `--browser-voice` with the
 remote display options; the served page owns microphone permission, browser
 speech recognition, and speaker playback, while the appliance receives only
 recognized turn text and does not open a local audio device. The default
-`legacy` browser transport uses the configured per-profile bearer sessions and
-is the rollback path. A recognized wake phrase selects that profile, the
+`legacy` browser transport still uses configured per-profile bearer sessions
+until the separately accepted R6 rollout. A recognized wake phrase selects a profile, the
 browser discards ambient speech, and a phrase-plus-question is sent as one
 turn. After each completed answer it opens an eight-second wake-free follow-up
 window and reopens it after every non-empty follow-up. Exactly `stop` is a
 silent local cancel. A disconnect, server error, or recognition failure turns
 hands-free off; it never replays an uncertain transcript.
 
-STD-8 adds an explicit Home bridge transport for the same browser/iPad surface.
-It keeps the Device credential and opaque conversation handle on the appliance
-side of the same-origin proxy; neither is sent to the browser, put in a URL, or
-written into the display snapshot. Configure it only when the approved Home
-route is deployed:
+The supported **Home browser path** pairs the appliance once, using the
+existing Home enrollment/approval flow. Only its service/admin can read the
+durable `0600` pairing record inside a service-owned `0700` directory outside
+the checkout. The browser receives neither Device credentials, Home grant IDs,
+conversation handles, nor owner-approval authority. There is no separate
+browser login: deployed page, WebSocket, actions, and health endpoint must all
+be behind the household Tailscale boundary, with the backend bound to loopback.
 
 ```bash
-hermes-relay-home --browser-voice \
-  --browser-transport home \
-  --home-bridge-url wss://home.example/api/v1/bridge/ws \
-  --home-device-credential-file ~/.hermes-relay-tui/home-device-credential \
-  --home-conversation-handle household-browser \
-  --display-host 192.168.1.20 --display-remote --display-port 8765 \
-  --display-tls-cert ~/.hermes-relay-tui/certs/display-cert.pem \
-  --display-tls-key ~/.hermes-relay-tui/certs/display-key.pem
+hermes-relay-browser-pair \
+  --home https://home.household.ts.net \
+  --credential-file /var/lib/hermes-home-browser/pairing.json
+hermes-relay-home --browser-voice --browser-transport home \
+  --home-bridge-url wss://home.household.ts.net/api/v1/bridge/ws \
+  --home-device-credential-file /var/lib/hermes-home-browser/pairing.json \
+  --config /var/lib/hermes-home-browser/shortcuts.yaml \
+  --display-host 127.0.0.1 --display-port 8875 \
+  --display-public-origin https://display.household.ts.net
 ```
 
-The credential file must be private; `HOME_DEVICE_CREDENTIAL` and
-`HOME_CONVERSATION_HANDLE` in the private profile env are an alternative to
-the file and handle flags. Home mode accepts choice/clarify prompt buttons via
-`prompt.respond`, reports secret/sudo prompts as unavailable to this browser,
-and advertises timing as explicitly absent. It never falls back to a direct
-bearer session when the route or pairing is missing. The approved Home route is
-currently an opt-in deployment gate; the existing Caddy/systemd example below
-continues to describe the legacy rollback until that route is live.
+Run these as the dedicated service user after the preparation in
+[the Home deployment runbook](docs/ops-web-deployment.md#supported-home-browser-path).
+The pairing code is entered privately, not passed on the command line.
+The Profile selector reflects all Home-authorized Profiles, including later
+grants, without a local wake phrase. Optional wake shortcuts bind to stable
+grant IDs, never labels. Each browser connection owns an independent, lazy
+`mode=new` claim. Browser or bridge reconnect does not replay a prompt or
+resume the prior conversation; the next explicit action opens a fresh one.
+
+Renewal uses a durably persisted request ID and retires old-generation turns
+before rotating the credential. Uncertain claims remain capacity-accounted
+until Home's authenticated HTTP list/close confirms cleanup. Typed unavailable,
+revoked, pending, stale-configuration, renewal, and capacity errors fail closed.
+`GET /healthz` reports **admission readiness only**, not Hermes generation,
+speaker playback, speech recognition, or hardware health. Choice/clarify
+buttons use Home `prompt.respond`; secret/sudo inputs remain unsupported.
+Timing is explicitly absent.
+
+The old static conversation-handle flags and credential environment fallback
+are removed from the Home path. `scripts/deploy_home_browser.py` is the isolated
+tagged Home deployment/rollback path; it never rolls back into legacy services.
+No deployment, R6 default switch/bake, or R7 legacy retirement is implied by
+this repository implementation.
 
 After the display is connected and idle in the legacy path, tap **Enable
 hands-free** to grant permission and listen for the configured profile catalog.
-For Home mode, the configured Home conversation owns account routing; local
-wake phrases only gate capture and no profile identifier crosses the bridge.
-The browser reconnects to the same-origin state channel after an ops/container
-restart:
+In Home mode, a configured wake shortcut selects its exact currently usable
+grant, while the selector remains available without shortcuts. The browser
+reconnects only its local state channel after a service restart. The following
+LAN/TLS example is **legacy-only**, not the supported Home deployment boundary:
 
 ```bash
 hermes-relay-home --browser-voice \

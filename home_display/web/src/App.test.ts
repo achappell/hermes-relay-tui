@@ -50,6 +50,34 @@ vi.mock("./state/bridge", () => ({
 import App from "./App.svelte";
 
 describe("App", () => {
+  it("keeps an explicit fresh Home action available after a bridge error, but not after revocation", async () => {
+    const { container, unmount } = render(App);
+    await tick();
+    const options = bridges.options.at(-1)!;
+    const token = "a".repeat(32);
+    const view: DisplayView = {
+      type: "snapshot", schema: 1, sequence: 1, state: "error", response_text: "",
+      status_text: "Hermes isn't responding. This conversation was not replayed.",
+      media: null, prompt: null, is_busy: false, connection_healthy: false,
+      can_choose: false, can_explore: false, can_dismiss: false,
+      capabilities: { actions: [], features: ["browser_voice", "browser_profiles"],
+        profiles: [{ selector_id: token, label: "First", available: true }], selected_profile: token },
+    };
+    options.onConnectionState("connected");
+    options.onView(view);
+    await tick();
+    const input = container.querySelector<HTMLInputElement>("#typed-turn")!;
+    expect(input).not.toBeDisabled();
+    expect(bridges.instances.at(-1)?.sendVoiceTurn).not.toHaveBeenCalled();
+    await fireEvent.input(input, { target: { value: "deliberate fresh action" } });
+    await fireEvent.submit(input.closest("form")!);
+    expect(bridges.instances.at(-1)?.sendVoiceTurn).toHaveBeenCalledExactlyOnceWith("deliberate fresh action");
+    options.onView({ ...view, sequence: 2, status_text: "This display needs to be paired again.",
+      capabilities: { ...view.capabilities!, profiles: [], selected_profile: null } });
+    await tick();
+    expect(input).toBeDisabled();
+    unmount();
+  });
   afterEach(() => {
     vi.useRealTimers();
     bridges.instances.length = 0;

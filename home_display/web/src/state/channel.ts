@@ -23,6 +23,7 @@ interface PendingProfileRoute {
 
 export interface WebSocketCloseEventLike {
   code?: number;
+  reason?: string;
 }
 
 export interface WebSocketLike {
@@ -37,6 +38,17 @@ export interface WebSocketLike {
 
 export const defaultSocketFactory: SocketFactory = (url) => new WebSocket(url) as unknown as WebSocketLike;
 
+
+const admissionMessages: Record<string, string> = {
+  home_unreachable: "Hermes Home can't be reached. Try again shortly.",
+  home_unauthorized: "This display needs to be paired again.",
+  hermes_unavailable: "Hermes isn't responding. This conversation was not replayed.",
+  profile_unavailable: "This Profile isn't available on this display.",
+  grant_pending: "This Profile still needs its owner's approval.",
+  configuration_changed: "Home access changed. Review the Profile and try again.",
+  credential_renewal_uncertain: "Home access is being recovered. This conversation was not replayed.",
+  claim_limit: "Too many conversations are open. Try again in a moment.",
+};
 const RECONNECT_DELAYS_MS = [250, 500, 1000, 2000, 4000] as const;
 // Admission may try several catalog profiles. Keep the browser waiting beyond
 // the server's bounded connect/cleanup sequence so it cannot resume capture
@@ -75,6 +87,16 @@ export class StateChannel {
     private readonly onAudioEvent: AudioEventListener = () => {},
     private readonly onAudioChunk: AudioChunkListener = () => {},
   ) {}
+
+  sendInterrupt(): boolean {
+    if (!this.socketOpen || !this.hasHydratedSocket || !this.socket?.send) return false;
+    try {
+      this.socket.send(JSON.stringify({ type: "interrupt", schema: 1 }));
+      return true;
+    } catch {
+      return false;
+    }
+  }
 
   start(): void {
     if (this.running) {
@@ -149,6 +171,9 @@ export class StateChannel {
       this.socketOpen = false;
       this.settlePendingProfileRoutes();
       this.deliver(() => this.onConnectionState(event?.code === 1013 ? "capacity" : "disconnected"));
+      if (event?.code === 1011 && event.reason && Object.hasOwn(admissionMessages, event.reason)) {
+        this.deliver(() => this.onProtocolError(admissionMessages[event.reason!]));
+      }
       this.scheduleReconnect();
     };
   }
@@ -190,7 +215,15 @@ export class StateChannel {
   }
 
   sendProfileRoute(wakePhrase: string): Promise<boolean> {
-    const normalized = normaliseWakePhrase(wakePhrase);
+    return this.sendRoute(normaliseWakePhrase(wakePhrase), false);
+  }
+
+  sendProfileSelect(selectorId: string): Promise<boolean> {
+    if (!/^[a-f0-9]{32}$/.test(selectorId)) return Promise.resolve(false);
+    return this.sendRoute(selectorId, true);
+  }
+
+  private sendRoute(normalized: string, selecting: boolean): Promise<boolean> {
     const socket = this.socket;
     const send = socket?.send;
     if (
@@ -221,10 +254,10 @@ export class StateChannel {
       this.pendingProfileRoutes.set(requestId, { resolve, timer });
       try {
         send.call(socket, JSON.stringify({
-          type: "profile_route",
+          type: selecting ? "profile_select" : "profile_route",
           schema: 1,
           request_id: requestId,
-          wake_phrase: normalized,
+          ...(selecting ? { selector_id: normalized } : { wake_phrase: normalized }),
         }));
       } catch {
         clearTimeout(timer);

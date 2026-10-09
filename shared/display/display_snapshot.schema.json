@@ -145,6 +145,23 @@
       "type": "object",
       "additionalProperties": false,
       "properties": {
+        "timing": { "const": "absent" },
+        "wake_phrases": { "type": "array", "maxItems": 8, "uniqueItems": true, "items": { "type": "string", "minLength": 1, "maxLength": 128 } },
+        "wake_listen_seconds": { "type": "number", "exclusiveMinimum": 0 },
+        "wake_followup_seconds": { "type": "number", "exclusiveMinimum": 0 },
+        "profiles": {
+          "type": "array", "maxItems": 1000,
+          "items": {
+            "type": "object", "additionalProperties": false,
+            "properties": {
+              "selector_id": { "type": "string", "pattern": "^[a-f0-9]{32}$" },
+              "label": { "type": "string", "minLength": 1, "maxLength": 256 },
+              "available": { "type": "boolean" }
+            },
+            "required": ["selector_id", "label", "available"]
+          }
+        },
+        "selected_profile": { "type": ["string", "null"], "pattern": "^[a-f0-9]{32}$" },
         "actions": {
           "type": "array",
           "uniqueItems": true,

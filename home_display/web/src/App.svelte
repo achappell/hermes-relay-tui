@@ -36,6 +36,12 @@
   let trackedResponseText = "";
   let responseTurnActive = false;
   let responseRetentionExpired = false;
+  let selectProfile: (id: string) => Promise<boolean> = async () => false;
+  let sendTypedTurn: (text: string) => Promise<boolean> = async () => false;
+  let typedText = "";
+  let selectingProfile = false;
+  let selectionError: string | null = null;
+  let interruptTurn: () => boolean = () => false;
 
   const responseActiveStates = new Set([
     "heard",
@@ -49,8 +55,11 @@
   $: browserVoiceEnabled = displayView.capabilities?.features.includes("browser_voice") ?? false;
   $: browserHandsFreeEnabled = displayView.capabilities?.features.includes("browser_hands_free") ?? false;
   $: handsFreeArmed = handsFreeState !== "off" && handsFreeState !== "error";
+  $: retryableHomeError = displayView.state === "error"
+    && (displayView.capabilities?.features.includes("browser_profiles") ?? false)
+    && (displayView.capabilities?.profiles?.some((profile) => profile.available && profile.selector_id === displayView.capabilities?.selected_profile) ?? false);
   $: displayReady = protocolError === null && connectionState === "connected"
-    && displayView.state === "idle" && displayView.connection_healthy && !displayView.is_busy;
+    && ((displayView.state === "idle" && displayView.connection_healthy) || retryableHomeError) && !displayView.is_busy;
   $: wakePhraseLabel = displayView.capabilities?.wake_phrases?.join(" or ") ?? "the wake phrase";
   $: promptVisible = protocolError === null && connectionState === "connected"
     && displayView.state === "prompt" && displayView.prompt !== null
@@ -58,8 +67,7 @@
   $: promptKey = displayView.prompt === null ? "" : JSON.stringify(displayView.prompt);
 
   function isDisplayReady(): boolean {
-    return protocolError === null && connectionState === "connected" && displayView.state === "idle"
-      && displayView.connection_healthy && !displayView.is_busy;
+    return displayReady;
   }
 
   function handsFreeSurfaceState(state: HandsFreeState): DisplayView["state"] | null {
@@ -248,6 +256,22 @@
         voiceState = "error";
       },
     });
+    selectProfile = async (id) => {
+      selectingProfile = true;
+      selectionError = null;
+      handsFreeController?.disarm();
+      voiceController?.reset();
+      clearConversationPresentation();
+      try {
+        const accepted = await bridge!.selectProfile(id);
+        if (!accepted) selectionError = "Profile selection was not accepted. Review Home access and try again.";
+        return accepted;
+      } finally {
+        selectingProfile = false;
+      }
+    };
+    sendTypedTurn = (text) => bridge!.sendVoiceTurn(text);
+    interruptTurn = () => bridge!.interrupt();
     dispatchAction = (action) => {
       let actionAllowed = displayView.can_choose;
       if ("operation" in action) {
@@ -408,6 +432,33 @@
   {/key}
 {/if}
 {#if browserVoiceEnabled}
+  {#if displayView.capabilities?.features.includes("browser_profiles")}
+    <section aria-label="Home Profiles" class="browser-profile-controls">
+      <label for="home-profile">Profile</label>
+      <select id="home-profile" value={displayView.capabilities.selected_profile ?? ""}
+        disabled={connectionState !== "connected" || displayView.is_busy || promptVisible || selectingProfile}
+        on:change={(event) => selectProfile(event.currentTarget.value)}>
+        <option value="" disabled>Choose a Profile</option>
+        {#each displayView.capabilities.profiles ?? [] as profile (profile.selector_id)}
+          <option value={profile.selector_id} disabled={!profile.available}>{profile.label}{profile.available ? "" : " — unavailable"}</option>
+        {/each}
+      </select>
+      {#if selectionError}<p role="alert">{selectionError}</p>{/if}
+      <form on:submit|preventDefault={async () => {
+        const text = typedText.trim();
+        if (!text || !displayReady || selectingProfile) return;
+        typedText = "";
+        beginCapturePresentation();
+        setUserTranscript(text);
+        if (!(await sendTypedTurn(text))) voiceError = "Turn could not be sent; it was not replayed.";
+      }}>
+        <label for="typed-turn">Message</label>
+        <input id="typed-turn" bind:value={typedText} maxlength="4000" autocomplete="off" disabled={!displayReady || selectingProfile} />
+        <button type="submit" disabled={!displayReady || selectingProfile || !typedText.trim()}>Send</button>
+        <button type="button" disabled={!displayView.is_busy || connectionState !== "connected"} on:click={() => interruptTurn()}>Interrupt</button>
+      </form>
+    </section>
+  {/if}
   <section class="browser-voice-controls" data-voice-state={voiceState} aria-label="Browser voice">
     <button
       type="button"

@@ -145,6 +145,40 @@ body {
   white-space: normal;
 }
 
+.browser-profile-controls {
+  position: absolute;
+  top: 1rem;
+  left: 1rem;
+  right: 1rem;
+  z-index: 2;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.75rem;
+  border-radius: 1rem;
+  background: rgb(7 19 29 / 92%);
+}
+
+.browser-profile-controls form {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  flex: 1 1 20rem;
+}
+
+.browser-profile-controls select,
+.browser-profile-controls input,
+.browser-profile-controls button {
+  min-height: 2.8rem;
+  max-width: 100%;
+  font: inherit;
+}
+
+.browser-profile-controls input { flex: 1; min-width: 5rem; }
+.browser-profile-controls p { flex-basis: 100%; margin: 0; color: var(--signal-error); }
+
 .state-surface {
   align-items: center;
   background: var(--canvas-night);

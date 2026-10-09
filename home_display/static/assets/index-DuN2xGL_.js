@@ -113,6 +113,7 @@ const ATTRIBUTES_CACHE = Symbol("attributes");
 const CLASS_CACHE = Symbol("class");
 const STYLE_CACHE = Symbol("style");
 const TEXT_CACHE = Symbol("text");
+const FORM_RESET_HANDLER = Symbol("form reset");
 const STALE_REACTION = new class StaleReactionError extends Error {
   constructor() {
     super(...arguments);
@@ -122,6 +123,8 @@ const STALE_REACTION = new class StaleReactionError extends Error {
 }();
 const EACH_ITEM_REACTIVE = 1;
 const EACH_INDEX_REACTIVE = 1 << 1;
+const EACH_IS_CONTROLLED = 1 << 2;
+const EACH_IS_ANIMATED = 1 << 3;
 const EACH_ITEM_IMMUTABLE = 1 << 4;
 const PROPS_IS_RUNES = 1 << 1;
 const PROPS_IS_UPDATED = 1 << 2;
@@ -133,6 +136,11 @@ const NAMESPACE_HTML = "http://www.w3.org/1999/xhtml";
 function derived_inert() {
   {
     console.warn(`https://svelte.dev/e/derived_inert`);
+  }
+}
+function select_multiple_invalid_value() {
+  {
+    console.warn(`https://svelte.dev/e/select_multiple_invalid_value`);
   }
 }
 function svelte_boundary_reset_noop() {
@@ -268,13 +276,18 @@ function run_micro_tasks() {
   run_all(tasks);
 }
 function queue_micro_task(fn) {
-  if (micro_tasks.length === 0 && true) {
+  if (micro_tasks.length === 0 && !is_flushing_sync) {
     var tasks = micro_tasks;
     queueMicrotask(() => {
       if (tasks === micro_tasks) run_micro_tasks();
     });
   }
   micro_tasks.push(fn);
+}
+function flush_tasks() {
+  while (micro_tasks.length > 0) {
+    run_micro_tasks();
+  }
 }
 const STATUS_MASK = -7169;
 function set_signal_status(signal, status) {
@@ -319,6 +332,31 @@ function capture_store_binding(fn) {
     is_store_binding = previous_is_store_binding;
   }
 }
+let listening_to_form_reset = false;
+function add_form_reset_listener() {
+  if (!listening_to_form_reset) {
+    listening_to_form_reset = true;
+    document.addEventListener(
+      "reset",
+      (evt) => {
+        Promise.resolve().then(() => {
+          var _a2;
+          if (!evt.defaultPrevented) {
+            for (
+              const e of
+              /**@type {HTMLFormElement} */
+              evt.target.elements
+            ) {
+              (_a2 = e[FORM_RESET_HANDLER]) == null ? void 0 : _a2.call(e);
+            }
+          }
+        });
+      },
+      // In the capture phase to guarantee we get noticed of it (no possibility of stopPropagation)
+      { capture: true }
+    );
+  }
+}
 function without_reactive_context(fn) {
   var previous_reaction = active_reaction;
   var previous_effect = active_effect;
@@ -330,6 +368,22 @@ function without_reactive_context(fn) {
     set_active_reaction(previous_reaction);
     set_active_effect(previous_effect);
   }
+}
+function listen_to_event_and_reset_event(element, event2, handler, on_reset = handler) {
+  element.addEventListener(event2, () => without_reactive_context(handler));
+  const prev = (
+    /** @type {any} */
+    element[FORM_RESET_HANDLER]
+  );
+  if (prev) {
+    element[FORM_RESET_HANDLER] = () => {
+      prev();
+      on_reset(true);
+    };
+  } else {
+    element[FORM_RESET_HANDLER] = () => on_reset(true);
+  }
+  add_form_reset_listener();
 }
 function flatten(blockers, sync, async, fn) {
   const d = is_runes() ? derived : derived_safe_equal;
@@ -541,6 +595,12 @@ function async_derived(fn, label, location) {
   });
 }
 // @__NO_SIDE_EFFECTS__
+function user_derived(fn) {
+  const d = /* @__PURE__ */ derived(fn);
+  push_reaction_value(d);
+  return d;
+}
+// @__NO_SIDE_EFFECTS__
 function derived_safe_equal(fn) {
   const signal = /* @__PURE__ */ derived(fn);
   signal.equals = safe_equals;
@@ -639,6 +699,7 @@ let current_batch = null;
 let previous_batch = null;
 let batch_values = null;
 let last_scheduled_effect = null;
+let is_flushing_sync = false;
 let is_processing = false;
 let collected_effects = null;
 let legacy_updates = null;
@@ -892,7 +953,7 @@ const _Batch = class _Batch {
   static ensure() {
     if (current_batch === null) {
       const batch = current_batch = new _Batch();
-      if (!is_processing && true) {
+      if (!is_processing && !is_flushing_sync) {
         queue_micro_task(() => {
           if (!__privateGet(batch, _started)) {
             batch.flush();
@@ -1274,6 +1335,26 @@ unlink_fn = function() {
   this.linked = false;
 };
 let Batch = _Batch;
+function flushSync(fn) {
+  var was_flushing_sync = is_flushing_sync;
+  is_flushing_sync = true;
+  try {
+    var result;
+    if (fn) ;
+    while (true) {
+      flush_tasks();
+      if (current_batch === null) {
+        return (
+          /** @type {T} */
+          result
+        );
+      }
+      current_batch.flush();
+    }
+  } finally {
+    is_flushing_sync = was_flushing_sync;
+  }
+}
 function infinite_loop_guard() {
   try {
     effect_update_depth_exceeded();
@@ -1741,6 +1822,18 @@ function proxy(value) {
     }
   );
 }
+function get_proxied_value(value) {
+  try {
+    if (value !== null && typeof value === "object" && STATE_SYMBOL in value) {
+      return value[STATE_SYMBOL];
+    }
+  } catch {
+  }
+  return value;
+}
+function is(a, b) {
+  return Object.is(get_proxied_value(a), get_proxied_value(b));
+}
 var $window;
 var is_firefox;
 var first_child_getter;
@@ -1816,11 +1909,11 @@ function clear_text_content(node) {
 function should_defer_append() {
   return false;
 }
-function create_element(tag, namespace, is) {
+function create_element(tag, namespace, is2) {
   {
     return (
       /** @type {T extends keyof HTMLElementTagNameMap ? HTMLElementTagNameMap[T] : Element} */
-      is ? document.createElement(tag, { is }) : document.createElement(tag)
+      is2 ? document.createElement(tag, { is: is2 }) : document.createElement(tag)
     );
   }
 }
@@ -2507,6 +2600,10 @@ function update_effect(effect2) {
     is_updating_effect = was_updating_effect;
     active_effect = previous_effect;
   }
+}
+async function tick() {
+  await Promise.resolve();
+  flushSync();
 }
 function get(signal) {
   var flags2 = signal.f;
@@ -3709,7 +3806,8 @@ var offscreen_anchor;
 function each(node, flags2, get_collection, get_key, render_fn2, fallback_fn = null) {
   var anchor = node;
   var items = /* @__PURE__ */ new Map();
-  {
+  var is_controlled = (flags2 & EACH_IS_CONTROLLED) !== 0;
+  if (is_controlled) {
     var parent_node = (
       /** @type {Element} */
       node
@@ -3829,18 +3927,32 @@ function skip_to_branch(effect2) {
   return effect2;
 }
 function reconcile(state2, array, anchor, flags2, get_key) {
-  var _a2;
+  var _a2, _b2, _c, _d, _e, _f, _g, _h, _i;
+  var is_animated = (flags2 & EACH_IS_ANIMATED) !== 0;
   var length = array.length;
   var items = state2.items;
   var current = skip_to_branch(state2.effect.first);
   var seen;
   var prev = null;
+  var to_animate;
   var matched = [];
   var stashed = [];
   var value;
   var key2;
   var effect2;
   var i;
+  if (is_animated) {
+    for (i = 0; i < length; i += 1) {
+      value = array[i];
+      key2 = get_key(value, i);
+      effect2 = /** @type {EachItem} */
+      items.get(key2).e;
+      if ((effect2.f & EFFECT_OFFSCREEN) === 0) {
+        (_b2 = (_a2 = effect2.nodes) == null ? void 0 : _a2.a) == null ? void 0 : _b2.measure();
+        (to_animate ?? (to_animate = /* @__PURE__ */ new Set())).add(effect2);
+      }
+    }
+  }
   for (i = 0; i < length; i += 1) {
     value = array[i];
     key2 = get_key(value, i);
@@ -3854,6 +3966,10 @@ function reconcile(state2, array, anchor, flags2, get_key) {
     }
     if ((effect2.f & INERT) !== 0) {
       resume_effect(effect2);
+      if (is_animated) {
+        (_d = (_c = effect2.nodes) == null ? void 0 : _c.a) == null ? void 0 : _d.unfix();
+        (to_animate ?? (to_animate = /* @__PURE__ */ new Set())).delete(effect2);
+      }
     }
     if ((effect2.f & EFFECT_OFFSCREEN) !== 0) {
       effect2.f ^= EFFECT_OFFSCREEN;
@@ -3929,7 +4045,7 @@ function reconcile(state2, array, anchor, flags2, get_key) {
     for (const group of state2.outrogroups) {
       if (group.pending.size === 0) {
         destroy_effects(state2, array_from(group.done));
-        (_a2 = state2.outrogroups) == null ? void 0 : _a2.delete(group);
+        (_e = state2.outrogroups) == null ? void 0 : _e.delete(group);
       }
     }
     if (state2.outrogroups.size === 0) {
@@ -3953,9 +4069,26 @@ function reconcile(state2, array, anchor, flags2, get_key) {
     }
     var destroy_length = to_destroy.length;
     if (destroy_length > 0) {
-      var controlled_anchor = length === 0 ? anchor : null;
+      var controlled_anchor = (flags2 & EACH_IS_CONTROLLED) !== 0 && length === 0 ? anchor : null;
+      if (is_animated) {
+        for (i = 0; i < destroy_length; i += 1) {
+          (_g = (_f = to_destroy[i].nodes) == null ? void 0 : _f.a) == null ? void 0 : _g.measure();
+        }
+        for (i = 0; i < destroy_length; i += 1) {
+          (_i = (_h = to_destroy[i].nodes) == null ? void 0 : _h.a) == null ? void 0 : _i.fix();
+        }
+      }
       pause_effects(state2, to_destroy, controlled_anchor);
     }
+  }
+  if (is_animated) {
+    queue_micro_task(() => {
+      var _a3, _b3;
+      if (to_animate === void 0) return;
+      for (effect2 of to_animate) {
+        (_b3 = (_a3 = effect2.nodes) == null ? void 0 : _a3.a) == null ? void 0 : _b3.apply();
+      }
+    });
   }
 }
 function create_item(items, anchor, value, key2, index2, render_fn2, flags2, get_collection) {
@@ -4055,6 +4188,100 @@ function set_class(dom, is_html, value, hash, prev_classes, next_classes) {
   }
   return next_classes;
 }
+function set_selected(option, selected) {
+  if (selected) {
+    if (!option.hasAttribute("selected")) option.setAttribute("selected", "");
+  } else {
+    option.removeAttribute("selected");
+  }
+}
+function apply_default_select_value(select, preserve) {
+  var value = select.__defaultValue;
+  var multiple = select.multiple;
+  var values = multiple ? value ?? [] : null;
+  if (multiple && !is_array(values)) return;
+  select.selectedIndex;
+  for (var option of select.options) {
+    var option_value = get_option_value(option);
+    set_selected(
+      option,
+      multiple ? (
+        /** @type {any[]} */
+        values.includes(option_value)
+      ) : is(option_value, value)
+    );
+  }
+  return;
+}
+function select_option(select, value, mounting = false) {
+  if (select.multiple) {
+    if (value == void 0) {
+      return;
+    }
+    if (!is_array(value)) {
+      return select_multiple_invalid_value();
+    }
+    for (var option of select.options) {
+      option.selected = value.includes(get_option_value(option));
+    }
+    return;
+  }
+  for (option of select.options) {
+    var option_value = get_option_value(option);
+    if (is(option_value, value)) {
+      option.selected = true;
+      return;
+    }
+  }
+  if (!mounting || value !== void 0) {
+    select.selectedIndex = -1;
+  }
+}
+function init_select(select) {
+  var observer = new MutationObserver((entries) => {
+    if (entries.every(is_selectedcontent_mutation)) return;
+    if ("__defaultValue" in select) {
+      apply_default_select_value(select);
+    }
+    if ("__value" in select) {
+      select_option(select, select.__value);
+    }
+  });
+  observer.observe(select, {
+    // Listen to option element changes
+    childList: true,
+    subtree: true,
+    // because of <optgroup>
+    // Listen to option element value attribute changes
+    // (doesn't get notified of select value changes,
+    // because that property is not reflected as an attribute)
+    attributes: true,
+    attributeFilter: ["value"]
+  });
+  teardown(() => {
+    observer.disconnect();
+  });
+}
+function get_option_value(option) {
+  if ("__value" in option) {
+    return option.__value;
+  } else {
+    return option.value;
+  }
+}
+function is_selectedcontent_mutation(entry) {
+  if (
+    /** @type {Element} */
+    entry.target.closest("selectedcontent") !== null
+  ) {
+    return true;
+  }
+  if (entry.type === "childList") {
+    var nodes = [...entry.addedNodes, ...entry.removedNodes];
+    return nodes.length > 0 && nodes.every((node) => node.nodeName === "SELECTEDCONTENT");
+  }
+  return false;
+}
 const IS_CUSTOM_ELEMENT = Symbol("is custom element");
 const IS_HTML = Symbol("is html");
 function set_attribute(element, attribute, value, skip_warning) {
@@ -4102,6 +4329,74 @@ function get_setters(element) {
   }
   return setters;
 }
+function bind_value(input, get2, set2 = get2) {
+  var batches = /* @__PURE__ */ new WeakSet();
+  listen_to_event_and_reset_event(input, "input", async (is_reset) => {
+    var value = is_reset ? input.defaultValue : input.value;
+    value = is_numberlike_input(input) ? to_number(value) : value;
+    set2(value);
+    if (current_batch !== null) {
+      batches.add(current_batch);
+    }
+    await tick();
+    if (value !== (value = get2())) {
+      var start = input.selectionStart;
+      var end = input.selectionEnd;
+      var length = input.value.length;
+      input.value = value ?? "";
+      if (end !== null) {
+        var new_length = input.value.length;
+        if (start === end && end === length && new_length > length) {
+          input.selectionStart = new_length;
+          input.selectionEnd = new_length;
+        } else {
+          input.selectionStart = start;
+          input.selectionEnd = Math.min(end, new_length);
+        }
+      }
+    }
+  });
+  if (
+    // If we are hydrating and the value has since changed,
+    // then use the updated value from the input instead.
+    // If defaultValue is set, then value == defaultValue
+    // TODO Svelte 6: remove input.value check and set to empty string?
+    untrack(get2) == null && input.value
+  ) {
+    set2(is_numberlike_input(input) ? to_number(input.value) : input.value);
+    if (current_batch !== null) {
+      batches.add(current_batch);
+    }
+  }
+  render_effect(() => {
+    var value = get2();
+    if (input === document.activeElement) {
+      var batch = (
+        /** @type {Batch} */
+        current_batch
+      );
+      if (batches.has(batch)) {
+        return;
+      }
+    }
+    if (is_numberlike_input(input) && value === to_number(input.value)) {
+      return;
+    }
+    if (input.type === "date" && !value && !input.value) {
+      return;
+    }
+    if (value !== input.value) {
+      input.value = value ?? "";
+    }
+  });
+}
+function is_numberlike_input(input) {
+  var type = input.type;
+  return type === "number" || type === "range";
+}
+function to_number(value) {
+  return value === "" ? null : +value;
+}
 function is_bound_this(bound_value, element_or_component) {
   return bound_value === element_or_component || (bound_value == null ? void 0 : bound_value[STATE_SYMBOL]) === element_or_component;
 }
@@ -4147,6 +4442,16 @@ function bind_this(element_or_component = mark_as_component(), update, get_value
     };
   });
   return element_or_component;
+}
+function preventDefault(fn) {
+  return function(...args) {
+    var event2 = (
+      /** @type {Event} */
+      args[0]
+    );
+    event2.preventDefault();
+    return fn == null ? void 0 : fn.apply(this, args);
+  };
 }
 function init(immutable = false) {
   const context = (
@@ -5007,6 +5312,17 @@ function parseCapabilities(raw) {
     actions: parsedActions,
     features: parsedFeatures
   };
+  if (raw.profiles !== void 0) {
+    if (!Array.isArray(raw.profiles) || raw.profiles.length > 1e3) return null;
+    const profiles = [];
+    for (const row of raw.profiles) {
+      if (!isRecord(row) || typeof row.selector_id !== "string" || !/^[a-f0-9]{32}$/.test(row.selector_id) || typeof row.label !== "string" || !row.label.length || row.label.length > 256 || typeof row.available !== "boolean" || profiles.some((p) => p.selector_id === row.selector_id)) return null;
+      profiles.push({ selector_id: row.selector_id, label: row.label, available: row.available });
+    }
+    if (raw.selected_profile !== null && !profiles.some((p) => p.selector_id === raw.selected_profile)) return null;
+    capabilities.profiles = profiles;
+    capabilities.selected_profile = raw.selected_profile;
+  }
   if (timing !== void 0) capabilities.timing = timing;
   if (wakePhrases !== void 0) capabilities.wake_phrases = wakePhrases;
   if (wakeListenSeconds !== void 0) capabilities.wake_listen_seconds = wakeListenSeconds;
@@ -5115,6 +5431,16 @@ function parseAudioEvent(raw) {
   return null;
 }
 const defaultSocketFactory = (url) => new WebSocket(url);
+const admissionMessages = {
+  home_unreachable: "Hermes Home can't be reached. Try again shortly.",
+  home_unauthorized: "This display needs to be paired again.",
+  hermes_unavailable: "Hermes isn't responding. This conversation was not replayed.",
+  profile_unavailable: "This Profile isn't available on this display.",
+  grant_pending: "This Profile still needs its owner's approval.",
+  configuration_changed: "Home access changed. Review the Profile and try again.",
+  credential_renewal_uncertain: "Home access is being recovered. This conversation was not replayed.",
+  claim_limit: "Too many conversations are open. Try again in a moment."
+};
 const RECONNECT_DELAYS_MS = [250, 500, 1e3, 2e3, 4e3];
 const PROFILE_ROUTE_ACK_TIMEOUT_MS = 2e4;
 function normaliseWakePhrase(value) {
@@ -5149,6 +5475,16 @@ class StateChannel {
     this.onValidSnapshot = onValidSnapshot;
     this.onAudioEvent = onAudioEvent;
     this.onAudioChunk = onAudioChunk;
+  }
+  sendInterrupt() {
+    var _a2;
+    if (!this.socketOpen || !this.hasHydratedSocket || !((_a2 = this.socket) == null ? void 0 : _a2.send)) return false;
+    try {
+      this.socket.send(JSON.stringify({ type: "interrupt", schema: 1 }));
+      return true;
+    } catch {
+      return false;
+    }
   }
   start() {
     if (this.running) {
@@ -5215,6 +5551,9 @@ class StateChannel {
       this.socketOpen = false;
       this.settlePendingProfileRoutes();
       this.deliver(() => this.onConnectionState((event2 == null ? void 0 : event2.code) === 1013 ? "capacity" : "disconnected"));
+      if ((event2 == null ? void 0 : event2.code) === 1011 && event2.reason && Object.hasOwn(admissionMessages, event2.reason)) {
+        this.deliver(() => this.onProtocolError(admissionMessages[event2.reason]));
+      }
       this.scheduleReconnect();
     };
   }
@@ -5237,7 +5576,13 @@ class StateChannel {
     }
   }
   sendProfileRoute(wakePhrase) {
-    const normalized = normaliseWakePhrase(wakePhrase);
+    return this.sendRoute(normaliseWakePhrase(wakePhrase), false);
+  }
+  sendProfileSelect(selectorId) {
+    if (!/^[a-f0-9]{32}$/.test(selectorId)) return Promise.resolve(false);
+    return this.sendRoute(selectorId, true);
+  }
+  sendRoute(normalized, selecting) {
     const socket = this.socket;
     const send = socket == null ? void 0 : socket.send;
     if (!this.socketOpen || !this.hasHydratedSocket || !socket || typeof send !== "function" || !normalized || normalized.length > 128 || hasControlCharacter(normalized)) {
@@ -5258,10 +5603,10 @@ class StateChannel {
       this.pendingProfileRoutes.set(requestId, { resolve, timer });
       try {
         send.call(socket, JSON.stringify({
-          type: "profile_route",
+          type: selecting ? "profile_select" : "profile_route",
           schema: 1,
           request_id: requestId,
-          wake_phrase: normalized
+          ...selecting ? { selector_id: normalized } : { wake_phrase: normalized }
         }));
       } catch {
         clearTimeout(timer);
@@ -5478,6 +5823,7 @@ class DisplayBridge {
     __publicField(this, "profileRouteTransport");
     __publicField(this, "onVoiceError");
     __publicField(this, "channel");
+    __publicField(this, "homeError", false);
     this.reducer = options.reducer ?? createDisplayReducer();
     this.onActionError = options.onActionError ?? (() => {
     });
@@ -5488,13 +5834,15 @@ class DisplayBridge {
     this.channel = new StateChannel(
       options.url,
       (snapshot) => {
+        var _a2;
         const result = this.reducer.applySnapshot(snapshot);
         if (result.kind === "accepted") {
+          this.homeError = snapshot.state === "error" && (((_a2 = snapshot.capabilities) == null ? void 0 : _a2.features.includes("browser_profiles")) ?? false);
           this.deliver(() => options.onView(result.view));
         } else if (result.kind === "invalid_transition" || result.kind === "invalid_snapshot") {
           this.deliver(() => {
-            var _a2;
-            return (_a2 = options.onProtocolError) == null ? void 0 : _a2.call(options, "display data unavailable");
+            var _a3;
+            return (_a3 = options.onProtocolError) == null ? void 0 : _a3.call(options, "display data unavailable");
           });
         }
       },
@@ -5547,6 +5895,10 @@ class DisplayBridge {
       return false;
     }
     try {
+      if (this.homeError) {
+        this.reducer.reset();
+        this.homeError = false;
+      }
       if (this.voiceTransport !== null) {
         if (normalizedWakePhrase === void 0) {
           await this.voiceTransport(normalized);
@@ -5562,6 +5914,12 @@ class DisplayBridge {
     }
     this.deliver(() => this.onVoiceError("transport_error"));
     return false;
+  }
+  selectProfile(selectorId) {
+    return this.channel.sendProfileSelect(selectorId);
+  }
+  interrupt() {
+    return this.channel.sendInterrupt();
   }
   async routeProfile(wakePhrase) {
     const normalized = wakePhrase.trim().replace(/\s+/g, " ");
@@ -6474,24 +6832,28 @@ class PcmAudioPlayer {
     return this.context;
   }
 }
-var root = /* @__PURE__ */ from_html(`<button type="button" data-handsfree-button=""> </button>`);
-var root_1 = /* @__PURE__ */ from_html(`<p data-voice-error="" role="alert"> </p>`);
-var root_2 = /* @__PURE__ */ from_html(`<p data-voice-status="">Listening…</p>`);
-var root_3 = /* @__PURE__ */ from_html(`<p data-voice-status="">Sending…</p>`);
-var root_4 = /* @__PURE__ */ from_html(`<p data-handsfree-error="" role="alert"> </p>`);
-var root_5 = /* @__PURE__ */ from_html(`<p data-handsfree-status=""> </p>`);
-var root_6 = /* @__PURE__ */ from_html(`<p data-handsfree-status="">Switching profile…</p>`);
-var root_7 = /* @__PURE__ */ from_html(`<p data-handsfree-status="">Heard you</p>`);
-var root_8 = /* @__PURE__ */ from_html(`<p data-handsfree-status="">Listening…</p>`);
-var root_9 = /* @__PURE__ */ from_html(`<p data-handsfree-status="">Listening for a follow-up…</p>`);
-var root_10 = /* @__PURE__ */ from_html(`<p data-handsfree-status="">Sending…</p>`);
-var root_11 = /* @__PURE__ */ from_html(`<section class="browser-voice-controls" aria-label="Browser voice"><button type="button" data-voice-button=""> </button> <!> <!> <!></section>`);
-var root_12 = /* @__PURE__ */ from_html(`<div><!></div> <!> <!>`, 1);
+var root = /* @__PURE__ */ from_html(`<option> </option>`);
+var root_1 = /* @__PURE__ */ from_html(`<p role="alert"> </p>`);
+var root_2 = /* @__PURE__ */ from_html(`<section aria-label="Home Profiles" class="browser-profile-controls"><label for="home-profile">Profile</label> <select id="home-profile"><option disabled="">Choose a Profile</option><!></select> <!> <form><label for="typed-turn">Message</label> <input id="typed-turn" maxlength="4000" autocomplete="off"/> <button type="submit">Send</button> <button type="button">Interrupt</button></form></section>`);
+var root_3 = /* @__PURE__ */ from_html(`<button type="button" data-handsfree-button=""> </button>`);
+var root_4 = /* @__PURE__ */ from_html(`<p data-voice-error="" role="alert"> </p>`);
+var root_5 = /* @__PURE__ */ from_html(`<p data-voice-status="">Listening…</p>`);
+var root_6 = /* @__PURE__ */ from_html(`<p data-voice-status="">Sending…</p>`);
+var root_7 = /* @__PURE__ */ from_html(`<p data-handsfree-error="" role="alert"> </p>`);
+var root_8 = /* @__PURE__ */ from_html(`<p data-handsfree-status=""> </p>`);
+var root_9 = /* @__PURE__ */ from_html(`<p data-handsfree-status="">Switching profile…</p>`);
+var root_10 = /* @__PURE__ */ from_html(`<p data-handsfree-status="">Heard you</p>`);
+var root_11 = /* @__PURE__ */ from_html(`<p data-handsfree-status="">Listening…</p>`);
+var root_12 = /* @__PURE__ */ from_html(`<p data-handsfree-status="">Listening for a follow-up…</p>`);
+var root_13 = /* @__PURE__ */ from_html(`<p data-handsfree-status="">Sending…</p>`);
+var root_14 = /* @__PURE__ */ from_html(`<!> <section class="browser-voice-controls" aria-label="Browser voice"><button type="button" data-voice-button=""> </button> <!> <!> <!></section>`, 1);
+var root_15 = /* @__PURE__ */ from_html(`<div><!></div> <!> <!>`, 1);
 function App($$anchor, $$props) {
   push($$props, false);
   const browserVoiceEnabled = /* @__PURE__ */ mutable_source();
   const browserHandsFreeEnabled = /* @__PURE__ */ mutable_source();
   const handsFreeArmed = /* @__PURE__ */ mutable_source();
+  const retryableHomeError = /* @__PURE__ */ mutable_source();
   const displayReady = /* @__PURE__ */ mutable_source();
   const wakePhraseLabel = /* @__PURE__ */ mutable_source();
   const promptVisible = /* @__PURE__ */ mutable_source();
@@ -6520,10 +6882,16 @@ function App($$anchor, $$props) {
   let trackedResponseText = "";
   let responseTurnActive = false;
   let responseRetentionExpired = false;
+  let selectProfile = /* @__PURE__ */ mutable_source(async () => false);
+  let sendTypedTurn = /* @__PURE__ */ mutable_source(async () => false);
+  let typedText = /* @__PURE__ */ mutable_source("");
+  let selectingProfile = /* @__PURE__ */ mutable_source(false);
+  let selectionError = /* @__PURE__ */ mutable_source(null);
+  let interruptTurn = /* @__PURE__ */ mutable_source(() => false);
   const responseActiveStates = /* @__PURE__ */ new Set(["heard", "listening", "thinking", "buffering", "speaking"]);
   const RESPONSE_RETENTION_MS = 6e4;
   function isDisplayReady() {
-    return get(protocolError) === null && get(connectionState) === "connected" && get(displayView).state === "idle" && get(displayView).connection_healthy && !get(displayView).is_busy;
+    return get(displayReady);
   }
   function handsFreeSurfaceState(state2) {
     if (state2 === "heard") return "heard";
@@ -6684,6 +7052,22 @@ function App($$anchor, $$props) {
         set(voiceState, "error");
       }
     });
+    set(selectProfile, async (id) => {
+      set(selectingProfile, true);
+      set(selectionError, null);
+      handsFreeController == null ? void 0 : handsFreeController.disarm();
+      voiceController == null ? void 0 : voiceController.reset();
+      clearConversationPresentation();
+      try {
+        const accepted = await bridge.selectProfile(id);
+        if (!accepted) set(selectionError, "Profile selection was not accepted. Review Home access and try again.");
+        return accepted;
+      } finally {
+        set(selectingProfile, false);
+      }
+    });
+    set(sendTypedTurn, (text) => bridge.sendVoiceTurn(text));
+    set(interruptTurn, () => bridge.interrupt());
     set(dispatchAction, (action) => {
       let actionAllowed = get(displayView).can_choose;
       if ("operation" in action) {
@@ -6806,10 +7190,17 @@ function App($$anchor, $$props) {
   legacy_pre_effect(() => get(handsFreeState), () => {
     set(handsFreeArmed, get(handsFreeState) !== "off" && get(handsFreeState) !== "error");
   });
+  legacy_pre_effect(() => get(displayView), () => {
+    var _a2, _b2, _c;
+    set(retryableHomeError, get(displayView).state === "error" && (((_a2 = get(displayView).capabilities) == null ? void 0 : _a2.features.includes("browser_profiles")) ?? false) && (((_c = (_b2 = get(displayView).capabilities) == null ? void 0 : _b2.profiles) == null ? void 0 : _c.some((profile) => {
+      var _a3;
+      return profile.available && profile.selector_id === ((_a3 = get(displayView).capabilities) == null ? void 0 : _a3.selected_profile);
+    })) ?? false));
+  });
   legacy_pre_effect(
-    () => (get(protocolError), get(connectionState), get(displayView)),
+    () => (get(protocolError), get(connectionState), get(displayView), get(retryableHomeError)),
     () => {
-      set(displayReady, get(protocolError) === null && get(connectionState) === "connected" && get(displayView).state === "idle" && get(displayView).connection_healthy && !get(displayView).is_busy);
+      set(displayReady, get(protocolError) === null && get(connectionState) === "connected" && (get(displayView).state === "idle" && get(displayView).connection_healthy || get(retryableHomeError)) && !get(displayView).is_busy);
     }
   );
   legacy_pre_effect(() => get(displayView), () => {
@@ -6837,7 +7228,7 @@ function App($$anchor, $$props) {
   });
   legacy_pre_effect_reset();
   init();
-  var fragment = root_12();
+  var fragment = root_15();
   var div = first_child(fragment);
   var node = child(div);
   StateSurface(node, {
@@ -6895,104 +7286,185 @@ function App($$anchor, $$props) {
   }
   var node_3 = sibling(node_1, 2);
   {
-    var consequent_12 = ($$anchor2) => {
-      var section = root_11();
-      var button = child(section);
-      var text_1 = only_child(button, true);
-      var node_4 = sibling(button, 2);
-      {
-        var consequent_1 = ($$anchor3) => {
-          var button_1 = root();
-          var text_2 = only_child(button_1, true);
-          template_effect(() => {
-            set_attribute(button_1, "aria-pressed", get(handsFreeArmed));
-            button_1.disabled = !get(handsFreeArmed) && !get(displayReady);
-            set_text(text_2, get(handsFreeArmed) ? "Disable hands-free" : "Enable hands-free");
-          });
-          event("click", button_1, toggleHandsFree);
-          append($$anchor3, button_1);
-        };
-        if_block(node_4, ($$render) => {
-          if (get(browserHandsFreeEnabled)) $$render(consequent_1);
-        });
-      }
-      var node_5 = sibling(node_4, 2);
+    var consequent_14 = ($$anchor2) => {
+      var fragment_3 = root_14();
+      var node_4 = first_child(fragment_3);
       {
         var consequent_2 = ($$anchor3) => {
-          var p = root_1();
-          var text_3 = only_child(p, true);
-          template_effect(() => set_text(text_3, get(voiceError)));
-          append($$anchor3, p);
+          var section = root_2();
+          var select = sibling(child(section), 2);
+          var option = child(select);
+          option.value = option.__value = "";
+          var node_5 = sibling(option);
+          each(
+            node_5,
+            1,
+            () => (get(displayView), untrack(() => get(displayView).capabilities.profiles ?? [])),
+            (profile) => profile.selector_id,
+            ($$anchor4, profile) => {
+              var option_1 = root();
+              var text_1 = only_child(option_1);
+              var option_1_value = {};
+              template_effect(() => {
+                option_1.disabled = (get(profile), untrack(() => !get(profile).available));
+                set_text(text_1, `${(get(profile), untrack(() => get(profile).label)) ?? ""}${(get(profile), untrack(() => get(profile).available ? "" : " — unavailable")) ?? ""}`);
+                if (option_1_value !== (option_1_value = (get(profile), untrack(() => get(profile).selector_id)))) {
+                  option_1.value = (option_1.__value = option_1_value) ?? "";
+                }
+              });
+              append($$anchor4, option_1);
+            }
+          );
+          var select_value;
+          init_select(select);
+          var node_6 = sibling(select, 2);
+          {
+            var consequent_1 = ($$anchor4) => {
+              var p = root_1();
+              var text_2 = only_child(p, true);
+              template_effect(() => set_text(text_2, get(selectionError)));
+              append($$anchor4, p);
+            };
+            if_block(node_6, ($$render) => {
+              if (get(selectionError)) $$render(consequent_1);
+            });
+          }
+          var form = sibling(node_6, 2);
+          var input = sibling(child(form), 2);
+          var button = sibling(input, 2);
+          var button_1 = sibling(button, 2);
+          template_effect(
+            ($0) => {
+              select.disabled = (get(connectionState), get(displayView), get(promptVisible), get(selectingProfile), untrack(() => get(connectionState) !== "connected" || get(displayView).is_busy || get(promptVisible) || get(selectingProfile)));
+              if (select_value !== (select_value = (get(displayView), untrack(() => get(displayView).capabilities.selected_profile ?? "")))) {
+                select.value = (select.__value = select_value) ?? "", select_option(select, select_value);
+              }
+              input.disabled = !get(displayReady) || get(selectingProfile);
+              button.disabled = $0;
+              button_1.disabled = (get(displayView), get(connectionState), untrack(() => !get(displayView).is_busy || get(connectionState) !== "connected"));
+            },
+            [
+              () => (get(displayReady), get(selectingProfile), get(typedText), untrack(() => !get(displayReady) || get(selectingProfile) || !get(typedText).trim()))
+            ]
+          );
+          event("change", select, (event2) => get(selectProfile)(event2.currentTarget.value));
+          bind_value(input, () => get(typedText), ($$value) => set(typedText, $$value));
+          event("click", button_1, () => get(interruptTurn)());
+          event("submit", form, preventDefault(async () => {
+            const text = get(typedText).trim();
+            if (!text || !get(displayReady) || get(selectingProfile)) return;
+            set(typedText, "");
+            beginCapturePresentation();
+            setUserTranscript(text);
+            if (!await get(sendTypedTurn)(text)) set(voiceError, "Turn could not be sent; it was not replayed.");
+          }));
+          append($$anchor3, section);
         };
-        var consequent_3 = ($$anchor3) => {
-          var p_1 = root_2();
-          append($$anchor3, p_1);
-        };
-        var consequent_4 = ($$anchor3) => {
-          var p_2 = root_3();
-          append($$anchor3, p_2);
-        };
-        if_block(node_5, ($$render) => {
-          if (get(voiceError)) $$render(consequent_2);
-          else if (get(voiceState) === "listening") $$render(consequent_3, 1);
-          else if (get(voiceState) === "submitting") $$render(consequent_4, 2);
+        var d = /* @__PURE__ */ user_derived(() => (get(displayView), untrack(() => {
+          var _a2;
+          return (_a2 = get(displayView).capabilities) == null ? void 0 : _a2.features.includes("browser_profiles");
+        })));
+        if_block(node_4, ($$render) => {
+          if (get(d)) $$render(consequent_2);
         });
       }
-      var node_6 = sibling(node_5, 2);
+      var section_1 = sibling(node_4, 2);
+      var button_2 = child(section_1);
+      var text_3 = only_child(button_2, true);
+      var node_7 = sibling(button_2, 2);
       {
+        var consequent_3 = ($$anchor3) => {
+          var button_3 = root_3();
+          var text_4 = only_child(button_3, true);
+          template_effect(() => {
+            set_attribute(button_3, "aria-pressed", get(handsFreeArmed));
+            button_3.disabled = !get(handsFreeArmed) && !get(displayReady);
+            set_text(text_4, get(handsFreeArmed) ? "Disable hands-free" : "Enable hands-free");
+          });
+          event("click", button_3, toggleHandsFree);
+          append($$anchor3, button_3);
+        };
+        if_block(node_7, ($$render) => {
+          if (get(browserHandsFreeEnabled)) $$render(consequent_3);
+        });
+      }
+      var node_8 = sibling(node_7, 2);
+      {
+        var consequent_4 = ($$anchor3) => {
+          var p_1 = root_4();
+          var text_5 = only_child(p_1, true);
+          template_effect(() => set_text(text_5, get(voiceError)));
+          append($$anchor3, p_1);
+        };
         var consequent_5 = ($$anchor3) => {
-          var p_3 = root_4();
-          var text_4 = only_child(p_3, true);
-          template_effect(() => set_text(text_4, get(handsFreeError)));
-          append($$anchor3, p_3);
+          var p_2 = root_5();
+          append($$anchor3, p_2);
         };
         var consequent_6 = ($$anchor3) => {
-          var p_4 = root_5();
-          var text_5 = only_child(p_4);
-          template_effect(() => set_text(text_5, `Say ${get(wakePhraseLabel) ?? ""}`));
+          var p_3 = root_6();
+          append($$anchor3, p_3);
+        };
+        if_block(node_8, ($$render) => {
+          if (get(voiceError)) $$render(consequent_4);
+          else if (get(voiceState) === "listening") $$render(consequent_5, 1);
+          else if (get(voiceState) === "submitting") $$render(consequent_6, 2);
+        });
+      }
+      var node_9 = sibling(node_8, 2);
+      {
+        var consequent_7 = ($$anchor3) => {
+          var p_4 = root_7();
+          var text_6 = only_child(p_4, true);
+          template_effect(() => set_text(text_6, get(handsFreeError)));
           append($$anchor3, p_4);
         };
-        var consequent_7 = ($$anchor3) => {
-          var p_5 = root_6();
+        var consequent_8 = ($$anchor3) => {
+          var p_5 = root_8();
+          var text_7 = only_child(p_5);
+          template_effect(() => set_text(text_7, `Say ${get(wakePhraseLabel) ?? ""}`));
           append($$anchor3, p_5);
         };
-        var consequent_8 = ($$anchor3) => {
-          var p_6 = root_7();
+        var consequent_9 = ($$anchor3) => {
+          var p_6 = root_9();
           append($$anchor3, p_6);
         };
-        var consequent_9 = ($$anchor3) => {
-          var p_7 = root_8();
+        var consequent_10 = ($$anchor3) => {
+          var p_7 = root_10();
           append($$anchor3, p_7);
         };
-        var consequent_10 = ($$anchor3) => {
-          var p_8 = root_9();
+        var consequent_11 = ($$anchor3) => {
+          var p_8 = root_11();
           append($$anchor3, p_8);
         };
-        var consequent_11 = ($$anchor3) => {
-          var p_9 = root_10();
+        var consequent_12 = ($$anchor3) => {
+          var p_9 = root_12();
           append($$anchor3, p_9);
         };
-        if_block(node_6, ($$render) => {
-          if (get(handsFreeError)) $$render(consequent_5);
-          else if (get(handsFreeState) === "wake_ready") $$render(consequent_6, 1);
-          else if (get(handsFreeState) === "routing") $$render(consequent_7, 2);
-          else if (get(handsFreeState) === "heard") $$render(consequent_8, 3);
-          else if (get(handsFreeState) === "listening") $$render(consequent_9, 4);
-          else if (get(handsFreeState) === "follow_up") $$render(consequent_10, 5);
-          else if (get(handsFreeState) === "submitting") $$render(consequent_11, 6);
+        var consequent_13 = ($$anchor3) => {
+          var p_10 = root_13();
+          append($$anchor3, p_10);
+        };
+        if_block(node_9, ($$render) => {
+          if (get(handsFreeError)) $$render(consequent_7);
+          else if (get(handsFreeState) === "wake_ready") $$render(consequent_8, 1);
+          else if (get(handsFreeState) === "routing") $$render(consequent_9, 2);
+          else if (get(handsFreeState) === "heard") $$render(consequent_10, 3);
+          else if (get(handsFreeState) === "listening") $$render(consequent_11, 4);
+          else if (get(handsFreeState) === "follow_up") $$render(consequent_12, 5);
+          else if (get(handsFreeState) === "submitting") $$render(consequent_13, 6);
         });
       }
       template_effect(() => {
-        set_attribute(section, "data-voice-state", get(voiceState));
-        set_attribute(button, "aria-pressed", get(voiceState) === "listening");
-        button.disabled = !get(displayReady) || get(voiceState) === "submitting" || get(handsFreeArmed);
-        set_text(text_1, get(voiceState) === "listening" ? "Stop listening" : "Tap to talk");
+        set_attribute(section_1, "data-voice-state", get(voiceState));
+        set_attribute(button_2, "aria-pressed", get(voiceState) === "listening");
+        button_2.disabled = !get(displayReady) || get(voiceState) === "submitting" || get(handsFreeArmed);
+        set_text(text_3, get(voiceState) === "listening" ? "Stop listening" : "Tap to talk");
       });
-      event("click", button, toggleVoice);
-      append($$anchor2, section);
+      event("click", button_2, toggleVoice);
+      append($$anchor2, fragment_3);
     };
     if_block(node_3, ($$render) => {
-      if (get(browserVoiceEnabled)) $$render(consequent_12);
+      if (get(browserVoiceEnabled)) $$render(consequent_14);
     });
   }
   template_effect(() => set_attribute(div, "aria-hidden", get(promptVisible) ? "true" : void 0));

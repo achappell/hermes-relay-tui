@@ -54,6 +54,7 @@ firmware = [
 [project.scripts]
 hermes-relay = "app:main"
 hermes-relay-home = "home_display.appliance:main"
+hermes-relay-browser-pair = "home_display.home_pairing:main"
 hermes-relay-home-demo = "home_display.demo:main"
 hermes-relay-benchmark = "speech_benchmark:main"
 

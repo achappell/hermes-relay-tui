@@ -74,6 +74,9 @@ from .state import (
     MAX_DISPLAY_WAKE_PHRASES,
     PromptOption,
 )
+from home_client import HomeClient
+from .home_store import PrivatePairings
+from .home_admission import AdmissionError, BrowserAdmission, BrowserSession, MESSAGES
 
 logger = logging.getLogger("hermes_relay_tui.appliance")
 
@@ -352,15 +355,6 @@ def _normalise_wake_phrase(value: str) -> str:
     return " ".join(value.strip().split()).casefold()
 
 
-def _read_home_device_credential(path: Path) -> str:
-    """Read a private Device credential without ever putting it in arguments."""
-    try:
-        credential = path.expanduser().read_text(encoding="utf-8").strip()
-    except (OSError, UnicodeError) as error:
-        raise RuntimeError("Home browser credential file is unavailable") from error
-    if not credential:
-        raise RuntimeError("Home browser credential file is empty")
-    return credential
 
 
 class _BrowserSessionContext:
@@ -433,22 +427,9 @@ class _BrowserSessionContext:
             self._child._set_listening()
             result = False
         if not self._child._connected and not self._closed:
-            if self._child._uses_home_browser_transport:
-                try:
-                    await asyncio.wait_for(
-                        self._child._session.connect(), PROFILE_CONNECT_TIMEOUT
-                    )
-                except Exception:
-                    close_transport = getattr(self._child._server, "close", None)
-                    if callable(close_transport):
-                        await asyncio.sleep(0)
-                        with contextlib.suppress(Exception):
-                            await close_transport(
-                                code=1011, reason="browser session unavailable"
-                            )
-                else:
-                    self._child._connected = True
-                    self._child._publish("idle", response_text="")
+            if isinstance(self._child._session, BrowserSession):
+                # Keep the local doorway; never reconnect/replay a conversation.
+                self._child._connected = True
                 return bool(result)
             close_transport = getattr(self._child._server, "close", None)
             if callable(close_transport):
@@ -483,6 +464,24 @@ class _BrowserSessionContext:
                 # the browser does not keep displaying the previous profile.
                 self._child._publish("idle")
             return result
+
+    async def handle_profile_select(self, token: str) -> BrowserProfileRouteResult:
+        session = self._child._session
+        if not isinstance(session, BrowserSession) or self._closed:
+            return BrowserProfileRouteResult(False, reason="unsupported")
+        if self._route_lock.locked() or session.active or self._child._pending_prompt_action_id:
+            return BrowserProfileRouteResult(False, reason="active_turn")
+        async with self._route_lock:
+            try:
+                accepted = await session.select(token)
+                return BrowserProfileRouteResult(accepted, account=session.label, reason=None if accepted else "active_turn")
+            except AdmissionError as error:
+                self._child._publish("error", status_text=str(error))
+                return BrowserProfileRouteResult(False, reason=error.reason)
+
+    async def handle_interrupt(self) -> None:
+        if not self._closed and isinstance(self._child._session, BrowserSession):
+            await self._child._session.interrupt_active_turn()
 
     async def handle_action(
         self,
@@ -581,6 +580,8 @@ class _BrowserSessionContext:
                 wake_phrases=snapshot_capabilities.wake_phrases,
                 wake_listen_seconds=snapshot_capabilities.wake_listen_seconds,
                 wake_followup_seconds=snapshot_capabilities.wake_followup_seconds,
+                profiles=snapshot_capabilities.profiles,
+                selected_profile=snapshot_capabilities.selected_profile,
             )
             self.publisher.publish(
                 state="prompt",
@@ -713,6 +714,7 @@ class Appliance:
         self._browser_context_mode = False
         self._browser_stop: asyncio.Event | None = None
         self._browser_connection_id: str | None = None
+        self._home_admission: BrowserAdmission | None = None
 
     @property
     def active_profile(self) -> config.HouseholdProfile:
@@ -726,6 +728,21 @@ class Appliance:
 
     def _browser_capabilities(self) -> DisplayCapabilities:
         """Return the complete browser-safe, non-secret profile catalog."""
+        if isinstance(self._session, BrowserSession):
+            catalog, selected = self._session.catalog()
+            usable = {g.grant_id for g in self._session.admission.grants if g.usable}
+            phrases = tuple(
+                phrase for phrase, profile in self._phrase_to_profile.items()
+                if profile is not None and getattr(profile, "home_grant", None) in usable
+            )[:MAX_DISPLAY_WAKE_PHRASES]
+            return DisplayCapabilities(
+                actions=tuple(action for action in ("prompt.choose", "prompt.explore") if action in self._session.capabilities),
+                features=("browser_voice", "browser_profiles") + (("browser_hands_free",) if phrases else ()),
+                timing="absent", profiles=catalog, selected_profile=selected,
+                wake_phrases=phrases,
+                wake_listen_seconds=8 if phrases else None,
+                wake_followup_seconds=8 if phrases else None,
+            )
         phrases_list: list[str] = []
         for profile in self._profiles:
             for raw_phrase in getattr(profile, "wake_phrases", ()) or ():
@@ -780,6 +797,8 @@ class Appliance:
             self._response_text = response_text
         status = status_text if status_text is not None else STATUS_TEXT.get(state)
         account = self._active_profile.display_name if self._active_profile else None
+        if isinstance(self._session, BrowserSession):
+            account = self._session.label
         capabilities = (
             self._browser_capabilities()
             if getattr(self.args, "browser_voice", False) and self._connected
@@ -826,6 +845,8 @@ class Appliance:
         """
         self._response_text = ""
         account = self._active_profile.display_name if self._active_profile else None
+        if isinstance(self._session, BrowserSession):
+            account = self._session.label
         capabilities = (
             self._browser_capabilities()
             if getattr(self.args, "browser_voice", False) and self._connected
@@ -935,6 +956,8 @@ class Appliance:
                 wake_phrases=capabilities.wake_phrases,
                 wake_listen_seconds=capabilities.wake_listen_seconds,
                 wake_followup_seconds=capabilities.wake_followup_seconds,
+                profiles=capabilities.profiles,
+                selected_profile=capabilities.selected_profile,
             )
             self.publisher.publish(
                 state="prompt",
@@ -1059,7 +1082,8 @@ class Appliance:
                 audio_active = False
 
         def publish_terminal_error(status_text: str) -> None:
-            self._connected = False
+            self._connected = isinstance(self._session, BrowserSession)
+            self._pending_prompt_action_id = None
             self._publish("error", response_text="", status_text=status_text)
             self._set_listening()
             self._request_reconnect()
@@ -1899,40 +1923,26 @@ class Appliance:
             == "home"
         )
 
-    def _home_browser_settings(self) -> tuple[str, str, str]:
-        """Resolve the Home route without falling back to a bearer profile."""
-        raw_url = str(getattr(self.args, "home_bridge_url", "") or "").strip()
+    def _home_browser_settings(self) -> tuple[str, Path]:
+        raw_url = str(getattr(self.args, "home_bridge_url", "") or "")
         if not raw_url:
-            raise RuntimeError(
-                "Home browser transport requires --home-bridge-url"
-            )
-        try:
-            url = require_home_bridge_url(raw_url)
-        except ValueError as error:
-            raise RuntimeError(str(error)) from error
-
-        credential_file = getattr(self.args, "home_device_credential_file", None)
-        if credential_file:
-            credential = _read_home_device_credential(Path(credential_file))
-        else:
-            credential = config.resolve_home_device_credential(
-                getattr(self.args, "profile_env", None)
-            )
-        if not credential:
-            raise RuntimeError(
-                "Home browser transport requires a Device credential"
-            )
-
-        handle = str(
-            getattr(self.args, "home_conversation_handle", "") or ""
-        ).strip() or config.resolve_home_conversation_handle(
-            getattr(self.args, "profile_env", None)
-        )
-        if not handle:
-            raise RuntimeError(
-                "Home browser transport requires a conversation handle"
-            )
-        return url, credential, handle
+            raise RuntimeError("Home browser transport requires --home-bridge-url")
+        url = require_home_bridge_url(raw_url)
+        path = getattr(self.args, "home_device_credential_file", None)
+        if not path:
+            raise RuntimeError("Home browser transport requires a private pairing file; run hermes-relay-browser-pair")
+        # The supported appliance is loopback behind tailnet Serve. An Origin
+        # allowlist is not network authentication and cannot secure a public bind.
+        import ipaddress
+        from urllib.parse import urlsplit
+        if not ipaddress.ip_address(getattr(self.args, "display_host", "127.0.0.1")).is_loopback:
+            raise RuntimeError("Home browser backend must bind loopback behind Tailscale Serve")
+        origin = getattr(self.args, "display_public_origin", None)
+        if origin:
+            parsed = urlsplit(origin)
+            if parsed.scheme != "https" or not (parsed.hostname or "").endswith(".ts.net"):
+                raise RuntimeError("Home browser public Origin must be a household Tailscale HTTPS name")
+        return url, Path(path)
 
     def _create_session_for_profile(self, profile: config.HouseholdProfile) -> Any:
         if self._session_factory is not None:
@@ -1940,8 +1950,7 @@ class Appliance:
             self._apply_browser_identity(session)
             return session
         if self._uses_home_browser_transport:
-            url, credential, handle = self._home_browser_settings()
-            return HomeBrowserSession(url, credential, handle)
+            raise RuntimeError("Home browser sessions require a connection-scoped admission")
         if self._browser_connection_id is not None:
             profile_args = config.make_profile_args(self.args, profile)
             profile_args.device_id = self._browser_connection_id
@@ -1995,8 +2004,9 @@ class Appliance:
             self._apply_browser_identity(session, connection_id)
             return session, profile_args
         if self._uses_home_browser_transport:
-            url, credential, handle = self._home_browser_settings()
-            return HomeBrowserSession(url, credential, handle), profile_args
+            if self._home_admission is None:
+                raise RuntimeError("Home browser admission has not started")
+            return BrowserSession(self._home_admission, connection_id), profile_args
         return HermesSession(profile_args), profile_args
 
     async def _create_browser_context(self, connection_id: str, audio_sender: Any) -> Any:
@@ -2050,7 +2060,21 @@ class Appliance:
                 child._server = audio_sender
                 context = _BrowserSessionContext(self, connection_id, child)
                 self._browser_contexts[connection_id] = context
-                child._publish("idle")
+                if isinstance(session, BrowserSession):
+                    last_home = None
+                    def update_home():
+                        nonlocal last_home
+                        current = (session.admission.reason, session.catalog())
+                        if current == last_home:
+                            return
+                        if not session.active and not child._stopping.is_set():
+                            last_home = current
+                            reason = session.admission.reason
+                            child._publish("error" if reason else "idle", status_text=MESSAGES.get(reason))
+                    session.on_change = update_home
+                    update_home()
+                else:
+                    child._publish("idle")
                 return context
             except asyncio.CancelledError:
                 if child is not None:
@@ -2226,35 +2250,20 @@ class Appliance:
         if self._stopping.is_set() or not self._connected:
             return BrowserProfileRouteResult(False, reason="unavailable")
 
-        if self._uses_home_browser_transport:
-            # The configured opaque handle is Home's selected conversation.
-            # Keep local wake recognition as a gate, but never turn it into a
-            # client-side Profile switch or send a Profile ID over the bridge.
-            if phrase:
-                normalized = _normalise_wake_phrase(phrase)
-                if (
-                    normalized not in self._phrase_to_profile
-                    or self._phrase_to_profile.get(normalized) is None
-                ):
-                    reason = (
-                        "ambiguous"
-                        if normalized in self._ambiguous_phrases
-                        else "unknown_phrase"
-                    )
-                    return BrowserProfileRouteResult(False, reason=reason)
-            current_state = self._coordinator.state if self._coordinator else handsfree.IDLE
-            if (
-                current_state != handsfree.IDLE
-                or (
-                    self._browser_turn_task is not None
-                    and not self._browser_turn_task.done()
-                )
-            ):
+        if isinstance(self._session, BrowserSession):
+            if self._session.active:
                 return BrowserProfileRouteResult(False, reason="active_turn")
-            return BrowserProfileRouteResult(
-                True,
-                account=self._active_profile.display_name,
-            )
+            if phrase:
+                profile = self._phrase_to_profile.get(_normalise_wake_phrase(phrase))
+                grant_id = getattr(profile, "home_grant", None)
+                token = next((token for token, grant in self._session.tokens.items() if grant == grant_id), None)
+                if token is None:
+                    return BrowserProfileRouteResult(False, reason="profile_unavailable")
+                try:
+                    await self._session.select(token)
+                except AdmissionError as error:
+                    return BrowserProfileRouteResult(False, reason=error.reason)
+            return BrowserProfileRouteResult(True, account=self._session.label)
 
         if not phrase:
             if len(self._profiles) == 1:
@@ -2388,10 +2397,11 @@ class Appliance:
         tls_context = self._display_tls_context()
         if getattr(self.args, "browser_voice", False):
             if self._uses_home_browser_transport:
-                # Fail before binding a public browser listener. A Home route
-                # without its explicit device grant must never drift back to
-                # the direct bearer path.
-                self._home_browser_settings()
+                url, path = self._home_browser_settings()
+                self._home_admission = BrowserAdmission(
+                    HomeClient(url, store=PrivatePairings(path)),
+                    socket_limit=getattr(self.args, "display_max_browser_sessions", 8),
+                )
             if self._server is None:
                 try:
                     self._server = DisplayServer(
@@ -2406,6 +2416,7 @@ class Appliance:
                             self.args, "display_max_browser_sessions", 8
                         ),
                         on_browser_connect=self._create_browser_context,
+                        health=self._home_admission.health if self._home_admission else None,
                     )
                 except ValueError as error:
                     raise RuntimeError(str(error)) from error
@@ -2679,6 +2690,8 @@ class Appliance:
             self._browser_stop.set()
         self._install_signals(self._loop)
         self._build()
+        if self._home_admission is not None:
+            await self._home_admission.start()
         self.info = await self._server.start()
 
         if self._touch_voice_enabled:
@@ -2823,6 +2836,8 @@ class Appliance:
         if self._listener is not None:
             await self._bounded_to_thread(self._listener.stop)
         await self._wait_for_cleanup_tasks()
+        if self._home_admission is not None:
+            await self._home_admission.close()
         if self._recorder is not None and not self._wake_opening:
             with contextlib.suppress(Exception):
                 await self._bounded_to_thread(self._recorder.shutdown)
@@ -2974,22 +2989,13 @@ def build_arg_parser(argv: list[str] | None = None) -> argparse.ArgumentParser:
         help="approved Home bridge URL ending in /api/v1/bridge/ws",
     )
     parser.add_argument(
-        "--home-conversation-handle",
-        default=os.getenv(
-            "HOME_CONVERSATION_HANDLE",
-            str(settings.get("home_conversation_handle", "")),
-        ),
-        metavar="HANDLE",
-        help="opaque Home conversation handle; prefer the private profile .env",
-    )
-    parser.add_argument(
         "--home-device-credential-file",
         type=Path,
         default=Path(credential_file_default).expanduser()
         if credential_file_default
         else None,
         metavar="PATH",
-        help="private file containing the Home Device credential",
+        help="durable private browser pairing JSON file created by hermes-relay-browser-pair",
     )
     parser.add_argument(
         "--display-public-origin",

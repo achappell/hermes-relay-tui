@@ -83,6 +83,40 @@ def _read_catalog(path: Path) -> dict[str, Any]:
     return data
 
 
+def read_home_catalog(path: Path) -> dict[str, Any]:
+    """Optional ID-bound wake shortcuts, never the authorized Profile catalog."""
+    import yaml
+    data = yaml.safe_load(path.read_text(encoding="utf-8"))
+    if not isinstance(data, dict) or set(data) - {"version", "profiles"} or data.get("version") != 1:
+        raise ValueError("Home catalog must contain version 1 and optional profiles")
+    profiles = data.get("profiles", {})
+    if not isinstance(profiles, dict) or len(profiles) > 1000:
+        raise ValueError("Home shortcuts must be a mapping")
+    phrases = set()
+    for name, entry in profiles.items():
+        if not isinstance(name, str) or not re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,63}", name):
+            raise ValueError("invalid shortcut name")
+        if not isinstance(entry, dict) or set(entry) - {"display_name", "wake_phrases", "home_grant"}:
+            raise ValueError("Home shortcuts accept only label, phrases, and an explicit grant binding")
+        label = entry.get("display_name", name)
+        grant = entry.get("home_grant", "")
+        wake = entry.get("wake_phrases", [])
+        if not isinstance(label, str) or not 1 <= len(label) <= 256 or not isinstance(grant, str) or not 1 <= len(grant) <= 128:
+            raise ValueError("shortcut needs a bounded label and explicit stable grant ID")
+        if any(ord(c) < 33 or ord(c) == 127 for c in grant) or not isinstance(wake, list):
+            raise ValueError("invalid shortcut binding")
+        for phrase in wake:
+            if not isinstance(phrase, str) or not 1 <= len(phrase.strip()) <= 128:
+                raise ValueError("invalid wake phrase")
+            normalized = " ".join(phrase.split()).casefold()
+            if normalized in phrases:
+                raise ValueError("wake phrases must be unique")
+            phrases.add(normalized)
+    if len(phrases) > 8:
+        raise ValueError("at most eight local wake shortcuts are supported")
+    return data
+
+
 def _read_token_values(path: Path) -> dict[str, str]:
     values: dict[str, str] = {}
     try:
@@ -123,10 +157,19 @@ def _write_filtered_env(path: Path, values: dict[str, str]) -> None:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--catalog", type=Path, required=True)
-    parser.add_argument("--env-file", type=Path, required=True)
+    parser.add_argument("--env-file", type=Path)
+    parser.add_argument("--browser-transport", choices=("legacy", "home"), default="legacy")
     parser.add_argument("--write-env", type=Path)
     args = parser.parse_args()
     try:
+        if args.browser_transport == "home":
+            if args.env_file or args.write_env:
+                raise ValueError("Home does not consume a bearer token environment")
+            read_home_catalog(args.catalog)
+            print("Home optional wake shortcuts validated; grants remain Home authority")
+            return 0
+        if args.env_file is None:
+            raise ValueError("legacy catalog requires --env-file")
         _read_catalog(args.catalog)
         values = _read_token_values(args.env_file)
         if args.write_env is not None:

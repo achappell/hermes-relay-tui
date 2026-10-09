@@ -53,7 +53,7 @@ development_status:
   standard-6-puck-migrate-respeaker-puck-path: done
   standard-7-esp32-add-touch-display-audio-session-adapter: done
   standard-8-wk-migrate-browser-and-ipad-routes: done
-  wk-home-01-migrate-production-browser-to-homebridge: backlog
+  wk-home-01-migrate-production-browser-to-homebridge: in-progress # repo integration; S7/R6/R7 remain unaccepted/undeployed
   epic-4: backlog
   tui-retire-01: backlog
   epic-5: in-progress

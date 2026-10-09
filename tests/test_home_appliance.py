@@ -2515,52 +2515,33 @@ def test_browser_session_limit_is_configurable():
     assert limited.display_max_browser_sessions == 3
 
 
-def test_home_browser_transport_is_explicit_and_uses_private_connection_inputs(tmp_path):
-    from home_display import appliance
+def test_home_browser_transport_uses_private_pairing_and_lazy_per_tab_sessions(tmp_path):
+    from home_display.home_admission import BrowserSession
+    from home_display.home_store import PrivatePairings
+    from home_client import PairingRecord
+    import time
 
-    credential_file = tmp_path / "home-device-credential"
-    credential_file.write_text("device-secret\n", encoding="utf-8")
-    args = appliance.build_arg_parser([]).parse_args(
-        [
-            "--browser-voice",
-            "--browser-transport",
-            "home",
-            "--home-bridge-url",
-            "wss://home.example/api/v1/bridge/ws",
-            "--home-conversation-handle",
-            "opaque-home-handle",
-            "--home-device-credential-file",
-            str(credential_file),
-        ]
-    )
-
-    assert args.browser_transport == "home"
-    assert args.home_bridge_url == "wss://home.example/api/v1/bridge/ws"
-    assert args.home_conversation_handle == "opaque-home-handle"
+    private = tmp_path / "service"
+    private.mkdir(mode=0o700)
+    credential_file = private / "pairing.json"
+    PrivatePairings(credential_file).save(PairingRecord(
+        "https://home.example", "device-test", "device-secret", 1, time.time() + 86400 * 90,
+    ))
+    args = appliance_module.build_arg_parser([]).parse_args([
+        "--browser-voice", "--browser-transport", "home",
+        "--home-bridge-url", "wss://home.example/api/v1/bridge/ws",
+        "--home-device-credential-file", str(credential_file),
+    ])
+    relay = Appliance(args, profiles=_catalog_profiles(), publisher=RecordingPublisher())
+    relay._build()
+    one, profile_args = relay._create_browser_session(relay.active_profile, "browser-one")
+    two, _ = relay._create_browser_session(relay.active_profile, "browser-two")
+    assert isinstance(one, BrowserSession) and one is not two
+    assert one.bridge is None and two.bridge is None
+    assert profile_args.token == ""
+    assert one.admission is two.admission
     assert args.home_device_credential_file == credential_file
-
-    relay = Appliance(
-        args,
-        profiles=_catalog_profiles(),
-        publisher=RecordingPublisher(),
-    )
-    session, profile_args = relay._create_browser_session(
-        relay.active_profile, "browser-one"
-    )
-    try:
-        assert isinstance(session, appliance_module.HomeBrowserSession)
-        assert session.device_credential == "device-secret"
-        assert session.session_id == "home-browser"
-        assert profile_args.token == ""
-        relay._connected = True
-        relay._publish("idle")
-        capabilities = relay.publisher.capabilities[-1]
-        assert capabilities.timing == "absent"
-        serialized = capabilities.to_dict()
-        assert "device-secret" not in json.dumps(serialized)
-        assert "opaque-home-handle" not in json.dumps(serialized)
-    finally:
-        asyncio.run(session.close())
+    assert "device-secret" not in json.dumps(one.catalog())
 
 
 def test_home_browser_parser_does_not_resolve_legacy_profile_tokens(tmp_path, monkeypatch):
@@ -2905,19 +2886,9 @@ async def test_home_browser_turn_reaches_idle_after_home_terminal_event():
 
 
 @pytest.mark.asyncio
-async def test_home_browser_drop_ends_audio_while_resumed_text_finishes():
+async def test_home_browser_drop_aborts_audio_without_reconnecting_or_replaying():
     from puck_bridge.home_session import HomeBridgeTransportError
 
-    def event(event_type, payload=None):
-        return {
-            "method": "event",
-            "params": {
-                "schema": 1,
-                "conversation_handle": "opaque-home-handle",
-                "turn_id": "home-turn-1",
-                "event": {"type": event_type, "payload": payload or {}},
-            },
-        }
 
     class FakeHomeClient:
         def __init__(self, frames):
@@ -2934,25 +2905,6 @@ async def test_home_browser_drop_ends_audio_while_resumed_text_finishes():
                     "turn_id": "home-turn-1",
                     "status": "submitted",
                 }
-            if method == "conversation.reconnect":
-                return {
-                    "schema": 1,
-                    "status": "ready",
-                    "conversation_handle": "opaque-home-handle",
-                    "route": {"class": "home", "id": "approved-route"},
-                    "capabilities": {
-                        "commands": [],
-                        "heartbeat": True,
-                        "timing": "absent",
-                        "interrupt": True,
-                    },
-                    "unresolved_turn": {
-                        "schema": 1,
-                        "conversation_handle": "opaque-home-handle",
-                        "turn_id": "home-turn-1",
-                        "status": "submitted",
-                    },
-                }
             raise AssertionError(f"unexpected Home request: {method}")
 
         async def next_frame(self):
@@ -2965,7 +2917,7 @@ async def test_home_browser_drop_ends_audio_while_resumed_text_finishes():
         async def close(self):
             self.is_connected = False
 
-    class ResumingHomeBrowserSession(appliance_module.HomeBrowserSession):
+    class NoReplayHomeBrowserSession(appliance_module.HomeBrowserSession):
         def __init__(self):
             super().__init__(
                 "wss://home.example/api/v1/bridge/ws",
@@ -2995,30 +2947,15 @@ async def test_home_browser_drop_ends_audio_while_resumed_text_finishes():
                     ),
                 ]
             )
-            self.resumed = FakeHomeClient(
-                [
-                    event("message.delta", {"text": "continued text"}),
-                    event("turn.complete", {"status": "completed"}),
-                ]
-            )
             self._client = self.first
             self._connected = True
             self._opened = True
             self._capabilities = frozenset({"heartbeat", "interrupt"})
 
         async def connect(self):
-            await self.first.close()
-            self._client = self.resumed
-            ready = await self.resumed.request(
-                "conversation.reconnect",
-                {"conversation_handle": "opaque-home-handle"},
-            )
-            self._validate_ready_result(ready)
-            self._connected = True
-            self._reconnect_required = False
-            return ready
+            raise AssertionError("browser must never reconnect an old conversation")
 
-    session = ResumingHomeBrowserSession()
+    session = NoReplayHomeBrowserSession()
     publisher = RecordingPublisher()
     server = FakeServer()
     relay = Appliance(
@@ -3031,12 +2968,11 @@ async def test_home_browser_drop_ends_audio_while_resumed_text_finishes():
     relay._connected = True
 
     try:
-        assert await relay._run_browser_turn("hello") is True
-        assert publisher.history[-1][0] == "idle"
-        assert publisher.history[-1][1] == "continued text"
-        assert [kind for kind, _ in server.audio] == ["start", "chunk", "end"]
+        assert await relay._run_browser_turn("hello") is False
+        assert publisher.history[-1][0] == "disconnected"
+        assert publisher.history[-1][1] == ""
+        assert [kind for kind, _ in server.audio] == ["start", "chunk", "abort"]
         assert session.first.requests == ["prompt.submit"]
-        assert session.resumed.requests == ["conversation.reconnect"]
     finally:
         await relay.aclose()
 
