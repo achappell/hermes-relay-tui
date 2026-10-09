@@ -10,6 +10,31 @@
 
 - Keep the Home conversation connected when Ctrl+C stops only the remaining local response audio; preserve remote-turn interruption and failure recovery.
 
+## 0.12.0 (2026-10-09)
+
+<!-- Release notes generated using configuration in .github/release.yml at main -->
+
+## What's Changed
+### Dependencies
+* chore(deps): bump undici from 8.10.1 to 8.11.2 in /home_display/web by @dependabot[bot] in https://github.com/achappell/hermes-relay-tui/pull/218
+* chore(deps-dev): bump devalue from 5.9.2 to 5.9.4 in /home_display/web by @dependabot[bot] in https://github.com/achappell/hermes-relay-tui/pull/220
+### Other Changes
+* fix(home): complete TUI-HOME-01 acceptance and correct TLS errors by @achappell in https://github.com/achappell/hermes-relay-tui/pull/213
+* docs(status): close TUI-HOME-01 after accepted verification by @achappell in https://github.com/achappell/hermes-relay-tui/pull/215
+* fix(tui): unblock wake turns and preserve Home session ownership by @achappell in https://github.com/achappell/hermes-relay-tui/pull/216
+* docs(status): close accepted TUI Epic 1 wake work by @achappell in https://github.com/achappell/hermes-relay-tui/pull/217
+* feat(tui): offer explicit Standard-only terminal setup by @achappell in https://github.com/achappell/hermes-relay-tui/pull/219
+* docs: record TUI-STD-01 merge status by @achappell in https://github.com/achappell/hermes-relay-tui/pull/221
+* docs: mark TUI-STD-01 done on owner acceptance by @achappell in https://github.com/achappell/hermes-relay-tui/pull/222
+* docs(status): reconcile merged 1-P-4, 2-T-3 and Standard-7 by @achappell in https://github.com/achappell/hermes-relay-tui/pull/223
+* fix(tui): retain Home connection for local playback stop by @achappell in https://github.com/achappell/hermes-relay-tui/pull/224
+* fix(home): log browser admission failures before the 1011 close by @achappell in https://github.com/achappell/hermes-relay-tui/pull/225
+* docs(wk): draft WK-HOME-01 — migrate the production browser/iPad appliance to HomeBridge by @achappell in https://github.com/achappell/hermes-relay-tui/pull/226
+* feat(browser): integrate paired HomeBridge appliance admission by @achappell in https://github.com/achappell/hermes-relay-tui/pull/227
+
+
+**Full Changelog**: https://github.com/achappell/hermes-relay-tui/compare/v0.11.0...v0.12.0
+
 ## 0.11.0 (2026-09-24)
 
 <!-- Release notes generated using configuration in .github/release.yml at main -->
