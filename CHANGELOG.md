@@ -4,6 +4,7 @@
 
 ### Features
 
+- Add opt-in `home.chappell-home.dev` deployment checks for household-only raw-TCP Tailscale Serve through a loopback-peer-gated Caddy site, with strict SSH and matching saved-Origin rollback. Keep the existing `.ts.net` path; named cutover and portal publication require separate operational authorization and a published release.
 - Add the authorized Home browser appliance path: private durable pairing and renewal, live Home Profile selection, per-tab fresh claims with HTTP cleanup, typed admission failures, and admission-only health. Provide isolated tagged Home deployment/rollback tooling and real local Home integration smoke. Production rollout, iPad acceptance, and post-bake legacy retirement remain separate gates.
 
 ### Bug fixes

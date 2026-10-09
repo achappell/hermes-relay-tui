@@ -18,8 +18,9 @@ remain separate authorized work; this implementation does not mark W/K deployed.
 - Use a dedicated loopback backend (`127.0.0.1:8875`) and separate
   `hermes-home-browser.service`; do not reuse the legacy `8765` listener/unit.
 - Household Tailscale ACLs must protect the entire origin: page, `/state`,
-  `/action`, and `/healthz`. Tailscale Serve terminates HTTPS and proxies `/`
-  to that exact loopback port. Disable Funnel, remove public reverse-proxy
+  `/action`, and `/healthz`. The default ingress is Tailscale Serve HTTPS with
+  `/` proxied to that exact loopback port. The opt-in named Caddy ingress below
+  uses raw TCP Serve instead. Disable Funnel, remove public reverse-proxy
   paths to this backend, and deny direct off-tailnet access. Exact Origin
   checks remain enabled; Origin is not authentication.
 - Provision the dedicated `hermes-home` service user and Python 3.14. Install
@@ -87,7 +88,12 @@ retires conversations and displays a safe error until recovery.
 ### Tagged deployment and rollback
 
 Prepare and verify the household-only Serve route before invoking the tool.
-Use an existing reviewed `vX.Y.Z` release tag containing `home_admission.py`:
+Use an existing reviewed **published** `vX.Y.Z` release containing
+`home_admission.py`; use its tagged checkout, not a newer helper against an
+older tag. Confirm the release's commit and published artifacts before any
+host change. Merge the code PR and the repository's generated release PR,
+then wait for publication through the normal release process. Do not create
+manual tags, bypass CI/release policy, or deploy unpublished main.
 
 ```bash
 python scripts/deploy_home_browser.py deploy --ops-host HOUSEHOLD_OPS \
@@ -111,6 +117,14 @@ Only a prior marked Home release and its saved unit are eligible. A Home outage
 does not trigger legacy rollback: retain the safe unavailable page and repair
 Home admission. With no compatible previous release, rollback fails explicitly.
 
+The saved rollback unit must exactly match the requested Origin, Home URL,
+backend port, and unit hardening. Restore the matching network ingress first;
+the helper fails before switching the release/unit if these disagree.
+The helper validates prepared ingress but **does not edit Caddy, Serve, DNS,
+ACLs, or private environment files**. SSH and SCP require `BatchMode=yes` and
+`StrictHostKeyChecking=yes`; provision trusted host keys independently, never
+disable these checks.
+
 `GET /healthz` is admission-only: `200 {\"status\":\"ok\"}` means current pairing,
 Home configuration, claim accounting, and at least one usable Profile.
 `503 {\"status\":\"degraded\",\"reason\":\"…\"}` distinguishes unavailable Home,
@@ -118,6 +132,159 @@ authorization, renewal, and Profile admission failures. The local page starts
 without waiting for Home HTTP; checks must not mistake a reachable page for
 healthy admission or claim Hermes/audio health. No new Ops monitoring is
 installed here.
+
+### Optional named Caddy ingress: `home.chappell-home.dev`
+
+This is an alternate URL, **not** the legacy `hermes-home.chappell-home.dev`
+default switch, R6 bake, or R7 retirement. Leave legacy sites, gateways,
+units, tokens, and unrelated services unchanged. The only supported named
+origin is exactly `https://home.chappell-home.dev`; no trailing path, alias,
+additional public Origin, or proxy-rewritten Origin is accepted. The existing
+local-listener Origin and missing-Origin native-client behavior are unchanged.
+Keep the backend bound only to `127.0.0.1:8875`.
+
+**Stage A is code/review only.** A new published release containing this helper
+and example is required; `v0.12.0` cannot perform this named deployment.
+Named deploy compares the helper with the selected tag's helper and refuses
+an older/different one. Do not change production until that release is
+published and the owner explicitly authorizes **Stage B**.
+
+Approved layout:
+
+```text
+household Tailscale TCP443 ACL -> Serve raw TCP443 -> 127.0.0.1:443 Caddy
+    -> exact named-host all-path immediate-loopback-peer gate
+    -> 127.0.0.1:8875 hermes-home-browser.service
+```
+
+Ops already has Porkbun wildcard DNS `*.chappell-home.dev` pointing to its
+Tailscale address and the `porkbun_tls` DNS-01 TLS snippet. Reconfirm DNS
+before cutover; no record edit is necessary while this remains true. Public
+DNS pointing to a tailnet IP alone is **not** an access boundary: Caddy also
+listens on LAN. Use `deploy/ops/home-browser.caddy.example` verbatim as the
+new `/srv/ops/caddy/sites-enabled/home.chappell-home.dev.caddy`. It imports
+the existing TLS automation; do not copy private keys, read credential values,
+add new public ingress, trust forwarded IP headers, or enable PROXY protocol.
+The first handler denies every non-loopback immediate peer with403, before
+any page, health, action, or WebSocket can reach the appliance.
+
+The deployer checks live Caddy HTTP configuration through its existing
+loopback admin endpoint (`127.0.0.1:2019`) on Ops. Only pass/fail leaves the
+host. It requires the example's exact terminal route, gate before proxy, no
+preceding catch-all for this host, no peer-overriding listener wrappers, and
+no additional static proxy to port8875. It does not establish the household
+ACL or prove LAN/WAN denial; the following operator evidence is mandatory.
+
+#### Stage B prerequisites, backup, and inventory
+
+1. Use strict SSH: `ssh -oBatchMode=yes -oStrictHostKeyChecking=yes jensen@ops`.
+   Reconfirm the approved household owner set on Ops TCP443; do not broaden
+   ACLs. Confirm Serve/Funnel state, loopback backend, service/private-file
+   metadata, Home admission health, and the published release provenance.
+2. Inventory **every** existing Caddy hostname and listener, including legacy,
+   voice, portal, and wildcard/fallback routing. Privately record baseline
+   TLS, HTTP status and safe page/health checks from the same tailnet and LAN
+   vantage points. Never probe legacy actions. Record pre-existing502 or
+   TLS failures as such, not as successful service health.
+3. Coordinate browser witnesses; require their tabs closed, no appliance
+   sockets, no owned active Home claims or turns. Recheck immediately before
+   ingress mutation and appliance restart. Do not interrupt an active user.
+4. On Ops, create a new root-owned0700 backup directory under
+   `/var/backups/hermes-home-browser` (unique name; never overwrite an older
+   backup). With root-only access, preserve Caddyfile, `sites-enabled`, Caddy
+   unit/drop-ins and `/srv/ops/caddy/porkbun.env`, the browser systemd unit/
+   drop-ins and any EnvironmentFiles, Serve JSON, and current/previous link
+   targets. Capture the browser pairing file's checksum privately plus its
+   owner/mode and directory mode; do not print/copy it into evidence.
+   Keep any copied env files inside the0700 backup and never print values.
+   Preserve the previous tagged Home release and its saved `unit.service`.
+   Record backup path, metadata and non-secret hashes only.
+
+#### Stage B cutover (only after explicit authorization)
+
+1. Refuse to overwrite an existing unrelated named site. Install only the new
+   example site, owned `root:caddy`, mode0640, under the existing site import.
+   Validate the **complete** Caddyfile using the same protected environment as
+   the Caddy unit, without shell tracing or dumping environment/configuration.
+   Reload, not restart, Caddy using its existing `systemctl reload caddy`
+   command (which inherits that unit's EnvironmentFile). On validation/reload
+   failure, remove/restore only the new site and leave ingress unchanged.
+2. Change only Serve443; never use `serve reset` or alter other Serve ports:
+
+   ```bash
+   sudo tailscale serve --https=443 off
+   sudo tailscale serve --bg --tcp=443 tcp://127.0.0.1:443
+   ```
+
+   Confirm raw `TCPForward: 127.0.0.1:443`, no TLS termination, no Web443
+   handlers, no PROXY protocol and no Funnel. **All SNI names on tailnet443
+   now reach Caddy**, not just the browser name. This is why the complete
+   other-name inventory must be compared before/after. If checks fail, use
+   the scoped rollback below; do not repair unrelated sites opportunistically.
+3. From the published tagged checkout, in the agreed idle maintenance window:
+
+   ```bash
+   python scripts/deploy_home_browser.py deploy --ops-host jensen@ops \
+     --ingress caddy --origin https://home.chappell-home.dev \
+     --home https://caticornqueen.taila59979.ts.net --port 8875 --tag vX.Y.Z
+   ```
+
+   Substitute the actually published tag, not a locally invented one. The
+   helper builds/tests that source, installs its isolated release, saves a
+   unit with the **single new public Origin**, switches `current`, and restarts
+   only `hermes-home-browser.service`. The maintenance window includes these
+   build/test steps; it does not continue serving the old `.ts.net` UI.
+   Pairing and grants are reused, never re-paired. No legacy service is stopped.
+4. Verify trusted certificate/hostname, admission health, exact Origin
+   success, wrong/old/null Origin denial for WS/actions, and no Origin rewrite.
+   Verify all paths (page, `/state`, `/action`, `/healthz`) deny direct LAN
+   access using the named Host **and SNI**; inspect all IPv4/IPv6 listeners,
+   ensure port8875 is refused over LAN/tailnet, and recheck no Funnel.
+   An allowed tailnet response does not prove external-WAN or non-household
+   denial: use actual independent vantage points or record that gate missing.
+   Compare all other Caddy names against baseline; do not call an unchanged
+   pre-existing failure healthy. Confirm legacy PIDs/config hashes unchanged.
+5. Verify pairing metadata/checksum unchanged and Home catalog usable. Only
+   then provide the named URL to an independent real-browser witness for
+   benign turns, dynamic Profiles, independent tabs and fresh no-replay
+   reconnect. Any restart-persistence check needs another coordinated idle
+   gate. Do not claim physical iPad/voice acceptance from desktop evidence.
+
+#### Rollback to the prior `.ts.net` Home release
+
+On a fresh idle gate, restore the backed-up named-site state (remove only this
+new site if previously absent), validate/reload Caddy without changing other
+sites, and restore the previous HTTPS Serve route:
+
+```bash
+sudo tailscale serve --tcp=443 off
+sudo tailscale serve --bg --https=443 http://127.0.0.1:8875
+```
+
+Confirm the saved Serve JSON's HTTPS443 root route and no Funnel, then run the
+current reviewed helper's `rollback` with `--ingress serve`,
+`--origin https://ops.taila59979.ts.net`, the same Home URL and port8875.
+It checks the saved prior unit matches before restoring it and the prior Home
+release. If the deploy never advanced `current`, retain that prior release and
+restore its backed-up unit instead; do not invoke a rollback to an unrelated
+older `previous`. A failed-restart service fallback does not restore ingress;
+the operator must finish the network/unit rollback and recheck `.ts.net`
+health and Origin behavior. Preserve pairing, backups and the failed release
+for diagnosis. The legacy8765 path is **not** a supported rollback.
+
+#### Stage C: portal link after verified Stage B
+
+Only after the new origin passes Stage B, back up Homepage's existing
+`/srv/ops/homepage/config/services.yaml` with original metadata and add an
+`Agents` tile following its existing conventions: `Hermes Home`, destination
+`https://home.chappell-home.dev/`, `icon: mdi-robot`, a short description.
+Do not add monitoring or alter existing legacy tiles. Validate YAML and verify
+the portal renders the tile and clicking it opens the verified appliance.
+Follow the Ops repository's ownership/commit conventions and update the
+Family Vault Homelab Services note under its rules (leave vault changes
+uncommitted; never blindly stage the vault). Portal discovery is not permission
+to mutate it before Stage B; its own network boundary must be reported
+separately from the stricter appliance boundary.
 
 ### Required rollout evidence still outstanding
 

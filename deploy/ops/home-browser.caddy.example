@@ -1,0 +1,11 @@
+# Optional Home browser entrypoint; keep the legacy hermes-home site unchanged.
+# Requires existing porkbun_tls DNS-01 snippet and household-only raw TCP Serve
+# on 443 -> 127.0.0.1:443. Never enable Funnel or PROXY protocol.
+https://home.chappell-home.dev {
+    import porkbun_tls
+    route {
+        @notServe not remote_ip 127.0.0.1 ::1
+        respond @notServe 403
+        reverse_proxy 127.0.0.1:8875
+    }
+}
