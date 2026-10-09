@@ -49,7 +49,7 @@ context: []
 - Initial universal project dependency resolution failed on the unsupported macOS x86_64/Python3.14 optional onnxruntime combination. Using the existing requirements with `--no-project` resolves for the actual arm64 environment without changing dependencies. An initial combined run's300-second deadline interrupted the full suite; the standalone full suite above completed with a longer deadline.
 - No web source changed; no new production build/deploy, Caddy reload, Serve change, pairing, or service restart was exercised. This specification's `done` status covers Stage A code and tests only, not Stage B/C rollout acceptance or any R6/R7 transition.
 
-### Corrective operator-configured Origin revision (#235)
+### Operator-configured Origin follow-up (#237)
 
 - Shared Origin/runtime/deployment/server/legacy smoke regressions: **533 passed, 6 existing warnings**.
 - Full Python suite: **2071 passed, 3 skipped, 6 existing warnings** in364.91seconds, using the same Python3.14 `uv --no-project` requirements command above.
