@@ -41,7 +41,8 @@ def test_origin_urls_reject_non_origin_values(value):
         origin_urls(value)
 
 
-def test_action_route_accepts_the_expected_safe_malformed_response(monkeypatch):
+@pytest.mark.parametrize("message", ["action_id is required", "action_id and choice are required"])
+def test_action_route_accepts_the_expected_safe_malformed_response(monkeypatch, message):
     seen = {}
 
     def fake_urlopen(request, *, timeout, context=None):
@@ -53,7 +54,7 @@ def test_action_route_accepts_the_expected_safe_malformed_response(monkeypatch):
             400,
             "bad request",
             {},
-            io.BytesIO(check.EXPECTED_ACTION_ERROR),
+            io.BytesIO(json.dumps({"error": message}).encode()),
         )
 
     monkeypatch.setattr("scripts.check_ops_web.urlopen", fake_urlopen)
@@ -94,7 +95,7 @@ def test_run_check_exercises_page_action_and_state_with_the_same_tls_context(mon
                 400,
                 "bad request",
                 {},
-                io.BytesIO(check.EXPECTED_ACTION_ERROR),
+                io.BytesIO(b'{"error":"action_id is required"}'),
             )
         return Response()
 
@@ -195,13 +196,31 @@ def test_page_check_rejects_a_generic_success_page(monkeypatch):
         )
 
 
-def test_action_check_rejects_an_unrelated_bad_request(monkeypatch):
+@pytest.mark.parametrize("body", [
+    b"proxy error", b"\xff", b"null", b"[]", b"{}", b'{"error":null}',
+    b'{"error":400}', b'{"error":{}}', b'{"error":""}', b'{"error":" "}',
+])
+def test_action_check_rejects_an_unrelated_bad_request(monkeypatch, body):
     def fake_urlopen(request, *, timeout, context=None):
-        raise HTTPError(request.full_url, 400, "bad request", {}, io.BytesIO(b"proxy error"))
+        raise HTTPError(request.full_url, 400, "bad request", {}, io.BytesIO(body))
 
     monkeypatch.setattr(check, "urlopen", fake_urlopen)
 
     with pytest.raises(check.CheckError, match="unexpected malformed-payload"):
+        check_action_route("https://display.example", timeout=1.0)
+
+
+@pytest.mark.parametrize("status", [401, 403, 404, 500])
+def test_action_check_rejects_other_statuses_with_a_valid_error_shape(monkeypatch, status):
+    def fake_urlopen(request, *, timeout, context=None):
+        raise HTTPError(
+            request.full_url, status, "error", {},
+            io.BytesIO(b'{"error":"action_id is required"}'),
+        )
+
+    monkeypatch.setattr(check, "urlopen", fake_urlopen)
+
+    with pytest.raises(check.CheckError, match=f"HTTP {status}, expected 400"):
         check_action_route("https://display.example", timeout=1.0)
 
 

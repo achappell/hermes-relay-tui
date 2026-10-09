@@ -9,6 +9,7 @@
 ### Bug fixes
 
 - Keep the Home conversation connected when Ctrl+C stops only the remaining local response audio; preserve remote-turn interruption and failure recovery.
+- Validate the deployment smoke probe's malformed-action JSON error shape instead of legacy wording, so the Home browser's valid HTTP 400 response passes.
 
 ## 0.12.0 (2026-10-09)
 
