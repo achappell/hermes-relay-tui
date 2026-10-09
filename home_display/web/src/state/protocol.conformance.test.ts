@@ -8,6 +8,7 @@ import nullSnapshot from "../../../../shared/display/fixtures/invalid/null_snaps
 import promptMissing from "../../../../shared/display/fixtures/invalid/prompt_missing.json";
 import promptOnIdle from "../../../../shared/display/fixtures/invalid/prompt_on_idle.json";
 import unknownState from "../../../../shared/display/fixtures/invalid/unknown_state.json";
+import browserProfiles from "../../../../shared/display/fixtures/snapshots/browser_profiles.json";
 import buffering from "../../../../shared/display/fixtures/snapshots/buffering.json";
 import disconnected from "../../../../shared/display/fixtures/snapshots/disconnected.json";
 import error from "../../../../shared/display/fixtures/snapshots/error.json";
@@ -24,6 +25,7 @@ import { parseSnapshot } from "./protocol";
 import { createDisplayReducer } from "./reducer";
 
 const validSnapshots = [
+  browserProfiles,
   idle,
   legacyIdle,
   unknownField,
@@ -50,6 +52,15 @@ const invalidSnapshots = [
 ];
 
 describe("shared display fixture conformance", () => {
+  it("rejects malformed or duplicate browser selector identities", () => {
+    for (const profiles of [
+      [{ selector_id: "not-an-opaque-selector", label: "First", available: true }],
+      [browserProfiles.capabilities.profiles[0], browserProfiles.capabilities.profiles[0]],
+    ]) {
+      expect(parseSnapshot({ ...browserProfiles, capabilities: { ...browserProfiles.capabilities, profiles } })).toBeNull();
+    }
+    expect(parseSnapshot({ ...browserProfiles, capabilities: { ...browserProfiles.capabilities, selected_profile: "c".repeat(32) } })).toBeNull();
+  });
   it.each(validSnapshots)("accepts the valid %j snapshot", (fixture) => {
     const parsed = parseSnapshot(fixture);
 

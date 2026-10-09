@@ -52,6 +52,7 @@ _MESSAGES = {
     "grant_selection": "Select an active, available Profile with --home-grant or /home select <label>.",
     "pairing_exists": "This Home is already paired; unpair locally before enrolling a replacement.",
     "lock_busy": "Another window is updating this Home pairing; try again shortly.",
+    "private_store": "Home appliance storage must be a private service-owned file outside the repository.",
 }
 
 class HomeError(RuntimeError):
@@ -156,6 +157,16 @@ class SecurePairings:
             # Native backend selection excludes insecure fallbacks. Availability
             # is established by off-loop reads/preflight, never a DBus priority
             # probe on the application's event loop.
+        except Exception:
+            raise HomeError("secure_store") from None
+
+    def preflight(self, home: str) -> None:
+        probe = home + "/storage-probe-" + uuid.uuid4().hex
+        try:
+            self.backend.set_password("hermes-relay-tui.home.probe", probe, "probe")
+            if self.backend.get_password("hermes-relay-tui.home.probe", probe) != "probe":
+                raise HomeError("secure_store")
+            self.backend.delete_password("hermes-relay-tui.home.probe", probe)
         except Exception:
             raise HomeError("secure_store") from None
 
@@ -374,6 +385,36 @@ class HomeClient:
         if selection["mode"] == "resumed":
             _string(selection.get("session_ref"), 128)
         return data
+
+    async def list_claims(self, record: PairingRecord) -> tuple[int, set[str]]:
+        data = await self.request("GET", "/api/v1/client-claims", record=record)
+        maximum, rows = data.get("max_claims"), data.get("claims")
+        if type(maximum) is not int or not 1 <= maximum <= 64 or not isinstance(rows, list) or len(rows) > 64:
+            raise HomeError("invalid_response")
+        refs = {_string(row.get("claim_ref"), 128) for row in rows if isinstance(row, dict)}
+        if len(refs) != len(rows):
+            raise HomeError("invalid_response")
+        return maximum, refs
+
+    async def close_claims(self, record: PairingRecord, refs: set[str]) -> set[str]:
+        if not refs:
+            return set()
+        if len(refs) > 64:
+            raise HomeError("invalid_response")
+        data = await self.request("POST", "/api/v1/client-claims/close", {"schema": 1, "claim_refs": sorted(refs)}, record=record)
+        rows = data.get("results")
+        if not isinstance(rows, list) or len(rows) != len(refs):
+            raise HomeError("invalid_response")
+        confirmed = set()
+        seen = set()
+        for row in rows:
+            if not isinstance(row, dict) or row.get("claim_ref") not in refs or row["claim_ref"] in seen:
+                raise HomeError("invalid_response")
+            seen.add(row["claim_ref"])
+            if row.get("result") not in {"closed", "not_open"}:
+                raise HomeError("invalid_response")
+            confirmed.add(row["claim_ref"])
+        return confirmed
 
     async def sessions(self, record: PairingRecord, grant: Grant, limit: int = 50) -> list[dict[str, Any]]:
         data = await self.request("POST", "/api/v1/client-sessions/list", {"schema": 1, "grant_id": grant.grant_id, "limit": max(1, min(limit, 50))}, record=record)

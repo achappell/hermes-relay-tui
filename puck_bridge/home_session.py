@@ -2197,6 +2197,7 @@ class HomeBrowserSession(HomePuckSession):
             connect_factory=connect_factory,
             request_timeout=request_timeout,
             supports_structured_prompts=True,
+            resume_uncertain_turn=False,
             session_id="home-browser",
             session_label="Browser",
         )
@@ -2213,9 +2214,8 @@ class HomeBrowserSession(HomePuckSession):
         """
         async for event in super()._send_turn_locked(text):
             if event.get("type") == "audio_end":
-                # Home has one bounded audio stream per turn. A local close
-                # after reconnect is final audio for this answer even while
-                # buffered text and the terminal event are still arriving.
+                # Home owns one bounded audio stream per turn. Its validated
+                # end is final even when terminal text is still arriving.
                 yield {**event, "final": True}
             else:
                 yield event

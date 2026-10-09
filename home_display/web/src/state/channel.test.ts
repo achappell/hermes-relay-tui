@@ -6,7 +6,7 @@ class FakeSocket implements WebSocketLike {
   onopen: (() => void) | null = null;
   onmessage: ((event: MessageEvent<unknown>) => void) | null = null;
   onerror: (() => void) | null = null;
-  onclose: ((event?: { code?: number }) => void) | null = null;
+  onclose: ((event?: { code?: number; reason?: string }) => void) | null = null;
   binaryType: "blob" | "arraybuffer" = "blob";
   closed = false;
   sent: string[] = [];
@@ -43,6 +43,39 @@ const rawSnapshot = (sequence: number) => JSON.stringify({
 });
 
 describe("StateChannel", () => {
+  it("selects by a tab-local opaque token and never replays selection after reconnect", async () => {
+    vi.useFakeTimers();
+    const socket = new FakeSocket();
+    const channel = new StateChannel("ws://display.test/state", () => {}, () => {}, () => {}, () => socket);
+    channel.start();
+    socket.open();
+    socket.message(rawSnapshot(1));
+    const selected = channel.sendProfileSelect("a".repeat(32));
+    expect(JSON.parse(socket.sent[0])).toEqual({
+      type: "profile_select", schema: 1, request_id: "route-1", selector_id: "a".repeat(32),
+    });
+    socket.closeFromServer();
+    expect(await selected).toBe(false);
+    await vi.advanceTimersByTimeAsync(250);
+    expect(socket.sent).toHaveLength(1);
+    channel.stop();
+  });
+
+  it("uses only allowlisted unavailable close reasons", () => {
+    vi.useFakeTimers();
+    const socket = new FakeSocket();
+    const error = vi.fn();
+    const channel = new StateChannel("ws://display.test/state", () => {}, () => {}, error, () => socket);
+    channel.start();
+    socket.onclose?.({ code: 1011, reason: "home_unauthorized" });
+    expect(error).toHaveBeenCalledWith("This display needs to be paired again.");
+    channel.stop();
+    error.mockClear();
+    channel.start();
+    socket.onclose?.({ code: 1011, reason: "untrusted upstream secret" });
+    expect(error).not.toHaveBeenCalled();
+    channel.stop();
+  });
   afterEach(() => vi.useRealTimers());
 
   it("requests ArrayBuffer delivery from the browser WebSocket", () => {

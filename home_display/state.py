@@ -169,8 +169,22 @@ class DisplayCapabilities:
     wake_phrases: tuple[str, ...] = ()
     wake_listen_seconds: float | None = None
     wake_followup_seconds: float | None = None
+    profiles: tuple[tuple[str, str, bool], ...] = ()
+    selected_profile: str | None = None
 
     def __post_init__(self) -> None:
+        if len(self.profiles) > 1000 or any(
+            not isinstance(token, str) or len(token) != 32
+            or any(character not in "0123456789abcdef" for character in token)
+            or not isinstance(label, str) or not 1 <= len(label) <= 256
+            or type(available) is not bool
+            for token, label, available in self.profiles
+        ):
+            raise ValueError("invalid browser Profile catalog")
+        if len({row[0] for row in self.profiles}) != len(self.profiles):
+            raise ValueError("duplicate browser Profile selector")
+        if self.selected_profile is not None and self.selected_profile not in {row[0] for row in self.profiles}:
+            raise ValueError("selected browser Profile is absent")
         allowed_actions = {"prompt.choose", "prompt.explore", "prompt.dismiss"}
         if any(
             not isinstance(action, str) or action not in allowed_actions
@@ -215,6 +229,9 @@ class DisplayCapabilities:
             "actions": list(self.actions),
             "features": list(self.features),
         }
+        if "browser_profiles" in self.features:
+            data["profiles"] = [{"selector_id": token, "label": label, "available": available} for token, label, available in self.profiles]
+            data["selected_profile"] = self.selected_profile
         if self.timing is not None:
             data["timing"] = self.timing
         if self.wake_phrases:

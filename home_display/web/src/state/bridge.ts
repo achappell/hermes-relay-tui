@@ -75,6 +75,7 @@ export class DisplayBridge {
   private readonly profileRouteTransport: VoiceRouteTransport | null;
   private readonly onVoiceError: (error: "transport_error") => void;
   private readonly channel: StateChannel;
+  private homeError = false;
 
   /**
    * Keep browser transport and action encoding at the edge. The reducer is an
@@ -94,6 +95,7 @@ export class DisplayBridge {
       (snapshot) => {
         const result = this.reducer.applySnapshot(snapshot);
         if (result.kind === "accepted") {
+          this.homeError = snapshot.state === "error" && (snapshot.capabilities?.features.includes("browser_profiles") ?? false);
           this.deliver(() => options.onView(result.view));
         } else if (result.kind === "invalid_transition" || result.kind === "invalid_snapshot") {
           this.deliver(() => options.onProtocolError?.("display data unavailable"));
@@ -160,6 +162,12 @@ export class DisplayBridge {
     }
 
     try {
+      if (this.homeError) {
+        // An explicit action after Home failure begins a fresh conversation,
+        // not a transition/replay of the failed turn. Keep wire sequencing.
+        this.reducer.reset();
+        this.homeError = false;
+      }
       if (this.voiceTransport !== null) {
         if (normalizedWakePhrase === undefined) {
           await this.voiceTransport(normalized);
@@ -176,6 +184,14 @@ export class DisplayBridge {
     }
     this.deliver(() => this.onVoiceError("transport_error"));
     return false;
+  }
+
+  selectProfile(selectorId: string): Promise<boolean> {
+    return this.channel.sendProfileSelect(selectorId);
+  }
+
+  interrupt(): boolean {
+    return this.channel.sendInterrupt();
   }
 
   async routeProfile(wakePhrase: string): Promise<boolean> {

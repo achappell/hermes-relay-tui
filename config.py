@@ -210,6 +210,7 @@ class HouseholdProfile:
     device_id: str
     session_id: str
     model: Optional[str] = None
+    home_grant: str = ""
 
     def __repr__(self) -> str:
         return (
@@ -1014,6 +1015,7 @@ def load_household_profiles(
                     device_id=device_id,
                     session_id=session_id,
                     model=model,
+                    home_grant=str(entry.get("home_grant") or ""),
                 )
             )
         if profiles:

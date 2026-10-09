@@ -3,7 +3,7 @@ id: WK-HOME-01
 title: 'Migrate the production W/K browser and iPad appliance to HomeBridge with claim-based admission'
 type: 'feature'
 created: '2026-10-08'
-status: draft
+status: in-review
 product_epic: 3
 surface: 'W/K'
 depends_on:
@@ -21,7 +21,7 @@ context:
   - '{project-root}/docs/ops-web-deployment.md'
 ---
 
-> **Status: draft.** `WK-1` and `WK-2` stay in `review` and this spec does not change them. The owner-approved decisions dated 2026-10-08 are recorded in [Owner decisions](#owner-decisions); every remaining design choice is still a numbered question with a `PROPOSED` default. No source, deploy or host change is made by this document.
+> **Status: in review — repository implementation, not deployed.** The authorized S2/S3/S4 and repo-local S5/S6 work is recorded in [implementation validation](validation-wk-home-browser-integration.md). `WK-1` and `WK-2` remain in `review`; S7 host/hardware acceptance, R6 default switch/bake, and R7 retirement are not completed here. The owner-approved decisions dated 2026-10-08 and subsequent authorized implementation scope govern the consumer path; historical inventory below is not deployment evidence.
 >
 > Evidence tags: **[FACT]** cites a file and line on `origin/main` (TUI `9afdd51`, Home `71539fc`). **[INFERENCE]** is my conclusion from facts. **UNKNOWN** is not established by any artifact I could read. Host facts come from the 2026-10-08 read-only Ops diagnosis (a session artifact, not committed here); they are tagged **[OPS]**.
 

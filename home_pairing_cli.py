@@ -29,22 +29,15 @@ def parse_pairing_input(value: str, code: str = "") -> tuple[str, str]:
     return canonical_home(value), _string(code, 256)
 
 
-async def pair(home: str, code: str, *, label: str, output_fn: Any = print, timeout: float = 300) -> list:
-    client = HomeClient(home)
+async def pair(home: str, code: str, *, label: str, output_fn: Any = print, timeout: float = 300, store: Any = None, browser: bool = False) -> list:
+    client = HomeClient(home, store=store)
+    kind = "browser" if browser else "tui"
+    storage = "service_private_file" if browser else "platform_secure_store"
     async with client.store.locked(client.home):
         if await asyncio.to_thread(client.store.load, client.home) is not None:
             raise HomeError("pairing_exists")
-        # Exercise the selected native store before consuming a single-use grant.
-        probe_name = client.home + "/storage-probe-" + uuid.uuid4().hex
-        try:
-            await asyncio.to_thread(client.store.backend.set_password, "hermes-relay-tui.home.probe", probe_name, "probe")
-            value = await asyncio.to_thread(client.store.backend.get_password, "hermes-relay-tui.home.probe", probe_name)
-            if value != "probe":
-                raise HomeError("secure_store")
-            await asyncio.to_thread(client.store.backend.delete_password, "hermes-relay-tui.home.probe", probe_name)
-        except Exception:
-            raise HomeError("secure_store") from None
-        request = await client.request("POST", "/api/v1/enrollment/requests", {"schema": 1, "enrollment_code": code, "endpoint_id": "tui-" + uuid.uuid4().hex, "label": _string(label, 128), "type": "tui", "requested_rooms": [], "requested_capabilities": ["client_claim"], "secure_storage": "platform_secure_store"})
+        await secure_call(client.store.preflight, client.home)
+        request = await client.request("POST", "/api/v1/enrollment/requests", {"schema": 1, "enrollment_code": code, "endpoint_id": kind + "-" + uuid.uuid4().hex, "label": _string(label, 128), "type": kind, "requested_rooms": [], "requested_capabilities": ["client_claim"], "secure_storage": storage})
         request_id = _string(request.get("request_id"), 128)
         confirmation = _string(request.get("confirmation_code"), 64)
         expiry = _timestamp(request.get("expires_at"))
@@ -53,7 +46,7 @@ async def pair(home: str, code: str, *, label: str, output_fn: Any = print, time
         from urllib.parse import quote
         while time.monotonic() < deadline:
             try:
-                material = await client.request("POST", f"/api/v1/enrollment/requests/{quote(request_id, safe='')}/consume", {"schema": 1, "enrollment_code": code, "secure_storage": "platform_secure_store"})
+                material = await client.request("POST", f"/api/v1/enrollment/requests/{quote(request_id, safe='')}/consume", {"schema": 1, "enrollment_code": code, "secure_storage": storage})
             except HomeError as exc:
                 if exc.code != "approval_pending":
                     if exc.code in {"transport", "invalid_response", "service_unavailable"}:

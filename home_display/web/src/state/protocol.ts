@@ -43,6 +43,8 @@ export interface DisplayCapabilities {
   wake_phrases?: string[];
   wake_listen_seconds?: number;
   wake_followup_seconds?: number;
+  profiles?: Array<{ selector_id: string; label: string; available: boolean }>;
+  selected_profile?: string | null;
 }
 
 export type DisplayAction =
@@ -258,6 +260,19 @@ function parseCapabilities(raw: unknown): DisplayCapabilities | null {
     actions: parsedActions,
     features: parsedFeatures,
   };
+  if (raw.profiles !== undefined) {
+    if (!Array.isArray(raw.profiles) || raw.profiles.length > 1000) return null;
+    const profiles: NonNullable<DisplayCapabilities["profiles"]> = [];
+    for (const row of raw.profiles) {
+      if (!isRecord(row) || typeof row.selector_id !== "string" || !/^[a-f0-9]{32}$/.test(row.selector_id)
+        || typeof row.label !== "string" || !row.label.length || row.label.length > 256
+        || typeof row.available !== "boolean" || profiles.some((p) => p.selector_id === row.selector_id)) return null;
+      profiles.push({ selector_id: row.selector_id, label: row.label, available: row.available });
+    }
+    if (raw.selected_profile !== null && !profiles.some((p) => p.selector_id === raw.selected_profile)) return null;
+    capabilities.profiles = profiles;
+    capabilities.selected_profile = raw.selected_profile as string | null;
+  }
   if (timing !== undefined) capabilities.timing = timing;
   if (wakePhrases !== undefined) capabilities.wake_phrases = wakePhrases;
   if (wakeListenSeconds !== undefined) capabilities.wake_listen_seconds = wakeListenSeconds;

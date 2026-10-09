@@ -987,7 +987,7 @@ async def test_browser_factory_failure_is_logged_without_changing_the_close(
         assert error.value.rcvd.code == 1011
         assert error.value.rcvd.reason == "browser session unavailable"
         messages = [r.getMessage() for r in caplog.records]
-        assert messages == ["browser context setup failed: RuntimeError"]
+        assert messages == ["browser.admission.failed reason=browser session unavailable exc=RuntimeError"]
     finally:
         await socket.close()
         await server.close()
@@ -1022,3 +1022,17 @@ async def test_browser_factory_timeout_is_logged_without_changing_the_close(
         release.set()
         await socket.close()
         await server.close()
+
+
+def test_home_profile_selector_accepts_only_exact_tab_token_envelope():
+    parse = DisplayServer._parse_websocket_profile_select
+    frame = {"type": "profile_select", "schema": 1, "request_id": "route-1", "selector_id": "a" * 32}
+    assert parse(json.dumps(frame)) == ("route-1", "a" * 32)
+    for invalid in (
+        {**frame, "schema": True},
+        {**frame, "grant_id": "must-not-cross-browser"},
+        {**frame, "selector_id": "stable-home-grant"},
+        {**frame, "selector_id": "A" * 32},
+        {**frame, "request_id": ""},
+    ):
+        assert parse(json.dumps(invalid)) is None

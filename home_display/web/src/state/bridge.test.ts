@@ -77,6 +77,24 @@ const action: DisplayAction = {
 };
 
 describe("DisplayBridge", () => {
+  it("starts fresh reducer state only for an explicit Home action after failure", async () => {
+    const socket = new FakeSocket();
+    const onView = vi.fn();
+    const onProtocolError = vi.fn();
+    const bridge = new DisplayBridge({ url: "ws://display.test/state", socketFactory: () => socket,
+      onView, onConnectionState: () => {}, onProtocolError });
+    bridge.start();
+    socket.open();
+    socket.message(JSON.stringify({ ...snapshot, state: "error", prompt: null,
+      capabilities: { actions: [], features: ["browser_voice", "browser_profiles"], profiles: [], selected_profile: null } }));
+    expect(socket.sent).toEqual([]);
+    expect(await bridge.sendVoiceTurn("explicit fresh turn")).toBe(true);
+    socket.message(JSON.stringify({ ...snapshot, sequence: 2, state: "thinking", prompt: null }));
+    expect(onProtocolError).not.toHaveBeenCalled();
+    expect(onView.mock.lastCall?.[0].state).toBe("thinking");
+    expect(socket.sent).toHaveLength(1);
+    bridge.stop();
+  });
   afterEach(() => {
     vi.useRealTimers();
     vi.restoreAllMocks();

@@ -344,6 +344,7 @@ class DisplayServer:
             [str, BrowserAudioSender], Awaitable[TouchSessionBinding]
         ]
         | None = None,
+        health: Callable[[], tuple[int, dict[str, Any]]] | None = None,
     ) -> None:
         """Create a display server.
 
@@ -408,6 +409,7 @@ class DisplayServer:
         self._connection_tasks: dict[ServerConnection, set[asyncio.Task[Any]]] = {}
         self._connection_cleanup_tasks: set[asyncio.Task[Any]] = set()
         self._reserved_browser_slots = 0
+        self._health = health
 
     @property
     def browser_session_limit(self) -> int:
@@ -582,6 +584,11 @@ class DisplayServer:
                     HTTPStatus.METHOD_NOT_ALLOWED, b"Method Not Allowed\n"
                 )
             )
+        if path == "/healthz" and self._health is not None:
+            status, payload = self._health()
+            return self._web_response(self._http_response(
+                HTTPStatus(status), json.dumps(payload).encode(), content_type="application/json",
+            ))
 
         try:
             static_path = self.resolve_static_path(request.path)
@@ -798,13 +805,27 @@ class DisplayServer:
                         action = self._parse_websocket_action(message)
                         voice_turn = self._parse_websocket_voice_turn(message)
                         profile_route = self._parse_websocket_profile_route(message)
+                        profile_select = self._parse_websocket_profile_select(message)
+                        try:
+                            envelope = json.loads(message)
+                            interrupt = isinstance(envelope, dict) and type(envelope.get("schema")) is int and envelope == {"type": "interrupt", "schema": 1}
+                        except (TypeError, ValueError):
+                            interrupt = False
                     except ConnectionClosed:
                         return
                     if binding is not None:
+                        if interrupt:
+                            handler = getattr(binding, "handle_interrupt", None)
+                            if callable(handler):
+                                self._track_connection_task(websocket, handler())
                         if action is not None:
                             self._track_connection_task(
                                 websocket, binding.handle_action(*action)
                             )
+                        if profile_select is not None:
+                            route_task = self._dispatch_profile_route(websocket, binding, *profile_select, selecting=True)
+                            if not self._track_connection_task(websocket, route_task):
+                                await self._send_profile_route_ack(websocket, profile_select[0], accepted=False, reason="busy")
                         if profile_route is not None:
                             route_task = self._dispatch_profile_route(
                                 websocket,
@@ -867,11 +888,11 @@ class DisplayServer:
         except asyncio.CancelledError:
             raise
         except Exception as error:
-            logger.warning(
-                "browser context setup failed: %s", type(error).__name__
-            )
+            from .home_admission import AdmissionError, MESSAGES
+            reason = error.reason if isinstance(error, AdmissionError) and error.reason in MESSAGES else "browser session unavailable"
+            logger.warning("browser.admission.failed reason=%s exc=%s", reason, type(error).__name__)
             with contextlib.suppress(ConnectionClosed, OSError):
-                await websocket.close(code=1011, reason="browser session unavailable")
+                await websocket.close(code=1011, reason=reason)
             return
         finally:
             for task in (factory_task, next_snapshot, closed, incoming, touch_worker):
@@ -1120,9 +1141,10 @@ class DisplayServer:
         binding: BrowserSessionBinding,
         request_id: str,
         wake_phrase: str,
+        *, selecting: bool = False,
     ) -> None:
         """Resolve one browser route and return its result to that socket."""
-        handler = getattr(binding, "handle_profile_route", None)
+        handler = getattr(binding, "handle_profile_select" if selecting else "handle_profile_route", None)
         if not callable(handler):
             result = BrowserProfileRouteResult(
                 accepted=False,
@@ -1315,6 +1337,23 @@ class DisplayServer:
         if not wake_phrase:
             return None
         return request_id, wake_phrase
+
+    @staticmethod
+    def _parse_websocket_profile_select(message: str | bytes) -> tuple[str, str] | None:
+        try:
+            payload = json.loads(message)
+        except (TypeError, ValueError):
+            return None
+        if not isinstance(payload, dict) or set(payload) != {"type", "schema", "request_id", "selector_id"}:
+            return None
+        if payload["type"] != "profile_select" or type(payload["schema"]) is not int or payload["schema"] != 1:
+            return None
+        request, token = payload["request_id"], payload["selector_id"]
+        if not isinstance(request, str) or not 1 <= len(request) <= MAX_BROWSER_ROUTE_REQUEST_ID_LENGTH or any(ord(c) < 33 or ord(c) == 127 for c in request):
+            return None
+        if not isinstance(token, str) or len(token) != 32 or any(c not in "0123456789abcdef" for c in token):
+            return None
+        return request, token
 
     @staticmethod
     def _parse_websocket_profile_route_request_id(

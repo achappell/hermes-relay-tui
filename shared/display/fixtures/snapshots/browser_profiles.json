@@ -1,0 +1,20 @@
+{
+  "type": "snapshot",
+  "schema": 1,
+  "sequence": 1,
+  "state": "idle",
+  "response_text": "",
+  "status_text": null,
+  "media": null,
+  "prompt": null,
+  "capabilities": {
+    "actions": [],
+    "features": ["browser_voice", "browser_profiles"],
+    "timing": "absent",
+    "profiles": [
+      {"selector_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "label": "First", "available": true},
+      {"selector_id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "label": "Later", "available": false}
+    ],
+    "selected_profile": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  }
+}
