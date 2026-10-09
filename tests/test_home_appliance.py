@@ -2515,7 +2515,14 @@ def test_browser_session_limit_is_configurable():
     assert limited.display_max_browser_sessions == 3
 
 
-def test_home_browser_transport_uses_private_pairing_and_lazy_per_tab_sessions(tmp_path):
+@pytest.mark.parametrize("public_origin", [
+    None,
+    "https://display.household.ts.net",
+    "https://display.household.ts.net:443",
+    "https://display.household.ts.net:8443",
+    "https://home.chappell-home.dev",
+])
+def test_home_browser_transport_uses_private_pairing_and_lazy_per_tab_sessions(tmp_path, public_origin):
     from home_display.home_admission import BrowserSession
     from home_display.home_store import PrivatePairings
     from home_client import PairingRecord
@@ -2532,6 +2539,7 @@ def test_home_browser_transport_uses_private_pairing_and_lazy_per_tab_sessions(t
         "--home-bridge-url", "wss://home.example/api/v1/bridge/ws",
         "--home-device-credential-file", str(credential_file),
     ])
+    args.display_public_origin = public_origin
     relay = Appliance(args, profiles=_catalog_profiles(), publisher=RecordingPublisher())
     relay._build()
     one, profile_args = relay._create_browser_session(relay.active_profile, "browser-one")
@@ -2542,6 +2550,39 @@ def test_home_browser_transport_uses_private_pairing_and_lazy_per_tab_sessions(t
     assert one.admission is two.admission
     assert args.home_device_credential_file == credential_file
     assert "device-secret" not in json.dumps(one.catalog())
+
+
+@pytest.mark.parametrize("origin", [
+    "http://home.chappell-home.dev",
+    "wss://home.chappell-home.dev",
+    "https://home.chappell-home.dev/",
+    "https://home.chappell-home.dev:443",
+    "https://home.chappell-home.dev:444",
+    "https://HOME.chappell-home.dev",
+    "https://home.chappell-home.dev.",
+    "https://home.chappell-home.dev/state",
+    "https://home.chappell-home.dev?x=1",
+    "https://home.chappell-home.dev#x",
+    "https://user@home.chappell-home.dev",
+    "https://home.chappell-home.dev\n",
+    "https://home.chappell-home.dev.evil.example",
+    "https://other.chappell-home.dev",
+    "https://hermes-home.chappell-home.dev",
+    "https://*.chappell-home.dev",
+    "https://*.household.ts.net",
+    "http://display.household.ts.net",
+])
+def test_home_browser_startup_rejects_unapproved_public_origins(tmp_path, origin):
+    args = appliance_module.build_arg_parser([]).parse_args([
+        "--browser-voice", "--browser-transport", "home",
+        "--home-bridge-url", "wss://home.example/api/v1/bridge/ws",
+        "--home-device-credential-file", str(tmp_path / "pairing.json"),
+        "--display-public-origin", origin,
+    ])
+    relay = Appliance(args)
+    with pytest.raises(RuntimeError, match="[Oo]rigin"):
+        relay._build()
+    assert relay._server is None
 
 
 def test_home_browser_parser_does_not_resolve_legacy_profile_tokens(tmp_path, monkeypatch):
