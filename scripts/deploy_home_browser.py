@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import inspect
 from pathlib import Path
 import re
 import shlex
@@ -22,12 +23,21 @@ from check_ops_web import run_check
 from validate_ops_profile_config import read_home_catalog
 
 ROOT = Path(__file__).resolve().parents[1]
+NAMED_ORIGIN = "https://home.chappell-home.dev"
+SSH_OPTIONS = ["-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=yes", "-o", "ConnectTimeout=15"]
 
 
 def tailnet_origin(value: str) -> str:
-    parsed = urlsplit(value)
-    if parsed.scheme != "https" or not re.fullmatch(r"[a-z0-9-]+\.[a-z0-9-]+\.ts\.net", parsed.hostname or "") or parsed.port not in {None, 443} or parsed.username or parsed.password or parsed.path or parsed.query or parsed.fragment:
+    if not re.fullmatch(r"https://[a-z0-9-]+\.[a-z0-9-]+\.ts\.net(?::443)?", value):
         raise ValueError("expected an exact household Tailscale HTTPS origin")
+    return value
+
+
+def public_origin(value: str, ingress: str) -> str:
+    if ingress == "serve":
+        return tailnet_origin(value)
+    if ingress != "caddy" or value != NAMED_ORIGIN:
+        raise ValueError("Caddy ingress requires the exact approved household origin")
     return value
 
 
@@ -57,23 +67,119 @@ WantedBy=multi-user.target
 """
 
 
-def validate_serve(status: dict, origin: str, port: int) -> None:
+def validate_serve(status: dict, origin: str, port: int, ingress: str = "serve") -> None:
+    public_origin(origin, ingress)
+    # AllowFunnel is an omitempty map in Tailscale's ServeConfig: absence is
+    # the disabled empty set, not an unknown boolean. Check foreground too.
+    foreground = status.get("Foreground", {})
+    if not isinstance(foreground, dict):
+        raise ValueError("invalid foreground Serve configuration")
+    for config in [status, *foreground.values()]:
+        if not isinstance(config, dict):
+            raise ValueError("invalid Serve configuration")
+        allowed = config.get("AllowFunnel", {})
+        if not isinstance(allowed, dict) or any(value is not False for value in allowed.values()):
+            raise ValueError("Tailscale Funnel must be disabled")
+        if config is not status and (
+            config.get("Foreground") or "443" in config.get("TCP", {}) or any(
+                host.endswith(":443") for host in config.get("Web", {})
+            )
+        ):
+            raise ValueError("foreground Serve must not override the prepared HTTPS443 ingress")
+    tcp = status.get("TCP", {}).get("443", {})
+    if ingress == "caddy":
+        if tcp != {"TCPForward": "127.0.0.1:443"} or any(
+            host.endswith(":443") for host in status.get("Web", {})
+        ):
+            raise ValueError("named ingress requires raw TCP443 to loopback Caddy, without TLS termination or PROXY protocol")
+        return
     host = urlsplit(origin).hostname + ":443"
-    if any(status.get("AllowFunnel", {}).values()):
-        raise ValueError("Tailscale Funnel must be disabled")
     route = status.get("Web", {}).get(host, {}).get("Handlers", {}).get("/", {})
     handlers = status.get("Web", {}).get(host, {}).get("Handlers", {})
-    if set(handlers) != {"/"} or route.get("Proxy") != f"http://127.0.0.1:{port}":
+    if tcp != {"HTTPS": True} or set(handlers) != {"/"} or route.get("Proxy") != f"http://127.0.0.1:{port}":
         raise ValueError("pre-existing Tailscale Serve route must target the exact isolated loopback backend")
+
+
+def validate_caddy(servers: dict, host: str, port: int) -> None:
+    """Validate effective HTTP routes on-host; never return private Caddy config."""
+    from fnmatch import fnmatchcase
+
+    proxy = {"handler": "reverse_proxy", "upstreams": [{"dial": f"127.0.0.1:{port}"}]}
+    gate = {
+        "match": [{"not": [{"remote_ip": {"ranges": ["127.0.0.1", "::1"]}}]}],
+        "handle": [{"handler": "static_response", "status_code": 403}],
+    }
+    expected = {
+        "match": [{"host": [host]}],
+        "handle": [{"handler": "subroute", "routes": [
+            {"handle": [{"handler": "subroute", "routes": [
+                gate, {"handle": [proxy]},
+            ]}]},
+        ]}],
+        "terminal": True,
+    }
+    matches = []
+    backend_proxies = []
+
+    def inspect_routes(value):
+        if isinstance(value, dict):
+            if value.get("handler") == "reverse_proxy":
+                for upstream in value.get("upstreams", []):
+                    if upstream.get("dial", "").endswith(f":{port}"):
+                        backend_proxies.append(value)
+            for child in value.values():
+                inspect_routes(child)
+        elif isinstance(value, list):
+            for child in value:
+                inspect_routes(child)
+
+    for server in servers.values():
+        routes = server.get("routes", [])
+        for index, route in enumerate(routes):
+            if route == expected:
+                if not set(server.get("listen", [])) & {":443", "127.0.0.1:443", "0.0.0.0:443"}:
+                    raise ValueError("named Caddy route must listen on loopback-reachable TLS443")
+                if server.get("listener_wrappers", []) not in ([], [{"wrapper": "tls"}]):
+                    raise ValueError("Caddy listener wrappers must not override the immediate peer")
+                # Earlier catch-all/wildcard routes could bypass the all-path gate.
+                for earlier in routes[:index]:
+                    matchers = earlier.get("match", [])
+                    if not matchers or any(
+                        not matcher.get("host") or any(fnmatchcase(host, name.lower()) for name in matcher["host"])
+                        for matcher in matchers
+                    ):
+                        raise ValueError("another Caddy route can intercept the named host")
+                matches.append(route)
+    inspect_routes(servers)
+    if len(matches) != 1 or backend_proxies != [proxy]:
+        raise ValueError("Caddy must have exactly one gated named route and no other proxy to the appliance port")
+
+
+def check_caddy(ssh: list[str], origin: str, port: int) -> None:
+    # Inspect the running configuration, not an un-reloaded Caddyfile. Only
+    # success/failure crosses SSH; other sites may contain private settings.
+    check = inspect.getsource(validate_caddy) + """
+import json
+import sys
+from urllib.request import ProxyHandler, build_opener
+try:
+    with build_opener(ProxyHandler({})).open("http://127.0.0.1:2019/config/apps/http/servers", timeout=10) as response:
+        servers = json.load(response)
+    validate_caddy(servers, sys.argv[1], int(sys.argv[2]))
+except Exception:
+    print("Live Caddy ingress validation failed; inspect the protected host configuration.", file=sys.stderr)
+    sys.exit(1)
+"""
+    command = "sudo python3 - " + shlex.join([urlsplit(origin).hostname, str(port)])
+    subprocess.run([*ssh, command], input=check, text=True, check=True)
 
 
 REMOTE = r'''
 set -Eeuo pipefail
-operation="$1"; commit="$2"; incoming="$3"; port="$4"
+operation="$1"; commit="$2"; incoming="$3"; port="$4"; expected_unit="$5"
 root=/opt/hermes-home-browser
 state=/var/lib/hermes-home-browser
 unit=hermes-home-browser.service
-sudo install -d -m 0755 "$root/releases"
 exec 9>"$HOME/.hermes-home-browser-deploy.lock"
 flock -n 9
 # A new service/port is intentional: never activate the dead legacy rollback.
@@ -86,9 +192,11 @@ old=$(readlink -f "$root/current" || true)
 if [ "$operation" = rollback ]; then
   target=$(readlink -f "$root/previous" || true)
   [ -n "$target" ] && [ -f "$target/.home-browser-v1" ] || { echo 'No compatible Home rollback; leave safe unavailable page running' >&2; exit 1; }
+  printf '%s' "$expected_unit" | sudo cmp -s - "$target/unit.service" || { echo 'Rollback unit does not match the requested Origin/Home/backend; restore its matching ingress first' >&2; exit 1; }
 else
   target="$root/releases/$commit"
   [ ! -e "$target" ] || { echo 'Release already exists; refusing overwrite' >&2; exit 1; }
+  sudo install -d -m 0755 "$root/releases"
   sudo install -d -m 0755 "$target"
   sudo python3.14 -m venv "$target/venv"
   sudo "$target/venv/bin/pip" install "$incoming/"*.whl
@@ -127,23 +235,29 @@ def main(argv=None):
     parser.add_argument("operation", choices=("deploy", "rollback"))
     parser.add_argument("--ops-host", required=True)
     parser.add_argument("--origin", required=True)
+    parser.add_argument("--ingress", choices=("serve", "caddy"), default="serve",
+                        help="preconfigured HTTPS Serve (default) or approved named Caddy site via raw TCP Serve")
     parser.add_argument("--home", required=True)
     parser.add_argument("--tag", help="existing release tag; required for deploy")
     parser.add_argument("--port", type=int, default=8875, help="dedicated loopback port; legacy 8765 is prohibited")
     parser.add_argument("--shortcuts", type=Path, help="optional service-local ID-bound wake shortcuts; never token env")
     args = parser.parse_args(argv)
     try:
-        tailnet_origin(args.origin)
+        public_origin(args.origin, args.ingress)
         tailnet_origin(args.home)
         if not re.fullmatch(r"[A-Za-z0-9_.@-]+", args.ops_host) or not 1024 <= args.port <= 65535 or args.port == 8765:
             raise ValueError("invalid SSH host or isolated backend port")
+        if args.ingress == "caddy" and args.port != 8875:
+            raise ValueError("named Caddy ingress requires the dedicated backend port 8875")
         if args.shortcuts:
             read_home_catalog(args.shortcuts)
         if args.operation == "deploy" and (not args.tag or not re.fullmatch(r"v[0-9]+\.[0-9]+\.[0-9]+", args.tag)):
             raise ValueError("deploy requires an existing vX.Y.Z release tag")
-        ssh = ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=15", args.ops_host]
+        ssh = ["ssh", *SSH_OPTIONS, args.ops_host]
         serve = subprocess.check_output([*ssh, "tailscale serve status --json"], text=True)
-        validate_serve(json.loads(serve), args.origin, args.port)
+        validate_serve(json.loads(serve), args.origin, args.port, args.ingress)
+        if args.ingress == "caddy":
+            check_caddy(ssh, args.origin, args.port)
         with tempfile.TemporaryDirectory(prefix="hermes-home-release-") as temporary:
             directory = Path(temporary)
             incoming = ""
@@ -157,6 +271,8 @@ def main(argv=None):
                     archive.extractall(source, filter="data")
                 if not (source / "home_display/home_admission.py").is_file():
                     raise ValueError("release tag predates the supported Home admission contract")
+                if args.ingress == "caddy" and (source / "scripts/deploy_home_browser.py").read_bytes() != Path(__file__).read_bytes():
+                    raise ValueError("named ingress requires this deployer in the selected published release; do not deploy an older tag with a newer helper")
                 web = source / "home_display/web"
                 for command in (["npm", "ci"], ["npm", "test"], ["npm", "run", "check"], ["npm", "run", "build"]):
                     subprocess.run(command, cwd=web, check=True)
@@ -175,8 +291,8 @@ def main(argv=None):
                 incoming = subprocess.check_output([*ssh, "mktemp -d /tmp/hermes-home-release.XXXXXX"], text=True).strip()
                 if not re.fullmatch(r"/tmp/hermes-home-release\.[A-Za-z0-9]+", incoming):
                     raise ValueError("invalid remote staging directory")
-                subprocess.run(["scp", "-r", str(package) + "/.", f"{args.ops_host}:{incoming}/"], check=True)
-            remote = "bash -s -- " + shlex.join([args.operation, commit, incoming, str(args.port)])
+                subprocess.run(["scp", *SSH_OPTIONS, "-r", str(package) + "/.", f"{args.ops_host}:{incoming}/"], check=True)
+            remote = "bash -s -- " + shlex.join([args.operation, commit, incoming, str(args.port), unit(args.origin, args.home, args.port)])
             subprocess.run([*ssh, remote], input=REMOTE, text=True, check=True)
         # Home-down health never triggers rollback to a legacy build. Keep the
         # new package's honest unavailable page and report acceptance failure.
