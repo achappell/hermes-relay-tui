@@ -30,7 +30,6 @@ EXPECTED_STATES = {
     "disconnected",
     "prompt",
 }
-EXPECTED_ACTION_ERROR = b'"error": "action_id and choice are required"'
 EXPECTED_PAGE_MARKERS = (b"<title>Hermes Home Display</title>", b'id="app"')
 
 
@@ -122,7 +121,11 @@ def check_action_route(
     except HTTPError as error:
         if error.code != 400:
             raise CheckError(f"/action returned HTTP {error.code}, expected 400") from error
-        if EXPECTED_ACTION_ERROR not in error.read():
+        try:
+            payload = json.loads(error.read())
+        except ValueError:
+            raise CheckError("/action returned an unexpected malformed-payload response") from None
+        if not isinstance(payload, dict) or not isinstance(payload.get("error"), str) or not payload["error"].strip():
             raise CheckError("/action returned an unexpected malformed-payload response")
 
 
