@@ -1940,8 +1940,17 @@ class Appliance:
         origin = getattr(self.args, "display_public_origin", None)
         if origin:
             parsed = urlsplit(origin)
-            if parsed.scheme != "https" or not (parsed.hostname or "").endswith(".ts.net"):
-                raise RuntimeError("Home browser public Origin must be a household Tailscale HTTPS name")
+            tailnet_host = parsed.hostname or ""
+            tailnet_origin = (
+                parsed.scheme == "https"
+                and tailnet_host.endswith(".ts.net")
+                and "*" not in tailnet_host
+            )
+            if origin != "https://home.chappell-home.dev" and not tailnet_origin:
+                raise RuntimeError(
+                    "Home browser public Origin must be an exact household Tailscale HTTPS name "
+                    "or https://home.chappell-home.dev"
+                )
         return url, Path(path)
 
     def _create_session_for_profile(self, profile: config.HouseholdProfile) -> Any:

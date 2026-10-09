@@ -143,11 +143,25 @@ additional public Origin, or proxy-rewritten Origin is accepted. The existing
 local-listener Origin and missing-Origin native-client behavior are unchanged.
 Keep the backend bound only to `127.0.0.1:8875`.
 
-**Stage A is code/review only.** A new published release containing this helper
-and example is required; `v0.12.0` cannot perform this named deployment.
+**Stage A is code/review only.** A published release containing both this helper
+and the appliance's matching named-Origin startup support is required.
+`v0.12.0` has no named deploy support; **`v0.13.0` is also ineligible** because
+its runtime still rejected non-`.ts.net` Origins despite accepting the deploy
+arguments. That cutover was rolled back to the prior `.ts.net` Home release.
+Do not hot-patch a release, rewrite Origin headers, or relax the boundary.
+Wait for a corrected published release and renewed owner authorization.
+
 Named deploy compares the helper with the selected tag's helper and refuses
-an older/different one. Do not change production until that release is
-published and the owner explicitly authorizes **Stage B**.
+an older/different one; matching helpers alone do not prove runtime readiness.
+The regression suite now parses generated deployment-unit arguments, executes
+the real Home appliance `_build()` path, starts its loopback display server,
+and checks the admitted public Origin, rejected alternate Origin, malformed
+action response, and honest unpaired health response. Server Origin matching
+remains exact scheme/host/effective-port matching; `/healthz` remains a local
+admission-state check, not a hostname allowlist or proof of Hermes readiness.
+Home's separate service URL remains restricted by the deployer's tailnet
+validator. None of these local tests substitutes for Stage B's real network,
+pairing, and browser acceptance.
 
 Approved layout:
 

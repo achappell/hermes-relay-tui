@@ -323,3 +323,62 @@ def test_named_nonstandard_backend_is_rejected_before_any_host_contact(monkeypat
     assert deploy.main(["deploy", "--ops-host", "ops", "--ingress", "caddy",
                         "--origin", deploy.NAMED_ORIGIN, "--home", "https://home.household.ts.net",
                         "--tag", "v1.0.0", "--port", "8876"]) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("ingress,origin", [
+    ("serve", ORIGIN),
+    ("serve", ORIGIN + ":443"),
+    ("caddy", deploy.NAMED_ORIGIN),
+])
+async def test_deployer_origins_start_the_real_home_appliance_and_display(tmp_path, ingress, origin):
+    import asyncio
+    import json
+    from urllib.error import HTTPError
+    from urllib.request import Request, urlopen
+
+    from home_display.appliance import Appliance, build_arg_parser
+
+    accepted = deploy.public_origin(origin, ingress)
+    saved_unit = deploy.unit(accepted, "https://home.household.ts.net", 8875)
+    command = next(line.removeprefix("ExecStart=") for line in saved_unit.splitlines() if line.startswith("ExecStart="))
+    args = build_arg_parser([]).parse_args(shlex.split(command)[1:])
+    assert args.display_public_origin == accepted
+    assert args.display_host == "127.0.0.1"
+    assert args.display_port == 8875
+    # Exercise the actual startup path, not a replacement validator or fake
+    # DisplayServer. Only the test's listener/storage locations are isolated.
+    args.display_port = 0
+    args.home_device_credential_file = tmp_path / "pairing.json"
+    relay = Appliance(args)
+    relay._build()
+    server = relay._server
+    info = await server.start()
+    try:
+        assert server._origin_is_allowed(accepted)
+        assert not server._origin_is_allowed("https://unrelated.example")
+        other_public_origin = ORIGIN if ingress == "caddy" else deploy.NAMED_ORIGIN
+        assert not server._origin_is_allowed(other_public_origin)
+
+        def request_error(path, supplied_origin, *, post=False):
+            request = Request(
+                info.http_url.rstrip("/") + path,
+                data=b"" if post else None,
+                headers={"Origin": supplied_origin},
+            )
+            with pytest.raises(HTTPError) as error:
+                urlopen(request, timeout=5)
+            return error.value.code, json.loads(error.value.read()) if error.value.code != 403 else None
+
+        status, payload = await asyncio.to_thread(request_error, "/action", accepted, post=True)
+        assert status == 400
+        assert isinstance(payload["error"], str)
+        status, _ = await asyncio.to_thread(request_error, "/action", other_public_origin, post=True)
+        assert status == 403
+        # No Home is enrolled/contacted in this test. Health remains honestly
+        # degraded, not Origin-rejected or falsely reported healthy.
+        status, payload = await asyncio.to_thread(request_error, "/healthz", accepted)
+        assert status == 503
+        assert payload["status"] == "degraded"
+    finally:
+        await server.close()
