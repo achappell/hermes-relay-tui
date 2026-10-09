@@ -72,6 +72,7 @@ story_aliases:
   tui-home-01-pair-with-home-and-own-sessions: TUI-HOME-01
   tui-std-01: TUI-STD-01
   tui-retire-01: TUI-RETIRE-01
+  wk-home-01-migrate-production-browser-to-homebridge: WK-HOME-01
   tui-defect-102: TUI-DEFECT-102
   tui-defect-104: TUI-DEFECT-104
   tui-attach-11: TUI-ATTACH-11
