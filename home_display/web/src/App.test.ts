@@ -1749,6 +1749,75 @@ describe("App", () => {
     unmount();
   });
 
+  it("replaces a waiting typed choice with the server's non-accepted status", async () => {
+    const { container, unmount } = render(App);
+    await tick();
+    const options = bridges.options.at(-1);
+    const bridge = bridges.instances.at(-1);
+    options?.onConnectionState("connected");
+    const prompt = {
+      kind: "choice" as const,
+      title: "Hermes choice",
+      body: "Which inspection step should I use?",
+      options: [{ id: "inspect", label: "Inspect the device" }],
+      action_id: "home-correlation-1",
+      timeout_seconds: null,
+      choice: {
+        object_id: "home-choice-1",
+        operations: ["choose" as const, "explore" as const],
+        freshness: "freshness-1",
+      },
+    };
+    options?.onView({
+      type: "snapshot",
+      schema: 1,
+      sequence: 1,
+      state: "prompt",
+      response_text: "",
+      status_text: null,
+      media: null,
+      prompt,
+      capabilities: { actions: ["prompt.choose", "prompt.explore"], features: [] },
+      is_busy: true,
+      connection_healthy: true,
+      can_choose: true,
+      can_explore: true,
+      can_dismiss: false,
+    });
+    await tick();
+    await fireEvent.click(screen.getByRole("button", { name: "Inspect the device" }));
+    await fireEvent.click(screen.getByRole("button", { name: "Choose" }));
+    await tick();
+    expect(bridge?.dispatchAction).toHaveBeenCalledTimes(1);
+    expect(screen.getByRole("status")).toHaveTextContent("Waiting for Home to update this choice.");
+
+    // The server refuses the request: same object, actions withdrawn, status set.
+    options?.onView({
+      type: "snapshot",
+      schema: 1,
+      sequence: 2,
+      state: "prompt",
+      response_text: "",
+      status_text: "Choose not accepted",
+      media: null,
+      prompt,
+      capabilities: { actions: [], features: [] },
+      is_busy: true,
+      connection_healthy: true,
+      can_choose: false,
+      can_explore: false,
+      can_dismiss: false,
+    });
+    await tick();
+    expect(container.querySelector(".prompt-overlay")).toBeNull();
+    expect(container.querySelector("[data-prompt-pending]")).toBeNull();
+    expect(container.querySelector(".status-text")).toHaveTextContent("Choose not accepted");
+    expect(container.querySelector(".prompt-summary")).toHaveTextContent(
+      "Which inspection step should I use?",
+    );
+    unmount();
+  });
+
   it("hides a stale prompt while the bridge is disconnected", async () => {
     const { container, unmount } = render(App);
     await tick();

@@ -374,6 +374,7 @@ class _BrowserSessionContext:
         self._closed = False
         self._close_lock = asyncio.Lock()
         self._route_lock = asyncio.Lock()
+        self._typed_action_in_flight = False
 
     async def handle_voice_turn(
         self, text: str, wake_phrase: str | None = None
@@ -484,6 +485,69 @@ class _BrowserSessionContext:
         if not self._closed and isinstance(self._child._session, BrowserSession):
             await self._child._session.interrupt_active_turn()
 
+    def _publish_typed_choice_outcome(
+        self, prompt: DisplayPrompt, status_text: str
+    ) -> None:
+        """Publish the unchanged typed choice with its actions withdrawn.
+
+        Used for an accepted request and for a refused one alike, so the page
+        never keeps offering (or waiting on) an object it already acted on or
+        could not act on. Home owns any replacement object.
+        """
+        snapshot = self.publisher.snapshot
+        capabilities = snapshot.capabilities
+        assert capabilities is not None
+        self.publisher.publish(
+            state="prompt",
+            response_text=snapshot.response_text,
+            status_text=status_text,
+            account=snapshot.account,
+            prompt=prompt,
+            capabilities=DisplayCapabilities(
+                actions=tuple(
+                    action
+                    for action in capabilities.actions
+                    if action not in {"prompt.choose", "prompt.explore"}
+                ),
+                features=capabilities.features,
+                timing=capabilities.timing,
+                wake_phrases=capabilities.wake_phrases,
+                wake_listen_seconds=capabilities.wake_listen_seconds,
+                wake_followup_seconds=capabilities.wake_followup_seconds,
+                profiles=capabilities.profiles,
+                selected_profile=capabilities.selected_profile,
+            ),
+        )
+
+    def _typed_choice_is_current(self, prompt: DisplayPrompt, action_id: str) -> bool:
+        """Whether ``prompt`` is still this socket's published, pending object."""
+        return (
+            not self._closed
+            and self.publisher.snapshot.prompt == prompt
+            and self._child._pending_prompt_action_id == action_id
+        )
+
+    def _reject_typed_choice(
+        self, prompt: DisplayPrompt, action_id: str, operation: str | None, status_text: str
+    ) -> None:
+        """Tell the page a request for the current object was not accepted.
+
+        This is an ordinary sequence-advancing snapshot; there is no rejection
+        frame. It is skipped when the page is already non-actionable for this
+        object (an earlier request was accepted, or it was replaced or
+        retired), because that snapshot already says what happened and a
+        second one would overwrite it.
+        """
+        capabilities = self.publisher.snapshot.capabilities
+        if (
+            not self._typed_choice_is_current(prompt, action_id)
+            or capabilities is None
+            or not {"prompt.choose", "prompt.explore"} & set(capabilities.actions)
+        ):
+            return
+        label = operation.title() if operation in DISPLAY_CHOICE_OPERATIONS else "Action"
+        self._publish_typed_choice_outcome(prompt, f"{label} {status_text}")
+
     async def handle_action(
         self,
         action_id: str,
@@ -500,10 +564,22 @@ class _BrowserSessionContext:
         typed_action = any(
             value is not None for value in (operation, object_id, freshness)
         )
+        typed_choice = prompt.choice if prompt is not None else None
         if (
             prompt is None
             or self._child._pending_prompt_action_id != action_id
-            or choice not in {option.id for option in prompt.options}
+            # A legacy tap cannot answer a typed choice, and a request for an
+            # object or freshness Home has since replaced is left to the
+            # replacement snapshot: nothing is dispatched or published.
+            or (
+                typed_choice is not None
+                and (
+                    not typed_action
+                    or object_id != typed_choice.object_id
+                    or freshness != typed_choice.freshness
+                )
+            )
+            or (typed_choice is None and choice not in {o.id for o in prompt.options})
         ):
             logger.debug(
                 "ignoring stale browser action connection=%s action_id=%s",
@@ -519,38 +595,45 @@ class _BrowserSessionContext:
                 await self.handle_voice_turn("/sethome")
             return
 
-        if prompt.choice is not None:
+        if typed_choice is not None:
             required_action = (
                 f"prompt.{operation}"
                 if operation in DISPLAY_CHOICE_OPERATIONS
                 else None
             )
             if (
-                not typed_action
+                choice not in {option.id for option in prompt.options}
                 or required_action is None
                 or snapshot_capabilities is None
                 or required_action not in snapshot_capabilities.actions
-                or operation not in prompt.choice.operations
-                or object_id != prompt.choice.object_id
-                or freshness != prompt.choice.freshness
+                or operation not in typed_choice.operations
             ):
+                self._reject_typed_choice(prompt, action_id, operation, "not accepted")
+                return
+            if self._typed_action_in_flight:
+                # One request per socket is in flight at a time; its outcome
+                # publishes the snapshot. A second is never dispatched.
                 return
         elif typed_action:
             return
 
         session = self._child._session
         send_prompt_response = getattr(session, "send_prompt_response", None)
-        if not callable(send_prompt_response):
+        if not callable(send_prompt_response) or not getattr(
+            session, "supports_structured_prompts", False
+        ):
+            if typed_choice is not None:
+                self._reject_typed_choice(prompt, action_id, operation, "not accepted")
             return
-        if not getattr(session, "supports_structured_prompts", False):
-            return
+        outcome = "not accepted"
+        self._typed_action_in_flight = typed_choice is not None
         try:
             response = {
                 "prompt_id": action_id,
                 "prompt_kind": prompt.kind,
                 "option_id": choice,
             }
-            if prompt.choice is not None:
+            if typed_choice is not None:
                 response.update(
                     operation=operation,
                     object_id=object_id,
@@ -564,36 +647,26 @@ class _BrowserSessionContext:
                 action_id,
                 exc_info=True,
             )
+            sent = False
+            outcome = "not confirmed"
+        finally:
+            self._typed_action_in_flight = False
+        if typed_choice is not None:
+            # Evaluate the result against the state now, not the state the
+            # request was validated against: a replacement object, a retired
+            # prompt, or a closed socket must not be touched by a stale request.
+            if sent is not False and self._typed_choice_is_current(prompt, action_id):
+                self._child._pending_prompt_action_id = None
+                self._publish_typed_choice_outcome(
+                    prompt, f"{operation.title()} requested"
+                )
+            elif sent is False:
+                self._reject_typed_choice(prompt, action_id, operation, outcome)
             return
         if sent is False:
             return
         self._child._pending_prompt_action_id = None
-        if prompt.choice is not None:
-            assert snapshot_capabilities is not None
-            capabilities = DisplayCapabilities(
-                actions=tuple(
-                    action
-                    for action in snapshot_capabilities.actions
-                    if action not in {"prompt.choose", "prompt.explore"}
-                ),
-                features=snapshot_capabilities.features,
-                timing=snapshot_capabilities.timing,
-                wake_phrases=snapshot_capabilities.wake_phrases,
-                wake_listen_seconds=snapshot_capabilities.wake_listen_seconds,
-                wake_followup_seconds=snapshot_capabilities.wake_followup_seconds,
-                profiles=snapshot_capabilities.profiles,
-                selected_profile=snapshot_capabilities.selected_profile,
-            )
-            self.publisher.publish(
-                state="prompt",
-                response_text=self.publisher.snapshot.response_text,
-                status_text=f"{operation.title()} requested",
-                account=self.publisher.snapshot.account,
-                prompt=prompt,
-                capabilities=capabilities,
-            )
-        else:
-            self._child._publish("idle", response_text="")
+        self._child._publish("idle", response_text="")
 
     async def close(self) -> None:
         async with self._close_lock:

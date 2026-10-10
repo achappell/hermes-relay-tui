@@ -5,6 +5,7 @@ import shutil
 import ssl
 import subprocess
 from urllib.error import HTTPError
+from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
 import pytest
@@ -367,6 +368,119 @@ def test_server_parses_typed_choice_actions_and_rejects_mixed_legacy_fields():
         **typed_action,
         "freshness": "",
     })) is None
+
+
+_TYPED_ACTION = {
+    "type": "action",
+    "schema": 1,
+    "action_id": "correlation-1",
+    "operation": "choose",
+    "option_id": "inspect",
+    "object_id": "home-object-1",
+    "freshness": "home-freshness-1",
+}
+
+
+@pytest.mark.parametrize(
+    "override",
+    [
+        pytest.param({"operation": "delete"}, id="unknown-operation"),
+        pytest.param({"operation": None}, id="null-operation"),
+        pytest.param({"option_id": ""}, id="empty-option"),
+        pytest.param({"option_id": "o" * 65}, id="oversized-option"),
+        pytest.param({"object_id": "x" * 65}, id="oversized-object"),
+        pytest.param({"object_id": 7}, id="non-string-object"),
+        pytest.param({"freshness": None}, id="null-freshness"),
+        pytest.param({"schema": True}, id="boolean-schema"),
+        pytest.param({"action_id": ""}, id="empty-action-id"),
+        pytest.param({"action_id": "a" * 65}, id="oversized-action-id"),
+    ],
+)
+def test_server_drops_malformed_typed_choice_actions_before_dispatch(override):
+    assert DisplayServer._parse_websocket_action(
+        json.dumps({**_TYPED_ACTION, **override})
+    ) is None
+
+
+@pytest.mark.parametrize("missing", ["operation", "option_id", "object_id", "freshness"])
+def test_server_drops_partial_typed_choice_actions(missing):
+    action = {name: value for name, value in _TYPED_ACTION.items() if name != missing}
+    assert DisplayServer._parse_websocket_action(json.dumps(action)) is None
+
+
+@pytest.mark.asyncio
+async def test_browser_socket_dispatches_only_well_formed_typed_actions_and_post_action_is_inert(
+    tmp_path,
+):
+    """Pin typed-action routing in browser-context mode (2-WK-5).
+
+    A typed action frame reaches only its own socket's binding and malformed
+    frames are dropped before dispatch. ``POST /action`` returns 200 with no
+    dispatch, because browser-context mode builds the server without an
+    ``on_action``; the page never uses that route, and this pins it as inert.
+    """
+    (tmp_path / "index.html").write_text("ok", encoding="utf-8")
+
+    class Binding:
+        def __init__(self):
+            self.publisher = DisplayStatePublisher()
+            self.actions: list[tuple] = []
+
+        async def handle_action(self, *action) -> None:
+            self.actions.append(action)
+
+        async def close(self) -> None:
+            pass
+
+    bindings: list[Binding] = []
+
+    async def create_binding(_connection_id, _sender):
+        binding = Binding()
+        bindings.append(binding)
+        return binding
+
+    server = DisplayServer(
+        DisplayStatePublisher(), tmp_path, on_browser_connect=create_binding
+    )
+    info = await server.start()
+    try:
+        async with connect(info.websocket_url) as socket:
+            assert json.loads(await socket.recv())["state"] == "idle"
+            await socket.send(json.dumps({**_TYPED_ACTION, "freshness": ""}))
+            await socket.send(json.dumps({**_TYPED_ACTION, "choice": "inspect"}))
+            await socket.send(json.dumps(_TYPED_ACTION))
+            await asyncio.sleep(0.05)
+            assert bindings[0].actions == [
+                (
+                    "correlation-1",
+                    "inspect",
+                    "choose",
+                    "home-object-1",
+                    "home-freshness-1",
+                )
+            ]
+
+            for query in (
+                {"action_id": "correlation-1", "choice": "inspect"},
+                {
+                    "action_id": "correlation-1",
+                    "operation": "choose",
+                    "option_id": "inspect",
+                    "object_id": "home-object-1",
+                    "freshness": "home-freshness-1",
+                },
+            ):
+                request = Request(
+                    f"http://{info.host}:{info.port}/action?{urlencode(query)}",
+                    method="POST",
+                )
+                response = await asyncio.to_thread(lambda: urlopen(request))
+                assert response.status == 200
+                assert response.read() == b"{}\n"
+            await asyncio.sleep(0.05)
+            assert len(bindings[0].actions) == 1
+    finally:
+        await server.close()
 
 
 @pytest.mark.asyncio
