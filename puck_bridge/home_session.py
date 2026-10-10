@@ -1205,6 +1205,9 @@ class HomePuckSession:
                 pending["event_type"], pending["prompt_kind"], prompt_kind
             ):
                 return False
+            if pending.get("unsupported"):
+                # No answer can be collected for this prompt; never guess one.
+                return False
             if _is_choice_prompt(pending["event_type"], pending["prompt_kind"]):
                 allowed_options = pending.get("option_ids")
                 if (
@@ -1256,6 +1259,9 @@ class HomePuckSession:
                 # Home choice prompts require typed object and freshness
                 # identity; missing metadata cannot fall back to a legacy tap.
                 return False
+            answers = pending.get("answers")
+            if value is None and isinstance(answers, dict) and option_id in answers:
+                value = answers[option_id]
             response = _prompt_response(
                 pending["event_type"],
                 pending["prompt_kind"],
@@ -1264,6 +1270,7 @@ class HomePuckSession:
                 operation=operation,
                 object_id=object_id,
                 freshness=freshness,
+                question_id=pending.get("question_id"),
             )
             if response is None:
                 return False
@@ -1536,6 +1543,9 @@ class HomePuckSession:
                 else None
             ),
             "choice_invalid": raw_choice is not None and not isinstance(raw_choice, dict),
+            "question_id": normalized.get("question_id"),
+            "answers": normalized.get("answers"),
+            "unsupported": normalized.get("unsupported") is True,
         }
 
     def _clear_pending_prompt(self, normalized: dict[str, Any]) -> None:
@@ -1840,6 +1850,7 @@ def _prompt_response(
     operation: str | None = None,
     object_id: str | None = None,
     freshness: str | None = None,
+    question_id: str | None = None,
 ) -> dict[str, str] | None:
     kind = str(prompt_kind or "").strip().lower()
     if _is_choice_prompt(event_type, kind):
@@ -1868,7 +1879,14 @@ def _prompt_response(
         event_type == _PROMPT_REQUEST_EVENT_TYPE and kind == "clarify"
     ):
         answer = value if value is not None else option_id
-        return {"answer": answer} if isinstance(answer, str) and answer else None
+        if not isinstance(answer, str) or not answer:
+            return None
+        # Home requires the question being answered for a Standard batch.
+        return (
+            {"answer": answer, "question_id": question_id}
+            if question_id
+            else {"answer": answer}
+        )
     if event_type == "secret.request" or (
         event_type == _PROMPT_REQUEST_EVENT_TYPE and kind == "secret"
     ):
@@ -1924,6 +1942,70 @@ def _final_text_update(
         "type": "text_replace",
         "text": _joined_text(str(state["committed"]), final_text),
     }
+
+
+def _standard_clarify(payload: dict[str, Any]) -> dict[str, Any] | None:
+    """Read the clarify shapes the pinned Standard Hermes sends.
+
+    Standard sends a batch ``{request_id, questions: [{qid, question, choices,
+    multi_select}]}`` where ``choices`` is ``null`` for a free-text question.
+    A single ``{question, choices}`` payload is read the same way. Returns
+    ``None`` for the legacy ``text``/``options`` shape, which is left alone.
+
+    Only one single-select question is answerable here, because the front
+    ends collect one answer and Home releases a batch only after every
+    question is answered. Anything else (several questions, multi-select, a
+    malformed question or choice) comes back with ``unsupported`` set and no
+    options, so no front end can offer an answer and none is ever guessed.
+    """
+    batch = "questions" in payload
+    if batch:
+        questions = payload.get("questions")
+    elif (
+        isinstance(payload.get("question"), str)
+        and "text" not in payload
+        and "options" not in payload
+    ):
+        questions = [payload]
+    else:
+        return None
+    first = questions[0] if isinstance(questions, list) and questions else None
+    text = (
+        first["question"]
+        if isinstance(first, dict) and isinstance(first.get("question"), str)
+        else ""
+    )
+    unsupported: dict[str, Any] = {"text": text, "options": [], "unsupported": True}
+    if not isinstance(questions, list) or len(questions) != 1:
+        return unsupported
+    question = questions[0]
+    if not isinstance(question, dict) or not isinstance(question.get("question"), str):
+        return unsupported
+    if question.get("multi_select", False) is not False:
+        return unsupported
+    question_id = question.get("qid") if batch else None
+    if batch and (not isinstance(question_id, str) or not question_id):
+        return unsupported
+    choices = question.get("choices")
+    result: dict[str, Any] = {"text": text, "options": []}
+    if question_id is not None:
+        result["question_id"] = question_id
+    if choices is None:
+        return result
+    if (
+        not isinstance(choices, list)
+        or not choices
+        or any(not isinstance(choice, str) or not choice for choice in choices)
+    ):
+        return unsupported
+    # The browser and the TUI cap option ids, so offer positions and keep the
+    # exact choice text to send back as the answer.
+    ids = [str(index) for index in range(1, len(choices) + 1)]
+    result["options"] = [
+        {"id": option_id, "label": choice} for option_id, choice in zip(ids, choices)
+    ]
+    result["answers"] = dict(zip(ids, choices))
+    return result
 
 
 def _normalize_event(
@@ -2108,6 +2190,13 @@ def _normalize_event(
             normalized_options = [
                 dict(option) for option in options if isinstance(option, dict)
             ]
+        text = str(payload.get("text") or "")
+        standard_clarify = (
+            _standard_clarify(payload) if event_type == "clarify.request" else None
+        )
+        if standard_clarify is not None:
+            text = standard_clarify["text"]
+            normalized_options = standard_clarify["options"]
         return {
             "type": "prompt_request",
             "prompt_id": str(
@@ -2119,10 +2208,19 @@ def _normalize_event(
             ),
             "prompt_kind": prompt_kind,
             "turn_id": str(prompt_turn_id or ""),
-            "text": str(payload.get("text") or ""),
+            "text": text,
             "options": normalized_options,
             "sensitive": bool(payload.get("sensitive", False)),
             "timeout_s": timeout_s,
+            **(
+                {
+                    key: standard_clarify[key]
+                    for key in ("question_id", "answers", "unsupported")
+                    if key in standard_clarify
+                }
+                if standard_clarify is not None
+                else {}
+            ),
             **(
                 {"correlation_id": str(state["correlation_id"])}
                 if state.get("correlation_id")
