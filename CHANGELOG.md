@@ -15,6 +15,20 @@
 - Harden the Home browser's typed-choice (`prompt.choose`/`prompt.explore`) action boundary: one request in flight per socket, results evaluated against current state so a replaced or disconnected request cannot touch newer state, and a refused request for the current object now publishes a non-accepted status snapshot (no new frame type) instead of leaving the page "waiting". Pin that `POST /action` is inert in browser-context mode. Typed choices remain unavailable on production until Home advertises them.
 - Unlock Home browser audio inside a user gesture (typed Send, tap, or key press) instead of only creating the audio context when a reply starts, resume contexts Safari reports as `interrupted`, and re-resume on `audio_start`, so spoken replies are no longer silent on Safari after a typed turn, page reload, or an iOS interruption. Verified in headless WebKit only; audible output on real Safari is not yet confirmed.
 
+## 0.14.0 (2026-10-10)
+
+<!-- Release notes generated using configuration in .github/release.yml at main -->
+
+## What's Changed
+### Other Changes
+* feat(home): default browser sessions to HomeBridge for R6 by @achappell in https://github.com/achappell/hermes-relay-tui/pull/238
+* fix(home): accept Home's dotted prompt.request typed-choice event by @achappell in https://github.com/achappell/hermes-relay-tui/pull/240
+* fix(home): render Standard clarify.request in the browser and answer with question_id by @achappell in https://github.com/achappell/hermes-relay-tui/pull/241
+* fix(home): validate typed-choice actions at the browser boundary (2-WK-5) by @achappell in https://github.com/achappell/hermes-relay-tui/pull/242
+
+
+**Full Changelog**: https://github.com/achappell/hermes-relay-tui/compare/v0.13.1...v0.14.0
+
 ## 0.13.1 (2026-10-09)
 
 <!-- Release notes generated using configuration in .github/release.yml at main -->
