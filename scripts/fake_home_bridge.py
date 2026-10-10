@@ -9,7 +9,7 @@ voice-session protocol `fake_relay.py` speaks. This script speaks enough of
 that bridge protocol for one full round trip per turn:
 
     conversation.open -> ready
-    prompt.submit     -> submitted, then a typed-choice `prompt_request` event
+    prompt.submit     -> submitted, then a typed-choice `prompt.request` event
     prompt.respond    -> accepted, then `prompt_resolved` + a terminal event
 
 That is enough to drive a real renderer (the native simulator, the web
@@ -178,7 +178,7 @@ class FakeHomeBridge:
             "turn_id": pending["turn_id"],
             "correlation_id": pending["correlation_id"],
             "event": {
-                "type": "prompt_request",
+                "type": "prompt.request",
                 "payload": {
                     "prompt_id": pending["prompt_id"],
                     "prompt_kind": "choice",
@@ -205,11 +205,21 @@ class FakeHomeBridge:
         response = params.get("response") or {}
         print(
             "[home-bridge] prompt.respond "
+            f"event_type={params.get('event_type')!r} "
             f"operation={response.get('operation')!r} "
             f"option_id={response.get('option_id')!r} "
             f"object_id={response.get('object_id')!r} "
             f"freshness={response.get('freshness')!r}"
         )
+        if params.get("event_type") != "prompt.request":
+            # Home only accepts a response that echoes the prompt's event type.
+            print("[home-bridge] rejecting response: event_type is not prompt.request")
+            await self._reply(
+                websocket,
+                request_id,
+                {"schema": HOME_BRIDGE_SCHEMA, "accepted": False, "status": "rejected"},
+            )
+            return
         if (
             self.args.reject_once
             and pending is not None

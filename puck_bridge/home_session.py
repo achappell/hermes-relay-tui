@@ -88,9 +88,13 @@ _INTERRUPTED_STATUSES = frozenset(
     {"interrupted", "cancelled", "canceled", "aborted", "stopped"}
 )
 _TERMINAL_STATUSES = _COMPLETED_STATUSES | _FAILED_STATUSES | _INTERRUPTED_STATUSES
+# Home's typed-choice prompt travels as the dotted Standard-style event name
+# (bridge-contract.md); the underscore form is only the normalized event this
+# session yields to the TUI/appliance and is never expected on the wire.
+_PROMPT_REQUEST_EVENT_TYPE = "prompt.request"
 _STRUCTURED_PROMPT_EVENT_TYPES = frozenset(
     {
-        "prompt_request",
+        _PROMPT_REQUEST_EVENT_TYPE,
         "approval.request",
         "clarify.request",
         "secret.request",
@@ -1246,7 +1250,7 @@ class HomePuckSession:
                 ):
                     return False
             elif (
-                pending["event_type"] == "prompt_request"
+                pending["event_type"] == _PROMPT_REQUEST_EVENT_TYPE
                 and pending["prompt_kind"].strip().lower() == "choice"
             ):
                 # Home choice prompts require typed object and freshness
@@ -1811,7 +1815,7 @@ def _prompt_kind_matches(event_type: str, pending_kind: str, supplied: str) -> b
         return actual == "secret"
     if event_type == "sudo.request":
         return actual == "sudo"
-    if event_type == "prompt_request":
+    if event_type == _PROMPT_REQUEST_EVENT_TYPE:
         return actual == expected or (
             expected in {"choice", "approval", "confirm"}
             and actual in {"choice", "approval", "confirm"}
@@ -1822,7 +1826,7 @@ def _prompt_kind_matches(event_type: str, pending_kind: str, supplied: str) -> b
 def _is_choice_prompt(event_type: str, prompt_kind: str) -> bool:
     kind = str(prompt_kind or "").strip().lower()
     return event_type == "approval.request" or (
-        event_type == "prompt_request"
+        event_type == _PROMPT_REQUEST_EVENT_TYPE
         and kind in {"choice", "approval", "confirm"}
     )
 
@@ -1861,16 +1865,16 @@ def _prompt_response(
             return None
         return {"choice": option_id} if isinstance(option_id, str) and option_id else None
     if event_type == "clarify.request" or (
-        event_type == "prompt_request" and kind == "clarify"
+        event_type == _PROMPT_REQUEST_EVENT_TYPE and kind == "clarify"
     ):
         answer = value if value is not None else option_id
         return {"answer": answer} if isinstance(answer, str) and answer else None
     if event_type == "secret.request" or (
-        event_type == "prompt_request" and kind == "secret"
+        event_type == _PROMPT_REQUEST_EVENT_TYPE and kind == "secret"
     ):
         return {"value": value} if isinstance(value, str) and value else None
     if event_type == "sudo.request" or (
-        event_type == "prompt_request" and kind == "sudo"
+        event_type == _PROMPT_REQUEST_EVENT_TYPE and kind == "sudo"
     ):
         return {"password": value} if isinstance(value, str) and value else None
     return None
@@ -2066,7 +2070,7 @@ def _normalize_event(
     if event_type == "notification.clear":
         return {"type": "notification_clear", "key": str(payload.get("key") or "")}
     if event_type in {
-        "prompt_request",
+        _PROMPT_REQUEST_EVENT_TYPE,
         "approval.request",
         "clarify.request",
         "secret.request",
