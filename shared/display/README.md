@@ -56,6 +56,36 @@ Capability names are deliberately small and explicit. `prompt.choose` and
 missing action capability leaves a prompt read-only. A target must not emit an
 action it has not advertised or that the current snapshot does not permit.
 
+### Typed-choice boundary (browser-context mode)
+
+In the Home browser appliance (`--browser-voice`, one context per socket) the
+typed `choose`/`explore` action arrives only as a WebSocket `action` frame, and
+the server validates it against the *current* snapshot before anything reaches
+Home: the pending action id, the object id and freshness, the operation as both
+advertised (`prompt.choose`/`prompt.explore`) and offered by the object, and an
+option the object lists. One request per socket is in flight at a time, and the
+result is evaluated against the state at completion, so a request that was
+replaced, retired, or disconnected mid-flight cannot touch the newer state. A
+legacy `{action_id, choice}` tap never answers a typed choice. Nothing is
+resent automatically.
+
+There is no rejection frame. A request for the *current* object that is refused
+(unlisted option, unadvertised or unoffered operation, Home or session
+refusal, or an unconfirmed delivery) is answered by an ordinary
+sequence-advancing snapshot: the same `prompt`, `prompt.choose` and
+`prompt.explore` withdrawn from `capabilities`, and `status_text` set to
+`Choose not accepted`, `Explore not accepted`, or `… not confirmed`. Existing
+consumers already unmount the overlay for such a snapshot and show the status.
+A request for an object or freshness Home has already replaced is dropped
+silently; the replacement snapshot is what tells the page. A refused object
+stays read-only until Home replaces or retires it.
+
+`POST /action` is not part of this path. In browser-context mode the display
+server is built without an `on_action` callback, so it still validates the
+query (400 for a malformed one) and answers `200 {}` but dispatches nothing,
+typed or legacy. The page sends actions over its state WebSocket and never
+uses it. Do not treat a 200 from `POST /action` as acceptance.
+
 ## Fixtures
 
 - `fixtures/snapshots/` contains valid state examples, including a legacy

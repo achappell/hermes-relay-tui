@@ -2919,6 +2919,328 @@ async def test_native_typed_choice_rejects_legacy_stale_and_unadvertised_actions
     assert len(session.responses) == 1
 
 
+# ---- 2-WK-5: typed-choice server boundary ------------------------------
+
+
+class _TypedChoiceSession(FakeSession):
+    """A structured-prompt session whose prompt.respond RPC can be held open."""
+
+    supports_structured_prompts = True
+
+    def __init__(self, *, capabilities=("prompt.choose", "prompt.explore")):
+        super().__init__()
+        self.capabilities = capabilities
+        self.responses: list[dict] = []
+        self.result: object = True
+        self.gate: asyncio.Event | None = None
+        self.entered = asyncio.Event()
+
+    async def send_prompt_response(self, **payload):
+        self.responses.append(payload)
+        self.entered.set()
+        if self.gate is not None:
+            await self.gate.wait()
+        if isinstance(self.result, BaseException):
+            raise self.result
+        return self.result
+
+
+def _typed_choice_prompt(
+    action_id="corr-typed-1",
+    object_id="home-object-1",
+    freshness="fresh-1",
+    operations=("choose", "explore"),
+):
+    return DisplayPrompt(
+        kind="choice",
+        title="Hermes choice",
+        body="Inspect this route",
+        options=(PromptOption("inspect", "Inspect the device"),),
+        action_id=action_id,
+        choice=DisplayChoice(object_id, operations, freshness),
+    )
+
+
+def _publish_typed_choice(context, prompt):
+    context._child._pending_prompt_action_id = prompt.action_id
+    context._child._publish_prompt(prompt)
+
+
+async def _typed_choice_context(session, **prompt_fields):
+    appliance = Appliance(
+        _args(browser_voice=True), session_factory=lambda _profile: session
+    )
+    context = await appliance._create_browser_context("typed-choice", FakeServer())
+    prompt = _typed_choice_prompt(**prompt_fields)
+    _publish_typed_choice(context, prompt)
+    return context, prompt
+
+
+def _typed_request(operation="choose", **overrides):
+    request = dict(
+        action_id="corr-typed-1",
+        choice="inspect",
+        operation=operation,
+        object_id="home-object-1",
+        freshness="fresh-1",
+    )
+    request.update(overrides)
+    return request
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("operation", ["choose", "explore"])
+async def test_typed_choice_current_advertised_action_dispatches_once(operation):
+    session = _TypedChoiceSession()
+    context, prompt = await _typed_choice_context(session)
+    try:
+        before = context.publisher.snapshot
+        await context.handle_action(**_typed_request(operation))
+
+        assert session.responses == [{
+            "prompt_id": "corr-typed-1",
+            "prompt_kind": "choice",
+            "option_id": "inspect",
+            "operation": operation,
+            "object_id": "home-object-1",
+            "freshness": "fresh-1",
+        }]
+        snapshot = context.publisher.snapshot
+        assert snapshot.sequence == before.sequence + 1
+        assert snapshot.state == "prompt"
+        assert snapshot.prompt == prompt
+        assert snapshot.status_text == f"{operation.title()} requested"
+        assert snapshot.capabilities.actions == ()
+        assert session.turns == []
+    finally:
+        await context.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("session_actions", "operations", "overrides", "operation"),
+    [
+        pytest.param(
+            ("prompt.choose", "prompt.explore"), ("choose", "explore"),
+            {"choice": "not-listed"}, "choose", id="option-not-in-object",
+        ),
+        pytest.param(
+            ("prompt.choose",), ("choose", "explore"), {}, "explore",
+            id="operation-not-advertised",
+        ),
+        pytest.param(
+            ("prompt.choose", "prompt.explore"), ("explore",), {}, "choose",
+            id="operation-not-offered-by-object",
+        ),
+        pytest.param(
+            ("prompt.choose", "prompt.explore"), ("choose", "explore"), {},
+            "delete", id="unknown-operation",
+        ),
+    ],
+)
+async def test_typed_choice_refused_for_current_object_is_visible_and_not_dispatched(
+    session_actions, operations, overrides, operation
+):
+    session = _TypedChoiceSession(capabilities=session_actions)
+    context, prompt = await _typed_choice_context(session, operations=operations)
+    try:
+        before = context.publisher.snapshot
+        await context.handle_action(**_typed_request(operation, **overrides))
+
+        assert session.responses == []
+        snapshot = context.publisher.snapshot
+        # An ordinary sequence-advancing snapshot: same object, a visible
+        # non-accepted status, and no action left to offer or wait on.
+        assert snapshot.sequence == before.sequence + 1
+        assert snapshot.state == "prompt"
+        assert snapshot.prompt == prompt
+        assert snapshot.status_text is not None
+        assert snapshot.status_text.endswith("not accepted")
+        assert "requested" not in snapshot.status_text
+        assert not {"prompt.choose", "prompt.explore"} & set(snapshot.capabilities.actions)
+        assert context._child._pending_prompt_action_id == prompt.action_id
+
+        # A second refusal against the already withdrawn object is silent.
+        await context.handle_action(**_typed_request(operation, **overrides))
+        assert context.publisher.snapshot is snapshot
+        assert session.responses == []
+    finally:
+        await context.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        pytest.param({"freshness": "stale"}, id="stale-freshness"),
+        pytest.param({"object_id": "other-object"}, id="other-object"),
+        pytest.param({"action_id": "unknown-correlation"}, id="unknown-action"),
+    ],
+)
+async def test_typed_choice_stale_request_leaves_published_state_untouched(overrides):
+    session = _TypedChoiceSession()
+    context, _prompt = await _typed_choice_context(session)
+    try:
+        before = context.publisher.snapshot
+        pending = context._child._pending_prompt_action_id
+        await context.handle_action(**_typed_request(**overrides))
+        # A legacy {action_id, choice} tap carries no freshness identity.
+        await context.handle_action("corr-typed-1", "inspect")
+
+        assert session.responses == []
+        # The replacement snapshot, not this request, tells the page what
+        # changed; nothing is dispatched or published for a stale request.
+        assert context.publisher.snapshot is before
+        assert context._child._pending_prompt_action_id == pending
+    finally:
+        await context.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("result", "status"),
+    [
+        pytest.param(False, "Choose not accepted", id="home-rejected"),
+        pytest.param(ConnectionError("lost"), "Choose not confirmed", id="uncertain"),
+    ],
+)
+async def test_typed_choice_rejected_by_session_is_visible_and_never_resent(
+    result, status
+):
+    session = _TypedChoiceSession()
+    session.result = result
+    context, prompt = await _typed_choice_context(session)
+    try:
+        before = context.publisher.snapshot
+        await context.handle_action(**_typed_request("choose"))
+
+        snapshot = context.publisher.snapshot
+        assert snapshot.sequence == before.sequence + 1
+        assert snapshot.state == "prompt"
+        assert snapshot.prompt == prompt
+        assert snapshot.status_text == status
+        assert not {"prompt.choose", "prompt.explore"} & set(snapshot.capabilities.actions)
+
+        # No replay: a retry of the same request is not dispatched again,
+        # and no turn or prompt submission is created.
+        await context.handle_action(**_typed_request("choose"))
+        await asyncio.sleep(0.01)
+        assert len(session.responses) == 1
+        assert session.turns == []
+        assert context.publisher.snapshot is snapshot
+    finally:
+        await context.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("result", [True, False])
+async def test_typed_choice_concurrent_duplicates_dispatch_once(result):
+    session = _TypedChoiceSession()
+    session.result = result
+    session.gate = asyncio.Event()
+    context, prompt = await _typed_choice_context(session)
+    try:
+        before = context.publisher.snapshot
+        tasks = [
+            asyncio.create_task(context.handle_action(**_typed_request("explore")))
+            for _ in range(3)
+        ]
+        await asyncio.wait_for(session.entered.wait(), 1)
+        await asyncio.sleep(0.01)
+        assert len(session.responses) == 1
+
+        session.gate.set()
+        await asyncio.gather(*tasks)
+
+        assert len(session.responses) == 1
+        snapshot = context.publisher.snapshot
+        assert snapshot.sequence == before.sequence + 1
+        assert snapshot.prompt == prompt
+        assert snapshot.status_text == (
+            "Explore requested" if result else "Explore not accepted"
+        )
+    finally:
+        await context.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("result", [True, False, ConnectionError("lost")])
+async def test_typed_choice_replaced_in_flight_leaves_replacement_untouched(result):
+    session = _TypedChoiceSession()
+    session.result = result
+    session.gate = asyncio.Event()
+    context, _prompt = await _typed_choice_context(session)
+    try:
+        task = asyncio.create_task(context.handle_action(**_typed_request("choose")))
+        await asyncio.wait_for(session.entered.wait(), 1)
+
+        replacement = _typed_choice_prompt(
+            action_id="corr-typed-2", object_id="home-object-2", freshness="fresh-2"
+        )
+        _publish_typed_choice(context, replacement)
+        replaced = context.publisher.snapshot
+        assert replaced.prompt == replacement
+
+        session.gate.set()
+        await task
+
+        # The old request's outcome must neither clear the replacement's
+        # pending id nor overwrite the replacement's published actions.
+        assert context.publisher.snapshot is replaced
+        assert context._child._pending_prompt_action_id == "corr-typed-2"
+        assert {"prompt.choose", "prompt.explore"} <= set(
+            replaced.capabilities.actions
+        )
+
+        # The old object can no longer be answered, only the new one.
+        await context.handle_action(**_typed_request("choose"))
+        assert len(session.responses) == 1
+    finally:
+        await context.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("result", [True, False, ConnectionError("lost")])
+async def test_typed_choice_disconnect_in_flight_publishes_nothing(result):
+    session = _TypedChoiceSession()
+    session.result = result
+    session.gate = asyncio.Event()
+    context, _prompt = await _typed_choice_context(session)
+    task = asyncio.create_task(context.handle_action(**_typed_request("choose")))
+    await asyncio.wait_for(session.entered.wait(), 1)
+
+    await context.close()
+    closed = context.publisher.snapshot
+
+    session.gate.set()
+    await task
+
+    assert context.publisher.snapshot is closed
+    assert len(session.responses) == 1
+    # A request arriving after disconnect is dropped before dispatch.
+    await context.handle_action(**_typed_request("choose"))
+    assert len(session.responses) == 1
+
+
+@pytest.mark.asyncio
+async def test_typed_choice_request_after_acceptance_does_not_overwrite_status():
+    session = _TypedChoiceSession()
+    context, prompt = await _typed_choice_context(session)
+    try:
+        await context.handle_action(**_typed_request("choose"))
+        accepted = context.publisher.snapshot
+        assert accepted.status_text == "Choose requested"
+
+        await context.handle_action(**_typed_request("choose"))
+        await context.handle_action(**_typed_request("explore"))
+        await context.handle_action(**_typed_request("choose", choice="not-listed"))
+
+        assert context.publisher.snapshot is accepted
+        assert len(session.responses) == 1
+    finally:
+        await context.close()
+
+
 @pytest.mark.asyncio
 async def test_home_browser_turn_reaches_idle_after_home_terminal_event():
     class FakeHomeClient:

@@ -1,6 +1,6 @@
 # Active epic parents are in story-index.yaml; numeric story prefixes remain historical.
 generated: 09-08-2026 00:00
-last_updated: '2026-10-09'
+last_updated: '2026-10-10'
 project: hermes-relay-tui
 project_key: NOKEY
 tracking_system: file-system
@@ -71,7 +71,7 @@ development_status:
   4-wk-2-recompute-and-clear-the-browser-departure-card-while-preserv: backlog
   epic-7: in-progress
   2-e-5-render-and-submit-native-choose-explore-actions-for-current: review
-  2-wk-5-validate-direct-use-typed-choice-actions-at-the-server-bound: backlog
+  2-wk-5-validate-direct-use-typed-choice-actions-at-the-server-bound: review
   2-wk-6-render-accessible-native-choose-explore-actions-for-current: backlog
   2-t-3-render-typed-choice-objects-with-keyboard-choose-explore-act: done
   epic-9: backlog
