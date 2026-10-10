@@ -352,7 +352,7 @@ async def test_home_browser_session_submits_typed_choice_with_current_freshness_
             "turn_id": "home-turn-1",
             "correlation_id": "corr-typed-1",
             "event": {
-                "type": "prompt_request",
+                "type": "prompt.request",
                 "payload": {
                     "prompt_id": "prompt-typed-1",
                     "prompt_kind": "choice",
@@ -425,7 +425,7 @@ async def test_home_browser_session_rejects_choice_without_home_freshness_contex
             "turn_id": "home-turn-1",
             "correlation_id": "corr-missing-choice-context",
             "event": {
-                "type": "prompt_request",
+                "type": "prompt.request",
                 "payload": {
                     "prompt_id": "prompt-missing-choice-context",
                     "prompt_kind": "choice",
@@ -459,6 +459,234 @@ async def test_home_browser_session_rejects_choice_without_home_freshness_contex
         await stream.aclose()
         await session.close()
 
+
+# Typed-choice projection copied from hermes-relay-home
+# _bmad-output/specs/spec-home-bridge-route-roaming/bridge-contract.md
+# ("Typed choices use this normalized event payload"), carried in the
+# contract's `event` notification envelope.
+HOME_CONTRACT_CHOICE_PAYLOAD = {
+    "prompt_id": "standard-request-id",
+    "prompt_kind": "choice",
+    "text": "Choose an inspection step.",
+    "timeout_s": 300,
+    "choice": {
+        "object_id": "home-choice-id",
+        "freshness": "home-freshness-id",
+        "operations": ["choose", "explore"],
+    },
+    "options": [{"id": "inspect", "label": "Inspect"}],
+}
+
+
+def _home_contract_choice_frame(event_type: str = "prompt.request") -> str:
+    return _notification(
+        "event",
+        {
+            "schema": 1,
+            "conversation_handle": "opaque-home-handle",
+            "turn_id": "home-turn-1",
+            "correlation_id": "standard-request-id",
+            "event": {
+                "type": event_type,
+                "payload": HOME_CONTRACT_CHOICE_PAYLOAD,
+            },
+        },
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("operation", ["choose", "explore"])
+async def test_home_contract_prompt_request_reaches_display_and_answers_with_dotted_event_type(
+    operation,
+):
+    from home_display.appliance import _classify_prompt_request
+    from home_display.state import DisplayChoice
+
+    socket = _ready_socket(_home_contract_choice_frame())
+    session = HomeBrowserSession(
+        f"wss://home.example{HOME_BRIDGE_PATH}",
+        "device-secret",
+        "opaque-home-handle",
+        connect_factory=_FakeConnect([socket]),
+    )
+    await session.connect()
+    stream = session.send_turn("inspect")
+    try:
+        event = await stream.__anext__()
+        # Recognised as a structured prompt, not an unknown wire event.
+        assert event["type"] == "prompt_request"
+        assert event["prompt_id"] == "standard-request-id"
+        assert event["prompt_kind"] == "choice"
+        assert event["correlation_id"] == "standard-request-id"
+        assert event["choice"] == HOME_CONTRACT_CHOICE_PAYLOAD["choice"]
+        assert event["options"] == [{"id": "inspect", "label": "Inspect"}]
+
+        # The appliance/browser path turns it into a typed choice prompt.
+        prompt = _classify_prompt_request(event)
+        assert prompt is not None
+        assert prompt.kind == "choice"
+        assert prompt.action_id == "standard-request-id"
+        assert prompt.choice == DisplayChoice(
+            "home-choice-id", ("choose", "explore"), "home-freshness-id"
+        )
+
+        # Freshness/object/operation gating still applies: nothing is written.
+        for bad in (
+            {"object_id": "other-object", "freshness": "home-freshness-id"},
+            {"object_id": "home-choice-id", "freshness": "stale"},
+        ):
+            assert not await session.send_prompt_response(
+                prompt_id="standard-request-id",
+                prompt_kind="choice",
+                option_id="inspect",
+                operation=operation,
+                **bad,
+            )
+        assert not await session.send_prompt_response(
+            prompt_id="standard-request-id",
+            prompt_kind="choice",
+            option_id="inspect",
+            operation="dismiss",
+            object_id="home-choice-id",
+            freshness="home-freshness-id",
+        )
+        assert not await session.send_prompt_response(
+            prompt_id="standard-request-id",
+            prompt_kind="choice",
+            option_id="not-offered",
+            operation=operation,
+            object_id="home-choice-id",
+            freshness="home-freshness-id",
+        )
+        assert [frame["method"] for frame in socket.sent] == [
+            "conversation.open",
+            "prompt.submit",
+        ]
+
+        assert await session.send_prompt_response(
+            prompt_id="standard-request-id",
+            prompt_kind="choice",
+            option_id="inspect",
+            operation=operation,
+            object_id="home-choice-id",
+            freshness="home-freshness-id",
+        )
+        assert socket.sent[-1]["method"] == "prompt.respond"
+        assert socket.sent[-1]["params"] == {
+            "conversation_handle": "opaque-home-handle",
+            "turn_id": "home-turn-1",
+            "correlation_id": "standard-request-id",
+            "event_type": "prompt.request",
+            "response": {
+                "operation": operation,
+                "option_id": "inspect",
+                "object_id": "home-choice-id",
+                "freshness": "home-freshness-id",
+            },
+        }
+    finally:
+        await stream.aclose()
+        await session.close()
+
+
+@pytest.mark.asyncio
+async def test_home_contract_choice_respects_operations_home_offers():
+    frame = _notification(
+        "event",
+        {
+            "schema": 1,
+            "conversation_handle": "opaque-home-handle",
+            "turn_id": "home-turn-1",
+            "correlation_id": "standard-request-id",
+            "event": {
+                "type": "prompt.request",
+                "payload": {
+                    **HOME_CONTRACT_CHOICE_PAYLOAD,
+                    "choice": {
+                        **HOME_CONTRACT_CHOICE_PAYLOAD["choice"],
+                        "operations": ["explore"],
+                    },
+                },
+            },
+        },
+    )
+    socket = _ready_socket(frame)
+    session = HomeBrowserSession(
+        f"wss://home.example{HOME_BRIDGE_PATH}",
+        "device-secret",
+        "opaque-home-handle",
+        connect_factory=_FakeConnect([socket]),
+    )
+    await session.connect()
+    stream = session.send_turn("inspect")
+    try:
+        await stream.__anext__()
+        assert not await session.send_prompt_response(
+            prompt_id="standard-request-id",
+            prompt_kind="choice",
+            option_id="inspect",
+            operation="choose",
+            object_id="home-choice-id",
+            freshness="home-freshness-id",
+        )
+        assert [frame["method"] for frame in socket.sent] == [
+            "conversation.open",
+            "prompt.submit",
+        ]
+    finally:
+        await stream.aclose()
+        await session.close()
+
+
+@pytest.mark.asyncio
+async def test_home_contract_prompt_request_is_refused_without_structured_prompt_support():
+    socket = _ready_socket(_home_contract_choice_frame())
+    session = _session(_FakeConnect([socket]))
+    await session.connect()
+    stream = session.send_turn("inspect")
+    events = [await stream.__anext__()]
+    await stream.aclose()
+
+    assert events == [
+        {"type": "error", "error": "Home Puck does not support structured prompts"}
+    ]
+    assert not session.is_connected()
+    await session.close()
+
+
+@pytest.mark.asyncio
+async def test_underscore_prompt_request_is_not_a_home_wire_event():
+    # Home never emits `prompt_request`; the underscore name only exists as
+    # the normalized event this session yields. A wire frame using it must
+    # not become a pending prompt that could be answered.
+    socket = _ready_socket(_home_contract_choice_frame("prompt_request"))
+    session = HomeBrowserSession(
+        f"wss://home.example{HOME_BRIDGE_PATH}",
+        "device-secret",
+        "opaque-home-handle",
+        connect_factory=_FakeConnect([socket]),
+    )
+    await session.connect()
+    stream = session.send_turn("inspect")
+    try:
+        event = await stream.__anext__()
+        assert event["type"] == "unknown_event"
+        assert event["event_type"] == "prompt_request"
+        assert not await session.send_prompt_response(
+            prompt_id="standard-request-id",
+            prompt_kind="choice",
+            option_id="inspect",
+            operation="choose",
+            object_id="home-choice-id",
+            freshness="home-freshness-id",
+        )
+        assert [frame["method"] for frame in socket.sent] == [
+            "conversation.open",
+            "prompt.submit",
+        ]
+    finally:
+        await stream.aclose()
+        await session.close()
 
 @pytest.mark.asyncio
 async def test_home_browser_prompt_response_rejects_stale_action_without_writing():
@@ -692,7 +920,7 @@ async def test_home_message_complete_without_status_owns_terminal_completion():
 @pytest.mark.parametrize(
     "event_type",
     [
-        "prompt_request",
+        "prompt.request",
         "approval.request",
         "clarify.request",
         "secret.request",
