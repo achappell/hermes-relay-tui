@@ -660,6 +660,9 @@ class HomePuckSession:
         self._connected = False
         self._active_turn_id: str | None = None
         self._pending_prompt: dict[str, Any] | None = None
+        # Only the browser session opts into sequential multi-question clarify.
+        self._sequential_clarify = False
+        self._clarify_outcome: dict[str, Any] | None = None
         self._turn_lock = asyncio.Lock()
         self._prompt_response_lock = asyncio.Lock()
         self._retirement_lock = asyncio.Lock()
@@ -761,6 +764,7 @@ class HomePuckSession:
         self._connected = False
         self._active_turn_id = None
         self._pending_prompt = None
+        self._clarify_outcome = None
         if self._opened:
             self._reconnect_required = True
         if client is not None:
@@ -1056,7 +1060,12 @@ class HomePuckSession:
                         raise HomeBridgeProtocolError(
                             "Home bridge structured prompt has no correlation ID"
                         )
-                    normalized = _normalize_event(event_type, payload, text_state)
+                    normalized = _normalize_event(
+                        event_type,
+                        payload,
+                        text_state,
+                        sequential_clarify=self._sequential_clarify,
+                    )
                     if (
                         event_type in _STRUCTURED_PROMPT_EVENT_TYPES
                         and isinstance(normalized, dict)
@@ -1274,6 +1283,14 @@ class HomePuckSession:
             )
             if response is None:
                 return False
+            sequence = pending.get("sequence")
+            if sequence is not None:
+                # One dispatch per question: an answered, rejected, or
+                # uncertain question is never sent again.
+                if pending["question_id"] in sequence["dispatched"]:
+                    return False
+                sequence["dispatched"].add(pending["question_id"])
+                self._clarify_outcome = None
             params = {
                 "conversation_handle": self._conversation_handle,
                 "turn_id": pending["turn_id"],
@@ -1288,6 +1305,8 @@ class HomePuckSession:
                 raise
             except HomeBridgeRPCError as exc:
                 if exc.delivery == "known":
+                    if sequence is not None:
+                        self._reject_clarify_answer()
                     return False
                 await self._close_after_uncertain_prompt()
                 raise HomeBridgeTransportError(
@@ -1301,13 +1320,79 @@ class HomePuckSession:
             try:
                 _validate_prompt_response_result(result)
             except HomeBridgeRPCError:
+                if sequence is not None:
+                    self._reject_clarify_answer()
                 return False
             except HomeBridgeProtocolError:
                 await self._close_after_protocol_failure()
                 raise
+            if sequence is not None:
+                return await self._finish_clarify_answer(pending, result)
             if self._pending_prompt == pending:
                 self._pending_prompt = None
             return True
+
+    def _reject_clarify_answer(self) -> None:
+        """Home refused a sequence answer; the question is never retried.
+
+        Home keeps the batch pending after a refusal, so the turn would wait
+        for an answer that cannot come. Ending it is the front end's call
+        (it interrupts the turn); the answered qid stays marked dispatched.
+        """
+        self._clarify_outcome = {"accepted": False, "final": False, "next": None}
+
+    async def _finish_clarify_answer(
+        self, pending: dict[str, Any], result: dict[str, Any]
+    ) -> bool:
+        """Advance a sequence after Home accepted one answer.
+
+        The result is evaluated against the prompt that is pending now: a
+        replaced, resolved, or disconnected prompt is neither advanced nor
+        judged. Otherwise Home must report exactly the questions still
+        unanswered, in order, or the session closes without replay.
+        """
+        outcome: dict[str, Any] = {"accepted": True, "final": False, "next": None}
+        self._clarify_outcome = outcome
+        if self._pending_prompt is not pending or not self.is_connected():
+            return True
+        sequence = pending["sequence"]
+        views = sequence["views"]
+        position = sequence["position"]
+        expected = [view["question_id"] for view in views[position:]]
+        if result.get("remaining", []) != expected:
+            await self._close_after_protocol_failure()
+            raise HomeBridgeProtocolError(
+                "Home bridge clarify result reports unexpected remaining questions"
+            )
+        if not expected:
+            self._pending_prompt = None
+            outcome["final"] = True
+            return True
+        view = views[position]
+        self._pending_prompt = {
+            **pending,
+            "question_id": view["question_id"],
+            "option_ids": frozenset(option["id"] for option in view["options"]),
+            "answers": view["answers"],
+            "sequence": {**sequence, "position": position + 1},
+        }
+        outcome["next"] = {
+            "type": "prompt_request",
+            "prompt_id": pending["prompt_id"],
+            "correlation_id": pending["correlation_id"],
+            "prompt_kind": pending["prompt_kind"],
+            "turn_id": pending["turn_id"],
+            "text": view["text"],
+            "options": view["options"],
+            "question_id": view["question_id"],
+            "answers": view["answers"],
+        }
+        return True
+
+    def take_clarify_outcome(self) -> dict[str, Any] | None:
+        """Hand the outcome of the last sequence answer to its caller once."""
+        outcome, self._clarify_outcome = self._clarify_outcome, None
+        return outcome
 
     async def list_sessions(self, **_kwargs: Any) -> list[dict[str, Any]]:
         raise HomeBridgeProtocolError("Home Puck session does not expose sessions")
@@ -1546,6 +1631,15 @@ class HomePuckSession:
             "question_id": normalized.get("question_id"),
             "answers": normalized.get("answers"),
             "unsupported": normalized.get("unsupported") is True,
+            "sequence": (
+                {
+                    "position": normalized["sequence"]["position"],
+                    "views": normalized["sequence"]["views"],
+                    "dispatched": set(),
+                }
+                if isinstance(normalized.get("sequence"), dict)
+                else None
+            ),
         }
 
     def _clear_pending_prompt(self, normalized: dict[str, Any]) -> None:
@@ -1944,7 +2038,52 @@ def _final_text_update(
     }
 
 
-def _standard_clarify(payload: dict[str, Any]) -> dict[str, Any] | None:
+def _clarify_sequence(questions: list[Any]) -> dict[str, Any] | None:
+    """Offer a batch of single-select questions one at a time.
+
+    Every question must be single-select with listed text choices and a
+    unique ``qid``; anything else returns ``None`` so the whole batch stays
+    unsupported before any answer is sent. Option ids carry the question's
+    position (``"2.1"``), so a tap can only ever answer the question it was
+    offered for.
+    """
+    total = len(questions)
+    views: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for position, question in enumerate(questions, start=1):
+        if not isinstance(question, dict) or not isinstance(question.get("question"), str):
+            return None
+        if question.get("multi_select", False) is not False:
+            return None
+        question_id = question.get("qid")
+        if not isinstance(question_id, str) or not question_id or question_id in seen:
+            return None
+        seen.add(question_id)
+        choices = question.get("choices")
+        if (
+            not isinstance(choices, list)
+            or not choices
+            or any(not isinstance(choice, str) or not choice for choice in choices)
+        ):
+            return None
+        ids = [f"{position}.{index}" for index in range(1, len(choices) + 1)]
+        views.append(
+            {
+                "question_id": question_id,
+                "text": f"({position}/{total}) {question['question']}",
+                "options": [
+                    {"id": option_id, "label": choice}
+                    for option_id, choice in zip(ids, choices)
+                ],
+                "answers": dict(zip(ids, choices)),
+            }
+        )
+    return {**views[0], "sequence": {"position": 1, "views": views}}
+
+
+def _standard_clarify(
+    payload: dict[str, Any], *, sequential: bool = False
+) -> dict[str, Any] | None:
     """Read the clarify shapes the pinned Standard Hermes sends.
 
     Standard sends a batch ``{request_id, questions: [{qid, question, choices,
@@ -1952,11 +2091,12 @@ def _standard_clarify(payload: dict[str, Any]) -> dict[str, Any] | None:
     A single ``{question, choices}`` payload is read the same way. Returns
     ``None`` for the legacy ``text``/``options`` shape, which is left alone.
 
-    Only one single-select question is answerable here, because the front
-    ends collect one answer and Home releases a batch only after every
-    question is answered. Anything else (several questions, multi-select, a
-    malformed question or choice) comes back with ``unsupported`` set and no
-    options, so no front end can offer an answer and none is ever guessed.
+    One single-select question is answerable here. With ``sequential`` (the
+    browser session only), a batch of several single-select questions is also
+    answerable, one question at a time (see ``_clarify_sequence``). Anything
+    else (several questions otherwise, multi-select, a malformed question or
+    choice) comes back with ``unsupported`` set and no options, so no front
+    end can offer an answer and none is ever guessed.
     """
     batch = "questions" in payload
     if batch:
@@ -1977,6 +2117,8 @@ def _standard_clarify(payload: dict[str, Any]) -> dict[str, Any] | None:
     )
     unsupported: dict[str, Any] = {"text": text, "options": [], "unsupported": True}
     if not isinstance(questions, list) or len(questions) != 1:
+        if batch and sequential and isinstance(questions, list) and len(questions) > 1:
+            return _clarify_sequence(questions) or unsupported
         return unsupported
     question = questions[0]
     if not isinstance(question, dict) or not isinstance(question.get("question"), str):
@@ -2012,6 +2154,8 @@ def _normalize_event(
     event_type: str,
     payload: dict[str, Any],
     state: dict[str, Any],
+    *,
+    sequential_clarify: bool = False,
 ) -> dict[str, Any] | list[dict[str, Any]] | None:
     status = str(payload.get("status") or "").strip().lower()
     if event_type in _INTERRUPTED_EVENT_TYPES or status in _INTERRUPTED_STATUSES:
@@ -2192,7 +2336,9 @@ def _normalize_event(
             ]
         text = str(payload.get("text") or "")
         standard_clarify = (
-            _standard_clarify(payload) if event_type == "clarify.request" else None
+            _standard_clarify(payload, sequential=sequential_clarify)
+            if event_type == "clarify.request"
+            else None
         )
         if standard_clarify is not None:
             text = standard_clarify["text"]
@@ -2215,7 +2361,7 @@ def _normalize_event(
             **(
                 {
                     key: standard_clarify[key]
-                    for key in ("question_id", "answers", "unsupported")
+                    for key in ("question_id", "answers", "unsupported", "sequence")
                     if key in standard_clarify
                 }
                 if standard_clarify is not None
@@ -2303,6 +2449,7 @@ class HomeBrowserSession(HomePuckSession):
             session_id="home-browser",
             session_label="Browser",
         )
+        self._sequential_clarify = True
 
     async def _send_turn_locked(self, text: str) -> AsyncIterator[dict[str, Any]]:
         """Expose the front-end terminal event after Home owns completion.

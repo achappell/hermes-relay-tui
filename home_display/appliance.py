@@ -151,6 +151,9 @@ MAX_BROWSER_PROMPT_OPTIONS = 8
 MAX_BROWSER_PROMPT_TEXT_LENGTH = 4096
 MAX_BROWSER_PROMPT_FIELD_LENGTH = 256
 
+UNSUPPORTED_PROMPT_STATUS = "This prompt needs an input the browser cannot collect"
+ANSWER_REJECTED_STATUS = "Home did not accept that answer, so the question was cancelled"
+
 
 def _classify_gateway_notice(text: str) -> DisplayPrompt | None:
     """Return a DisplayPrompt if text is a known gateway notice, else None.
@@ -325,6 +328,21 @@ def _classify_prompt_request(event: dict) -> DisplayPrompt | None:
             action_id=prompt_id,
         )
     return None
+
+
+def _sequence_is_renderable(event: dict) -> bool:
+    """Whether every question of a sequential clarify can be shown.
+
+    A single prompt carries no ``sequence`` and is always renderable here.
+    """
+    sequence = event.get("sequence")
+    if sequence is None:
+        return True
+    views = sequence.get("views") if isinstance(sequence, dict) else None
+    return isinstance(views, list) and all(
+        isinstance(view, dict) and _classify_prompt_request({**event, **view}) is not None
+        for view in views
+    )
 
 
 # How long the unit waits, after you stop talking, before deciding you have
@@ -663,10 +681,62 @@ class _BrowserSessionContext:
             elif sent is False:
                 self._reject_typed_choice(prompt, action_id, operation, outcome)
             return
+        if prompt.kind == "clarify":
+            take_outcome = getattr(session, "take_clarify_outcome", None)
+            clarify_outcome = take_outcome() if callable(take_outcome) else None
+            if isinstance(clarify_outcome, dict):
+                await self._continue_clarify_sequence(prompt, action_id, clarify_outcome)
+                return
         if sent is False:
             return
         self._child._pending_prompt_action_id = None
         self._child._publish("idle", response_text="")
+
+    async def _continue_clarify_sequence(
+        self, prompt: DisplayPrompt, action_id: str, outcome: dict[str, Any]
+    ) -> None:
+        """Act on one sequential clarify answer, if it is still the current one.
+
+        Like a typed choice, the result is judged against the state now: a
+        replaced or resolved prompt, or a closed socket, is left to whatever
+        replaced it. The batch is identified by its action id rather than the
+        published prompt, because an unrelated status update may already have
+        replaced the overlay while the answer was in flight. Home refusing an
+        answer cancels the question: Home keeps the batch pending, so the turn
+        is interrupted (or the connection closed) rather than left waiting.
+        """
+        child = self._child
+        if self._closed or child._pending_prompt_action_id != action_id:
+            return
+        if outcome.get("accepted") is True:
+            if outcome.get("final") is True:
+                child._pending_prompt_action_id = None
+                child._publish("idle", response_text="")
+                return
+            next_event = outcome.get("next")
+            if not isinstance(next_event, dict):
+                return  # the session did not advance: nothing to show
+            next_prompt = _classify_prompt_request(next_event)
+            if next_prompt is not None:
+                child._pending_prompt_action_id = next_prompt.action_id
+                child._publish_prompt(next_prompt)
+                return
+            # Defensive: admission already proved every question renders.
+            stop_status = UNSUPPORTED_PROMPT_STATUS
+        else:
+            stop_status = ANSWER_REJECTED_STATUS
+        child._answer_rejected_status = stop_status
+        child._pending_prompt_action_id = None
+        child._publish("error", response_text="", status_text=stop_status)
+        interrupt = getattr(child._session, "interrupt_active_turn", None)
+        interrupted = False
+        if callable(interrupt):
+            with contextlib.suppress(Exception):
+                interrupted = bool(await interrupt())
+        if not interrupted:
+            # Nothing else will end the turn, so retire this connection; the
+            # page reconnects. The answered question is never sent again.
+            await self.close()
 
     async def close(self) -> None:
         async with self._close_lock:
@@ -782,6 +852,9 @@ class Appliance:
         self._signals_installed: list[signal.Signals] = []
         self._sigint_count = 0
         self._pending_prompt_action_id: str | None = None
+        # Set when Home refuses a sequential clarify answer, so the turn's
+        # interrupted ending keeps saying why instead of a generic message.
+        self._answer_rejected_status: str | None = None
         self._browser_contexts: dict[str, _BrowserSessionContext] = {}
         self._touch_contexts: dict[str, TouchDoorway] = {}
         self._touch_device_config: TouchDeviceConfig | None = None
@@ -1143,7 +1216,13 @@ class Appliance:
         unsupported_prompt = False
         turn_id = "browser-turn"
         events: Any = None
+        self._answer_rejected_status = None
         self._publish("thinking", response_text="")
+
+        def stopped_status() -> str | None:
+            if self._answer_rejected_status is not None:
+                return self._answer_rejected_status
+            return UNSUPPORTED_PROMPT_STATUS if unsupported_prompt else None
 
         def publish_response(state: DisplayState = "thinking") -> None:
             self._publish(state, response_text=display_text(response))
@@ -1189,6 +1268,10 @@ class Appliance:
                     )
                 elif kind == "prompt_request":
                     prompt = _classify_prompt_request(event)
+                    if prompt is not None and not _sequence_is_renderable(event):
+                        # A later question the page cannot show must not be
+                        # discovered after earlier answers were sent.
+                        prompt = None
                     if prompt is not None:
                         logger.debug(
                             "browser prompt_request kind=%s action=%s",
@@ -1207,7 +1290,7 @@ class Appliance:
                         self._publish(
                             "error",
                             response_text="",
-                            status_text="This prompt needs an input the browser cannot collect",
+                            status_text=UNSUPPORTED_PROMPT_STATUS,
                         )
                         interrupt = getattr(self._session, "interrupt_active_turn", None)
                         interrupted = False
@@ -1217,7 +1300,7 @@ class Appliance:
                         if not interrupted:
                             await abort_audio("unsupported prompt")
                             publish_terminal_error(
-                                "This prompt needs an input the browser cannot collect"
+                                UNSUPPORTED_PROMPT_STATUS
                             )
                             return False
                 elif kind == "prompt_resolved":
@@ -1311,12 +1394,9 @@ class Appliance:
                     await server.send_audio_chunk(decoded)
                 elif kind in ("audio_abort", "turn_interrupted"):
                     await abort_audio(str(event.get("error") or event.get("reason") or kind))
-                    if unsupported_prompt:
-                        self._publish(
-                            "error",
-                            response_text="",
-                            status_text="This prompt needs an input the browser cannot collect",
-                        )
+                    stopped = stopped_status()
+                    if stopped is not None:
+                        self._publish("error", response_text="", status_text=stopped)
                         self._set_listening()
                         return False
                     publish_terminal_error("Response interrupted")
@@ -1324,20 +1404,26 @@ class Appliance:
                 elif kind == "error":
                     error_text = str(event.get("error") or "Hermes error")
                     await abort_audio(error_text)
-                    if unsupported_prompt:
-                        self._publish("error", response_text="", status_text=error_text)
+                    stopped = stopped_status()
+                    if stopped is not None:
+                        self._publish(
+                            "error",
+                            response_text="",
+                            status_text=self._answer_rejected_status or error_text,
+                        )
                         self._set_listening()
                         return False
                     publish_terminal_error(error_text)
                     return False
                 elif kind == "turn_end":
-                    if unsupported_prompt:
-                        await abort_audio("unsupported prompt")
-                        self._publish(
-                            "error",
-                            response_text="",
-                            status_text="This prompt needs an input the browser cannot collect",
+                    stopped = stopped_status()
+                    if stopped is not None:
+                        await abort_audio(
+                            "answer rejected"
+                            if self._answer_rejected_status is not None
+                            else "unsupported prompt"
                         )
+                        self._publish("error", response_text="", status_text=stopped)
                         self._set_listening()
                         return False
                     had_audio = audio_active or streamed_audio or bool(file_audio)

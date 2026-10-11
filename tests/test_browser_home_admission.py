@@ -432,3 +432,18 @@ async def test_queued_selection_cannot_close_a_turn_that_started_while_waiting(c
     finish.set()
     await active
     assert len(client.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_clarify_outcome_is_forwarded_once_from_the_claim_bridge(client):
+    admission = await admit(client)
+    session = BrowserSession(admission, "one")
+    assert session.take_clarify_outcome() is None  # no claim yet
+    outcomes = [{"accepted": True, "next": None}]
+    session.bridge = SimpleNamespace(
+        take_clarify_outcome=lambda: outcomes.pop() if outcomes else None
+    )
+    assert session.take_clarify_outcome() == {"accepted": True, "next": None}
+    assert session.take_clarify_outcome() is None
+    session.bridge = SimpleNamespace()  # a bridge without sequential clarify
+    assert session.take_clarify_outcome() is None

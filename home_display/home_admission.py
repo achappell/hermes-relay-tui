@@ -299,6 +299,10 @@ class BrowserSession:
             return await self.bridge.interrupt_active_turn()
         return False
 
+    def take_clarify_outcome(self):
+        take = getattr(self.bridge, "take_clarify_outcome", None)
+        return take() if callable(take) else None
+
     async def send_prompt_response(self, **kwargs):
         if not self.bridge or not self.bridge.is_connected():
             return False

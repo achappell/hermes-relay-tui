@@ -6,6 +6,7 @@
 
 - Add opt-in operator-selected HTTPS DNS Origin deployment checks (example: `https://home.example.com`) for household-only raw-TCP443 Tailscale Serve to `127.0.0.1:443` through an all-path loopback-peer-gated Caddy site, with no Funnel, strict SSH and matching saved-Origin rollback. Keep the existing `.ts.net` path; named cutover and portal publication require separate operational authorization and a published release.
 - Add the authorized Home browser appliance path: private durable pairing and renewal, live Home Profile selection, per-tab fresh claims with HTTP cleanup, typed admission failures, and admission-only health. Provide isolated tagged Home deployment/rollback tooling and real local Home integration smoke. Production rollout, iPad acceptance, and post-bake legacy retirement remain separate gates.
+- Answer a multi-question, all single-select Standard `clarify.request` in the Home browser one question at a time. Each answer carries its own `question_id`, option ids are bound to their question so a stale tap cannot answer the next one, and the next question appears only when Home reports exactly the remaining question ids. Divergent `remaining`, a rejected answer, uncertain delivery, a replaced or resolved prompt, and a disconnect stop without replaying an answer. Multi-select, free-text, and unrenderable batches keep the visible unsupported error; Puck, the Textual TUI, single-question clarify, approval, secret, sudo, and typed choices are unchanged.
 
 ### Bug fixes
 

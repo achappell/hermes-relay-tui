@@ -768,7 +768,9 @@ until Home's authenticated HTTP list/close confirms cleanup. Typed unavailable,
 revoked, pending, stale-configuration, renewal, and capacity errors fail closed.
 `GET /healthz` reports **admission readiness only**, not Hermes generation,
 speaker playback, speech recognition, or hardware health. Choice/clarify
-buttons use Home `prompt.respond`; secret/sudo inputs remain unsupported.
+buttons use Home `prompt.respond`, and a multi-question single-select clarify
+is answered one question at a time; multi-select and free-text clarify and
+secret/sudo inputs remain unsupported.
 Timing is explicitly absent.
 
 The old static conversation-handle flags and credential environment fallback
