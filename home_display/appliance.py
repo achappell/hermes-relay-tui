@@ -55,6 +55,7 @@ from timing import (
 from .origin import validate_public_origin
 from .server import BrowserProfileRouteResult, DisplayServer, load_tls_context
 from .touch import (
+    AUDIO_UNAVAILABLE_STATUS,
     HttpTouchClaimClient,
     TouchConfigurationError,
     TouchDeviceConfig,
@@ -1214,6 +1215,7 @@ class Appliance:
         file_audio_active = False
         completed = False
         unsupported_prompt = False
+        audio_unavailable = False
         turn_id = "browser-turn"
         events: Any = None
         self._answer_rejected_status = None
@@ -1225,7 +1227,16 @@ class Appliance:
             return UNSUPPORTED_PROMPT_STATUS if unsupported_prompt else None
 
         def publish_response(state: DisplayState = "thinking") -> None:
-            self._publish(state, response_text=display_text(response))
+            # A rejection or unsupported-prompt status outranks the audio notice.
+            self._publish(
+                state,
+                response_text=display_text(response),
+                status_text=(
+                    AUDIO_UNAVAILABLE_STATUS
+                    if audio_unavailable and stopped_status() is None
+                    else None
+                ),
+            )
 
         async def abort_audio(reason: str) -> None:
             nonlocal audio_active
@@ -1315,6 +1326,8 @@ class Appliance:
                     if current_prompt is not None:
                         self._publish_prompt(current_prompt)
                 elif kind == "audio_start":
+                    if audio_unavailable:
+                        continue
                     incoming_format = (
                         int(event.get("sample_rate", 0)),
                         int(event.get("channels", 0)),
@@ -1363,6 +1376,8 @@ class Appliance:
                     if file_audio_active and isinstance(data, bytes):
                         file_audio.extend(data)
                 elif kind == "audio_file_end":
+                    if audio_unavailable:
+                        continue
                     data = event.get("data")
                     if isinstance(data, bytes):
                         file_audio.extend(data)
@@ -1392,6 +1407,16 @@ class Appliance:
                         audio_active = True
                     publish_response("speaking")
                     await server.send_audio_chunk(decoded)
+                elif kind == "audio_unavailable":
+                    # Home's explicit fallback/unavailable frame: only audio is
+                    # lost. Close any open stream once, keep text and prompts.
+                    await abort_audio(str(event.get("reason") or "audio unavailable"))
+                    audio_unavailable = True
+                    if (
+                        self._pending_prompt_action_id is None
+                        and stopped_status() is None
+                    ):
+                        publish_response("thinking")
                 elif kind in ("audio_abort", "turn_interrupted"):
                     await abort_audio(str(event.get("error") or event.get("reason") or kind))
                     stopped = stopped_status()
@@ -1439,7 +1464,15 @@ class Appliance:
                         self._pending_prompt_action_id = notice.action_id
                         self._publish_prompt(notice)
                     elif self._pending_prompt_action_id is None:
-                        self._publish("idle", response_text=display_text(response))
+                        self._publish(
+                            "idle",
+                            response_text=display_text(response),
+                            status_text=(
+                                AUDIO_UNAVAILABLE_STATUS
+                                if audio_unavailable
+                                else None
+                            ),
+                        )
                     completed = True
                     break
             if not completed:
