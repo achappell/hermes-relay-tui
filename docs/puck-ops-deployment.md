@@ -23,8 +23,28 @@ If Home is unavailable, the Puck stays unavailable.
 The Puck can only admit a new Home claim with calibrated proximity evidence
 from a trusted hardware provider (P-4). Production wiring passes no provider,
 so after a claim is retired, the bridge restarts with a non-active record, or
-Home restarts, every wake is refused. Until the provider exists, a deployed
-bridge serves only its initially configured claim. Do not work around this.
+Home restarts, every wake is refused. Do not work around this.
+
+Two releases behave differently here:
+
+- Released bridges up to `v0.13.1`, the ones exercised in the smoke below,
+  serve only their initially configured claim.
+- 3-P-5 (PR #249, not yet released) makes the bridge refuse an initial
+  handle that Home cannot verify, so even that claim works only after
+  verified Home admission.
+
+### First-connect failure (P-4/STD-6 implementation blocker)
+
+The smoke observed this: `server.main` persists an `active` claim-recovery
+record before its first Home connect. If that first connect fails, every
+later start treats the record as a persisted claim and never reopens Home.
+The bridge then listens but cannot admit.
+
+This is recorded as a blocker for the P-4/STD-6 owner. The fix must come from
+verified retirement of the persisted claim plus fresh calibrated admission,
+never from erasing state. **Operators must not delete, edit or move the
+claim-recovery record** to force a retry or a fresh claim. Doing so defeats
+P-4's recovery and no-replay guarantees.
 
 ## What the tooling does
 
@@ -105,6 +125,12 @@ no household credentials were used. Observed:
   Home contact;
 - `systemd-analyze verify` accepted the unit.
 
+Fixture note: inside the throwaway container, the synthetic claim-recovery
+state was deleted between runs. That reset the fixture after it had hit the
+first-connect blocker, and it also showed that a fresh record reopens Home.
+It was a test-fixture reset only, never an operator step; see "First-connect
+failure" above.
+
 The smoke found and fixed two defects:
 
 - On a first deploy, GNU `readlink -f` of the missing `current` made
@@ -171,13 +197,10 @@ remain unverified until a VM or the first ops install.
    `systemctl status hermes-home-browser` is unchanged.
 5. **[smoke-only]** Confirm the first start reached Home. The journal must
    show `puck bridge connecting through Home` followed by `listening`, with
-   no `HomeBridgeTransportError`. **If the first start failed to reach Home**
-   (or any first install failed after the unit started), clear the
-   claim-recovery record before retrying:
-   `sudo rm -rf /var/lib/hermes-puck-bridge/.hermes-relay-tui/home-claim-state`.
-   The bridge writes an `active` record before its first Home connect, and
-   later starts never reopen Home while a record exists. Without this step a
-   retry reports "active and listening" without ever connecting to Home.
+   no `HomeBridgeTransportError`. If the first start failed to reach Home,
+   stop the unit and leave the claim-recovery record untouched. Record the
+   failure against the first-connect blocker above. Do not retry by clearing
+   state; recovery waits on the P-4/STD-6 fix.
 
 ## Start, stop, restart
 
@@ -204,9 +227,8 @@ venv/bin/python scripts/deploy_puck_bridge.py rollback --ops-host ops \
   --bind <ops-lan-ip> --home-url wss://<home-host>/api/v1/bridge/ws
 ```
 
-It refuses when no previous release exists or its saved unit differs. Rolling
-back does not clear the claim-recovery record. Clear it as in Install step 5
-only if the rolled-back release must open a fresh Home claim.
+It refuses when no previous release exists or its saved unit differs.
+Rollback never touches the claim-recovery record.
 
 ## Removal
 
@@ -217,9 +239,11 @@ sudo systemctl disable --now hermes-puck-bridge
 sudo rm /etc/systemd/system/hermes-puck-bridge.service
 sudo systemctl daemon-reload
 sudo rm -rf /opt/hermes-puck-bridge
-# Only when retiring the Puck bridge for good (this also removes bridge.env
-# and the claim-recovery record):
-# sudo rm -rf /var/lib/hermes-puck-bridge
+# Retained state in /var/lib/hermes-puck-bridge (bridge.env and the
+# claim-recovery record) is NOT removed here. Delete it only as part of a full
+# device retirement after Home has explicitly revoked the Puck's credential
+# (3-P-6 / MIG-09). That is a separate, authorized procedure outside this
+# helper and runbook.
 ```
 
 Delete `/var/lib/hermes-puck-bridge` (credentials, claim records, model

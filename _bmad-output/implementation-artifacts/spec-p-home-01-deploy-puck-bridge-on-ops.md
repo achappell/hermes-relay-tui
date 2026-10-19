@@ -85,9 +85,11 @@ provider). Production wiring passes no provider (`puck_bridge/server.py:269`),
 so every wake after a claim is retired, the bridge restarts with a
 non-active record, or Home restarts is refused
 (`puck_bridge/home_admission.py:247-248`). This story neither resolves nor
-reopens that decision. Until the provider exists, a deployed bridge serves
-only its initially configured claim, and the rollout cannot show service
-that survives restarts.
+reopens that decision. Released bridges up to `v0.13.1` (the releases
+exercised in this story's smoke) serve only their initially configured claim
+until the provider exists. 3-P-5 (PR #249, unreleased) additionally rejects
+an initial handle that Home cannot verify. Either way, the rollout cannot
+show service that survives restarts.
 
 ## Prerequisites and gates
 
@@ -170,13 +172,15 @@ owning story, not here:
 - Renewal of the bridge's Home credential: 3-P-2/3-P-6 and MIG-09 AC-5 cover
   credential application and renewal acceptance, but no story names the
   bridge-side renewal implementation. Owner to assign.
-- Smoke observation for the P-4/STD-6 owner (bridge behavior, not changed
-  here): `server.main` persists an `active` claim-recovery record before the
-  first Home connect. If that first connect fails (seen with a TLS failure in
-  the smoke), every later start treats the record as a persisted claim and
-  never reopens Home. A Home outage during first install therefore leaves
-  the bridge listening but unable to admit until the operator clears the
-  record. Owner to decide whether this is intended.
+- **Blocker for the P-4/STD-6 owner** (bridge behavior, not changed here):
+  the smoke showed that `server.main` persists an `active` claim-recovery
+  record before the first Home connect. If that first connect fails (a TLS
+  failure in the smoke), every later start treats the record as a persisted
+  claim and never reopens Home. The fix must come from verified retirement
+  plus fresh calibrated admission, never from erasing state. This story's
+  runbook forbids operators from deleting or editing the record. Only a full
+  device retirement after explicit Home credential revocation may remove
+  retained state, and that procedure sits outside the deploy helper.
 
 ## Dependencies
 
