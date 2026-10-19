@@ -282,7 +282,7 @@ void MicroWakeWord::inference_task(void *params) {
 std::vector<WakeWordModel *> MicroWakeWord::get_wake_words() {
   std::vector<WakeWordModel *> external_wake_word_models;
   for (auto *model : this->wake_word_models_) {
-    if (!model->get_internal_only()) {
+    if (is_public_wake_model(model->get_internal_only())) {
       external_wake_word_models.push_back(model);
     }
   }
@@ -515,6 +515,14 @@ void MicroWakeWord::loop() {
     case State::DETECTING_WAKE_WORD: {
       DetectionEvent detection_event;
       while (xQueueReceive(this->detection_queue_, &detection_event, 0)) {
+        const DetectionRoute route = detection_route(detection_event);
+        if (route == DetectionRoute::INTERNAL_CONTROL) {
+          ESP_LOGD(TAG, "Internal control detection suppressed; excluded from public wake routing");
+          continue;
+        }
+        if (route == DetectionRoute::IGNORED) {
+          continue;
+        }
         if (detection_event.blocked_by_vad) {
           ESP_LOGD(TAG, "Wake word model predicts '%s', but VAD model doesn't.", detection_event.wake_word->c_str());
         } else {
@@ -523,8 +531,8 @@ void MicroWakeWord::loop() {
           ESP_LOGD(TAG, "Detected '%s' with sliding average probability is %.2f and max probability is %.2f",
                    detection_event.wake_word->c_str(), (detection_event.average_probability / uint8_to_float_divisor),
                    (detection_event.max_probability / uint8_to_float_divisor));
-          this->wake_word_detected_trigger_.trigger(*detection_event.wake_word);
-          if (this->stop_after_detection_) {
+          if (dispatch_public_detection(detection_event, this->wake_word_detected_trigger_) &&
+              this->stop_after_detection_) {
             this->stop();
           }
         }
@@ -647,7 +655,7 @@ void MicroWakeWord::process_probabilities_() {
   for (auto &model : this->wake_word_models_) {
     if (model->get_unprocessed_probability_status()) {
       // Only detect wake words if there is a new probability since the last check
-      DetectionEvent wake_word_state = model->determine_detected();
+      DetectionEvent wake_word_state = make_model_detection(*model);
       if (wake_word_state.detected) {
 #ifdef USE_MICRO_WAKE_WORD_VAD
         if (vad_state.detected) {
