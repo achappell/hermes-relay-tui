@@ -1084,6 +1084,50 @@ def test_home_connected_claim_rejects_a_different_wake_mapping():
         runner.stop()
 
 
+def test_paired_room_each_physical_wake_retires_previous_ready_claim():
+    from types import SimpleNamespace
+
+    events = []
+
+    class PairedSession(FakeSession):
+        wake_mapping_id = "hey-missy"
+        wake_configuration_revision = 4
+        wake_admission_mode = "paired_room"
+
+        def __init__(self, handle):
+            super().__init__()
+            self.conversation_handle = handle
+
+        async def close_claim(self):
+            events.append(("retire", self.conversation_handle))
+            self.connected = False
+            return True
+
+    class Factory:
+        async def verify_mapping_id(self, mapping_id, revision):
+            return mapping_id == "hey-missy" and revision == 4
+
+        async def admit_wake(self, phrase, *, previous_handle):
+            events.append(("claim", previous_handle))
+            replacement = PairedSession("fresh-" + previous_handle)
+            await replacement.connect()
+            return SimpleNamespace(status="admitted", session=replacement)
+
+    session = PairedSession("initial")
+    runner = TurnRunner(session, home_claim_factory=Factory())
+    runner.start()
+    try:
+        assert runner.admit_wake("Hey Missy", 1) == "admitted"
+        assert runner.admit_wake("Hey Missy", 2) == "admitted"
+        assert events == [
+            ("retire", "initial"), ("claim", "initial"),
+            ("retire", "fresh-initial"), ("claim", "fresh-initial"),
+        ]
+        assert session.turns == []
+    finally:
+        assert runner.stop()
+
+
 def test_home_wake_denies_if_session_disconnects_during_mapping_lookup():
     from concurrent.futures import ThreadPoolExecutor
 
@@ -1202,6 +1246,46 @@ def test_unconfirmed_home_claim_close_is_retried_after_restart(tmp_path):
         assert record is not None and record.status == "retired"
     finally:
         restarted.stop()
+
+
+@pytest.mark.parametrize("receipt_confirmed", [False, True])
+def test_cold_saved_claim_needs_owned_receipt_before_fresh_admission(tmp_path, receipt_confirmed):
+    from types import SimpleNamespace
+    from puck_bridge.home_admission import HomeClaimRecoveryState
+
+    events = []
+
+    class SavedSession(FakeSession):
+        conversation_handle = "saved"
+        wake_mapping_id = "hey-missy"
+
+        async def retry_uncertain_claim(self):
+            events.append("control_close_unconfirmed")
+            return False
+
+    class Factory:
+        async def close_paired_claim(self, handle):
+            assert handle == "saved"
+            events.append("owned_receipt")
+            return receipt_confirmed
+
+        async def admit_wake(self, phrase, *, previous_handle):
+            events.append("fresh_claim")
+            return SimpleNamespace(status="denied", session=None)
+
+    state = HomeClaimRecoveryState("puck", tmp_path / "claim.json")
+    state.record_retired("saved", "hey-missy", confirmed=False)
+    runner = TurnRunner(
+        SavedSession(), home_claim_factory=Factory(), home_claim_recovery_state=state,
+        home_claim_retired=True, home_claim_close_confirmed=False,
+    )
+    runner.start(connect=False)
+    try:
+        assert runner.admit_wake("Hey Missy", 12) == "denied"
+        assert events == ["control_close_unconfirmed", "owned_receipt"] + (["fresh_claim"] if receipt_confirmed else [])
+        assert state.load().status == ("retired" if receipt_confirmed else "unconfirmed")
+    finally:
+        assert runner.stop()
 
 
 def test_home_grant_that_disconnects_during_handoff_is_retired_and_persisted():
@@ -1657,7 +1741,6 @@ def test_home_transport_requires_explicit_pairing_configuration(
     )
     monkeypatch.setattr(server.config, "resolve_puck_device_token", lambda _path: "local")
     monkeypatch.setattr(server.config, "resolve_home_device_credential", lambda _path: "")
-    monkeypatch.setattr(server.config, "resolve_home_conversation_handle", lambda _path: "")
     monkeypatch.setattr(
         server,
         "HomePuckSession",
@@ -1669,8 +1752,9 @@ def test_home_transport_requires_explicit_pairing_configuration(
 
 
 @pytest.mark.parametrize("identity_rejected", [False, True])
-def test_home_transport_wires_home_session_without_resolving_hermes_profile(
-    monkeypatch, tmp_path, identity_rejected,
+@pytest.mark.parametrize("saved_status", [None, "active", "unconfirmed", "retired"])
+def test_home_transport_starts_without_an_active_session_or_operator_handle(
+    monkeypatch, tmp_path, identity_rejected, saved_status,
 ):
     from types import SimpleNamespace
 
@@ -1790,7 +1874,6 @@ def test_home_transport_wires_home_session_without_resolving_hermes_profile(
         lambda _path: "device-secret",
     )
     monkeypatch.setattr(server.config, "resolve_home_device_id", lambda _path: "puck-1")
-    monkeypatch.setattr(server.config, "resolve_home_wake_mapping_id", lambda _path: "hey-missy")
     monkeypatch.setattr(
         server,
         "HomeClaimRecoveryState",
@@ -1798,6 +1881,13 @@ def test_home_transport_wires_home_session_without_resolving_hermes_profile(
             device_id, tmp_path / "home-claim-state.json"
         ),
     )
+    state = RecoveryState("puck-1", tmp_path / "home-claim-state.json")
+    if saved_status == "active":
+        state.record_active("saved-handle", "hey-missy")
+    elif saved_status is not None:
+        state.record_retired(
+            "saved-handle", "hey-missy", confirmed=saved_status == "retired",
+        )
     identity_state = HomeIdentityRejectionState(
         "wss://home.example/api/v1/bridge/ws", "puck-1", "device-secret",
         tmp_path / "home-identity.json",
@@ -1811,14 +1901,19 @@ def test_home_transport_wires_home_session_without_resolving_hermes_profile(
     monkeypatch.setattr(server, "make_handler", lambda **kwargs: kwargs)
 
     assert server.main([]) == 0
-    assert captured["connect"] is not identity_rejected
+    assert captured["connect"] is False
     assert captured["home_claim_factory"].identity_rejected is identity_rejected
     assert server.main([]) == 0
-    assert captured["home_args"] == (
-        "wss://home.example/api/v1/bridge/ws",
-        "device-secret",
-        "opaque",
-    )
+    if saved_status is None:
+        assert captured["session"] is None
+        assert "home_args" not in captured
+        assert state.load() is None
+    else:
+        assert captured["home_args"] == (
+            "wss://home.example/api/v1/bridge/ws", "device-secret", "saved-handle",
+        )
+        assert captured["home_session_kwargs"]["resume_uncertain_turn"] is False
+        assert captured["home_session_kwargs"]["wake_mapping_id"] == "hey-missy"
     assert captured["started"] is True
     assert captured["stopped"] is True
     assert captured["runner_response_stream"] is not None
@@ -1826,18 +1921,52 @@ def test_home_transport_wires_home_session_without_resolving_hermes_profile(
         captured["handler"]["response_stream"]
         is captured["runner_response_stream"]
     )
-    assert captured["home_session_kwargs"]["resume_uncertain_turn"] is False
-    assert captured["home_session_kwargs"]["wake_mapping_id"] == "hey-missy"
     assert captured["home_claim_factory"].device_id == "puck-1"
     assert captured["home_claim_factory"].evidence_provider is None
     assert captured["home_claim_factory"].recovery_state is captured["home_claim_recovery_state"]
     assert captured["handler"]["on_wake_admission"] is not None
     assert captured["handler"]["on_follow_up_admission"] is not None
-    # A second bridge process sees the durable active marker and does not
-    # reopen the configured claim as an active conversation.
     assert captured["connect"] is False
-    assert captured["home_claim_retired"] is False
-    assert captured["home_claim_close_confirmed"] is False
+    assert captured["home_claim_retired"] is (saved_status != "active")
+    assert captured["home_claim_close_confirmed"] is (saved_status in {None, "retired"})
+
+
+def test_sessionless_home_start_denies_without_provider_and_shuts_down(tmp_path):
+    from puck_bridge.home_admission import HomeClaimRecoveryState, HomePuckSessionFactory
+
+    state = HomeClaimRecoveryState("paired-puck", tmp_path / "claim.json")
+    requests = []
+
+    def configuration_only(method, *_args, **_kwargs):
+        requests.append(method)
+        assert method == "GET"
+        return {"schema": 1, "snapshot": {
+            "revision": 1,
+            "wake_mappings": [{"id": "hey-missy", "phrase": "Hey Missy"}],
+        }}
+
+    factory = HomePuckSessionFactory(
+        "wss://home.example/api/v1/bridge/ws",
+        "isolated-fixture-credential",
+        "paired-puck",
+        recovery_state=state,
+        request_json=configuration_only,
+    )
+    runner = TurnRunner(
+        None,
+        home_claim_factory=factory,
+        home_claim_recovery_state=state,
+        home_claim_retired=True,
+        home_claim_close_confirmed=True,
+    )
+    runner.start(connect=False)
+    try:
+        assert runner.admit_wake("Hey Missy", seq=1) == "denied"
+        assert runner.submit_transcript_outcome("never send this fixture") == "rejected"
+        assert state.load() is None
+        assert requests == ["GET"]
+    finally:
+        assert runner.stop()
 
 
 def test_direct_server_wires_a_fresh_hermes_session_factory(
@@ -1986,13 +2115,10 @@ def test_bridge_defaults_to_device_playback_and_keeps_host_as_explicit_fallback(
             "home",
             "--home-url",
             "wss://home.example/api/v1/bridge/ws",
-            "--home-conversation-handle",
-            "opaque",
         ]
     )
     assert home_args.transport == "home"
     assert home_args.home_url.endswith("/api/v1/bridge/ws")
-    assert home_args.home_conversation_handle == "opaque"
     assert parser.parse_args([]).play_on_device is True
     assert parser.parse_args(["--play-on-device"]).play_on_device is True
     assert parser.parse_args(["--host-playback"]).play_on_device is False
@@ -3932,6 +4058,60 @@ def test_home_mapping_loss_closes_each_consumer_boundary_without_revoking_identi
         assert asyncio.run(factory.verify_mapping_id("other", revision[0]))
     finally:
         runner.stop()
+
+
+@pytest.mark.parametrize("change", ["policy_removed", "profile_repoint", "scope_forbidden", "credential_revoked"])
+def test_paired_room_late_capture_change_denies_dispatch_without_replay(tmp_path, change):
+    from puck_bridge.home_admission import HomeClaimHTTPError, HomeIdentityRejectionState, HomePuckSessionFactory
+
+    snapshot = {"revision": 4, "wake_mappings": [{"id": "hey-missy", "phrase": "Hey Missy"}],
+                "wake_admission": {"mode": "paired_room", "room_id": "living-room", "wake_mapping_ids": ["hey-missy"]}}
+    failure = [None]
+
+    def request(*args, **kwargs):
+        if failure[0] is not None:
+            raise failure[0]
+        return {"schema": 1, "snapshot": snapshot}
+
+    class PairedSession(FakeSession):
+        conversation_handle = "actual-grant-fixture"
+        wake_mapping_id = "hey-missy"
+        wake_configuration_revision = 4
+        wake_admission_mode = "paired_room"
+        retirements = 0
+
+        async def close_claim(self):
+            self.retirements += 1
+            self.connected = False
+            return True
+
+    state = HomeIdentityRejectionState("wss://home/api/v1/bridge/ws", "puck", "isolated", tmp_path / "refusal.json")
+    factory = HomePuckSessionFactory(
+        "wss://home/api/v1/bridge/ws", "isolated", "puck",
+        request_json=request, identity_state=state,
+    )
+    session = PairedSession()
+    runner = TurnRunner(session, home_claim_factory=factory)
+    runner.start()
+    try:
+        assert asyncio.run(factory.verify_mapping_id("hey-missy", 4))
+        if change == "policy_removed":
+            snapshot.pop("wake_admission")
+            snapshot["revision"] = 5
+        elif change == "profile_repoint":
+            snapshot["revision"] = 5
+        else:
+            failure[0] = HomeClaimHTTPError(
+                401 if change == "credential_revoked" else 403,
+                "unauthorized" if change == "credential_revoked" else "forbidden",
+            )
+        assert not runner.submit_transcript("captured before authority changed")
+        assert session.turns == []
+        assert session.retirements == 1
+        assert factory.identity_rejected is (change == "credential_revoked")
+        assert state.is_rejected() is (change == "credential_revoked")
+    finally:
+        assert runner.stop()
 
 
 def test_home_confirmed_revocation_remains_closed_across_runner_restart(tmp_path):

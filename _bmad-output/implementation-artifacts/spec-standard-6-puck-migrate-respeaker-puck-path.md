@@ -211,3 +211,15 @@ record is auditable.
 - [Review][Rejected] Surface `unresolved_turn` from `TurnRunner.start()` — false: `HomePuckSession.connect()` returns the complete readiness result, but `SessionProtocol` startup does not require a presentation for an unresolved old turn and never replays it.
 - [Review][Rejected] Recover an outer RPC error code when `error.data` omits `code` — false: the current code deliberately reads the nested Home code when `data` is an object; malformed nested data is covered by the new envelope-validation patch instead.
 - [Review][Rejected] Correct stale review line references — rejected by workflow: the proposed fix edits the spec under review rather than a product or test defect.
+
+## Current Home Puck delivery amendment — 2026-10-19
+
+The operator-handle startup described in the historical adapter scope is replaced
+by session-less startup and Home's explicit owner-approved paired-room grant
+contract. Existing P-4 recovery and 3-P-5 identity/revision enforcement remain
+authoritative; strict wake still requires calibrated evidence. See
+[the implementation amendment](spec-p4-home-fresh-startup.md) and
+[validation](validation-p4-home-paired-room-full-turn.md).
+Real Standard speech capability/PCM format, controlled rollout and physical
+wake/STT/Amanda/TTS acceptance remain open until observed; local API fixtures
+do not complete the deferred external gate above.

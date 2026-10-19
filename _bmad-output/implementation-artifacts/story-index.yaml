@@ -201,7 +201,7 @@ stories:
     owner: hermes-relay-tui
     release_scope: migration
     depends_on: []
-    evidence_note: 'PR #204 merged; tracker remains in-progress and calibrated proximity provider remains absent. Preserve outstanding Home physical acceptance.'
+    evidence_note: 'PR #204 recovery retained; owner-approved paired-room implementation amendment spec-p4-home-fresh-startup.md and validation-p4-home-paired-room-full-turn.md cover session-less startup, explicit fresh Home grants and owned retirement. Physical full turn and real Standard audio evidence remain open; strict endpoints still require a qualified calibrated provider.'
     acceptance_overlay: _bmad-output/implementation-artifacts/course-correction-2026-09-23.md
   - id: P-5
     title: Complete streamed response playback without underrun.
