@@ -72,9 +72,48 @@ script locally against temporary directories with fake `sudo`/`systemctl`
 automatic rollback on restart and health failure, first-deploy failure,
 rollback, stale `current.next`, preconditions with staging cleanup, lock) and
 runs the `ExecStartPre` check against a temporary env file. No host was
-contacted. `flock`, GNU `mv -T`, `stat -c` and `sudo` were exercised only
-through fakes on macOS; their real behaviour on ops is unverified until the
-first live run.
+contacted. The fakes include GNU `readlink -f` semantics, which BSD readlink
+had hidden (see below).
+
+**[exercised, disposable Linux, systemd shimmed]** 2026-10-18 smoke on a
+throwaway unprivileged Ubuntu 26.04 container (Python 3.14, GNU `mv`, uutils
+`stat`, util-linux `flock`, real `sudo`, the same toolchain as ops). It ran on
+ops's Docker with no host port, no host mount and no changes to host units.
+It was removed afterwards. The real `deploy_puck_bridge.py` CLI ran over SSH.
+Home was a synthetic local `wss://home.test` endpoint with a throwaway CA.
+The env file held synthetic values created by following Install steps 1-2;
+no household credentials were used. Observed:
+
+- a missing `bridge.env` was refused before anything was installed, and the
+  staging upload was removed;
+- a first deploy whose Home connection failed health-checked, stopped and
+  removed its unit and release;
+- a first deploy (v0.13.0) and an upgrade (v0.13.1) switched `current` and
+  `previous` correctly, listened on the bind address, enabled the unit and
+  left no staging directory;
+- the bridge opened `conversation.open` with a correctly authenticated
+  `Device` header;
+- `rollback` swapped `current` and `previous` and the bridge listened again;
+- `systemctl restart` and a container restart brought the enabled unit back
+  with the claim-recovery record unchanged (same sha256);
+- `systemd-analyze verify` accepted the unit.
+
+The smoke found and fixed two defects:
+
+- On a first deploy, GNU `readlink -f` of the missing `current` made
+  `previous` point at `current`. CI on Linux failed for the same reason.
+- A failed `scp` stranded the remote staging directory.
+
+**Not exercised:** PID-1 systemd and a host reboot. Unprivileged Docker
+mounts the cgroup filesystem read-only, so systemd as PID 1 failed with
+`Failed to allocate manager object: Read-only file system`. Running it would
+need `--privileged`, `CAP_SYS_ADMIN` with AppArmor disabled, or a host
+cgroup mount on a shared household host. So the restart steps used a
+smoke-only `systemctl` shim that executes the unit's
+User/Environment/EnvironmentFile/ExecStartPre/ExecStart, and the reboot was
+approximated by a container restart. Real systemd sandboxing
+(`ProtectSystem`, `StateDirectory` creation and so on) and boot ordering
+remain unverified until a VM or the first ops install.
 
 ## Prerequisites
 

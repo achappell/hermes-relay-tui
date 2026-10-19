@@ -140,10 +140,16 @@ owning story, not here:
   preconditions, lock), `ExecStartPre` check. No network.
 - [x] `docs/puck-ops-deployment.md` with every step labelled; firmware README
   pointer; CHANGELOG.
-- [ ] Disposable Linux host run (deploy, rollback, restart/reboot persistence,
-  secret file ownership on host). Unexercised; needs operational authorization.
-  `flock`, GNU `mv -T`, `stat -c` and `sudo` were exercised only through
-  fakes on macOS; their real behaviour on ops is unverified.
+- [x] Disposable Linux run, partial: a 2026-10-18 unprivileged Ubuntu 26.04
+  container smoke ran the real CLI with real GNU/uutils tools and sudo. It
+  covered deploy, upgrade, rollback, precondition refusal, first-deploy
+  failure cleanup, restart and container-restart persistence, and synthetic
+  Home authentication. It found and fixed the first-deploy `previous` defect
+  (also seen in CI) and the stranded staging directory after a failed upload.
+  See `docs/puck-ops-deployment.md`.
+- [ ] PID-1 systemd sandboxing and a true host reboot. Unexercised: this
+  needs a privileged container or a VM, which is not available without
+  elevating privileges on a shared host.
 
 ## Never
 
@@ -164,6 +170,13 @@ owning story, not here:
 - Renewal of the bridge's Home credential: 3-P-2/3-P-6 and MIG-09 AC-5 cover
   credential application and renewal acceptance, but no story names the
   bridge-side renewal implementation. Owner to assign.
+- Smoke observation for the P-4/STD-6 owner (bridge behavior, not changed
+  here): `server.main` persists an `active` claim-recovery record before the
+  first Home connect. If that first connect fails (seen with a TLS failure in
+  the smoke), every later start treats the record as a persisted claim and
+  never reopens Home. A Home outage during first install therefore leaves
+  the bridge listening but unable to admit until the operator clears the
+  record. Owner to decide whether this is intended.
 
 ## Dependencies
 

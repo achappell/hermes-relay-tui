@@ -145,10 +145,18 @@ healthy() {
   done
   return 1
 }
-old=$(readlink -f "$root/current" || true)
+# GNU readlink -f prints the path itself when `current` does not exist yet;
+# on a first deploy that path later resolves to the NEW release, which would
+# make `previous` point at `current`. Only a real existing release counts.
+old=""
+if [ -L "$root/current" ]; then
+  old=$(readlink -f "$root/current" || true)
+  case "$old" in "$root"/releases/*) ;; *) old="" ;; esac
+fi
 if [ "$operation" = rollback ]; then
   target=$(readlink -f "$root/previous" || true)
-  [ -n "$target" ] && [ -f "$target/$marker" ] || { echo 'No previous Puck bridge release to roll back to' >&2; exit 1; }
+  case "$target" in "$root"/releases/*) ;; *) target="" ;; esac
+  [ -n "$target" ] && [ "$target" != "$old" ] && [ -f "$target/$marker" ] || { echo 'No previous Puck bridge release to roll back to' >&2; exit 1; }
   printf '%s' "$expected_unit" | sudo cmp -s - "$target/unit.service" || { echo 'Previous release unit does not match the requested bind/port/Home URL' >&2; exit 1; }
 else
   target="$root/releases/$commit"
@@ -246,7 +254,13 @@ def main(argv=None):
                 incoming = subprocess.check_output([*ssh, "mktemp -d /tmp/hermes-puck-release.XXXXXX"], text=True).strip()
                 if not re.fullmatch(r"/tmp/hermes-puck-release\.[A-Za-z0-9]+", incoming):
                     raise ValueError("invalid remote staging directory")
-                subprocess.run(["scp", *SSH_OPTIONS, "-r", str(package) + "/.", f"{args.ops_host}:{incoming}/"], check=True)
+                try:
+                    subprocess.run(["scp", *SSH_OPTIONS, "-r", str(package) + "/.", f"{args.ops_host}:{incoming}/"], check=True)
+                except (OSError, subprocess.CalledProcessError):
+                    # The remote script owns staging cleanup only once it runs;
+                    # a failed upload must not strand the mktemp directory.
+                    subprocess.run([*ssh, "rm -rf -- " + shlex.quote(incoming)], check=False)
+                    raise
             remote = "bash -s -- " + shlex.join([args.operation, commit, incoming, args.bind, str(args.port), rendered])
             subprocess.run([*ssh, remote], input=REMOTE, text=True, check=True)
         print(f"{UNIT_NAME} active and listening on {args.bind}:{args.port}. Live Puck/Home gates remain with their owning stories.")
@@ -255,7 +269,7 @@ def main(argv=None):
         print(f"Puck bridge deployment refused: {error}", file=sys.stderr)
         return 1
     except (OSError, subprocess.CalledProcessError, RuntimeError):
-        print("Puck bridge deployment failed; the remote step restores the previous release when the restart or health check fails.", file=sys.stderr)
+        print("Puck bridge deployment failed; see the output above. Nothing is activated before a successful upload, and a failed restart or health check restores the previous release.", file=sys.stderr)
         return 1
 
 

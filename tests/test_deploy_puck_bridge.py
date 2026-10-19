@@ -179,6 +179,26 @@ def test_deploy_cli_uploads_package_and_runs_remote_with_rendered_unit(monkeypat
     assert options["input"] == deploy.REMOTE
 
 
+def test_failed_upload_removes_remote_staging_and_never_runs_remote(monkeypatch, tmp_path, capsys):
+    # Found by the disposable-Linux smoke: a failed scp stranded the mktemp
+    # staging directory because the remote script, which owns cleanup, never ran.
+    calls = []
+    monkeypatch.setattr(deploy, "build_package", lambda tag, directory, unit_text: ("a" * 40, tmp_path / "package"))
+    monkeypatch.setattr(deploy.subprocess, "check_output", lambda command, **kwargs: "/tmp/hermes-puck-release.AbC123\n")
+
+    def run(command, **kwargs):
+        calls.append(command)
+        if command[0] == "scp":
+            raise subprocess.CalledProcessError(1, command)
+
+    monkeypatch.setattr(deploy.subprocess, "run", run)
+    assert deploy.main(["deploy", "--ops-host", "ops", "--bind", BIND, "--home-url", HOME_URL, "--tag", "v0.14.0"]) == 1
+    assert [c[0] for c in calls] == ["scp", "ssh"]
+    assert calls[1][-1] == "rm -rf -- /tmp/hermes-puck-release.AbC123"
+    assert "bash -s" not in " ".join(calls[1])
+    assert "deployment failed" in capsys.readouterr().err
+
+
 def test_build_refuses_tag_without_home_claim_recovery(monkeypatch, tmp_path):
     import tarfile
 
@@ -207,8 +227,11 @@ def test_remote_script_touches_only_the_bridge_unit():
 
 
 # --- Embedded remote bash, exercised locally with fake privileged commands ---
-# flock, GNU `mv -T`, `stat -c` and sudo are exercised ONLY through the fakes
-# below on macOS; their real behaviour on ops is not verified by these tests.
+# flock, GNU `mv -T`, `stat -c` and sudo are faked below on macOS. The same
+# script was also run for real on disposable Ubuntu 26.04 (see the P-HOME-01
+# validation record); systemd itself was replaced there by a smoke shim.
+# `readlink -f` is faked with GNU semantics (it prints the canonical path even
+# when the final component is missing); BSD readlink hid a first-deploy bug.
 
 FAKES = r'''
 sudo() { if [ "$1" = -u ]; then shift 2; fi; "$@"; }
@@ -219,6 +242,7 @@ stat() {
   if [ "$2" = %U ]; then cat "$FAKE/owner"; else python3 -c 'import os,sys;print(oct(os.stat(sys.argv[1]).st_mode&0o777)[2:])' "$3"; fi
 }
 mv() { if [ "$1" = -Tf ]; then rm -f "$3"; command mv "$2" "$3"; else command mv "$@"; fi; }
+readlink() { if [ "$1" = -f ]; then python3 -c 'import os,sys;print(os.path.realpath(sys.argv[1]))' "$2"; else command readlink "$@"; fi; }
 python3.14() {
   mkdir -p "$3/bin"
   printf '#!/bin/sh\n[ -e "%s/fail-pip" ] && exit 1\necho "$@" >> "%s/pip.log"\n' "$FAKE" "$FAKE" > "$3/bin/pip"
