@@ -312,3 +312,7 @@
 - source_spec: `_bmad-output/implementation-artifacts/spec-1-p-8-deterministic-respeaker-audio-format.md`
   summary: OPEN — controlled physical P-8 wake/VAD/upload/audible-playback regression on the reviewed firmware build.
   evidence: Signed-fixture native/sanitizer checks, a separate one-second native smoke, both actual firmware variants and the full suite pass. No real microphone or hardware was accessed. Only tui-p7-pcm-diagnostics owns hardware; keep raw PCM diagnostics off and use installation-owned configuration, never the synthetic compile image. Calibrated trusted-proximity evidence remains a separate locked rollout blocker.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-1-p-9-fail-safe-i2s-lifecycle.md`
+  summary: OPEN — controlled physical RX lifecycle/wake/capture/playback regression for P-9.
+  evidence: Actual-source native IDF fault injection and a separate alternating-failure smoke check software ownership, safe cleanup attempts and retry; both firmware variants compile. They do not prove physical IDF resource release when the driver reports failure. Only tui-p7-pcm-diagnostics owns hardware; raw PCM diagnostics stay off, and installation-owned configuration is required. Trusted-proximity rollout evidence remains a separate locked blocker.

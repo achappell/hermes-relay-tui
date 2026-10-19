@@ -11,6 +11,7 @@
 
 ### Bug fixes
 
+- Make ReSpeaker RX I2S startup/teardown fail-safe (P-9): initialize all shared driver fields, unwind partial starts immediately, release the owned lock exactly once, disable only enabled channels, log cleanup faults with RX-port context, and expose the original startup operation/error. Prevent a pending microphone task's live driver from being torn down by a duplicate start. Native fault injection compiles the actual component source; speaker pacing is unchanged and physical acceptance remains open.
 - Record owner-confirmed Living Room paired-room Puck full-turn acceptance on TUI6b288939 / av18.1.0 / Home831e55e / firmware212. Automatic follow-up hitting the 8-second buffer limit remains an open defect/limit; repeated-wake and physical authority/recovery acceptance are not implied.
 
 - Keep WAV speech-to-text compatible with faster-whisper 1.2.1 by constraining the voice extra and direct requirements to PyAV `<19`; PyAV 19 removed the `metadata_errors` argument that its decoder uses. A real synthetic WAV decoding regression runs when voice support is installed. Existing environments need the compatible PyAV dependency applied as well as the new wheel; no admission, gain, VAD or replay behavior changes.
