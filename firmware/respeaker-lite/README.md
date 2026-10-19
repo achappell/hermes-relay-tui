@@ -128,6 +128,33 @@ on the compiled build remains an explicit hardware gate.
 
 ---
 
+## Microphone I2S ownership (P-9)
+
+Each I2S controller parent owns its own mutex. The microphone owns one RX
+channel and its acquired parent lock until teardown completes; speaker TX
+uses the separately configured output parent. All pin/port/format and RX
+lifecycle fields have deterministic defaults before generated setters run.
+
+Failed RX allocation, initialization or enable unwinds immediately before
+startup returns. Only successfully enabled channels are disabled; allocated
+channels are deleted, the handle is cleared, and the parent is unlocked once.
+Repeated cleanup, including the caller's failure cleanup, is harmless.
+`get_driver_failure()` exposes the original typed operation and IDF error;
+logs include the operation and RX port. Disable/delete errors do not suppress
+remaining safe cleanup or replace the original startup error. They do **not**
+prove that a malfunctioning driver physically released its resource.
+The next start requests a new handle, never reuses the failed one.
+
+A created microphone task also owns the driver while it is waiting to publish
+`TASK_RUNNING`; the component loop does not retry startup underneath it.
+`tests/test_respeaker_i2s.py` compiles the actual microphone source/shared
+header against narrow fault-injectable driver/task stubs under ASan/UBSan.
+The untouched `components_stock` remains an upstream comparison fixture.
+Speaker pacing, wake/capture admission and raw-PCM diagnostic defaults are
+unchanged. Physical lifecycle/wake/playback regression remains a separate
+controlled-hardware gate.
+
+---
 ## Build & Flashing
 
 ESPHome lives in its own dedicated venv (`venv-firmware/`, Python 3.12),

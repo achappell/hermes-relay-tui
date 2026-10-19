@@ -15,6 +15,13 @@
 
 namespace esphome::i2s_audio {
 
+enum class RxDriverOperation : uint8_t { NONE, ALLOCATE, INITIALIZE, ENABLE };
+
+struct RxDriverFailure {
+  RxDriverOperation operation{RxDriverOperation::NONE};
+  esp_err_t error{ESP_OK};
+};
+
 class I2SAudioMicrophone final : public I2SAudioIn, public microphone::Microphone, public Component {
  public:
   void setup() override;
@@ -23,6 +30,8 @@ class I2SAudioMicrophone final : public I2SAudioIn, public microphone::Microphon
   void stop() override;
 
   void loop() override;
+
+  RxDriverFailure get_driver_failure() const { return this->driver_failure_; }
 
   void set_correct_dc_offset(bool correct_dc_offset) { this->correct_dc_offset_ = correct_dc_offset; }
 
@@ -60,14 +69,16 @@ class I2SAudioMicrophone final : public I2SAudioIn, public microphone::Microphon
   TaskHandle_t task_handle_{nullptr};
 
   gpio_num_t din_pin_{I2S_GPIO_UNUSED};
-  i2s_chan_handle_t rx_handle_;
+  i2s_chan_handle_t rx_handle_{nullptr};
   bool pdm_{false};
 #if SOC_I2S_SUPPORTS_PDM_RX
   i2s_pdm_dsr_t pdm_dsr_{I2S_PDM_DSR_8S};
 #endif
 
-  bool correct_dc_offset_;
+  bool correct_dc_offset_{false};
   bool locked_driver_{false};
+  bool channel_enabled_{false};
+  RxDriverFailure driver_failure_{};
   int32_t dc_offset_prev_input_{0};
   int32_t dc_offset_prev_output_{0};
 };
