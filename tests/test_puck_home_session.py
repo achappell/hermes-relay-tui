@@ -23,6 +23,10 @@ from puck_bridge.home_admission import (
     HomeClaimRecoveryState,
     HomePuckSessionFactory,
 )
+from puck_bridge.home_admission import (
+    HomeClaimHTTPError, HomeIdentityRejectionState, HomeMappingUnavailable,
+    _request_json, is_home_identity_rejection,
+)
 
 
 READY = {
@@ -2294,7 +2298,8 @@ async def test_home_active_mapping_does_not_infer_a_blank_mapping_id():
         request_json=lambda *_args, **_kwargs: config,
     )
 
-    assert await factory.current_mapping_id("Hey Missy") is None
+    with pytest.raises(HomeMappingUnavailable):
+        await factory.current_mapping_id("Hey Missy")
 
 
 def test_home_claim_retirement_outer_budget_covers_control_close_cleanup():
@@ -2615,3 +2620,196 @@ async def test_home_text_completed_before_audio_disconnect_does_not_replay_or_re
         assert [event["type"] for event in next_events] == expected
     finally:
         await session.close()
+
+
+@pytest.mark.parametrize("status,code,rejected", [
+    (401, "unauthorized", True), (401, "credential_revoked", True),
+    (403, "forbidden", False), (403, "claim_denied", False),
+    (409, "stale_mapping", False), (503, "service_unavailable", False),
+    (401, "", False),
+])
+@pytest.mark.asyncio
+async def test_home_denials_only_latch_confirmed_credential_rejection(
+    tmp_path, status, code, rejected,
+):
+    path = tmp_path / "identity.json"
+    state = HomeIdentityRejectionState("wss://home.example/api/v1/bridge/ws", "puck", "isolated", path)
+    calls = []
+
+    def request(*args, **kwargs):
+        calls.append(args)
+        raise HomeClaimHTTPError(status, code)
+
+    factory = HomePuckSessionFactory(
+        "wss://home.example/api/v1/bridge/ws", "isolated", "puck",
+        identity_state=state, request_json=request,
+    )
+    with pytest.raises(HomeClaimHTTPError):
+        await factory.current_mapping_id("Hey Missy", "missy")
+    assert factory.identity_rejected is rejected
+    assert state.is_rejected() is rejected
+    restarted = HomePuckSessionFactory(
+        "wss://home.example/api/v1/bridge/ws", "isolated", "puck",
+        identity_state=state, request_json=request,
+    )
+    assert restarted.identity_rejected is rejected
+    if rejected:
+        result = await restarted.admit_wake("Hey Missy")
+        assert result.status == "identity_rejected"
+        assert len(calls) == 1
+        raw = path.read_text()
+        assert "isolated" not in raw and "home.example" not in raw and "puck" not in raw
+        assert path.stat().st_mode & 0o777 == 0o600
+        assert path.parent.stat().st_mode & 0o777 == 0o700
+
+
+def test_home_rejection_scope_is_exact_and_malformed_state_fails_closed(tmp_path, monkeypatch):
+    monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
+    original = HomeIdentityRejectionState("wss://home/api/v1/bridge/ws", "puck", "old")
+    original.reject()
+    assert original.is_rejected()
+    for home, device, credential in [
+        ("wss://other/api/v1/bridge/ws", "puck", "old"),
+        ("wss://home/api/v1/bridge/ws", "other", "old"),
+        ("wss://home/api/v1/bridge/ws", "puck", "renewed"),
+    ]:
+        assert not HomeIdentityRejectionState(home, device, credential).is_rejected()
+    original.path.write_text("{}")
+    with pytest.raises(ValueError, match="invalid"):
+        original.is_rejected()
+
+
+@pytest.mark.parametrize("status,code", [(401, "unauthorized"), (403, "claim_denied"), (403, "forbidden")])
+def test_home_http_preserves_safe_contract_error_code(monkeypatch, status, code):
+    import io
+    import urllib.error
+
+    def fail(_request, timeout):
+        raise urllib.error.HTTPError(
+            "https://isolated.invalid", status, "private", {},
+            io.BytesIO(json.dumps({"schema": 1, "error": {"code": code, "message": "private"}}).encode()),
+        )
+
+    monkeypatch.setattr("urllib.request.urlopen", fail)
+    with pytest.raises(HomeClaimHTTPError) as raised:
+        _request_json("GET", "https://isolated.invalid", credential="test", payload=None, timeout=1)
+    assert raised.value.status == status
+    assert raised.value.code == code
+    assert is_home_identity_rejection(raised.value) is (code == "unauthorized")
+    assert "private" not in str(raised.value)
+
+
+@pytest.mark.asyncio
+async def test_home_unavailable_current_mapping_does_not_borrow_independent_mapping():
+    configuration = {"schema": 1, "snapshot": {
+        "revision": 5, "wake_mappings": [{"id": "other", "phrase": "Hey Other"}],
+    }}
+    factory = HomePuckSessionFactory(
+        "wss://home.example/api/v1/bridge/ws", "isolated", "puck",
+        request_json=lambda *args, **kwargs: configuration,
+    )
+    with pytest.raises(HomeMappingUnavailable):
+        await factory.current_mapping_id("Hey Missy", "missy")
+    assert not await factory.verify_mapping_id("missy", 5)
+    assert await factory.verify_mapping_id("other", 5)
+    assert await factory.current_mapping_id("Hey Other", "other") == "other"
+    assert factory.identity_rejected is False
+
+
+@pytest.mark.asyncio
+async def test_home_same_id_profile_repoint_invalidates_old_claim_revision():
+    # Device projection intentionally hides Profile IDs. A repoint publishes
+    # a new revision even when the mapping ID and phrase are unchanged.
+    configuration = {"schema": 1, "snapshot": {
+        "revision": 11, "wake_mappings": [{"id": "missy", "phrase": "Hey Missy"}],
+    }}
+    factory = HomePuckSessionFactory(
+        "wss://home/api/v1/bridge/ws", "isolated", "puck",
+        request_json=lambda *a, **kw: configuration,
+    )
+    assert await factory.current_mapping_id("Hey Missy", "missy", configuration_revision=11) == "missy"
+    configuration["snapshot"]["revision"] = 12
+    with pytest.raises(HomeMappingUnavailable):
+        await factory.current_mapping_id("Hey Missy", "missy", configuration_revision=11)
+    assert not await factory.verify_mapping_id("missy", 11)
+    assert not await factory.verify_mapping_id("missy")
+    assert factory.identity_rejected is False
+
+
+@pytest.mark.asyncio
+async def test_independent_mapping_can_obtain_its_own_verified_claim_without_fallback(tmp_path):
+    calls = []
+
+    class Socket(_FakeSocket):
+        async def send(self, raw):
+            frame = json.loads(raw)
+            self.sent.append(frame)
+            handle = "other-profile-handle"
+            if frame["method"] in {"conversation.open", "conversation.reconnect"}:
+                self.incoming.put_nowait(_reply(frame["id"], {**READY, "conversation_handle": handle}))
+            elif frame["method"] == "conversation.close":
+                self.incoming.put_nowait(_reply(frame["id"], {
+                    "conversation_handle": handle, "status": "closed",
+                }))
+
+    def request(method, url, *, credential, payload, timeout):
+        calls.append((method, payload))
+        if method == "GET":
+            return {"schema": 1, "snapshot": {"revision": 4, "wake_mappings": [
+                {"id": "other", "phrase": "Hey Other"},
+            ]}}
+        assert payload["wake_mapping_id"] == "other"
+        return {"schema": 1, "claim_id": payload["claim_id"], "configuration_revision": 4,
+                "decision": "granted", "conversation_handle": "other-profile-handle"}
+
+    socket = Socket()
+    factory = HomePuckSessionFactory(
+        "wss://home/api/v1/bridge/ws", "isolated", "puck",
+        request_json=request, connect_factory=_FakeConnect([socket]),
+        evidence_provider=lambda _: CalibratedProximityEvidence(0.8, "isolated-trusted-fixture", int(time.time() * 1000)),
+        identity_state=HomeIdentityRejectionState("wss://home/api/v1/bridge/ws", "puck", "isolated", tmp_path / "identity.json"),
+    )
+    denied = await factory.admit_wake("Hey Missy")
+    assert denied.status == "denied" and not factory.identity_rejected
+    assert [method for method, _ in calls] == ["GET"]
+    granted = await factory.admit_wake("Hey Other")
+    try:
+        assert granted.status == "admitted"
+        assert granted.session.wake_mapping_id == "other"
+        assert granted.session.wake_configuration_revision == 4
+        assert granted.session.is_connected()
+        assert await factory.verify_mapping_id("other", 4)
+        assert [frame["method"] for frame in socket.sent] == ["conversation.open"]
+    finally:
+        if granted.session is not None:
+            await granted.session.close_claim()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("credential_response", [200, 401, 403, 503])
+async def test_bridge_unauthorized_does_not_revoke_a_valid_device_credential(
+    tmp_path, credential_response,
+):
+    state = HomeIdentityRejectionState(
+        "wss://home/api/v1/bridge/ws", "puck", "isolated", tmp_path / "refusal.json",
+    )
+    calls = []
+
+    def request(*args, **kwargs):
+        calls.append(args)
+        if credential_response == 200:
+            return {"schema": 1, "snapshot": {"revision": 1, "wake_mappings": []}}
+        raise HomeClaimHTTPError(
+            credential_response,
+            {401: "unauthorized", 403: "forbidden", 503: "service_unavailable"}[credential_response],
+        )
+
+    factory = HomePuckSessionFactory(
+        "wss://home/api/v1/bridge/ws", "isolated", "puck",
+        identity_state=state, request_json=request,
+    )
+    error = HomeBridgeRPCError("conversation.open", "unauthorized", "known")
+    assert await factory.confirm_identity_rejection(error) is (credential_response == 401)
+    assert state.is_rejected() is (credential_response == 401)
+    assert factory.identity_rejected is (credential_response == 401)
+    assert len(calls) == 1

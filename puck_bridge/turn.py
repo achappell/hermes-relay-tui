@@ -32,7 +32,9 @@ from handsfree import (
     is_local_stop_command,
 )
 
-from .home_admission import HOME_WAKE_ADMISSION_TIMEOUT_SECONDS
+from .home_admission import (
+    HOME_WAKE_ADMISSION_TIMEOUT_SECONDS, is_home_identity_rejection,
+)
 from .home_session import HOME_CLAIM_RETIRE_CALL_TIMEOUT_SECONDS
 from .response import MAX_QUEUED_PCM_BYTES, ResponseStreamError
 
@@ -191,7 +193,9 @@ class TurnRunner:
         self._home_claim_recovery_state = home_claim_recovery_state
         self._home_claim_retired = bool(home_claim_retired)
         self._home_claim_close_confirmed = bool(home_claim_close_confirmed)
-        self._home_identity_rejected = False
+        self._home_identity_rejected = bool(
+            getattr(home_claim_factory, "identity_rejected", False)
+        )
         self._home_admission_lock = threading.Lock()
         self._turn_transport_uncertain = False
         self._turn_stage = "idle"
@@ -297,10 +301,15 @@ class TurnRunner:
                 raise
 
     async def _connect_initial(self) -> None:
-        if self._stopping.is_set():
+        if self._stopping.is_set() or self._home_identity_rejected:
             return
         self._connect_task = asyncio.current_task()
-        await self._session.connect()
+        try:
+            await self._session.connect()
+        except Exception as exc:
+            if await self._confirm_home_identity_rejection(exc):
+                self._reject_home_identity()
+            raise
 
     def request_stop(self, deadline: float | None = None) -> None:
         """Latch admission and schedule one cleanup owner without waiting."""
@@ -623,6 +632,53 @@ class TurnRunner:
         finally:
             self._home_admission_lock.release()
 
+    async def _confirm_home_identity_rejection(self, error: BaseException) -> bool:
+        if not is_home_identity_rejection(error):
+            return False
+        confirm = getattr(self._home_claim_factory, "confirm_identity_rejection", None)
+        if callable(confirm):
+            try:
+                return bool(await confirm(error))
+            except Exception:
+                return bool(getattr(self._home_claim_factory, "identity_rejected", False))
+        return False
+
+    def _reject_home_identity(self) -> None:
+        self._home_identity_rejected = True
+        self._disarm_follow_up_admission()
+        self._mark_home_admission_required()
+        reject = getattr(self._home_claim_factory, "reject_identity", None)
+        if callable(reject):
+            try:
+                reject()
+            except Exception as exc:
+                logger.error("Home identity refusal could not be saved (%s)", type(exc).__name__)
+
+    async def _verify_home_mapping(self) -> bool:
+        """Recheck Home's exact current grant, not network reachability."""
+        if self._home_identity_rejected or self._home_claim_retired:
+            return False
+        verify = getattr(self._home_claim_factory, "verify_mapping_id", None)
+        mapping_id = str(getattr(self._session, "wake_mapping_id", "") or "")
+        revision = getattr(self._session, "wake_configuration_revision", None)
+        try:
+            verified = (
+                callable(verify) and bool(mapping_id)
+                and type(revision) is int and revision >= 0
+                and bool(await verify(mapping_id, revision))
+                and self._session_is_connected()
+            )
+        except Exception as exc:
+            if await self._confirm_home_identity_rejection(exc):
+                self._reject_home_identity()
+            verified = False
+        if verified:
+            return True
+        self._mark_home_admission_required()
+        self._disarm_follow_up_admission()
+        await self._retire_home_claim()
+        return False
+
     def admit_follow_up(self, seq: int) -> str:
         """Authorize a wake-free follow-up only while its session stays live."""
         if self._stopping.is_set() or self._loop is None:
@@ -657,7 +713,8 @@ class TurnRunner:
             self._disarm_follow_up_admission()
             return "denied"
         if self._session_is_connected() and not self._home_claim_retired:
-            return "admitted"
+            if self._home_claim_factory is None or await self._verify_home_mapping():
+                return "admitted"
         if self._home_claim_factory is not None:
             await self._retire_home_claim()
         else:
@@ -678,18 +735,27 @@ class TurnRunner:
         # this conversation handle.
         if not self._home_claim_retired and self._session_is_connected():
             mapping_id = str(getattr(self._session, "wake_mapping_id", "") or "")
+            revision = getattr(self._session, "wake_configuration_revision", None)
+            if not mapping_id or type(revision) is not int or revision < 0:
+                self._mark_home_admission_required()
+                await self._retire_home_claim()
+                return "denied"
             resolve_mapping = getattr(factory, "current_mapping_id", None)
             if not callable(resolve_mapping):
                 return "denied"
             try:
-                resolved = await resolve_mapping(wake_phrase, mapping_id)
+                resolved = await resolve_mapping(
+                    wake_phrase, mapping_id, configuration_revision=revision,
+                )
             except Exception as exc:
-                if getattr(exc, "status", None) in {401, 403}:
-                    self._home_identity_rejected = True
+                if await self._confirm_home_identity_rejection(exc):
+                    self._reject_home_identity()
                     return "identity_rejected"
                 logger.warning(
                     "Puck Home wake mapping check failed (%s)", type(exc).__name__
                 )
+                self._mark_home_admission_required()
+                await self._retire_home_claim()
                 return "denied"
             if self._home_claim_retired or not self._session_is_connected():
                 if not self._home_claim_retired:
@@ -697,20 +763,6 @@ class TurnRunner:
                 return "denied"
             if not resolved:
                 return "denied"
-            if not mapping_id:
-                try:
-                    self._session.wake_mapping_id = str(resolved)
-                    if self._home_claim_recovery_state is not None:
-                        self._home_claim_recovery_state.record_active(
-                            str(getattr(self._session, "conversation_handle", "")),
-                            str(resolved),
-                        )
-                except Exception as exc:
-                    logger.warning(
-                        "Puck Home mapping binding could not be persisted (%s)",
-                        type(exc).__name__,
-                    )
-                    return "denied"
             return "admitted"
 
         if not self._home_claim_retired:
@@ -733,7 +785,7 @@ class TurnRunner:
         )
         status = str(getattr(result, "status", "denied"))
         if status == "identity_rejected":
-            self._home_identity_rejected = True
+            self._reject_home_identity()
             return status
         if status != "admitted":
             return "denied"
@@ -755,8 +807,11 @@ class TurnRunner:
         self._session = replacement
         self._home_claim_retired = False
         self._home_claim_close_confirmed = True
-        self._home_identity_rejected = False
+        # A rejected credential never reaches this branch; only Home's verified
+        # new claim can recover an unavailable mapping/transport.
         self._needs_reconnect = False
+        if not await self._verify_home_mapping():
+            return "identity_rejected" if self._home_identity_rejected else "denied"
         logger.info("Puck Home claim admitted for a fresh physical wake")
         return "admitted"
 
@@ -1147,6 +1202,10 @@ class TurnRunner:
         """Drive one `send_turn` to completion, speaking the response here."""
         if self._stopping.is_set():
             return False
+        if self._home_claim_factory is not None and not await self._verify_home_mapping():
+            if self._response_stream is not None:
+                self._response_stream.unavailable(self._response_seq, reason="identity_unavailable")
+            return False
         self._turn_task = asyncio.current_task()
         file_audio = bytearray()
         spoke = False
@@ -1311,7 +1370,9 @@ class TurnRunner:
             ):
                 self._mark_home_admission_required()
             raise
-        except Exception:
+        except Exception as exc:
+            if await self._confirm_home_identity_rejection(exc):
+                self._reject_home_identity()
             if not self._session_is_connected():
                 self._turn_transport_uncertain = True
             if (

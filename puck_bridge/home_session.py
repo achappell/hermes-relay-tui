@@ -634,11 +634,13 @@ class HomePuckSession:
         session_id: str = "home-puck",
         session_label: str = "Puck",
         wake_mapping_id: str = "",
+        wake_configuration_revision: int | None = None,
     ) -> None:
         self.url = require_home_bridge_url(url)
         self.device_credential = str(device_credential).strip()
         self._conversation_handle = str(conversation_handle).strip()
         self.wake_mapping_id = str(wake_mapping_id).strip()
+        self.wake_configuration_revision = wake_configuration_revision
         if not self.device_credential:
             raise ValueError("Home Device credential is required")
         if not self._conversation_handle:
