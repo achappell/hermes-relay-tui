@@ -79,7 +79,12 @@ esphome:
         # capture. Starts UNAUTHORIZED and only opens if a token is
         # actually configured -- a build shipped without one must refuse,
         # not capture.
-        - lambda: puck_identity::setup("${puck_device_token}");
+        - lambda: |-
+            puck_identity::setup_indicator([](bool unavailable) {
+              if (unavailable) id(puck_unavailable_led).turn_on();
+              else id(puck_unavailable_led).turn_off();
+            });
+            puck_identity::setup("${puck_device_token}", ${puck_home_transport});
     - priority: -200  # after identity is established above
       then:
         # No-op unless P-7 raw PCM diagnostics were explicitly enabled.
@@ -109,6 +114,16 @@ esp32:
   framework:
     type: esp-idf
     version: recommended
+
+# XIAO ESP32-S3 (not Plus): Seeed's USER_LED is orange, GPIO21, active-low.
+# Solid means Unavailable; Home boot stays lit until verified admission.
+# I2S uses 7/8/9/43/44, I2C 5/6, reset 2 and user button 3.
+output:
+  - platform: gpio
+    id: puck_unavailable_led
+    pin:
+      number: GPIO21
+      inverted: true
 
 # PSRAM is enabled for the current Puck capture buffers used by the follow-on
 # host-transport path. Historical note: the first isolation test enabled PSRAM

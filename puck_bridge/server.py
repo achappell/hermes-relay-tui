@@ -35,7 +35,9 @@ import config
 from session import HermesSession
 
 from .home_session import HomePuckSession
-from .home_admission import HomeClaimRecoveryState, HomePuckSessionFactory
+from .home_admission import (
+    HomeClaimRecoveryState, HomeIdentityRejectionState, HomePuckSessionFactory,
+)
 from .receiver import ThreadingHTTPServer, make_handler
 from .response import ResponseStream
 from .turn import SHUTDOWN_TIMEOUT_SECONDS, TurnRunner
@@ -237,6 +239,9 @@ def main(argv: list[str] | None = None) -> int:
             return 1
         try:
             home_recovery_state = HomeClaimRecoveryState(home_device_id)
+            identity_state = HomeIdentityRejectionState(
+                home_url, home_device_id, credential,
+            )
             recovery_record = home_recovery_state.load()
             if recovery_record is None:
                 home_recovery_state.record_active(
@@ -268,7 +273,10 @@ def main(argv: list[str] | None = None) -> int:
                 # replacement claim after retirement before asking Home.
                 evidence_provider=None,
                 recovery_state=home_recovery_state,
+                identity_state=identity_state,
             )
+            if home_claim_factory.identity_rejected:
+                connect_home_session = False
         except (OSError, ValueError) as exc:
             print(
                 f"error: Home claim recovery state could not be loaded or saved ({type(exc).__name__})",

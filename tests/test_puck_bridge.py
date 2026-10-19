@@ -542,6 +542,9 @@ class FakePlayer:
 class FakeSession:
     """A minimal `SessionProtocol` double, matching test_handsfree_wiring.py."""
 
+    wake_mapping_id = "hey-missy"
+    wake_configuration_revision = 9
+
     def __init__(self, events: list[dict] | None = None) -> None:
         self.turns: list[tuple[str, str]] = []
         self.connected = False
@@ -835,6 +838,7 @@ def test_home_local_response_delivery_failure_keeps_live_claim_usable():
     from puck_bridge.response import ResponseStream
 
     class HomeSession(FakeSession):
+        wake_mapping_id = "hey-missy"
         def __init__(self):
             super().__init__()
             self.retirement_calls = 0
@@ -844,10 +848,13 @@ def test_home_local_response_delivery_failure_keeps_live_claim_usable():
             return True
 
     class ClaimFactory:
+        async def verify_mapping_id(self, mapping_id, revision):
+            return mapping_id == "hey-missy"
+
         def __init__(self):
             self.calls = []
 
-        async def current_mapping_id(self, wake_phrase, mapping_id):
+        async def current_mapping_id(self, wake_phrase, mapping_id, *, configuration_revision):
             assert wake_phrase == "hey missy"
             return mapping_id or "hey-missy"
 
@@ -885,6 +892,7 @@ def test_home_transport_uncertainty_retires_claim_and_requires_admission():
     from puck_bridge.response import ResponseStream
 
     class BrokenHomeSession(FakeSession):
+        wake_mapping_id = "hey-missy"
         def __init__(self):
             super().__init__()
             self.conversation_handle = "old-home-handle"
@@ -905,10 +913,13 @@ def test_home_transport_uncertainty_retires_claim_and_requires_admission():
             return True
 
     class ClaimFactory:
+        async def verify_mapping_id(self, mapping_id, revision):
+            return mapping_id == "hey-missy"
+
         def __init__(self):
             self.calls = []
 
-        async def current_mapping_id(self, wake_phrase, mapping_id):
+        async def current_mapping_id(self, wake_phrase, mapping_id, *, configuration_revision):
             assert wake_phrase == "hey missy"
             return mapping_id or "hey-missy"
 
@@ -1011,7 +1022,7 @@ def test_home_idle_disconnect_requires_admission_before_a_turn_is_submitted():
         def __init__(self):
             self.calls = []
 
-        async def current_mapping_id(self, wake_phrase, mapping_id):
+        async def current_mapping_id(self, wake_phrase, mapping_id, *, configuration_revision):
             assert wake_phrase == "hey missy"
             return mapping_id or "hey-missy"
 
@@ -1046,7 +1057,7 @@ def test_home_connected_claim_rejects_a_different_wake_mapping():
             self.claim_calls = []
             self.mapping_checks = []
 
-        async def current_mapping_id(self, wake_phrase, mapping_id):
+        async def current_mapping_id(self, wake_phrase, mapping_id, *, configuration_revision):
             self.mapping_checks.append((wake_phrase, mapping_id))
             if wake_phrase.casefold() == "hey missy" and mapping_id == "hey-missy":
                 return mapping_id
@@ -1095,7 +1106,7 @@ def test_home_wake_denies_if_session_disconnects_during_mapping_lookup():
             self.release_lookup = threading.Event()
             self.claim_calls = []
 
-        async def current_mapping_id(self, _wake_phrase, mapping_id):
+        async def current_mapping_id(self, _wake_phrase, mapping_id, *, configuration_revision):
             self.lookup_started.set()
             assert await asyncio.to_thread(self.release_lookup.wait, 5)
             return mapping_id
@@ -1145,7 +1156,7 @@ def test_unconfirmed_home_claim_close_is_retried_after_restart(tmp_path):
         def __init__(self):
             self.calls = []
 
-        async def current_mapping_id(self, wake_phrase, mapping_id):
+        async def current_mapping_id(self, wake_phrase, mapping_id, *, configuration_revision):
             assert wake_phrase == "hey missy"
             return mapping_id or "hey-missy"
 
@@ -1294,6 +1305,9 @@ def test_home_fresh_claim_submits_a_later_capture_once(monkeypatch):
     replacement.connected = True
 
     class ClaimFactory:
+        async def verify_mapping_id(self, mapping_id, revision):
+            return mapping_id == "hey-missy"
+
         def __init__(self):
             self.calls = []
 
@@ -1331,7 +1345,10 @@ def test_follow_up_admission_requires_live_session_and_disarms_mailbox():
             return True
 
     class ClaimFactory:
-        async def current_mapping_id(self, _wake_phrase, mapping_id):
+        async def verify_mapping_id(self, mapping_id, revision):
+            return mapping_id == "hey-missy"
+
+        async def current_mapping_id(self, _wake_phrase, mapping_id, *, configuration_revision):
             return mapping_id
 
         async def admit_wake(self, *_args, **_kwargs):
@@ -1651,13 +1668,15 @@ def test_home_transport_requires_explicit_pairing_configuration(
     assert "Home transport requires" in capsys.readouterr().err
 
 
+@pytest.mark.parametrize("identity_rejected", [False, True])
 def test_home_transport_wires_home_session_without_resolving_hermes_profile(
-    monkeypatch, tmp_path
+    monkeypatch, tmp_path, identity_rejected,
 ):
     from types import SimpleNamespace
 
     from puck_bridge import server
     from puck_bridge.home_admission import HomeClaimRecoveryState as RecoveryState
+    from puck_bridge.home_admission import HomeIdentityRejectionState
 
     captured = {}
 
@@ -1779,12 +1798,21 @@ def test_home_transport_wires_home_session_without_resolving_hermes_profile(
             device_id, tmp_path / "home-claim-state.json"
         ),
     )
+    identity_state = HomeIdentityRejectionState(
+        "wss://home.example/api/v1/bridge/ws", "puck-1", "device-secret",
+        tmp_path / "home-identity.json",
+    )
+    if identity_rejected:
+        identity_state.reject()
+    monkeypatch.setattr(server, "HomeIdentityRejectionState", lambda *_: identity_state)
     monkeypatch.setattr(server, "HomePuckSession", _HomeSession)
     monkeypatch.setattr(server, "TurnRunner", _Runner)
     monkeypatch.setattr(server, "ThreadingHTTPServer", _HTTPServer)
     monkeypatch.setattr(server, "make_handler", lambda **kwargs: kwargs)
 
     assert server.main([]) == 0
+    assert captured["connect"] is not identity_rejected
+    assert captured["home_claim_factory"].identity_rejected is identity_rejected
     assert server.main([]) == 0
     assert captured["home_args"] == (
         "wss://home.example/api/v1/bridge/ws",
@@ -3845,3 +3873,125 @@ def test_a_stale_player_failure_is_not_blamed_on_a_later_turn():
     assert not any("an old device error" in r for r in records), (
         "a previous turn's playback failure was reported as this turn's"
     )
+
+
+@pytest.mark.parametrize("operation", ["wake", "follow_up", "dispatch"])
+@pytest.mark.parametrize("change", ["mapping_removed", "same_id_profile_repoint"])
+def test_home_mapping_loss_closes_each_consumer_boundary_without_revoking_identity(
+    tmp_path, operation, change,
+):
+    from puck_bridge.home_admission import HomePuckSessionFactory, HomeIdentityRejectionState
+
+    class HomeSession(FakeSession):
+        conversation_handle = "only-missy-handle"
+        wake_mapping_id = "missy"
+        retirements = 0
+
+        async def retire_uncertain_claim(self):
+            self.retirements += 1
+            self.connected = False
+            return True
+
+    mappings = [{"id": "missy", "phrase": "Hey Missy"}, {"id": "other", "phrase": "Hey Other"}]
+    revision = [9]
+    state = HomeIdentityRejectionState("wss://home/api/v1/bridge/ws", "puck", "isolated", tmp_path / "reject.json")
+    factory = HomePuckSessionFactory(
+        "wss://home/api/v1/bridge/ws", "isolated", "puck",
+        identity_state=state,
+        request_json=lambda *a, **kw: {"schema": 1, "snapshot": {
+            "revision": revision[0], "wake_mappings": list(mappings),
+        }},
+    )
+    session = HomeSession()
+    runner = TurnRunner(session, home_claim_factory=factory)
+    runner.start()
+    try:
+        assert runner.admit_wake("Hey Missy", 81) == "admitted"
+        if change == "mapping_removed":
+            mappings.pop(0)
+        else:
+            revision[0] = 10  # Home hides the changed Profile target, not its revision.
+        if operation == "wake":
+            assert runner.admit_wake("Hey Missy", 82) == "denied"
+        elif operation == "follow_up":
+            runner.set_response_seq(81)
+            runner._follow_up_admission = True
+            assert runner.admit_follow_up(81) == "denied"
+        else:
+            assert runner.submit_transcript("must never reach Hermes") is False
+        assert session.turns == []
+        assert session.retirements == 1
+        assert not factory.identity_rejected and not state.is_rejected()
+        assert runner._home_claim_retired
+        if change == "mapping_removed":
+            mappings.insert(0, {"id": "missy", "phrase": "Hey Missy"})
+        session.connected = True  # Reachability is not a verified new claim.
+        assert runner.admit_wake("Hey Missy", 83) == "denied"
+        assert runner.submit_transcript("not a verified recovery") is False
+        assert session.turns == []
+        assert asyncio.run(factory.verify_mapping_id("other", revision[0]))
+    finally:
+        runner.stop()
+
+
+def test_home_confirmed_revocation_remains_closed_across_runner_restart(tmp_path):
+    from puck_bridge.home_admission import (
+        HomeClaimHTTPError, HomeIdentityRejectionState, HomePuckSessionFactory,
+    )
+
+    path = tmp_path / "rejection.json"
+    calls = []
+
+    def reject(*args, **kwargs):
+        calls.append(args)
+        raise HomeClaimHTTPError(401, "unauthorized")
+
+    def factory():
+        return HomePuckSessionFactory(
+            "wss://home/api/v1/bridge/ws", "isolated", "puck", request_json=reject,
+            identity_state=HomeIdentityRejectionState(
+                "wss://home/api/v1/bridge/ws", "puck", "isolated", path,
+            ),
+        )
+
+    for restarted in [False, True]:
+        session = FakeSession()
+        session.wake_mapping_id = "missy"
+        runner = TurnRunner(session, home_claim_factory=factory())
+        runner.start()
+        try:
+            assert runner.admit_wake("Hey Missy", 91) == "identity_rejected"
+            assert runner.submit_transcript("denied despite reachable bridge") is False
+            assert session.turns == []
+            if restarted:
+                assert not session.is_connected()
+        finally:
+            runner.stop()
+    assert len(calls) == 1
+
+
+def test_home_operator_handle_without_grant_revision_never_infers_capture_authority():
+    class OperatorSession(FakeSession):
+        conversation_handle = "unverifiable-operator-handle"
+        wake_configuration_revision = None
+        retirements = 0
+
+        async def retire_uncertain_claim(self):
+            self.retirements += 1
+            self.connected = False
+            return True
+
+    class Factory:
+        async def current_mapping_id(self, *args, **kwargs):
+            pytest.fail("fresh configuration cannot prove an old handle's binding")
+
+    session = OperatorSession()
+    runner = TurnRunner(session, home_claim_factory=Factory())
+    runner.start()
+    try:
+        assert runner.admit_wake("hey missy", 101) == "denied"
+        assert session.retirements == 1
+        assert session.turns == []
+        assert runner.submit_transcript("not an authorized handle") is False
+    finally:
+        runner.stop()

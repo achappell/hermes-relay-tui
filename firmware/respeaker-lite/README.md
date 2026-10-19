@@ -596,14 +596,24 @@ export HOME_CONVERSATION_HANDLE=opaque-conversation-handle
 venv/bin/python -m puck_bridge --transport home --port 8766
 ```
 
+To run the bridge permanently on the household host `ops`, use
+`scripts/deploy_puck_bridge.py` and the runbook in `docs/puck-ops-deployment.md`
+(P-HOME-01).
+
 `PUCK_DEVICE_TOKEN` remains the local firmware-to-bridge upload credential;
 the Home Device credential is a separate boundary credential. `HOME_DEVICE_ID`
-keys the bridge's private claim-recovery record, and `HOME_WAKE_MAPPING_ID`
-binds the configured conversation handle to its Home wake mapping. The mapping
-ID may be omitted when Home exposes exactly one active mapping; with multiple
-mappings it is required. Each physical wake checks that its phrase still maps
-to the active claim before capture. Each wake-free follow-up checks the live
-bridge session before its microphone window opens.
+keys the bridge's private claim-recovery record. A capture-authorizing session
+must come from Home's verified wake grant, bound to its mapping ID and
+`configuration_revision`. Each physical wake, wake-free follow-up and turn
+dispatch checks that current authorized configuration still matches that binding.
+A changed revision (including a same-ID mapping repointed to another Profile)
+retires the old claim; it never silently borrows another Profile.
+
+**Operator-handle consequence (3-P-5):** `HOME_CONVERSATION_HANDLE` and
+`HOME_WAKE_MAPPING_ID` alone cannot prove which configuration authorized that
+handle. The bridge can retire such a handle but does not authorize capture by
+inferring freshness from a newly fetched snapshot. Recovery requires the existing
+fresh Home claim and ready-session flow, including trusted calibrated proximity.
 
 The firmware defaults to Direct Hermes so a local bridge outage does not
 disable capture. Build Home firmware with the explicit mode substitution so
@@ -622,11 +632,35 @@ active or unconfirmed marker. If closure remains unconfirmed, later physical
 wakes may retry that close while capture stays closed. A verified close still
 requires fresh calibrated proximity evidence before Home grants a replacement.
 The Puck has no production evidence provider yet, so new Home claims remain
-denied after a restart or claim loss. Home transport fails closed when required
-pairing is absent and never falls back to the direct Hermes bearer path. The
-public Home route is not live in this checkout, so the bridge contract is
-covered by fake-bridge tests; live-route and hardware round trips remain
-integration gates.
+denied, including initial operator handles whose binding cannot be verified.
+This is an existing rollout gate, not permission to substitute wake-model
+confidence, a fixed proximity score or touch admission. Home transport fails
+closed when pairing is absent and never falls back to Direct Hermes.
+Real Home enrollment/credentials and physical round trips remain integration gates;
+isolated local contract fixtures do not establish household rollout readiness.
+
+Confirmed Home `unauthorized`/revoked-credential errors persist a refusal in
+`~/.hermes-relay-tui/home-identity-state/`, scoped to the Home authority, Device
+and credential using only a digest. Restart or network restoration cannot clear
+it. Do not delete the marker to restore access: Home must approve a replacement
+credential and verify fresh admission. Home's existing policy requires
+re-enrollment after expiry; a still-valid renewal-window credential is not
+rejected merely for being in its renewal window. Home `forbidden`, lost claims,
+unavailable mappings and service failures are not credential revocation. They
+close the affected admission/claim; independent mappings remain eligible for
+their own verified Home claims. Ordered enrollment UX remains Story 3-P-6.
+
+**Visible Unavailable:** the XIAO ESP32-S3 orange `USER_LED` is solid while Home
+identity/mapping admission is unavailable, including boot until verified
+admission. It lights synchronously before a denied capture could start and stays
+lit through refusal/wake recovery; mere upload success does not clear it. Only a
+matching verified admission clears that Home indication. This accompanies, not
+replaces, the existing audible refusal. The configured `seeed_xiao_esp32s3`
+target's GPIO21 is active-low, per Seeed's
+[official pin map and Blink polarity note](https://wiki.seeedstudio.com/xiao_esp32s3_getting_started/).
+It does not share the firmware's I2S, I2C, button or reset pins. Native-header
+tests verify transitions; actual LED appearance/visibility in the assembled Puck
+remains physically unverified. Direct-mode P-1 degraded behavior is unchanged.
 
 Raw Puck audio stays transient end-to-end (NFR3): the receiver's in-memory
 chunk buffer for a capture is discarded as soon as it is reassembled, and
@@ -637,8 +671,9 @@ failure — no audio or transcript archive by default.
 
 After the Puck finishes a successful response, `puck_response.h` holds wake
 mode while the firmware asks the bridge to admit an eight-second follow-up
-capture. The bridge checks that the same session is still connected and does
-not create a new Home claim for a follow-up. VAD can end the window after
+capture. In Home mode the bridge checks the connected session's exact mapping
+and grant revision again, and does not create a new Home claim for a follow-up.
+VAD can end the window after
 800ms of silence once speech has started; if nobody speaks, the hard
 eight-second deadline closes it and sends one empty upload. The host bridge
 turns that empty upload into a `silent` response status, so the Puck returns to
