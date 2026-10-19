@@ -240,7 +240,7 @@ stories:
     title: Make the vendored reSpeaker audio-format boundary deterministic and testable.
     surface: P
     kind: surface
-    spec: _bmad-output/planning-artifacts/epics.md
+    spec: _bmad-output/implementation-artifacts/spec-1-p-8-deterministic-respeaker-audio-format.md
     tracker_key: 1-p-8-make-the-vendored-respeaker-audio-format-boundary-determinis
     product_epic: 3
     owner: hermes-relay-tui

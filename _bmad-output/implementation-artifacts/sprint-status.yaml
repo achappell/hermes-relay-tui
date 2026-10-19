@@ -31,7 +31,7 @@ development_status:
   1-p-5-complete-streamed-response-playback-without-underrun: done
   1-p-6-graceful-bridge-service-shutdown-and-entry-point-coverage: done
   1-p-7-make-raw-pcm-diagnostics-explicitly-opt-in-and-bounded: review
-  1-p-8-make-the-vendored-respeaker-audio-format-boundary-determinis: backlog
+  1-p-8-make-the-vendored-respeaker-audio-format-boundary-determinis: review
   1-p-9-make-respeaker-i2s-channel-startup-and-teardown-fail-safe: backlog
   1-p-10-keep-internal-wake-models-out-of-ordinary-capture-routing: backlog
   1-p-11-surface-runtime-audio-output-failures-honestly-and-recoverab: backlog
