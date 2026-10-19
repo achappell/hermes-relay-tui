@@ -988,3 +988,102 @@ def test_identity_header_fail_closes_4xx_but_degrades_on_server_or_transport_fai
     assert compile_result.returncode == 0, compile_result.stderr
     run_result = subprocess.run([str(executable)], capture_output=True, text=True)
     assert run_result.returncode == 0, run_result.stderr
+
+
+def test_unavailable_led_is_exact_xiao_user_led_without_pin_conflicts():
+    source = (Path(__file__).resolve().parents[1] / "firmware/respeaker-lite/respeaker-lite.yaml").read_text()
+    config = yaml.load(source, Loader=yaml.BaseLoader)
+    assert config["esp32"]["board"] == "seeed_xiao_esp32s3"
+    led = next(item for item in config["output"] if item["id"] == "puck_unavailable_led")
+    assert led["platform"] == "gpio"
+    assert led["pin"] == {"number": "GPIO21", "inverted": "true"}
+    def pins(value):
+        if isinstance(value, dict):
+            return [pin for item in value.values() for pin in pins(item)]
+        if isinstance(value, list):
+            return [pin for item in value for pin in pins(item)]
+        return [value] if isinstance(value, str) and value.startswith("GPIO") else []
+
+    assert pins(config).count("GPIO21") == 1
+
+
+def test_home_unavailable_is_visible_before_real_capture_and_not_cleared_by_reachability(tmp_path):
+    compiler = shutil.which("clang++") or shutil.which("c++")
+    if compiler is None:
+        pytest.skip("no C++ compiler available for real-header identity harness")
+    _write_capture_stubs(tmp_path)
+    _compile_and_run_capture_harness(tmp_path, compiler, """
+        #include "pcm_capture.h"
+        #include <cassert>
+        std::uint32_t fake_millis = 0;
+        static bool led_on = false;
+        static void indicator(bool on) { led_on = on; }
+        namespace cap = pcm_capture::wake_capture;
+        namespace response = puck_response;
+
+        static void reset_response() {
+          response::state = response::State::IDLE;
+          response::home_admission_pending = false;
+          response::home_admission_granted_flag = false;
+        }
+        int main() {
+          cap::setup();
+          puck_identity::setup_indicator(indicator);
+          puck_identity::setup("local-test-token", true);
+          assert(led_on); // Home reboot is not verification.
+          esphome::http_request::HttpRequestComponent client;
+          uint8_t synthetic[32] = {};
+          for (const char *denial : {"denied:12", "unavailable:12", "admitted:11"}) {
+            reset_response();
+            assert(response::begin_home_admission(12));
+            response::note_home_admission(200, denial);
+            assert(led_on && puck_identity::unavailable_visible);
+            response::dispatch_wake_capture(response::can_start_wake_capture(),
+                [&]() { cap::prepare("Hey Missy"); },
+                [&]() { cap::cancel_pending(); });
+            cap::start_pending();
+            cap::write(synthetic, sizeof(synthetic));
+            cap::upload(&client, "http://isolated/wake", "local-test-token");
+            assert(!cap::capturing && cap::write_pos == 0 && client.urls.empty());
+            puck_identity::note_upload_status(200); // Reachability cannot restore it.
+            assert(led_on);
+          }
+          reset_response();
+          assert(response::begin_home_admission(13));
+          response::note_home_admission(200, "admitted:13");
+          assert(!led_on);
+          cap::prepare("Hey Missy");
+          cap::start_pending();
+          assert(cap::capturing);
+          cap::capturing = false;
+          reset_response();
+          assert(response::begin_home_admission(99));
+          response::note_home_admission_transport_failure(); // Absent/unpaired bridge.
+          assert(led_on && !response::can_start_wake_capture());
+          response::dispatch_wake_capture(response::can_start_wake_capture(),
+              [&]() { cap::prepare("Hey Missy"); },
+              [&]() { cap::cancel_pending(); });
+          cap::start_pending();
+          cap::write(synthetic, sizeof(synthetic));
+          cap::upload(&client, "http://isolated/wake", "local-test-token");
+          assert(!cap::capturing && cap::write_pos == 0 && client.urls.empty());
+          reset_response();
+          assert(response::begin_home_admission(14));
+          response::note_home_admission(200, "identity_rejected:14");
+          assert(led_on && !puck_identity::may_capture());
+          puck_identity::note_upload_status(200);
+          assert(led_on && !puck_identity::may_capture());
+          reset_response();
+          assert(response::begin_home_admission(15));
+          response::note_home_admission(200, "admitted:15");
+          assert(led_on); // Even a grant cannot clear rejected local authority.
+          cap::prepare("Hey Other");
+          cap::start_pending();
+          assert(!cap::capturing && client.urls.empty());
+          // Preserve the locked Direct-mode degraded policy.
+          puck_identity::setup("local-test-token");
+          puck_identity::note_upload_status(503);
+          assert(puck_identity::may_capture());
+          return 0;
+        }
+    """)

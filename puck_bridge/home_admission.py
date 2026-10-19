@@ -1,9 +1,9 @@
 """Pre-capture Home wake claims for a recovered Puck conversation.
 
-The current configured Home handle remains usable until its transport is
-retired. This adapter creates a replacement handle only when a trusted,
-fresh proximity provider supplies calibrated evidence; with no provider the
-replacement path refuses before requesting a claim.
+A capture-authorizing handle must have a verified Home wake grant whose
+configuration revision still matches. Replacement handles require trusted,
+fresh calibrated proximity evidence; with no provider admission refuses
+before requesting a claim. Confirmed credential refusal survives restart.
 """
 
 from __future__ import annotations
@@ -29,6 +29,7 @@ from typing import Any, Callable
 from .home_session import (
     HOME_CLAIM_RETIRE_CALL_TIMEOUT_SECONDS,
     HomePuckSession,
+    require_home_bridge_url,
 )
 
 logger = logging.getLogger("hermes_relay_tui.puck_bridge.home_admission")
@@ -110,31 +111,80 @@ class HomeClaimRecoveryState:
             "conversation_handle": handle,
             "wake_mapping_id": mapping_id,
         }
-        encoded = (json.dumps(payload, separators=(",", ":")) + "\n").encode("utf-8")
-        with self._lock:
-            self.path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-            os.chmod(self.path.parent, 0o700)
-            temporary = self.path.with_name(
-                f".{self.path.name}.{uuid.uuid4().hex}.tmp"
-            )
-            fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        _write_private_json(self.path, payload, self._lock)
+
+
+def _write_private_json(path: Path, payload: dict[str, Any], lock: Any) -> None:
+    encoded = (json.dumps(payload, separators=(",", ":")) + "\n").encode("utf-8")
+    with lock:
+        path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        os.chmod(path.parent, 0o700)
+        temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+        fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        try:
+            with os.fdopen(fd, "wb") as stream:
+                stream.write(encoded)
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(temporary, path)
+            os.chmod(path, 0o600)
+            directory_fd = os.open(path.parent, os.O_RDONLY)
             try:
-                with os.fdopen(fd, "wb") as stream:
-                    stream.write(encoded)
-                    stream.flush()
-                    os.fsync(stream.fileno())
-                os.replace(temporary, self.path)
-                os.chmod(self.path, 0o600)
-                directory_fd = os.open(self.path.parent, os.O_RDONLY)
-                try:
-                    os.fsync(directory_fd)
-                finally:
-                    os.close(directory_fd)
+                os.fsync(directory_fd)
             finally:
-                try:
-                    temporary.unlink()
-                except FileNotFoundError:
-                    pass
+                os.close(directory_fd)
+        finally:
+            try:
+                temporary.unlink()
+            except FileNotFoundError:
+                pass
+
+
+class HomeIdentityRejectionState:
+    """A refusal belongs to one Home, Device and credential, never another route."""
+
+    def __init__(
+        self, bridge_url: str, device_id: str, credential: str,
+        path: str | os.PathLike[str] | None = None,
+    ) -> None:
+        parsed = urllib.parse.urlsplit(require_home_bridge_url(bridge_url))
+        authority = f"{parsed.scheme}://{parsed.hostname}:{parsed.port or 443}"
+        scope = [authority, device_id.strip(), credential.strip()]
+        if not all(scope):
+            raise ValueError("Home identity scope is required")
+        self._digest = hashlib.sha256(
+            json.dumps(scope, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()
+        self.path = Path(path).expanduser() if path is not None else (
+            Path.home() / ".hermes-relay-tui" / "home-identity-state" /
+            f"{self._digest}.json"
+        )
+        self._lock = threading.Lock()
+
+    def is_rejected(self) -> bool:
+        with self._lock:
+            try:
+                value = json.loads(self.path.read_text(encoding="utf-8"))
+            except FileNotFoundError:
+                return False
+            if (
+                not isinstance(value, dict)
+                or type(value.get("schema")) is not int or value["schema"] != 1
+                or value.get("scope_sha256") != self._digest
+                or value.get("rejected") is not True
+                or set(value) != {"schema", "scope_sha256", "rejected"}
+            ):
+                raise ValueError("Home identity rejection state is invalid")
+            return True
+
+    def reject(self) -> None:
+        _write_private_json(self.path, {
+            "schema": 1, "scope_sha256": self._digest, "rejected": True
+        }, self._lock)
+
+
+class HomeMappingUnavailable(Exception):
+    """The current claim's mapping can no longer be verified."""
 
 
 @dataclass(frozen=True)
@@ -154,9 +204,14 @@ class HomeAdmissionResult:
 
 
 class HomeClaimHTTPError(Exception):
-    def __init__(self, status: int) -> None:
+    def __init__(self, status: int, code: str = "") -> None:
         self.status = status
-        super().__init__(f"Home HTTP request failed ({status})")
+        self.code = code if isinstance(code, str) and code in {
+            "unauthorized", "credential_revoked", "device_revoked", "forbidden",
+            "claim_denied", "stale_configuration", "stale_mapping",
+            "service_unavailable", "configuration_migration_required",
+        } else "unknown"
+        super().__init__(f"Home HTTP request failed ({status}, {self.code})")
 
 
 class HomeClaimTransportError(Exception):
@@ -166,11 +221,12 @@ class HomeClaimTransportError(Exception):
 def is_home_identity_rejection(error: BaseException) -> bool:
     status = str(getattr(error, "status", "")).strip().lower()
     code = str(getattr(error, "code", "")).strip().lower()
-    return status in {"unauthorized", "forbidden", "rejected"} or code in {
-        "unauthorized",
-        "forbidden",
-        "credential_revoked",
-        "device_revoked",
+    if isinstance(error, HomeClaimHTTPError):
+        return error.status == 401 and code in {
+            "unauthorized", "credential_revoked", "device_revoked",
+        }
+    return status == "unauthorized" or code in {
+        "unauthorized", "credential_revoked", "device_revoked",
     }
 
 
@@ -188,6 +244,7 @@ class HomePuckSessionFactory:
         connect_factory: Any | None = None,
         request_json: Callable[..., dict[str, Any]] | None = None,
         recovery_state: HomeClaimRecoveryState | None = None,
+        identity_state: HomeIdentityRejectionState | None = None,
     ) -> None:
         self.bridge_url = bridge_url
         self.device_credential = str(device_credential).strip()
@@ -197,9 +254,60 @@ class HomePuckSessionFactory:
         self.connect_factory = connect_factory
         self._request_json = request_json or _request_json
         self.recovery_state = recovery_state
+        self.identity_state = identity_state
+        self.identity_rejected = bool(identity_state and identity_state.is_rejected())
+
+    def reject_identity(self) -> None:
+        self.identity_rejected = True
+        if self.identity_state is not None:
+            self.identity_state.reject()
+
+    async def confirm_identity_rejection(self, error: BaseException) -> bool:
+        if self.identity_rejected:
+            return True
+        if not is_home_identity_rejection(error):
+            return False
+        if isinstance(error, HomeClaimHTTPError):
+            self.reject_identity()
+            return True
+        # Bridge "unauthorized" can also mean a handle/device mismatch.
+        # Confirm credential scope through Home's Device-authorized endpoint
+        # before making a durable, device-wide credential refusal.
+        try:
+            await self._request(
+                "GET", self._device_configuration_url(),
+                timeout=HOME_HTTP_REQUEST_TIMEOUT_SECONDS,
+            )
+        except Exception:
+            pass
+        return self.identity_rejected
+
+    async def verify_mapping_id(
+        self, mapping_id: str, configuration_revision: int | None = None,
+    ) -> bool:
+        if (
+            not mapping_id or self.identity_rejected
+            or type(configuration_revision) is not int or configuration_revision < 0
+        ):
+            return False
+        configuration = await self._request(
+            "GET", self._device_configuration_url(),
+            timeout=HOME_HTTP_REQUEST_TIMEOUT_SECONDS,
+        )
+        # Validate the same envelope as phrase admission, without guessing a phrase.
+        _matching_mapping(configuration, "")
+        if configuration["snapshot"]["revision"] != configuration_revision:
+            return False
+        mappings = configuration["snapshot"]["wake_mappings"]
+        return sum(
+            isinstance(item, dict) and item.get("id") == mapping_id
+            and isinstance(item.get("phrase"), str) and bool(item["phrase"].strip())
+            for item in mappings
+        ) == 1
 
     async def current_mapping_id(
-        self, wake_phrase: str, current_mapping_id: str = ""
+        self, wake_phrase: str, current_mapping_id: str = "", *,
+        configuration_revision: int | None = None,
     ) -> str | None:
         """Confirm this phrase still names the mapping bound to the live claim."""
         if not self.device_id or not self.device_credential:
@@ -211,31 +319,25 @@ class HomePuckSessionFactory:
                 timeout=HOME_HTTP_REQUEST_TIMEOUT_SECONDS,
             )
             mapping = _matching_mapping(configuration, wake_phrase)
+            if (
+                configuration_revision is not None
+                and configuration["snapshot"]["revision"] != configuration_revision
+            ):
+                raise HomeMappingUnavailable
             mappings = configuration["snapshot"]["wake_mappings"]
-            valid_mappings = [
-                item for item in mappings
-                if isinstance(item, dict)
-                and isinstance(item.get("id"), str)
-                and item["id"].strip()
-                and isinstance(item.get("phrase"), str)
-                and item["phrase"].strip()
-            ]
+            if current_mapping_id and not any(
+                isinstance(item, dict) and item.get("id") == current_mapping_id
+                for item in mappings
+            ):
+                raise HomeMappingUnavailable
             if mapping is None:
                 return None
             expected = str(current_mapping_id).strip()
-            if expected:
-                return mapping["id"] if mapping["id"] == expected else None
-            # A configured initial handle has no claim metadata available
-            # locally. Infer its binding only when Home exposes one mapping.
-            return mapping["id"] if len(valid_mappings) == 1 else None
-        except HomeClaimHTTPError as exc:
-            if exc.status in {401, 403}:
-                raise
-            logger.warning("Home wake mapping validation failed (%s)", type(exc).__name__)
-            return None
+            return mapping["id"] if expected and mapping["id"] == expected else None
+        except HomeClaimHTTPError:
+            raise
         except Exception as exc:
-            logger.warning("Home wake mapping validation failed (%s)", type(exc).__name__)
-            return None
+            raise HomeMappingUnavailable from exc
 
     async def admit_wake(
         self,
@@ -244,6 +346,8 @@ class HomePuckSessionFactory:
         previous_handle: str = "",
     ) -> HomeAdmissionResult:
         """Admit a fresh wake only after its new Home session is verified."""
+        if self.identity_rejected:
+            return HomeAdmissionResult("identity_rejected", reason="home_identity_rejected")
         if self.evidence_provider is None:
             return HomeAdmissionResult("denied", reason="calibration_unavailable")
         if not self.device_id or not self.device_credential:
@@ -312,6 +416,7 @@ class HomePuckSessionFactory:
                     resume_uncertain_turn=False,
                     session_label="Puck",
                     wake_mapping_id=mapping["id"],
+                    wake_configuration_revision=revision,
                 )
                 if self.recovery_state is not None:
                     self.recovery_state.record_active(handle, mapping["id"])
@@ -323,7 +428,8 @@ class HomePuckSessionFactory:
                     "admitted", session=granted_session, reason="granted"
                 )
         except HomeClaimHTTPError as exc:
-            if exc.status in {401, 403}:
+            if is_home_identity_rejection(exc):
+                self.reject_identity()
                 return HomeAdmissionResult("identity_rejected", reason="home_identity_rejected")
             return HomeAdmissionResult("denied", reason="home_service_unavailable")
         except BaseException as exc:
@@ -342,7 +448,7 @@ class HomePuckSessionFactory:
                     pass
             if isinstance(exc, asyncio.CancelledError):
                 raise
-            if is_home_identity_rejection(exc):
+            if await self.confirm_identity_rejection(exc):
                 return HomeAdmissionResult("identity_rejected", reason="home_identity_rejected")
             logger.warning(
                 "Home fresh-wake admission failed (%s)",
@@ -412,17 +518,24 @@ class HomePuckSessionFactory:
         payload: dict[str, Any] | None = None,
         timeout: float,
     ) -> dict[str, Any]:
-        result = await asyncio.wait_for(
-            asyncio.to_thread(
-                self._request_json,
-                method,
-                url,
-                credential=self.device_credential,
-                payload=payload,
+        if self.identity_rejected:
+            raise HomeClaimHTTPError(401, "unauthorized")
+        try:
+            result = await asyncio.wait_for(
+                asyncio.to_thread(
+                    self._request_json,
+                    method,
+                    url,
+                    credential=self.device_credential,
+                    payload=payload,
+                    timeout=timeout,
+                ),
                 timeout=timeout,
-            ),
-            timeout=timeout,
-        )
+            )
+        except HomeClaimHTTPError as exc:
+            if is_home_identity_rejection(exc):
+                self.reject_identity()
+            raise
         if not isinstance(result, dict):
             raise ValueError("Home response is not an object")
         return result
@@ -460,6 +573,11 @@ def _matching_mapping(
     mappings = snapshot.get("wake_mappings")
     if not isinstance(mappings, list):
         raise ValueError("Home device configuration has no wake mappings")
+    ids = [item.get("id") for item in mappings if isinstance(item, dict)]
+    if any(not isinstance(value, str) or not value.strip() for value in ids):
+        raise ValueError("Home mapping identity is invalid")
+    if len(ids) != len(set(ids)):
+        raise ValueError("Home mapping identity is ambiguous")
     wanted = _normalize_phrase(wake_phrase)
     matches = [
         mapping
@@ -535,7 +653,12 @@ def _request_json(
         with urllib.request.urlopen(request, timeout=timeout) as response:
             raw = response.read(HOME_MAX_RESPONSE_BYTES + 1)
     except urllib.error.HTTPError as exc:
-        raise HomeClaimHTTPError(exc.code) from None
+        try:
+            error = json.loads(exc.read(HOME_MAX_RESPONSE_BYTES).decode("utf-8"))
+            code = error.get("error", {}).get("code", "")
+        except (ValueError, UnicodeError, AttributeError):
+            code = ""
+        raise HomeClaimHTTPError(exc.code, code) from None
     except (urllib.error.URLError, TimeoutError, OSError) as exc:
         raise HomeClaimTransportError(type(exc).__name__) from None
     if len(raw) > HOME_MAX_RESPONSE_BYTES:
@@ -552,5 +675,7 @@ __all__ = [
     "HomePuckSessionFactory",
     "HomeClaimRecoveryRecord",
     "HomeClaimRecoveryState",
+    "HomeIdentityRejectionState",
+    "HomeMappingUnavailable",
     "is_home_identity_rejection",
 ]

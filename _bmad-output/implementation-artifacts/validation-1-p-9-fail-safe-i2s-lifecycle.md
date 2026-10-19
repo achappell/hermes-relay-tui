@@ -50,3 +50,7 @@ Independent firmware-owner semantic review read the complete merge diff and actu
 - Initial focused attempt: **22 passed, 1 failed** because ESPHome 2026.9 rejects the public all-zero example API key. Replaced only the temporary example key with an explicit nonzero synthetic value; no product/test change or suppression. Full/build chain did not run on the failed attempt. Temporary example secrets were removed after successful checks; generated images must never be deployed.
 
 The earlier actual-source standalone lifecycle smoke remains applicable to the unchanged runtime source; it was not represented as a new smoke run. Physical acceptance remains OPEN; no live action occurred.
+
+## Main reconciliation after249/250 landed
+
+Normal merge of main5f92cddba4c76a11e1fc1797efe037937b90d078; only manual conflict additive CHANGELOG, both retained. Independent actual firmware integration review CLEAN: P8 determinism, P9 RX ownership and inherited P5 pre-capture identity/LED gates preserved. Focused157passed12.80s; full2295passed/2skipped/2knownBashdeselections/6existingwarnings352.37s. Default/Home ESPHome2026.9.1 IDF5.5.5 compile both PASS: RAM117071 each, flash1861603/1861599; config5e5c355d/a2413bf6. Synthetic secrets removed; images NOT deployable, no hardware accessed. diff-check passed.
