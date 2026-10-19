@@ -308,3 +308,7 @@
 - source_spec: `_bmad-output/implementation-artifacts/spec-tui-home-01-pair-with-home-and-own-sessions.md`
   summary: Complete TUI-HOME-01 regression coverage and update obsolete environment-pairing assertions before acceptance.
   evidence: Current session prohibits adding/running tests without explicit request. Six existing old-contract cases were maintained by static inspection only. Renewal retry and pairing persistence still need dedicated regression cases, and all tests remain unexecuted; runtime acceptance is not passed or closed.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-1-p-8-deterministic-respeaker-audio-format.md`
+  summary: OPEN — controlled physical P-8 wake/VAD/upload/audible-playback regression on the reviewed firmware build.
+  evidence: Signed-fixture native/sanitizer checks, a separate one-second native smoke, both actual firmware variants and the full suite pass. No real microphone or hardware was accessed. Only tui-p7-pcm-diagnostics owns hardware; keep raw PCM diagnostics off and use installation-owned configuration, never the synthetic compile image. Calibrated trusted-proximity evidence remains a separate locked rollout blocker.

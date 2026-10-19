@@ -1,6 +1,6 @@
 # Active epic parents are in story-index.yaml; numeric story prefixes remain historical.
 generated: 09-08-2026 00:00
-last_updated: '2026-10-10'
+last_updated: '2026-10-18'
 project: hermes-relay-tui
 project_key: NOKEY
 tracking_system: file-system
@@ -30,8 +30,8 @@ development_status:
   1-p-4-recovery-without-replay: done
   1-p-5-complete-streamed-response-playback-without-underrun: done
   1-p-6-graceful-bridge-service-shutdown-and-entry-point-coverage: done
-  1-p-7-make-raw-pcm-diagnostics-explicitly-opt-in-and-bounded: backlog
-  1-p-8-make-the-vendored-respeaker-audio-format-boundary-determinis: backlog
+  1-p-7-make-raw-pcm-diagnostics-explicitly-opt-in-and-bounded: review
+  1-p-8-make-the-vendored-respeaker-audio-format-boundary-determinis: review
   1-p-9-make-respeaker-i2s-channel-startup-and-teardown-fail-safe: backlog
   1-p-10-keep-internal-wake-models-out-of-ordinary-capture-routing: backlog
   1-p-11-surface-runtime-audio-output-failures-honestly-and-recoverab: backlog
@@ -48,9 +48,10 @@ development_status:
   3-p-2-apply-approved-room-credential-and-wake-mapping-configuratio: backlog
   3-p-3-enforce-the-selected-wake-mapping-and-profile-before-capture: backlog
   3-p-4-participate-in-single-winner-wake-arbitration-and-remain-sil: backlog
-  3-p-5-reject-revoked-unavailable-or-unverified-identity-before-cap: backlog
+  3-p-5-reject-revoked-unavailable-or-unverified-identity-before-cap: review # done-with-deferred-gate; physical visibility, real Home and calibrated provider open
   3-p-6-retire-revoked-credentials-and-require-the-ordered-setup-flo: backlog
-  standard-6-puck-migrate-respeaker-puck-path: done
+  standard-6-puck-migrate-respeaker-puck-path: done # implementation merged; deferred live Home/Puck gate open (spec frontmatter `deferred`)
+  p-home-01-deploy-puck-bridge-on-ops: review # tooling, unit, tests and runbook done locally; all live ops/Home/Puck steps unexercised
   standard-7-esp32-add-touch-display-audio-session-adapter: done
   standard-8-wk-migrate-browser-and-ipad-routes: done
   wk-home-01-migrate-production-browser-to-homebridge: in-progress # typed-browser rollout deployed and verified; R6/R7 retirement remain open

@@ -29,8 +29,16 @@
 # dev/household Mac) listens, and the hardcoded shared token this story
 # stands in for Story 4's real per-device credential system. The bridge host,
 # port, and token are installation-specific and gitignored via secrets.yaml.
+#
+# P-7: `puck_pcm_diagnostics` is an explicit, off-by-default operator
+# opt-in for raw microphone PCM capture/export. Leave it "false" for every
+# household build. Enabling it also requires `puck_pcm_diagnostics_url`
+# (e.g. tools/receiver.py's /upload endpoint); the device then logs a boot
+# warning and exports at most 15 two-second captures per boot.
 substitutions:
   puck_home_transport: "false"
+  puck_pcm_diagnostics: "false"
+  puck_pcm_diagnostics_url: ""
   puck_bridge_host: !secret puck_bridge_host
   puck_bridge_port: !secret puck_bridge_port
   puck_device_token: !secret puck_device_token
@@ -38,9 +46,9 @@ substitutions:
 esphome:
   name: respeaker-lite
   friendly_name: "Hermes Puck (reSpeaker Lite)"
-  # TEMPORARY: raw PCM capture for a human to actually listen to (story 3
-  # follow-up) -- see pcm_capture.h for why this design avoids the two
-  # patterns that crash-looped the device in a prior session.
+  # P-7: pcm_capture.h holds the wake capture and the opt-in, bounded raw
+  # PCM diagnostic capture, which is off unless `puck_pcm_diagnostics` is
+  # set above.
   includes:
     - pcm_capture.h
     # 1-p-1: identity gate -- consulted before capture, fed by upload status.
@@ -63,17 +71,23 @@ esphome:
         # own explicit enable_model call or it's silently never invoked.
         - micro_wake_word.enable_model: hey_bestie
         - micro_wake_word.enable_model: hey_skippy
-        - lambda: pcm_capture::setup();
+        - lambda: pcm_capture::setup(${puck_pcm_diagnostics}, "${puck_pcm_diagnostics_url}");
         # Story 5: the VAD-gated, single-shot, wake-triggered capture
-        # buffer, separate from the training-data capture buffer above.
+        # buffer, separate from the P-7 opt-in diagnostic buffer above.
         - lambda: pcm_capture::wake_capture::setup();
         # 1-p-1: establish identity BEFORE micro_wake_word can fire a
         # capture. Starts UNAUTHORIZED and only opens if a token is
         # actually configured -- a build shipped without one must refuse,
         # not capture.
-        - lambda: puck_identity::setup("${puck_device_token}");
-    - priority: -200  # after the capture buffer is allocated above
+        - lambda: |-
+            puck_identity::setup_indicator([](bool unavailable) {
+              if (unavailable) id(puck_unavailable_led).turn_on();
+              else id(puck_unavailable_led).turn_off();
+            });
+            puck_identity::setup("${puck_device_token}", ${puck_home_transport});
+    - priority: -200  # after identity is established above
       then:
+        # No-op unless P-7 raw PCM diagnostics were explicitly enabled.
         - lambda: pcm_capture::start();
     # 1-p-2: bring the output path up last, so a failure here cannot
     # delay wake-word setup above. The delay lets the XU316 finish its own
@@ -100,6 +114,16 @@ esp32:
   framework:
     type: esp-idf
     version: recommended
+
+# XIAO ESP32-S3 (not Plus): Seeed's USER_LED is orange, GPIO21, active-low.
+# Solid means Unavailable; Home boot stays lit until verified admission.
+# I2S uses 7/8/9/43/44, I2C 5/6, reset 2 and user button 3.
+output:
+  - platform: gpio
+    id: puck_unavailable_led
+    pin:
+      number: GPIO21
+      inverted: true
 
 # PSRAM is enabled for the current Puck capture buffers used by the follow-on
 # host-transport path. Historical note: the first isolation test enabled PSRAM
@@ -134,9 +158,8 @@ ota:
   - platform: esphome
     password: !secret ota_password
 
-# Training-data pipeline (story 3 follow-up): POSTs each rolling capture
-# window to a local server on the dev Mac, replacing the far-too-slow
-# serial/base64 dump path. See pcm_capture.h.
+# Wake-capture upload and, only when P-7 raw PCM diagnostics are explicitly
+# enabled, bounded diagnostic export. See pcm_capture.h.
 http_request:
   id: http_client
   timeout: 5s
@@ -329,21 +352,19 @@ microphone:
     on_data:
       - lambda: |-
           static uint32_t last_log_ms = 0;
-          static int32_t running_max_ch0 = 0;
-          static int32_t running_max_ch1 = 0;
+          static uint32_t running_max_ch0 = 0;
+          static uint32_t running_max_ch1 = 0;
           // Stereo, 32-bit: each frame is 8 bytes -- ch0 first 4 bytes, ch1 next 4.
           for (size_t i = 0; i + 7 < x.size(); i += 8) {
-            int32_t sample0 = (int32_t)(x[i] | (x[i+1] << 8) | (x[i+2] << 16) | (x[i+3] << 24));
-            int32_t sample1 = (int32_t)(x[i+4] | (x[i+5] << 8) | (x[i+6] << 16) | (x[i+7] << 24));
-            int32_t abs0 = sample0 < 0 ? -sample0 : sample0;
-            int32_t abs1 = sample1 < 0 ? -sample1 : sample1;
+            const uint32_t abs0 = esphome::i2s_audio::respeaker_pcm::magnitude_s32le(&x[i]);
+            const uint32_t abs1 = esphome::i2s_audio::respeaker_pcm::magnitude_s32le(&x[i + 4]);
             if (abs0 > running_max_ch0) running_max_ch0 = abs0;
             if (abs1 > running_max_ch1) running_max_ch1 = abs1;
           }
           uint32_t now = millis();
           if (now - last_log_ms > 1000) {
-            ESP_LOGI("mic_diag", "peak amplitude last ~1s -- ch0: %d, ch1: %d (bytes this callback: %d)",
-                     (int) running_max_ch0, (int) running_max_ch1, (int) x.size());
+            ESP_LOGI("mic_diag", "peak amplitude last ~1s -- ch0: %lu, ch1: %lu (bytes this callback: %u)",
+                     (unsigned long) running_max_ch0, (unsigned long) running_max_ch1, (unsigned) x.size());
             running_max_ch0 = 0;
             running_max_ch1 = 0;
             last_log_ms = now;
@@ -707,18 +728,15 @@ interval:
           ESP_LOGI("puck_identity", "state: %s (may_capture=%s)",
                    puck_identity::state_name(puck_identity::state),
                    puck_identity::may_capture() ? "true" : "false");
-  # Story 5: disabled the story-3 serial-dump diagnostic wiring that used
-  # to run here (pcm_capture::dump_over_serial(), still defined in
-  # pcm_capture.h but no longer called). MAX_DUMPS=15 full ~256KB captures
-  # base64-encoded over a 115200 baud serial link saturates the main loop
-  # for several minutes on every boot -- starving WiFi/API and making mww
-  # appear to stop (task starvation, not a crash). Discovered live during
-  # this story's hardware smoke test: WiFi/API dropped and mww is_running
-  # went false a couple minutes after every boot with no crash marker,
-  # exactly matching this dump's duration. Story 3's own serial-dump
-  # tooling (tools/collect_serial_dumps.py) is unaffected -- it drives this
-  # same dump_over_serial() function directly when needed, not via this
-  # always-on interval.
+  # P-7: opt-in raw PCM diagnostic export. A no-op (one atomic compare)
+  # unless `puck_pcm_diagnostics` enabled the buffer at boot; then it
+  # uploads each finished two-second window to `puck_pcm_diagnostics_url`
+  # and stops after pcm_capture::MAX_DIAGNOSTIC_CAPTURES. The story-3
+  # serial/base64 dump path was removed: raw PCM is never written to logs.
+  - interval: 2s
+    then:
+      - lambda: |-
+          pcm_capture::upload_and_restart(id(http_client));
   # Story 5: ends the VAD-gated wake capture window on debounced silence.
   # 100ms keeps the end-of-utterance round-trip snappy without adding real
   # load -- this is a cheap boolean check, a no-op whenever no wake capture
