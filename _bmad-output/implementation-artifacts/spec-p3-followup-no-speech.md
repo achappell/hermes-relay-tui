@@ -7,6 +7,8 @@ disposition: 'done-with-deferred-gate'
 physical_acceptance: 'open'
 route: 'dispatch'
 review_loop_iteration: 0
+reconciled_main: 'b3aba782abdfd32151562218855b09bbe98af474'
+verified_source_commit: '0f81c3b4cf8219c43dc1920abe92e9d70534e416'
 baseline_commit: '5311eb32a446d108a45d49c48f1a945638cca6e5'
 context:
   - '{project-root}/AGENTS.md'
@@ -93,4 +95,4 @@ A source-backed candidate for the unattributed speaker error is intentional sile
 
 **OBSERVED:** Eight targeted native-header/HTTP edge cases passed (156 deselected, 5.24 s), including ASan/UBSan callback-preemption cases. Independent custodian spec/code review fixes are applied. A throwaway native-header/configured-YAML/libcurl → production bridge HTTP/mailbox smoke passed both deadline and buffer-first cases: one control POST, zero PCM/STT/new turn/media fetch, native IDLE and unchanged claim lifecycle. See [validation](validation-p4-home-paired-room-full-turn.md#p-3-deterministic-no-speech-completion-repair--2026-10-19).
 
-**FINAL OBSERVED CHECKS:** Focused bridge/firmware/Home/shutdown/I2S modules: **368 passed, 170.92 s**. Full Python suite: **2349 passed, 2 skipped, 2 explicitly known Bash 3.2 cases deselected, 6 existing warnings, 401.81 s**. Both actual Direct/Home firmware builds passed on ESPHome2026.9.1 / ESP-IDF5.5.5, including atomic fields and configured YAML handoff. Compilation used synthetic example settings only; temporary secrets and the throwaway smoke runner were removed. Build-workflow blind/edge reviews had no actionable finding; the verification observation is triaged above. Exact commands, firmware hashes, matrix mapping and the unexecuted flash/rollback plan are in [validation](validation-p4-home-paired-room-full-turn.md#p-3-deterministic-no-speech-completion-repair--2026-10-19). Physical quiet/follow-up and speaker-error attribution remain OPEN.
+**FINAL OBSERVED CHECKS AFTER MAIN RECONCILIATION:** Focused bridge/firmware/Home/shutdown/I2S modules: **368 passed, 168.80 s**. Full Python suite: **2370 passed, 2 skipped, 2 explicitly known Bash 3.2 cases deselected, 6 existing warnings, 397.17 s**. Both actual Direct/Home firmware builds passed again on ESPHome2026.9.1 / ESP-IDF5.5.5 after normal merge of main's browser fallback; only CHANGELOG conflicted, and no Puck runtime resolution was needed. Temporary synthetic secrets/toolchain link and the throwaway smoke runner were removed. Independent custodian and all three build-workflow review layers completed as recorded above. Exact commands, skip reasons, firmware hashes, matrix mapping and the unexecuted flash/rollback plan are in [validation](validation-p4-home-paired-room-full-turn.md#p-3-deterministic-no-speech-completion-repair--2026-10-19). Physical quiet/follow-up and speaker-error attribution remain OPEN.

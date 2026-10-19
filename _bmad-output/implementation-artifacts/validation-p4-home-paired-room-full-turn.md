@@ -198,3 +198,15 @@ Physical quiet/follow-up acceptance and exact speaker-error attribution remain *
 | Later physical wake / restart / no replay | `test_paired_room_each_physical_wake_retires_previous_ready_claim`, `test_unconfirmed_home_claim_close_is_retried_after_restart`, `test_cold_saved_claim_needs_owned_receipt_before_fresh_admission`, existing uncertainty/no-replay tests |
 
 All listed tests ran and passed in the final focused/full runs; no skipped test backs a row. Independent firmware custodian SPEC/CODE review found the real in-flight quiet-byte leak (fixed with winner-only snapshot publication) and a redundant Python-only media recorder (removed). Re-review confirmed no new blocking runtime finding. All three build-workflow review layers completed: blind/edge reported no actionable issue; verification noted that a copied-but-uncommitted speech tail can be excluded at close, correctly triaged as the intentional immutable committed-byte boundary rather than a requirement to delay closure or read a mutable tail. Preexisting cached-VAD freshness remains recorded in the deferred-work ledger; physical attribution and acceptance stay OPEN.
+
+### Latest main reconciliation and final verification — 2026-10-19
+
+Normal merge `0f81c3b4cf8219c43dc1920abe92e9d70534e416` incorporates main `b3aba782abdfd32151562218855b09bbe98af474` (browser audio fallback PR244), preserving implementation commit `a71e422`. Only CHANGELOG conflicted; both independent entries were retained. Puck capture/response headers and YAML remained byte-identical to the independently reviewed implementation. No browser branch or live host was edited.
+
+Fresh serial verification on that reconciled source supersedes the earlier counts above:
+
+- Both actual Direct/Home firmware compiles passed again with the same documented commands, config hashes and memory/flash sizes. Direct build time: **2026-10-19 15:59:37 -0500**; Home: **2026-10-19 16:00:01 -0500**.
+- Focused command above: **368 passed, 168.80 s**.
+- Full command above, adding `-ra` for explicit skip reporting: **2370 passed, 2 skipped, 2 deselected, 6 existing warnings, 397.17 s**. Skips: `tests/test_display_contract.py:163` — ESP-IDF cJSON unavailable; `tests/test_wake_sherpa.py:216` — optional `wake` extra absent. Neither backs this repair's acceptance. The same two known Bash3.2 ops cases were the only deselections.
+- Current **synthetic-example-only, never-flash** Home hashes: factory `1c1e6a18d452f2bd18a86e47cf5fe96ff8baaccb0735ccfe4190bac02b820777`; OTA `c08107189bd7dc89ee2792181ea82a97ffde0e0678998c8e2c04473384645582`. All temporary secrets and the toolchain symlink were removed afterward.
+- No runtime source changed after those checks; the subsequent evidence commit records these observations only. No PR merge/flash/deploy/retest approval is implied. The sole custodian must privately build the final approved PR source under the prepared plan before any Amanda-authorized hardware action.
