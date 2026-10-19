@@ -3,6 +3,7 @@
 #ifdef USE_ESP32
 
 #include "preprocessor_settings.h"
+#include "detection_event.h"
 #include "model_data.h"
 
 #include "esphome/core/preferences.h"
@@ -17,15 +18,6 @@ namespace esphome::micro_wake_word {
 static const uint8_t MIN_SLICES_BEFORE_DETECTION = 100;
 static const uint32_t STREAMING_MODEL_VARIABLE_ARENA_SIZE = 1024;
 
-struct DetectionEvent {
-  std::string *wake_word;
-  bool detected;
-  bool partially_detection;  // Set if the most recent probability exceed the threshold, but the sliding window average
-                             // hasn't yet
-  uint8_t max_probability;
-  uint8_t average_probability;
-  bool blocked_by_vad = false;
-};
 
 class StreamingModel {
  public:

@@ -308,3 +308,7 @@
 - source_spec: `_bmad-output/implementation-artifacts/spec-tui-home-01-pair-with-home-and-own-sessions.md`
   summary: Complete TUI-HOME-01 regression coverage and update obsolete environment-pairing assertions before acceptance.
   evidence: Current session prohibits adding/running tests without explicit request. Six existing old-contract cases were maintained by static inspection only. Renewal retry and pairing persistence still need dedicated regression cases, and all tests remain unexecuted; runtime acceptance is not passed or closed.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-1-p-10-internal-wake-routing.md`
+  summary: OPEN — controlled physical public-wake/internal-control isolation regression for P-10.
+  evidence: Production model-to-event role handoff/queue-copy/dispatch runs into real capture/upload in native tests, with real ESPHome role validation and compiled firmware. No acoustic detection or hardware was exercised. Only tui-p7-pcm-diagnostics owns hardware; keep raw diagnostics off and preserve calibrated trusted-proximity rollout policy.

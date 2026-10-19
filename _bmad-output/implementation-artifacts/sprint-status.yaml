@@ -33,7 +33,7 @@ development_status:
   1-p-7-make-raw-pcm-diagnostics-explicitly-opt-in-and-bounded: review
   1-p-8-make-the-vendored-respeaker-audio-format-boundary-determinis: backlog
   1-p-9-make-respeaker-i2s-channel-startup-and-teardown-fail-safe: backlog
-  1-p-10-keep-internal-wake-models-out-of-ordinary-capture-routing: backlog
+  1-p-10-keep-internal-wake-models-out-of-ordinary-capture-routing: review
   1-p-11-surface-runtime-audio-output-failures-honestly-and-recoverab: backlog
   1-e-1-authorized-voice-capture: review
   1-e-2-native-phases-and-streamed-response-rendering: backlog

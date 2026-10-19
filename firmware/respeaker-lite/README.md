@@ -74,6 +74,29 @@ is also later work; detection and profile selection are separate concerns.
 The `stop` model stays `internal: true`, so it is not independently exposed
 as a toggleable Home Assistant entity.
 
+### Internal-model routing (P-10)
+
+`internal: true` is the existing model-role declaration, not a model-name
+allowlist. Internal models are excluded from both public entity listing and
+the `on_wake_word_detected` callback. The inference producer carries that role
+in the queued detection; unspecified event provenance fails closed. The same
+production boundary guards public dispatch regardless of name or list order.
+
+Internal detection emits only a content-safe `Internal control detection
+suppressed` diagnostic. It does not prepare capture, request Home admission,
+upload PCM, select a Profile, create a Hermes turn or apply the public
+stop-after-detection action. A configured public model keeps the existing
+VAD/authorization/capture/upload route. This change adds no internal stop
+action and does not redefine P-3's exact spoken-stop transcription behavior.
+
+`tests/test_respeaker_wake_routing.py` executes the production model-to-event
+handoff and dispatch into the real capture/upload header using synthetic
+samples and a fake HTTP boundary; it also runs real ESPHome configuration
+validation with public, stop and arbitrary additional internal roles. No
+source-text wording pins or acoustic recognition claims are used. Raw PCM
+diagnostics remain off; physical acoustic regression is still a controlled
+hardware gate.
+
 ---
 
 ## Build & Flashing
