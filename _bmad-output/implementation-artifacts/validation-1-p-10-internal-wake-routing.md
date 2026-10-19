@@ -36,3 +36,16 @@ Only the hardware owner may use the reviewed SHA with installation-owned configu
 Software disposition is **done-with-deferred-gate**; supported spec/tracker values remain `in-review` / `review`, following P-7 while physical acceptance is open. No issue is auto-closed.
 
 Temporary synthetic compile secrets and throwaway smoke source/binary/header scaffolds were removed before commit. Permanent production-header regression tests and observed logs remain.
+
+## Main/P-8 reconciliation (2026-10-19)
+
+Normal merge of `origin/main` at `cce15704457a51ed587b30bd6d780e106da629f5`, without rebase/force. Manual conflicts were `CHANGELOG.md`, `deferred-work.md` and `surface-coverage-matrix.md`; retained both P-8 and P-10 delivery evidence and open physical gates. Runtime files did not conflict. Existing untracked `venv` / `venv-firmware` entries were preserved.
+
+Independent firmware-owner review read the complete merge diff and actual producer/queue/consumer/capture source: no substantiated integration regression. P-8 decimator pending bytes/frame phase and signed stereo32LE16k format remain intact; P-10 assigns declared role before queueing, defaults unspecified provenance closed, drops internal/ignored events before public callbacks and limits public stop-after-detection to public routing. Home admission, channel1/gain4 conversion and default diagnostics-off remain unchanged. Reviewer ran no checks and granted no hardware authority.
+
+- Focused `python -m pytest -q tests/test_respeaker_wake_routing.py tests/test_respeaker_pcm.py tests/test_puck_firmware.py`: **24 passed** (3.83s).
+- Full `python -m pytest -q` with exactly the two previously reported macOS Bash 3.2 deployment cases deselected: **2198 passed, 2 skipped, 2 deselected**, six existing websockets warnings (334.13s).
+- Actual default and `-s puck_home_transport true` ESPHome compiles both passed under **2026.9.1 / ESP-IDF 5.5.5**. RAM **117031 bytes** both; flash **1860867 / 1860871 bytes**. Config hashes **0x77d1d0f0 / 0xbfd81cc0**, build times **2026-10-19 11:55:43 / 11:55:57 -0500**. Existing GPIO3/OTA-password warnings remain. `git diff --check` passed.
+- Temporary nonzero synthetic example secrets were removed afterward; generated images must never be deployed. No live credentials, microphone, host or hardware action was used.
+
+Original standalone routing/capture smoke above remains historical evidence, not a newly rerun smoke. The current merged real-source native regressions, signed P-8 fixture, configuration and actual firmware builds are the new merge evidence. Physical acceptance remains OPEN.

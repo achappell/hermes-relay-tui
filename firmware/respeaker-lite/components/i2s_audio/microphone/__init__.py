@@ -65,9 +65,23 @@ def _validate_esp32_variant(config):
     raise NotImplementedError
 
 
-def _validate_channel(config):
-    if config[CONF_CHANNEL] == CONF_MONO:
-        raise cv.Invalid(f"I2S microphone does not support {CONF_MONO}.")
+def _validate_respeaker_format(config):
+    required = {
+        CONF_ADC_TYPE: "external",
+        CONF_PDM: False,
+        CONF_SAMPLE_RATE: 48000,
+        CONF_BITS_PER_SAMPLE: 32,
+        CONF_CHANNEL: "stereo",
+        "i2s_mode": "secondary",
+        CONF_CORRECT_DC_OFFSET: False,
+    }
+    for key, value in required.items():
+        if config.get(key) != value:
+            raise cv.Invalid(
+                "ReSpeaker microphone supports only external non-PDM 48000 Hz, "
+                "32-bit stereo secondary I2S without DC correction; "
+                f"{key} must be {value!r}"
+            )
     return config
 
 
@@ -96,12 +110,13 @@ def _set_stream_limits(config):
 BASE_SCHEMA = microphone.MICROPHONE_SCHEMA.extend(
     i2s_audio_component_schema(
         I2SAudioMicrophone,
-        default_sample_rate=16000,
-        default_channel=CONF_RIGHT,
+        default_sample_rate=48000,
+        default_channel="stereo",
         default_bits_per_sample="32bit",
     ).extend(
         {
             cv.Optional(CONF_CORRECT_DC_OFFSET, default=False): cv.boolean,
+            cv.Optional("i2s_mode", default="secondary"): cv.one_of("secondary", "primary"),
         }
     )
 ).extend(cv.COMPONENT_SCHEMA)
@@ -127,7 +142,7 @@ CONFIG_SCHEMA = cv.All(
         key=CONF_ADC_TYPE,
     ),
     _validate_esp32_variant,
-    _validate_channel,
+    _validate_respeaker_format,
     _set_num_channels_from_config,
     _set_stream_limits,
     validate_mclk_divisible_by_3,

@@ -1,4 +1,5 @@
 #include "i2s_audio_microphone.h"
+#include "respeaker_pcm.h"
 
 #ifdef USE_ESP32
 
@@ -59,32 +60,9 @@ void I2SAudioMicrophone::dump_config() {
 }
 
 void I2SAudioMicrophone::configure_stream_settings_() {
-  uint8_t channel_count = 1;
-  uint8_t bits_per_sample = 16;
-  if (this->slot_bit_width_ != I2S_SLOT_BIT_WIDTH_AUTO) {
-    bits_per_sample = this->slot_bit_width_;
-  }
-
-  if (this->slot_mode_ == I2S_SLOT_MODE_STEREO) {
-    channel_count = 2;
-  }
-
-#ifdef USE_ESP32_VARIANT_ESP32
-  // ESP32 reads audio aligned to a multiple of 2 bytes. For example, if configured for 24 bits per sample, then it will
-  // produce 32 bits per sample, where the actual data is in the most significant bits. Other ESP32 variants produce 24
-  // bits per sample in this situation.
-  if (bits_per_sample < 16) {
-    bits_per_sample = 16;
-  } else if ((bits_per_sample > 16) && (bits_per_sample <= 32)) {
-    bits_per_sample = 32;
-  }
-#endif
-
-  if (this->pdm_) {
-    bits_per_sample = 16;  // PDM mics are always 16 bits per sample
-  }
-
-  this->audio_stream_info_ = audio::AudioStreamInfo(bits_per_sample, channel_count, 16000);
+  // Configuration validation permits only the proven board wire format.
+  // Decimation changes rate, not channel order or the signed 32-bit words.
+  this->audio_stream_info_ = audio::AudioStreamInfo(32, 2, respeaker_pcm::OUTPUT_RATE);
 }
 
 void I2SAudioMicrophone::start() {
@@ -239,6 +217,9 @@ void I2SAudioMicrophone::mic_task(void *params) {
     const size_t bytes_to_read = this_microphone->audio_stream_info_.ms_to_bytes(READ_DURATION_MS);
     std::vector<uint8_t> samples;
     samples.reserve(bytes_to_read);
+    std::vector<uint8_t> converted;
+    converted.reserve(respeaker_pcm::Decimator::output_capacity(bytes_to_read));
+    respeaker_pcm::Decimator decimator;
 
     xEventGroupSetBits(this_microphone->event_group_, MicrophoneEventGroupBits::TASK_RUNNING);
 
@@ -276,22 +257,11 @@ void I2SAudioMicrophone::mic_task(void *params) {
         // for this model. Do not reintroduce filtering here without
         // re-verifying detection still works on real hardware, not just
         // spectrogram inspection.
-        std::vector<uint8_t> each_third_sample;
-        size_t block_size = 24;
-        size_t copy_size = 8;
-        size_t total_blocks = samples.size() / block_size;
-
-        each_third_sample.resize(total_blocks * copy_size);
-
-        for (size_t block = 0; block < total_blocks; ++block) {
-            std::copy_n(
-                samples.begin() + block * block_size,
-                copy_size,
-                each_third_sample.begin() + block * copy_size
-            );
-        }
-
-        this_microphone->data_callbacks_.call(each_third_sample);
+        converted.resize(respeaker_pcm::Decimator::output_capacity(bytes_read));
+        const size_t output_bytes = decimator.convert(samples.data(), samples.size(), converted.data());
+        converted.resize(output_bytes);
+        if (!converted.empty())
+          this_microphone->data_callbacks_.call(converted);
       } else {
         vTaskDelay(pdMS_TO_TICKS(READ_DURATION_MS));
       }
