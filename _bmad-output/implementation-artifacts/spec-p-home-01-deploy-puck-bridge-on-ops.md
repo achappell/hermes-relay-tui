@@ -140,7 +140,7 @@ owning story, not here:
   preconditions, lock), `ExecStartPre` check. No network.
 - [x] `docs/puck-ops-deployment.md` with every step labelled; firmware README
   pointer; CHANGELOG.
-- [x] Disposable Linux run, partial: a 2026-10-18 unprivileged Ubuntu 26.04
+- [ ] Disposable Linux run: partial, PID-1 systemd and reboot are outstanding. A 2026-10-18 unprivileged Ubuntu 26.04
   container smoke ran the real CLI with real GNU/uutils tools and sudo. It
   covered deploy, upgrade, rollback, precondition refusal, first-deploy
   failure cleanup, restart and container-restart persistence, and synthetic

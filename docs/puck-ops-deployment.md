@@ -7,10 +7,12 @@ rollout. It adds no bridge behaviour. Spec:
 
 Every step carries a label:
 
-- **[exercised]** — run in this repository, with the evidence named.
-- **[unexercised]** — not yet run anywhere. Every step that touches ops, Home,
-  the network or the Puck is unexercised. Running this runbook needs
-  separate operational authorization; writing it does not grant any.
+- **[exercised]**: run in this repository, with the evidence named.
+- **[smoke-only]**: run once in the disposable Linux smoke below, with
+  systemd shimmed. Not yet run against the real ops install.
+- **[unexercised]**: not yet run anywhere against the real ops install,
+  Home, the network or the Puck. Running this runbook needs separate
+  operational authorization; writing it does not grant any.
 
 There is no direct-Hermes fallback. Legacy direct mode and the voice-session
 endpoint are retired; the deploy tool refuses any transport other than `home`.
@@ -71,14 +73,16 @@ script locally against temporary directories with fake `sudo`/`systemctl`
 (deploy, overwrite refusal, failed `pip install` cleanup and retry,
 automatic rollback on restart and health failure, first-deploy failure,
 rollback, stale `current.next`, preconditions with staging cleanup, lock) and
-runs the `ExecStartPre` check against a temporary env file. No host was
-contacted. The fakes include GNU `readlink -f` semantics, which BSD readlink
+runs the `ExecStartPre` check against a temporary env file. These
+repository checks contact no host. The fakes include GNU `readlink -f` semantics, which BSD readlink
 had hidden (see below).
 
-**[exercised, disposable Linux, systemd shimmed]** 2026-10-18 smoke on a
-throwaway unprivileged Ubuntu 26.04 container (Python 3.14, GNU `mv`, uutils
-`stat`, util-linux `flock`, real `sudo`, the same toolchain as ops). It ran on
-ops's Docker with no host port, no host mount and no changes to host units.
+**[smoke-only]** 2026-10-18 smoke in a throwaway, unprivileged Ubuntu 26.04
+container: Python 3.14, GNU `mv` 9.7, uutils `stat` 0.10.0, util-linux
+`flock` 2.41.3, and real `sudo`. Ops is also Ubuntu 26.04, but runs uutils
+`stat` 0.8.0 (GNU `mv` 9.7 and `flock` 2.41.3 match). The container ran on
+ops's Docker under the owner's 2026-10-18 deploy authorization. It used no
+host port and no host mount, and it changed no host unit, file or service.
 It was removed afterwards. The real `deploy_puck_bridge.py` CLI ran over SSH.
 Home was a synthetic local `wss://home.test` endpoint with a throwaway CA.
 The env file held synthetic values created by following Install steps 1-2;
@@ -95,7 +99,10 @@ no household credentials were used. Observed:
   `Device` header;
 - `rollback` swapped `current` and `previous` and the bridge listened again;
 - `systemctl restart` and a container restart brought the enabled unit back
-  with the claim-recovery record unchanged (same sha256);
+  with the claim-recovery record unchanged (same sha256). After a restart
+  the bridge only listens: because a record is present, `server.main` does
+  not reconnect to Home. Only the first start's `conversation.open` proves
+  Home contact;
 - `systemd-analyze verify` accepted the unit.
 
 The smoke found and fixed two defects:
@@ -130,14 +137,14 @@ remain unverified until a VM or the first ops install.
 
 ## Install
 
-1. **[unexercised]** Create the service user and private state directory:
+1. **[smoke-only]** Create the service user and private state directory:
 
    ```bash
    sudo useradd --system --home-dir /var/lib/hermes-puck-bridge --shell /usr/sbin/nologin hermes-puck
    sudo install -d -o hermes-puck -g hermes-puck -m 0700 /var/lib/hermes-puck-bridge
    ```
 
-2. **[unexercised]** Create the env file yourself, on the host, without
+2. **[smoke-only, synthetic values]** Create the env file yourself, on the host, without
    putting values in shell history, the repository or any log:
 
    ```bash
@@ -152,22 +159,31 @@ remain unverified until a VM or the first ops install.
    owner and mode; it never reads or writes values. Do not reuse the browser
    appliance's pairing.
 
-3. **[unexercised]** From the tagged checkout on the operator machine:
+3. **[smoke-only]** From the tagged checkout on the operator machine:
 
    ```bash
    venv/bin/python scripts/deploy_puck_bridge.py deploy --ops-host ops \
      --bind <ops-lan-ip> --home-url wss://<home-host>/api/v1/bridge/ws --tag vX.Y.Z
    ```
 
-4. **[unexercised]** Verify: `systemctl status hermes-puck-bridge`,
+4. **[smoke-only]** Verify: `systemctl status hermes-puck-bridge`,
    `ss -ltnp 'sport = :8766'` shows only `<ops-lan-ip>`, and
    `systemctl status hermes-home-browser` is unchanged.
+5. **[smoke-only]** Confirm the first start reached Home. The journal must
+   show `puck bridge connecting through Home` followed by `listening`, with
+   no `HomeBridgeTransportError`. **If the first start failed to reach Home**
+   (or any first install failed after the unit started), clear the
+   claim-recovery record before retrying:
+   `sudo rm -rf /var/lib/hermes-puck-bridge/.hermes-relay-tui/home-claim-state`.
+   The bridge writes an `active` record before its first Home connect, and
+   later starts never reopen Home while a record exists. Without this step a
+   retry reports "active and listening" without ever connecting to Home.
 
 ## Start, stop, restart
 
-- **[unexercised]** `sudo systemctl restart hermes-puck-bridge` — the unit
+- **[smoke-only]** `sudo systemctl restart hermes-puck-bridge` — the unit
   returns without manual action (`Restart=on-failure`, enabled at boot).
-- **[unexercised]** After a restart or reboot, confirm the claim-recovery file
+- **[smoke-only]** After a restart or reboot, confirm the claim-recovery file
   persists under `/var/lib/hermes-puck-bridge/.hermes-relay-tui/home-claim-state/`
   (mode 0600). Per the blocker above, new claims stay refused after restart.
 - **[unexercised]** `sudo systemctl stop hermes-puck-bridge` stops the bridge;
@@ -175,12 +191,12 @@ remain unverified until a VM or the first ops install.
 
 ## Upgrade
 
-**[unexercised]** Run `deploy` with the new tag. A failed restart or health
+**[smoke-only]** Run `deploy` with the new tag. A failed restart or health
 check restores the previous release automatically and exits non-zero.
 
 ## Rollback
 
-**[unexercised]** Run `rollback` with the same `--bind`, `--port` and
+**[smoke-only]** Run `rollback` with the same `--bind`, `--port` and
 `--home-url` the previous release was installed with:
 
 ```bash
@@ -188,7 +204,9 @@ venv/bin/python scripts/deploy_puck_bridge.py rollback --ops-host ops \
   --bind <ops-lan-ip> --home-url wss://<home-host>/api/v1/bridge/ws
 ```
 
-It refuses when no previous release exists or its saved unit differs.
+It refuses when no previous release exists or its saved unit differs. Rolling
+back does not clear the claim-recovery record. Clear it as in Install step 5
+only if the rolled-back release must open a fresh Home claim.
 
 ## Removal
 
@@ -199,6 +217,9 @@ sudo systemctl disable --now hermes-puck-bridge
 sudo rm /etc/systemd/system/hermes-puck-bridge.service
 sudo systemctl daemon-reload
 sudo rm -rf /opt/hermes-puck-bridge
+# Only when retiring the Puck bridge for good (this also removes bridge.env
+# and the claim-recovery record):
+# sudo rm -rf /var/lib/hermes-puck-bridge
 ```
 
 Delete `/var/lib/hermes-puck-bridge` (credentials, claim records, model
