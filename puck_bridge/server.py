@@ -74,19 +74,9 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help="paired Home bridge URL, ending in /api/v1/bridge/ws",
     )
     parser.add_argument(
-        "--home-conversation-handle",
-        default="",
-        help="opaque Home conversation handle; prefer HOME_CONVERSATION_HANDLE",
-    )
-    parser.add_argument(
         "--home-device-id",
         default=os.getenv("HOME_DEVICE_ID", ""),
         help="Home device id used for wake claims and durable claim recovery",
-    )
-    parser.add_argument(
-        "--home-wake-mapping-id",
-        default=os.getenv("HOME_WAKE_MAPPING_ID", ""),
-        help="wake mapping bound to the initial Home handle",
     )
     parser.add_argument(
         "--home-device-credential-file",
@@ -205,21 +195,11 @@ def main(argv: list[str] | None = None) -> int:
         credential = _read_home_device_credential(args.home_device_credential_file)
         if not credential:
             credential = config.resolve_home_device_credential(profile_env)
-        conversation_handle = str(args.home_conversation_handle or "").strip()
-        if not conversation_handle:
-            conversation_handle = config.resolve_home_conversation_handle(
-                profile_env
-            )
         home_device_id = str(
             getattr(args, "home_device_id", "") or ""
         ).strip()
         if not home_device_id:
             home_device_id = config.resolve_home_device_id(profile_env)
-        home_wake_mapping_id = str(
-            getattr(args, "home_wake_mapping_id", "") or ""
-        ).strip()
-        if not home_wake_mapping_id:
-            home_wake_mapping_id = config.resolve_home_wake_mapping_id(profile_env)
         missing = []
         if not home_url:
             missing.append("--home-url/HOME_BRIDGE_WS_URL")
@@ -227,8 +207,6 @@ def main(argv: list[str] | None = None) -> int:
             missing.append(
                 "--home-device-credential-file/HOME_DEVICE_CREDENTIAL"
             )
-        if not conversation_handle:
-            missing.append("--home-conversation-handle/HOME_CONVERSATION_HANDLE")
         if not home_device_id:
             missing.append("--home-device-id/HOME_DEVICE_ID")
         if missing:
@@ -243,34 +221,30 @@ def main(argv: list[str] | None = None) -> int:
                 home_url, home_device_id, credential,
             )
             recovery_record = home_recovery_state.load()
+            connect_home_session = False
             if recovery_record is None:
-                home_recovery_state.record_active(
-                    conversation_handle, home_wake_mapping_id
-                )
-                active_handle = conversation_handle
-                active_mapping_id = home_wake_mapping_id
+                session = None
+                home_claim_retired = True
+                home_claim_close_confirmed = True
             else:
-                # Process-local recovery latches die at reboot. A persisted
-                # claim is never reopened as an active conversation.
-                active_handle = recovery_record.conversation_handle
-                active_mapping_id = recovery_record.wake_mapping_id
-                connect_home_session = False
+                # Saved claims are control-only retirement owners, never
+                # startup authorization to resume audio or turn delivery.
+                session = HomePuckSession(
+                    home_url,
+                    credential,
+                    recovery_record.conversation_handle,
+                    resume_uncertain_turn=False,
+                    wake_mapping_id=recovery_record.wake_mapping_id,
+                )
                 home_claim_retired = recovery_record.status != "active"
                 home_claim_close_confirmed = recovery_record.status == "retired"
-            session = HomePuckSession(
-                home_url,
-                credential,
-                active_handle,
-                resume_uncertain_turn=False,
-                wake_mapping_id=active_mapping_id,
-            )
             home_claim_factory = HomePuckSessionFactory(
                 home_url,
                 credential,
                 home_device_id,
-                # The Puck has no production calibrated-evidence provider.
-                # This keeps current-claim wakes working and denies every
-                # replacement claim after retirement before asking Home.
+                # Strict wake still requires a qualified hardware provider.
+                # Only an explicit Home-approved paired-room policy can
+                # select the separate score-free admission contract.
                 evidence_provider=None,
                 recovery_state=home_recovery_state,
                 identity_state=identity_state,

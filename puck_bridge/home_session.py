@@ -635,12 +635,14 @@ class HomePuckSession:
         session_label: str = "Puck",
         wake_mapping_id: str = "",
         wake_configuration_revision: int | None = None,
+        wake_admission_mode: str = "",
     ) -> None:
         self.url = require_home_bridge_url(url)
         self.device_credential = str(device_credential).strip()
         self._conversation_handle = str(conversation_handle).strip()
         self.wake_mapping_id = str(wake_mapping_id).strip()
         self.wake_configuration_revision = wake_configuration_revision
+        self.wake_admission_mode = wake_admission_mode
         if not self.device_credential:
             raise ValueError("Home Device credential is required")
         if not self._conversation_handle:
@@ -1461,6 +1463,7 @@ class HomePuckSession:
         except Exception as exc:
             logger.warning("Puck Home claim close was not confirmed (%s)", type(exc).__name__)
             self._claim_retired = True
+            await self.close()
             return False
         self._claim_retired = True
         self._retirement_confirmed = True

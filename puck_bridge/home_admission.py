@@ -1,9 +1,10 @@
 """Pre-capture Home wake claims for a recovered Puck conversation.
 
-A capture-authorizing handle must have a verified Home wake grant whose
-configuration revision still matches. Replacement handles require trusted,
-fresh calibrated proximity evidence; with no provider admission refuses
-before requesting a claim. Confirmed credential refusal survives restart.
+A capture-authorizing handle must have a verified Home grant whose configuration
+revision still matches. Strict wake requires fresh trusted calibrated evidence;
+explicit Home paired-room approval uses its separate score-free contract.
+Confirmed credential refusal survives restart; owned close receipts recover
+persisted paired claims without fabricating authority.
 """
 
 from __future__ import annotations
@@ -210,6 +211,7 @@ class HomeClaimHTTPError(Exception):
             "unauthorized", "credential_revoked", "device_revoked", "forbidden",
             "claim_denied", "stale_configuration", "stale_mapping",
             "service_unavailable", "configuration_migration_required",
+            "conversation_active", "duplicate_claim", "invalid_request",
         } else "unknown"
         super().__init__(f"Home HTTP request failed ({status}, {self.code})")
 
@@ -256,6 +258,7 @@ class HomePuckSessionFactory:
         self.recovery_state = recovery_state
         self.identity_state = identity_state
         self.identity_rejected = bool(identity_state and identity_state.is_rejected())
+        self._pending_session: HomePuckSession | None = None
 
     def reject_identity(self) -> None:
         self.identity_rejected = True
@@ -348,8 +351,7 @@ class HomePuckSessionFactory:
         """Admit a fresh wake only after its new Home session is verified."""
         if self.identity_rejected:
             return HomeAdmissionResult("identity_rejected", reason="home_identity_rejected")
-        if self.evidence_provider is None:
-            return HomeAdmissionResult("denied", reason="calibration_unavailable")
+
         if not self.device_id or not self.device_credential:
             return HomeAdmissionResult("denied", reason="device_configuration_missing")
 
@@ -365,10 +367,12 @@ class HomePuckSessionFactory:
 
         try:
             async with asyncio.timeout(HOME_WAKE_ADMISSION_TIMEOUT_SECONDS):
-                evidence = await self._fresh_evidence(wake_phrase)
-                if not _valid_evidence(evidence, now_ms=int(time.time() * 1000)):
-                    return HomeAdmissionResult("denied", reason="invalid_proximity_evidence")
-
+                # Retain the actual granted control owner until its close is
+                # confirmed, including when a cancelled waiter lost the result.
+                if self._pending_session is not None:
+                    previous_handle = self._pending_session.conversation_handle
+                    if not await self._retire_granted_session(self._pending_session):
+                        return HomeAdmissionResult("denied", reason="claim_retirement_unconfirmed")
                 configuration = await self._request(
                     "GET",
                     self._device_configuration_url(),
@@ -385,23 +389,52 @@ class HomePuckSessionFactory:
                     "device_id": self.device_id,
                     "wake_mapping_id": mapping["id"],
                     "configuration_revision": revision,
-                    "observation": {
-                        "detector": "device-local",
-                        "observed_at_ms": evidence.observed_at_ms,
-                    },
-                    "acoustic_evidence": {
-                        "kind": "opaque-v1",
-                        "value": evidence.value,
-                    },
-                    "availability": "ready",
                 }
+                policy = configuration["snapshot"].get("wake_admission")
+                paired_room = "wake_admission" in configuration["snapshot"]
+                if paired_room:
+                    if (
+                        not isinstance(policy, dict)
+                        or policy.get("mode") != "paired_room"
+                        or set(policy) != {"mode", "room_id", "wake_mapping_ids"}
+                        or not isinstance(policy.get("room_id"), str)
+                        or not policy["room_id"].strip()
+                        or not isinstance(policy.get("wake_mapping_ids"), list)
+                        or not policy["wake_mapping_ids"]
+                        or any(
+                            not isinstance(value, str) or not value.strip()
+                            for value in policy["wake_mapping_ids"]
+                        )
+                        or len(set(policy["wake_mapping_ids"])) != len(policy["wake_mapping_ids"])
+                        or mapping["id"] not in policy["wake_mapping_ids"]
+                    ):
+                        return HomeAdmissionResult("denied", reason="invalid_admission_policy")
+                    claim["initiation"] = {"kind": "wake_word"}
+                    claim_route = "paired-room-claims"
+                else:
+                    if self.evidence_provider is None:
+                        return HomeAdmissionResult("denied", reason="calibration_unavailable")
+                    evidence = await self._fresh_evidence(wake_phrase)
+                    if not _valid_evidence(evidence, now_ms=int(time.time() * 1000)):
+                        return HomeAdmissionResult("denied", reason="invalid_proximity_evidence")
+                    claim.update({
+                        "observation": {
+                            "detector": "device-local",
+                            "observed_at_ms": evidence.observed_at_ms,
+                        },
+                        "acoustic_evidence": {"kind": "opaque-v1", "value": evidence.value},
+                        "availability": "ready",
+                    })
+                    claim_route = "wake-claims"
                 result = await self._request(
                     "POST",
-                    f"{self.api_base_url}/wake-claims",
+                    f"{self.api_base_url}/{claim_route}",
                     payload=claim,
                     timeout=min(HOME_HTTP_REQUEST_TIMEOUT_SECONDS, remaining()),
                 )
                 handle = _validate_grant(result, claim_id, revision)
+                if paired_room and result.get("admission_mode") != "paired_room":
+                    raise ValueError("Home grant changed admission mode")
                 if handle is None:
                     return HomeAdmissionResult("denied", reason="claim_denied")
                 if handle == previous_handle:
@@ -417,13 +450,16 @@ class HomePuckSessionFactory:
                     session_label="Puck",
                     wake_mapping_id=mapping["id"],
                     wake_configuration_revision=revision,
+                    wake_admission_mode="paired_room" if paired_room else "",
                 )
+                self._pending_session = granted_session
                 if self.recovery_state is not None:
                     self.recovery_state.record_active(handle, mapping["id"])
                 await asyncio.wait_for(granted_session.connect(), timeout=remaining())
                 if not granted_session.is_connected():
                     await self._retire_granted_session(granted_session)
                     return HomeAdmissionResult("denied", reason="fresh_session_unverified")
+                self._pending_session = None
                 return HomeAdmissionResult(
                     "admitted", session=granted_session, reason="granted"
                 )
@@ -482,7 +518,9 @@ class HomePuckSessionFactory:
             logger.warning(
                 "Unusable Home grant could not be retired (%s)", type(exc).__name__
             )
-            return False
+            confirmed = False
+        if not confirmed and session.wake_admission_mode == "paired_room":
+            confirmed = await self.close_paired_claim(handle)
         if self.recovery_state is not None:
             try:
                 self.recovery_state.record_retired(
@@ -494,7 +532,29 @@ class HomePuckSessionFactory:
                     type(exc).__name__,
                 )
                 return False
+        if confirmed and self._pending_session is session:
+            self._pending_session = None
         return confirmed
+
+    async def close_paired_claim(self, handle: str) -> bool:
+        """Require Home's authoritative receipt for an owned persisted paired claim."""
+        if not handle or self.identity_rejected:
+            return False
+        try:
+            result = await self._request(
+                "POST", f"{self.api_base_url}/paired-room-claims/close",
+                payload={"schema": 1, "conversation_handle": handle},
+                timeout=HOME_HTTP_REQUEST_TIMEOUT_SECONDS,
+            )
+            return bool(
+                type(result.get("schema")) is int and result["schema"] == 1
+                and result.get("conversation_handle") == handle
+                and result.get("admission_mode") == "paired_room"
+                and result.get("status") == "closed"
+            )
+        except Exception as exc:
+            logger.warning("Owned paired Home retirement unconfirmed (%s)", type(exc).__name__)
+            return False
 
     async def _fresh_evidence(self, wake_phrase: str) -> CalibratedProximityEvidence | None:
         provider = self.evidence_provider
@@ -651,6 +711,8 @@ def _request_json(
     request = urllib.request.Request(url, data=body, headers=headers, method=method)
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:
+            if response.status != 200:
+                raise HomeClaimHTTPError(response.status)
             raw = response.read(HOME_MAX_RESPONSE_BYTES + 1)
     except urllib.error.HTTPError as exc:
         try:

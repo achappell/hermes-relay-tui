@@ -49,3 +49,5 @@ Independent firmware-owner review read the complete merge diff and actual produc
 - Temporary nonzero synthetic example secrets were removed afterward; generated images must never be deployed. No live credentials, microphone, host or hardware action was used.
 
 Original standalone routing/capture smoke above remains historical evidence, not a newly rerun smoke. The current merged real-source native regressions, signed P-8 fixture, configuration and actual firmware builds are the new merge evidence. Physical acceptance remains OPEN.
+
+Latest main fb1fe6f (254 landed): independent paired-consumer/P10 coexistence review CLEAN. Focused192passed6.39s; full2343passed/2skipped/2knownBashdeselected/6warnings353.16s; default/Home ESPHome2026.9.1 compile PASS RAM117063,flash1861595/1861591. Synthetic secrets removed; no hardware actions. diff-check passed.

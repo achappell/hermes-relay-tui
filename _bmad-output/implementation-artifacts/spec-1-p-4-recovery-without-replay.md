@@ -169,3 +169,17 @@ Verification on 2026-09-23: focused bridge, Home, firmware, HandsFree, and confi
 - 2026-09-23: Review clarified Home cleanup, per-wake claim acquisition, and fail-closed behavior while calibrated evidence is unavailable.
 - 2026-09-23: Code review found Home authorization was acquired after Puck recording and transcription. Clarified pre-capture Home admission and firmware refusal/lockout, avoiding audio capture without a current grant. KEEP: fresh direct Hermes sessions, bounded Home claim retirement, event discard, claim-response validation, initial upload refusal, and no-replay coverage.
 - 2026-09-23: Review found the volatile status-fed Home admission latch can be missed after idle loss, a delayed or expired terminal status, or reboot. Clarified an admission check before every Home capture, fail-closed handling for missing responses, and preservation of direct Hermes capture. KEEP: fresh direct Hermes sessions, bounded Home claim retirement, event discard, claim-response validation, initial upload refusal, and no-replay coverage.
+
+## Owner-approved paired-room amendment — 2026-10-19
+
+The owner explicitly renegotiated the calibrated-proximity prerequisite only for
+the Home-approved Living Room Puck / Hey Missy paired-room mode. The original
+frozen text above remains historical; strict endpoints still require qualified
+trusted evidence, with no synthetic score or global bypass. The current explicit
+Home policy, fresh per-physical-wake grant, session-less startup and authoritative
+owned-retirement consumer are specified in
+[the implementation amendment](spec-p4-home-fresh-startup.md), with
+[local validation and open physical gates](validation-p4-home-paired-room-full-turn.md).
+Revocation, pre-capture Home readiness, mapping/revision verification, bounded
+retirement and no-replay remain required. This amendment does not claim physical
+full-turn acceptance or close the other complete 3-P stories.
