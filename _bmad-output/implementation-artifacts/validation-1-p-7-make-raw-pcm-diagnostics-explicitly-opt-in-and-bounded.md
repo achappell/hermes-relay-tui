@@ -43,3 +43,23 @@ Controlled hardware check, not performed:
 - Mutation check: removing the exporter-discard `captures_exported++` fails only the first new test, and removing the post-upload increment fails only the second. The header was restored afterwards.
 - README/spec wording: after authorization loss, the window is dropped and never exported. PSRAM is not zeroed, only overwritten later, and diagnostics stay stopped until reboot.
 - Reran `venv/bin/pytest -q tests/test_puck_firmware.py -rs`: **20 passed**, including the ESPHome config gate. `esphome compile` passed for both the default and the opt-in variants, with no `pcm_capture.h` warnings (flash 1,860,467 / 1,860,827 B).
+
+## Partial hardware evidence (2026-10-18)
+
+Physical Puck: XIAO ESP32-S3, 8 MB flash, USB-Serial/JTAG on `/dev/cu.usbmodem101`. All logs, the build and the flash backup are kept privately outside the repository, with SSIDs and keys redacted.
+
+- **Before flashing:** the device ran ESPHome 2026.8.2, compiled 2026-09-12. Its boot log showed `Allocated 256000 bytes of PSRAM for PCM capture`, which is the pre-P-7 always-on buffer. The whole 8 MB flash was read back over USB (`esptool --no-stub read-flash`) and checksummed (sha256 prefix `c5a12279`). A second read of the app region matched it byte for byte. The original credentials were not recoverable, so the device was re-keyed with newly generated private secrets.
+- **Flashed:** a private build of 3-P-5 source `21223b44` (PR #249). That source contains merged P-7 (`95809e1`). The build was compiled with ESPHome 2026.9.1, `puck_home_transport=true`, `puck_pcm_diagnostics=false` and bridge `192.168.0.4:8766`. factory.bin is 1,926,784 B (sha256 prefix `0794019a`). The USB write reported 1,926,784 bytes written and `Hash of data verified`.
+- **First boot, 45 s serial capture** (step A of the gate, partial):
+  - `ESPHome version 2026.9.1 compiled on 2026-10-18 22:37:58`
+  - `raw PCM diagnostics disabled (default) -- no capture buffer allocated`
+  - no `256000`-byte allocation; only the wake buffer (`Allocated 1024000 bytes of PSRAM for wake capture`)
+  - 0 `PCMDUMP` lines and 0 `/upload` requests
+  - Wi-Fi joined (`IP Address: 192.168.0.184`) after two `Connecting to network failed` retries
+  - API port 6053 and web port 80 accept TCP from ops and from this Mac.
+- **Not yet done:**
+  - The step A wake round trip. It is blocked: no Puck bridge is deployed (P-HOME-01, PR #250), Home has no room-device pairing route, and the P-4 calibrated proximity provider is missing. Under 3-P-5 the Home-mode build refuses before capture while admission is absent.
+  - Step B (opt-in bounded capture) was deliberately not run. It records ambient microphone audio and needs the owner present.
+  - Step C will be a reflash only if an opt-in build is ever installed. The device is not on an opt-in build.
+
+The P-7 hardware gate remains open. Status stays `review`.

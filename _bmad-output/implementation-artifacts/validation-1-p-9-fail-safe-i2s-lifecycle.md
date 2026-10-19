@@ -37,3 +37,16 @@ Checkpoint authority is **delegated unattended implementation**, not newly fabri
 Only the hardware-owning session may deploy a reviewed commit with installation-owned configuration; never deploy the generated synthetic-example image. Keep `puck_pcm_diagnostics=false` and its URL empty. Record exact build/device identity, verify normal boot/wake/VAD/upload/full audible response/clean next wake, and observe contextual RX lifecycle state during a controlled stop/start. Any hardware fault injection must remain under that owner's procedure. No low-level fault-injection hardware result is claimed here. Calibrated trusted-proximity evidence remains locked and its missing provider remains a separate rollout blocker; no confidence/fixed-score/touch substitute was introduced.
 
 Disposition: **done-with-deferred-gate** for software, with spec/tracker deliberately `in-review` / `review` while controlled physical acceptance is open. Temporary compile secrets and throwaway smoke source/binaries were removed; observed logs and permanent real-source regression remain.
+
+## Main/P-8 reconciliation (2026-10-19)
+
+Normal merge of `origin/main` at `cce15704457a51ed587b30bd6d780e106da629f5`, without rebase/force. Manual conflicts were `CHANGELOG.md`, `deferred-work.md`, `sprint-status.yaml`, `surface-coverage-matrix.md` and the firmware README; kept delivered P-9 evidence and main's P-8 evidence together. The merged I2S runtime source is byte-identical to the pre-merge P-9 source, which already inherited P-8. Existing untracked `venv` / `venv-firmware` entries were preserved.
+
+Independent firmware-owner semantic review read the complete merge diff and actual source: no substantiated regression. Verified P-8 per-task decimator pending bytes and 0/3/6 frame phase, strict external48k/stereo32/no-DC format, signed magnitude and default diagnostics-off; verified P-9 stage/error retention, enabled-channel cleanup, single owned-lock release and pending-task guard. Reviewer ran no checks and granted no hardware authority.
+
+- Focused `python -m pytest -q tests/test_respeaker_i2s.py tests/test_respeaker_pcm.py tests/test_puck_firmware.py`: **23 passed** (3.75s).
+- Full `python -m pytest -q` with exactly the two known macOS Bash 3.2 deployment cases deselected: **2197 passed, 2 skipped, 2 deselected**, six existing websockets warnings (333.23s).
+- Actual default and `-s puck_home_transport true` ESPHome compiles both passed under **2026.9.1 / ESP-IDF 5.5.5**. RAM **117039 bytes** both; flash **1860899 / 1860903 bytes**. Config hashes **0x7110dac6 / 0xad9a6c7e**, build times **2026-10-19 11:49:29 / 11:49:44 -0500**. Existing GPIO3 and OTA-password warnings remain. `git diff --check` passed.
+- Initial focused attempt: **22 passed, 1 failed** because ESPHome 2026.9 rejects the public all-zero example API key. Replaced only the temporary example key with an explicit nonzero synthetic value; no product/test change or suppression. Full/build chain did not run on the failed attempt. Temporary example secrets were removed after successful checks; generated images must never be deployed.
+
+The earlier actual-source standalone lifecycle smoke remains applicable to the unchanged runtime source; it was not represented as a new smoke run. Physical acceptance remains OPEN; no live action occurred.

@@ -50,7 +50,8 @@ development_status:
   3-p-4-participate-in-single-winner-wake-arbitration-and-remain-sil: backlog
   3-p-5-reject-revoked-unavailable-or-unverified-identity-before-cap: backlog
   3-p-6-retire-revoked-credentials-and-require-the-ordered-setup-flo: backlog
-  standard-6-puck-migrate-respeaker-puck-path: done
+  standard-6-puck-migrate-respeaker-puck-path: done # implementation merged; deferred live Home/Puck gate open (spec frontmatter `deferred`)
+  p-home-01-deploy-puck-bridge-on-ops: backlog # draft 2026-10-18; ops deployment tooling + rollout runbook only
   standard-7-esp32-add-touch-display-audio-session-adapter: done
   standard-8-wk-migrate-browser-and-ipad-routes: done
   wk-home-01-migrate-production-browser-to-homebridge: in-progress # typed-browser rollout deployed and verified; R6/R7 retirement remain open

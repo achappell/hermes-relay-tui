@@ -132,7 +132,6 @@ unchanged. Physical lifecycle/wake/playback regression remains a separate
 controlled-hardware gate.
 
 ---
-
 ## Build & Flashing
 
 ESPHome lives in its own dedicated venv (`venv-firmware/`, Python 3.12),
