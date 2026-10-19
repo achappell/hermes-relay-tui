@@ -3,7 +3,7 @@ id: P-HOME-01
 title: 'Deploy the Puck bridge to ops as a systemd service and write the Puck Home rollout runbook'
 type: 'feature'
 created: '2026-10-18'
-status: 'draft'
+status: 'review'
 route: 'dispatch'
 story_key: 'p-home-01-deploy-puck-bridge-on-ops'
 baseline_commit: '95809e1'
@@ -19,7 +19,7 @@ context:
 
 # P-HOME-01 — Puck bridge on ops: deployment and rollout runbook
 
-Draft scope only. Nothing is implemented, deployed or flashed.
+Tooling, unit, tests and runbook are implemented. Nothing is deployed or flashed.
 
 ## Intent
 
@@ -91,9 +91,12 @@ provider). Production wiring passes no provider (`puck_bridge/server.py:269`),
 so every wake after a claim is retired, the bridge restarts with a
 non-active record, or Home restarts is refused
 (`puck_bridge/home_admission.py:247-248`). This story neither resolves nor
-reopens that decision. Until the provider exists, a deployed bridge serves
-only its initially configured claim, and the rollout cannot show service
-that survives restarts.
+reopens that decision. Released bridges up to `v0.13.1` (the releases
+exercised in this story's smoke) serve only their initially configured claim
+until the provider exists. 3-P-5 (PR #249, unreleased) binds admission to a
+Home wake-configuration revision that only a calibrated fresh admission
+sets, so it serves no claim at all without the provider. Either way, the rollout cannot
+show service that survives restarts.
 
 ## Prerequisites and gates
 
@@ -129,6 +132,34 @@ owning story, not here:
   direct-Hermes fallback.
 - Repository checks for the new script and its tests pass.
 
+## Tasks
+
+- [x] `scripts/deploy_puck_bridge.py deploy|rollback`: tagged build, `releases/<sha>`
+  with atomic `current`/`previous`, lock, overwrite refusal, automatic rollback
+  on restart or health failure, pre-activation cleanup of the new release and
+  staging upload, stale `current.next` removal, only `hermes-puck-bridge.service`; `--bind` LAN
+  IPv4 only, `--port` default 8766 (8765/8875 refused), `--transport home` only,
+  `--home-url` exact Home bridge URL with port 1-65535.
+- [x] Hardened unit rendered by the script (user `hermes-puck`, state dir 0700,
+  `EnvironmentFile` in the state dir with an `ExecStartPre` presence/owner/mode
+  check, `HOME`/`XDG_CACHE_HOME`/`HF_HOME` under the state dir, LAN-only bind,
+  no secret values).
+- [x] `tests/test_deploy_puck_bridge.py`: unit content and flags against the real
+  bridge parser, argument validation, embedded remote script run locally with
+  fake privileged commands (deploy, overwrite, automatic rollback, rollback,
+  preconditions, lock), `ExecStartPre` check. No network.
+- [x] `docs/puck-ops-deployment.md` with every step labelled; firmware README
+  pointer; CHANGELOG.
+- [ ] Disposable Linux run: partial, PID-1 systemd and reboot are outstanding. A 2026-10-18 unprivileged Ubuntu 26.04
+  container smoke ran the real CLI with real GNU/uutils tools and sudo. It
+  covered deploy, upgrade, rollback, precondition refusal, first-deploy
+  failure cleanup, restart and container-restart persistence, and synthetic
+  Home authentication. It found and fixed the first-deploy `previous` defect
+  (also seen in CI) and the stranded staging directory after a failed upload.
+  See `docs/puck-ops-deployment.md`.
+- [ ] PID-1 systemd sandboxing and a true host reboot. Unexercised: this
+  needs a privileged container or a VM, which is not available without
+  elevating privileges on a shared host.
 ## Never
 
 - Implement pairing, renewal, admission, evidence or arbitration behavior.
@@ -148,6 +179,17 @@ owning story, not here:
 - Renewal of the bridge's Home credential: 3-P-2/3-P-6 and MIG-09 AC-5 cover
   credential application and renewal acceptance, but no story names the
   bridge-side renewal implementation. Owner to assign.
+- **Blocker for the P-4/STD-6 owner** (bridge behavior, not changed here):
+  the smoke showed that `server.main` persists an `active` claim-recovery
+  record before the first Home connect. If that first connect fails (a TLS
+  failure in the smoke), every later start treats the record as a persisted
+  claim and never reopens Home. The fix must come from verified retirement
+  plus fresh calibrated admission, never from erasing state. This story's
+  runbook forbids operators from deleting or editing the record. Only a full
+  device retirement after explicit Home credential revocation may remove
+  retained state, and that procedure sits outside the deploy helper. After a
+  failed first deploy, re-running `deploy` is not a recovery: the leftover
+  record makes the bridge listen without ever contacting Home.
 - STD-6 tracker/spec status was reconciled on 2026-10-18 (see STD-6 spec
   note); confirm the owner accepts done-with-deferred-gate.
 
@@ -155,3 +197,13 @@ owning story, not here:
 
 Code: `tui:STD-6`, `tui:P-4`, `tui:P-6`. Rollout: `home:HOME-NW-17-room-device-admission`,
 `tui:3-P-2`, the P-4 trusted provider. Feeds hermes-relay-home MIG-09 AC-5.
+
+## Main reconciliation verification (2026-10-19)
+
+Normal merge of `origin/main` at `cce15704457a51ed587b30bd6d780e106da629f5`, without rebase/force. The worktree was clean before the merge. Manual conflicts were this spec, `sprint-status.yaml` and `story-index.yaml`; retained the implemented tooling/review evidence and all main refinements, including the explicit state-directory `HOME` binding, rollout-time port reconfirmation, exact persistence acceptance and STD-6 deferred-gate distinction. No runtime code conflicted.
+
+- `python -m pytest -q tests/test_deploy_puck_bridge.py tests/test_puck_bridge_shutdown.py`: **106 passed** (7.34s).
+- Full `python -m pytest -q` with only the two previously reported macOS Bash 3.2 `test_ops_web_deployment.py` cases deselected: **2263 passed, 4 skipped, 2 deselected**, six existing websockets deprecation warnings (347.05s).
+- `git diff --check` passed. No live host action, deployment, microphone access or firmware flash occurred.
+
+The original release-only helper contract and historical smoke/rollout gates above are unchanged. PRs #249 and #254 separately own the newer identity and explicitly Home-approved paired-room/session-less behavior; this merge does not claim those consumer changes or close their physical gates.
