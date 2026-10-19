@@ -5,4 +5,6 @@ python-dotenv>=1.0.1
 PyYAML>=6.0
 numpy>=2.0
 faster-whisper>=1.2.1
+# Keep the WAV decoder compatible with faster-whisper's metadata_errors call.
+av<19
 keyring>=25.0

@@ -114,3 +114,14 @@ Independent startup edits precede dependent mode edits under parent authorizatio
 - Actual cross-repository local Home API smoke: seven scenarios passed through HomeApplication, SQLite credential enrollment/approval/consume, configuration and persistent grant store over loopback HTTP. Verified real paired grant, idempotent exact owned-close receipt, unknown-handle non-confirmation, duplicate-claim denial, policy-removal strict refusal and close after policy removal. Evidence `/var/folders/cb/3pkc1ncx58j1xq63ktd8xftw0000gn/T/hermes-puck-paired-api-smoke-o2sjowb9/observed.json`. No Standard or physical audio exercised.
 - Remaining required rollout evidence: real gateway capabilities/actual TTS PCM format and physical wake/STT/Amanda/TTS/playback through the designated live custodians. Code publication is authorized with this gate OPEN, not full-goal closure.
 - No full turn, gateway, firmware change/compile, host mutation or new PR claimed yet.
+
+## Corrective delivery — real WAV decoder dependency (2026-10-19)
+
+Owner-authorized continuation of this full-turn slice, not a new story or policy: the first real physical wake/grant/capture/upload reached STT, where faster-whisper 1.2.1 with freshly resolved PyAV 19.0.1 failed because `av.open(metadata_errors=...)` is no longer supported. Preserve all frozen admission/recovery/no-replay requirements; do not tune gain/VAD or catch/suppress the failure.
+
+- [x] Check the latest released upstream faster-whisper (still 1.2.1) and PyAV's documented version-19 API removal; constrain `av<19` in both existing voice dependency entry points (`pyproject.toml`, `requirements.txt`). No Python dependency lock exists here.
+- [x] Add a no-mock real WAV decoder regression in `tests/test_mic.py`: given installed voice support, decode synthetic mono S16/16k WAV through actual faster-whisper and assert all float32 samples; skip only when the package is absent, not when an installed decoder is broken.
+- [x] Fresh isolated voice-extra resolution, focused/full regression and independent spec/code review; real production receiver WAV-conversion → decoder smoke, without a microphone/model or retained synthetic WAV.
+- [ ] Custodial compatible-dependency application and another explicitly authorized physical window remain separate rollout gates. Exact-head wheel/metadata/hash and workflow-dispatch CI evidence are recorded on PR #254 before that cutover.
+
+Independent spec and actual-code review found no substantiated issue. This correction does not claim an end-to-end physical turn; the failed physical audio is not retained or replayed. Exact observed checks and upstream sources are recorded in validation.

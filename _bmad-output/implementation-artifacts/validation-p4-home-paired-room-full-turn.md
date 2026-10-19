@@ -108,3 +108,23 @@ Merged updated PR #249 branch at `c0b318f447abe14f5bf6119a3a897354d18886fe`, whi
 - `git diff --check` passed. The additional main/P-8 Python firmware-boundary test needs this worktree's absent firmware environment; the existing native signed PCM fixture ran in the full suite.
 
 Earlier actual CLI/API smoke and independent implementation reviews above remain the behavior evidence; this source-only reconciliation adds no physical acceptance or live operations. The newly built exact-head wheel supersedes the earlier `d5cb6c5` deployment artifact; deployment still requires both exact-source CI success and the coordinator's approved plan.
+
+## Real physical STT failure and dependency correction (2026-10-19)
+
+User-reported ground truth: physical wake, fresh Home grant, capture and upload worked, then faster-whisper **1.2.1** / PyAV **19.0.1** failed in `decode_audio` because `av.open` rejected `metadata_errors`. No Standard turn/TTS followed that failed STT. The known failure was not rerun merely to confirm it; no physical audio/transcript was read, copied or replayed by this worker.
+
+Upstream evidence:
+
+- [Latest released faster-whisper v1.2.1](https://github.com/SYSTRAN/faster-whisper/releases/tag/v1.2.1), confirmed through its latest-release API; [released decoder](https://github.com/SYSTRAN/faster-whisper/blob/v1.2.1/faster_whisper/audio.py#L46) still passes `metadata_errors`.
+- [Official PyAV 19 changelog](https://pyav.basswood.io/docs/stable/development/changelog.html#v19-0-0) explicitly removes `metadata_errors` / `metadata_encoding` from `av.open`; [PyAV 18 API](https://github.com/PyAV-Org/PyAV/blob/v18.0.0/av/container/core.pyi) accepts them.
+
+Added `av<19` to the existing optional voice extra and direct requirements; retained faster-whisper's transitive minimum instead of inventing a new lower bound. No Python lock file is present. No runtime workaround, exception suppression, admission, gain, VAD or recovery change.
+
+Observed fresh private **Python 3.14.8** environment: `uv pip install '.[voice]' -r requirements-dev.txt` resolved **faster-whisper 1.2.1 / av 18.1.0**. `uv pip check` passed.
+
+- Focused `python -m pytest -q tests/test_mic.py tests/test_puck_bridge.py`: **153 passed** (156.79s), including the new real decoder test, not a skipped optional test.
+- Full `python -m pytest -q` with only the same two Bash 3.2 cases named above deselected: **2270 passed, 4 skipped, 2 deselected**, six existing websockets deprecation warnings (336.49s). `git diff --check` passed. Combined install/check log: `artifact://3689`.
+- Beyond-test actual production `raw_stereo32_to_wav` → real `faster_whisper.audio.decode_audio` smoke: **1600 source frames → 1600 float32 samples**, exact signed expected values, compatible av18.1.0/faster-whisper1.2.1. Synthetic channel-1/gain-4 input only; temporary WAV explicitly removed, no microphone or model loaded.
+- Independent spec and actual-code review: **no substantiated findings**. Reviewer checked real WAV/sample assertions, absent-package-only skip and both dependency entry points; reviewer ran no checks.
+
+Deployment must apply compatible **av18.1.0** as well as the new wheel: `--no-deps` on the wheel alone leaves an existing av19 installation broken. The live custodian owns targeted dependency application, old-environment backup, graceful stop/authoritative owned-close confirmation if needed, and the next explicitly authorized physical window. Never erase recovery state or use 404 as retirement proof. Physical full-turn acceptance remains OPEN.
