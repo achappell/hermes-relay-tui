@@ -2475,6 +2475,31 @@ class HomeBrowserSession(HomePuckSession):
                 yield event
         yield {"type": "turn_end"}
 
+    def _audio_event(
+        self,
+        params: dict[str, Any],
+        turn_id: str,
+        *,
+        audio_started: bool,
+        audio_ended: bool,
+    ) -> dict[str, Any] | None:
+        """Report Home's explicit audio fallback/unavailable frame as non-fatal.
+
+        Only the validated ``fallback``/``unavailable`` frame kinds reach the
+        ``audio_abort`` branch of the base implementation; every malformed or
+        mismatched frame raises there and still does. The base turn loop
+        latches ``audio_failed`` for any non-start/non-end audio event, so the
+        renamed event keeps dropping later audio. Transport loss and timeouts
+        are yielded by the turn loop itself as ``audio_abort`` and stay fatal
+        for the browser.
+        """
+        event = super()._audio_event(
+            params, turn_id, audio_started=audio_started, audio_ended=audio_ended
+        )
+        if event is not None and event["type"] == "audio_abort":
+            return {"type": "audio_unavailable", "reason": event["error"]}
+        return event
+
 
 __all__ = [
     "HOME_BRIDGE_PATH",
