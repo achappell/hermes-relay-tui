@@ -25,6 +25,8 @@ voice = [
   "sounddevice>=0.4.6",
   "numpy>=2.0",
   "faster-whisper>=1.2.1",
+  # faster-whisper 1.2.1 uses av.open(metadata_errors), removed in PyAV 19.
+  "av<19",
 ]
 
 # Appliance-only. AGENTS.md keeps front-end-specific dependencies out of the

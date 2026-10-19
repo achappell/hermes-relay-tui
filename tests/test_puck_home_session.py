@@ -2072,21 +2072,26 @@ async def test_unconfirmed_puck_claim_can_retry_control_close_once():
 
 
 @pytest.mark.asyncio
-async def test_home_fresh_claim_denies_before_home_request_without_evidence():
+async def test_home_strict_fresh_claim_fetches_policy_but_does_not_claim_without_evidence():
     calls = []
     factory = HomePuckSessionFactory(
         f"wss://home.example{HOME_BRIDGE_PATH}",
         "device-secret",
         "puck-1",
         evidence_provider=None,
-        request_json=lambda *args, **kwargs: calls.append((args, kwargs)) or {},
+        request_json=lambda *args, **kwargs: calls.append((args, kwargs)) or {
+            "schema": 1, "snapshot": {
+                "revision": 4,
+                "wake_mappings": [{"id": "hey-missy", "phrase": "Hey Missy"}],
+            },
+        },
     )
 
     result = await factory.admit_wake("hey missy")
 
     assert result.status == "denied"
     assert result.reason == "calibration_unavailable"
-    assert calls == []
+    assert len(calls) == 1 and calls[0][0][0] == "GET"
 
 
 @pytest.mark.asyncio
@@ -2094,7 +2099,7 @@ async def test_home_fresh_claim_denies_before_home_request_without_evidence():
     "case",
     ["stale", "future", "negative", "too_large", "nan", "infinite", "blank_id", "bool"],
 )
-async def test_home_fresh_claim_rejects_invalid_evidence_before_home_request(case):
+async def test_home_strict_fresh_claim_rejects_invalid_evidence_before_claim(case):
     now_ms = int(time.time() * 1000)
     value = 0.8
     calibration_id = "calibration-1"
@@ -2124,14 +2129,19 @@ async def test_home_fresh_claim_rejects_invalid_evidence_before_home_request(cas
         evidence_provider=lambda _phrase: CalibratedProximityEvidence(
             value, calibration_id, observed_at_ms
         ),
-        request_json=lambda *args, **kwargs: requests.append((args, kwargs)) or {},
+        request_json=lambda *args, **kwargs: requests.append((args, kwargs)) or {
+            "schema": 1, "snapshot": {
+                "revision": 4,
+                "wake_mappings": [{"id": "hey-missy", "phrase": "Hey Missy"}],
+            },
+        },
     )
 
     result = await factory.admit_wake("hey missy")
 
     assert result.status == "denied"
     assert result.reason == "invalid_proximity_evidence"
-    assert requests == []
+    assert len(requests) == 1 and requests[0][0][0] == "GET"
 
 
 @pytest.mark.asyncio
@@ -2186,7 +2196,172 @@ async def test_home_fresh_claim_rejects_a_mismatched_grant_binding(wrong_field):
 
 
 @pytest.mark.asyncio
-async def test_home_fresh_claim_opens_a_verified_new_handle(tmp_path):
+@pytest.mark.parametrize("policy", [
+    None, {}, {"mode": "strict"}, {"mode": "paired_room", "room_id": "", "wake_mapping_ids": ["hey-missy"]},
+    {"mode": "paired_room", "room_id": "living-room", "wake_mapping_ids": ["other"]},
+    {"mode": "paired_room", "room_id": "living-room", "wake_mapping_ids": ["hey-missy", "hey-missy"]},
+    {"mode": "paired_room", "room_id": "living-room", "wake_mapping_ids": ["hey-missy"], "score": 1},
+])
+async def test_paired_room_malformed_policy_never_claims_or_opens(policy):
+    calls = []
+
+    def request(method, *args, **kwargs):
+        calls.append(method)
+        assert method == "GET"
+        return {"schema": 1, "snapshot": {
+            "revision": 4,
+            "wake_mappings": [{"id": "hey-missy", "phrase": "Hey Missy"}],
+            "wake_admission": policy,
+        }}
+
+    factory = HomePuckSessionFactory(
+        f"wss://home.example{HOME_BRIDGE_PATH}", "fixture", "puck-1",
+        request_json=request,
+        connect_factory=lambda *a, **kw: pytest.fail("invalid policy must never open"),
+    )
+    result = await factory.admit_wake("Hey Missy")
+    assert result.status == "denied"
+    assert result.reason == "invalid_admission_policy"
+    assert calls == ["GET"]
+    assert not factory.identity_rejected
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("field,value", [
+    ("admission_mode", None), ("admission_mode", "strict"),
+    ("claim_id", "foreign"), ("configuration_revision", True),
+    ("configuration_revision", 5), ("schema", True),
+    ("conversation_handle", ""),
+])
+async def test_paired_room_grant_requires_exact_authority(field, value):
+    calls = []
+
+    def request(method, url, *, payload, **kwargs):
+        calls.append((method, url))
+        if method == "GET":
+            return {"schema": 1, "snapshot": {
+                "revision": 4,
+                "wake_mappings": [{"id": "hey-missy", "phrase": "Hey Missy"}],
+                "wake_admission": {"mode": "paired_room", "room_id": "living-room", "wake_mapping_ids": ["hey-missy"]},
+            }}
+        assert url.endswith("/paired-room-claims")
+        assert set(payload) == {"schema", "claim_id", "device_id", "wake_mapping_id", "configuration_revision", "initiation"}
+        grant = {"schema": 1, "claim_id": payload["claim_id"], "decision": "granted",
+                 "configuration_revision": 4, "conversation_handle": "issued",
+                 "admission_mode": "paired_room"}
+        grant[field] = value
+        return grant
+
+    factory = HomePuckSessionFactory(
+        f"wss://home.example{HOME_BRIDGE_PATH}", "fixture", "puck-1",
+        request_json=request,
+        connect_factory=lambda *a, **kw: pytest.fail("invalid grant must never open"),
+    )
+    assert (await factory.admit_wake("Hey Missy")).status == "denied"
+    assert [method for method, _ in calls] == ["GET", "POST"]
+    assert not factory.identity_rejected
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status,code", [
+    (403, "forbidden"), (409, "duplicate_claim"), (409, "stale_configuration"),
+    (409, "conversation_active"), (503, "service_unavailable"),
+])
+async def test_paired_room_denial_is_not_replayed_or_credential_retirement(status, code):
+    calls = []
+
+    def request(method, url, *, payload, **kwargs):
+        calls.append((method, url))
+        if method == "GET":
+            return {"schema": 1, "snapshot": {
+                "revision": 4, "wake_mappings": [{"id": "hey-missy", "phrase": "Hey Missy"}],
+                "wake_admission": {"mode": "paired_room", "room_id": "living-room", "wake_mapping_ids": ["hey-missy"]},
+            }}
+        assert url.endswith("/paired-room-claims")
+        raise HomeClaimHTTPError(status, code)
+
+    factory = HomePuckSessionFactory(
+        f"wss://home.example{HOME_BRIDGE_PATH}", "fixture", "puck-1",
+        request_json=request,
+        connect_factory=lambda *a, **kw: pytest.fail("denied claim must never open"),
+    )
+    assert (await factory.admit_wake("Hey Missy")).status == "denied"
+    assert [method for method, _ in calls] == ["GET", "POST"]
+    assert not factory.identity_rejected
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mutation", [None, "schema", "handle", "mode", "status", "not_found", "forbidden", "unauthorized"])
+async def test_owned_paired_retirement_requires_exact_authoritative_receipt(mutation):
+    calls = []
+
+    def request(method, url, *, payload, **kwargs):
+        calls.append((method, url, payload))
+        if mutation in {"not_found", "forbidden", "unauthorized"}:
+            raise HomeClaimHTTPError(
+                {"not_found": 404, "forbidden": 403, "unauthorized": 401}[mutation],
+                mutation,
+            )
+        receipt = {"schema": 1, "conversation_handle": "saved", "admission_mode": "paired_room", "status": "closed"}
+        if mutation == "schema":
+            receipt["schema"] = True
+        elif mutation == "handle":
+            receipt["conversation_handle"] = "foreign"
+        elif mutation == "mode":
+            receipt["admission_mode"] = "wake"
+        elif mutation == "status":
+            receipt["status"] = "active"
+        return receipt
+
+    factory = HomePuckSessionFactory(
+        f"wss://home.example{HOME_BRIDGE_PATH}", "fixture", "puck-1", request_json=request,
+    )
+    assert await factory.close_paired_claim("saved") is (mutation is None)
+    assert calls == [("POST", "https://home.example/api/v1/paired-room-claims/close",
+                      {"schema": 1, "conversation_handle": "saved"})]
+    assert factory.identity_rejected is (mutation == "unauthorized")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", [200, 201, 202])
+async def test_owned_paired_retirement_requires_actual_http_200(status):
+    import http.server
+    import threading
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_POST(self):
+            payload = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+            assert self.path == "/api/v1/paired-room-claims/close"
+            assert payload == {"schema": 1, "conversation_handle": "saved"}
+            body = json.dumps({"schema": 1, "conversation_handle": "saved",
+                               "admission_mode": "paired_room", "status": "closed"}).encode()
+            self.send_response(status)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *_args):
+            pass
+
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        factory = HomePuckSessionFactory(
+            f"wss://home.example{HOME_BRIDGE_PATH}", "fixture", "puck-1",
+            api_base_url=f"http://127.0.0.1:{server.server_port}/api/v1",
+        )
+        assert await factory.close_paired_claim("saved") is (status == 200)
+        assert not factory.identity_rejected
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("paired_room", [False, True])
+async def test_home_fresh_claim_opens_a_verified_new_handle(tmp_path, paired_room):
     calls = []
 
     class _FreshHandleSocket(_FakeSocket):
@@ -2212,19 +2387,26 @@ async def test_home_fresh_claim_opens_a_verified_new_handle(tmp_path):
         del url, credential, timeout
         calls.append((method, payload))
         if method == "GET":
-            return {
+            configuration = {
                 "schema": 1,
                 "snapshot": {
                     "revision": 4,
                     "wake_mappings": [{"id": "hey-missy", "phrase": "Hey Missy"}],
                 },
             }
+            if paired_room:
+                configuration["snapshot"]["wake_admission"] = {
+                    "mode": "paired_room", "room_id": "living-room",
+                    "wake_mapping_ids": ["hey-missy"],
+                }
+            return configuration
         return {
             "schema": 1,
             "claim_id": payload["claim_id"],
             "configuration_revision": 4,
             "decision": "granted",
             "conversation_handle": "fresh-home-handle",
+            **({"admission_mode": "paired_room"} if paired_room else {}),
         }
 
     socket = _FreshHandleSocket()
@@ -2233,7 +2415,7 @@ async def test_home_fresh_claim_opens_a_verified_new_handle(tmp_path):
         f"wss://home.example{HOME_BRIDGE_PATH}",
         "device-secret",
         "puck-1",
-        evidence_provider=lambda _phrase: CalibratedProximityEvidence(
+        evidence_provider=None if paired_room else lambda _phrase: CalibratedProximityEvidence(
             0.8, "calibration-1", int(time.time() * 1000)
         ),
         request_json=request_json,
@@ -2245,12 +2427,23 @@ async def test_home_fresh_claim_opens_a_verified_new_handle(tmp_path):
 
     assert result.status == "admitted"
     assert result.session is not None and result.session.is_connected()
+    assert result.session.wake_admission_mode == ("paired_room" if paired_room else "")
     assert result.session.conversation_handle == "fresh-home-handle"
     assert result.session.wake_mapping_id == "hey-missy"
     persisted = recovery_state.load()
     assert persisted is not None and persisted.status == "active"
     assert persisted.conversation_handle == "fresh-home-handle"
     assert [method for method, _payload in calls] == ["GET", "POST"]
+    claim = calls[1][1]
+    if paired_room:
+        assert claim == {
+            "schema": 1, "claim_id": claim["claim_id"], "device_id": "puck-1",
+            "wake_mapping_id": "hey-missy", "configuration_revision": 4,
+            "initiation": {"kind": "wake_word"},
+        }
+    else:
+        assert "acoustic_evidence" in claim
+        assert "initiation" not in claim
     assert await result.session.close_claim()
 
 
@@ -2339,7 +2532,8 @@ def test_home_claim_recovery_state_survives_restart_and_records_unconfirmed_clos
 
 
 @pytest.mark.asyncio
-async def test_home_fresh_claim_closes_grant_when_websocket_open_fails(tmp_path):
+@pytest.mark.parametrize("paired_room", [False, True])
+async def test_home_fresh_claim_closes_grant_when_websocket_open_fails(tmp_path, paired_room):
     class _OpenFailureSocket(_FakeSocket):
         async def send(self, raw: str) -> None:
             payload = json.loads(raw)
@@ -2368,19 +2562,26 @@ async def test_home_fresh_claim_closes_grant_when_websocket_open_fails(tmp_path)
     def request_json(method, url, *, credential, payload, timeout):
         del url, credential, timeout
         if method == "GET":
-            return {
+            configuration = {
                 "schema": 1,
                 "snapshot": {
                     "revision": 4,
                     "wake_mappings": [{"id": "hey-missy", "phrase": "Hey Missy"}],
                 },
             }
+            if paired_room:
+                configuration["snapshot"]["wake_admission"] = {
+                    "mode": "paired_room", "room_id": "living-room",
+                    "wake_mapping_ids": ["hey-missy"],
+                }
+            return configuration
         return {
             "schema": 1,
             "claim_id": payload["claim_id"],
             "configuration_revision": 4,
             "decision": "granted",
             "conversation_handle": "fresh-home-handle",
+            **({"admission_mode": "paired_room"} if paired_room else {}),
         }
 
     opening = _OpenFailureSocket()
@@ -2390,7 +2591,7 @@ async def test_home_fresh_claim_closes_grant_when_websocket_open_fails(tmp_path)
         f"wss://home.example{HOME_BRIDGE_PATH}",
         "device-secret",
         "puck-1",
-        evidence_provider=lambda _phrase: CalibratedProximityEvidence(
+        evidence_provider=None if paired_room else lambda _phrase: CalibratedProximityEvidence(
             0.8, "calibration-1", int(time.time() * 1000)
         ),
         request_json=request_json,
@@ -2408,6 +2609,105 @@ async def test_home_fresh_claim_closes_grant_when_websocket_open_fails(tmp_path)
     ]
     record = recovery_state.load()
     assert record is not None and record.status == "retired"
+
+
+@pytest.mark.asyncio
+async def test_failed_healthy_close_releases_actual_client_before_owned_http_confirmation():
+    class FailedCloseSocket(_FakeSocket):
+        async def send(self, raw):
+            frame = json.loads(raw)
+            if frame["method"] == "conversation.close":
+                raise ConnectionError("isolated close RPC failure")
+            await super().send(raw)
+
+    socket = FailedCloseSocket()
+    connector = _FakeConnect([socket])
+    session = HomePuckSession(
+        f"wss://home.example{HOME_BRIDGE_PATH}", "fixture", "opaque-home-handle",
+        connect_factory=connector, wake_admission_mode="paired_room",
+    )
+    await session.connect()
+    assert session.is_connected()
+    assert not await session.close_claim()
+    assert connector.contexts[0].closed
+    assert session._client is None
+
+    def owned_receipt(method, url, *, payload, **kwargs):
+        assert connector.contexts[0].closed
+        assert session._client is None
+        return {"schema": 1, "conversation_handle": payload["conversation_handle"],
+                "admission_mode": "paired_room", "status": "closed"}
+
+    factory = HomePuckSessionFactory(
+        f"wss://home.example{HOME_BRIDGE_PATH}", "fixture", "puck",
+        request_json=owned_receipt,
+    )
+    assert await factory.close_paired_claim(session.conversation_handle)
+    await session.close()
+
+
+@pytest.mark.asyncio
+async def test_failed_first_open_retains_pending_owner_until_exact_close_before_new_claim(tmp_path):
+    requests = []
+    allow_close = [False]
+    ready_open = [False]
+    handles = []
+
+    class OpeningSocket(_FakeSocket):
+        async def send(self, raw):
+            frame = json.loads(raw)
+            self.sent.append(frame)
+            if frame["method"] == "conversation.open" and ready_open[0]:
+                self.incoming.put_nowait(_reply(frame["id"], {**READY, "conversation_handle": handles[-1]}))
+            elif frame["method"] == "conversation.close":
+                self.incoming.put_nowait(_reply(frame["id"], {"conversation_handle": handles[-1], "status": "closed"}))
+            else:
+                raise ConnectionError("isolated first-open and control-close failure")
+
+    def request(method, url, *, payload, **kwargs):
+        requests.append((method, url))
+        if url.endswith("/paired-room-claims/close"):
+            if not allow_close[0]:
+                raise HomeClaimHTTPError(503, "service_unavailable")
+            return {"schema": 1, "conversation_handle": payload["conversation_handle"],
+                    "admission_mode": "paired_room", "status": "closed"}
+        if method == "GET":
+            return {"schema": 1, "snapshot": {
+                "revision": 4, "wake_mappings": [{"id": "hey-missy", "phrase": "Hey Missy"}],
+                "wake_admission": {"mode": "paired_room", "room_id": "living-room", "wake_mapping_ids": ["hey-missy"]},
+            }}
+        handles.append("issued-" + str(len(handles) + 1))
+        return {"schema": 1, "claim_id": payload["claim_id"], "configuration_revision": 4,
+                "decision": "granted", "conversation_handle": handles[-1], "admission_mode": "paired_room"}
+
+    state = HomeClaimRecoveryState("puck", tmp_path / "claim.json")
+    factory = HomePuckSessionFactory(
+        f"wss://home.example{HOME_BRIDGE_PATH}", "fixture", "puck",
+        request_json=request, connect_factory=lambda *a, **kw: _FakeContext(OpeningSocket()),
+        recovery_state=state,
+    )
+    assert (await factory.admit_wake("Hey Missy")).status == "denied"
+    assert state.load().status == "unconfirmed"
+    assert state.load().conversation_handle == "issued-1"
+    requests.clear()
+    assert (await factory.admit_wake("Hey Missy")).reason == "claim_retirement_unconfirmed"
+    assert handles == ["issued-1"]
+    assert requests == [("POST", "https://home.example/api/v1/paired-room-claims/close")]
+    # A fresh factory after process loss sees the same durable unconfirmed
+    # marker; the production server restores it for runner retirement.
+    assert HomeClaimRecoveryState("puck", tmp_path / "claim.json").load().status == "unconfirmed"
+    allow_close[0] = True
+    ready_open[0] = True
+    requests.clear()
+    result = await factory.admit_wake("Hey Missy")
+    try:
+        assert result.status == "admitted"
+        assert handles == ["issued-1", "issued-2"]
+        assert [method for method, _ in requests] == ["POST", "GET", "POST"]
+        assert state.load().conversation_handle == "issued-2"
+    finally:
+        if result.session is not None:
+            await result.session.close_claim()
 
 
 def test_home_url_requires_secure_pinned_path():

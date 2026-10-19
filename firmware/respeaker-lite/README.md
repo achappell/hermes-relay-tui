@@ -568,8 +568,6 @@ export PUCK_DEVICE_TOKEN=local-upload-credential
 export HOME_BRIDGE_WS_URL=wss://home.example/api/v1/bridge/ws
 export HOME_DEVICE_CREDENTIAL=paired-device-credential
 export HOME_DEVICE_ID=puck-device-id
-export HOME_WAKE_MAPPING_ID=hey-missy
-export HOME_CONVERSATION_HANDLE=opaque-conversation-handle
 venv/bin/python -m puck_bridge --transport home --port 8766
 ```
 
@@ -586,11 +584,14 @@ dispatch checks that current authorized configuration still matches that binding
 A changed revision (including a same-ID mapping repointed to another Profile)
 retires the old claim; it never silently borrows another Profile.
 
-**Operator-handle consequence (3-P-5):** `HOME_CONVERSATION_HANDLE` and
-`HOME_WAKE_MAPPING_ID` alone cannot prove which configuration authorized that
-handle. The bridge can retire such a handle but does not authorize capture by
-inferring freshness from a newly fetched snapshot. Recovery requires the existing
-fresh Home claim and ready-session flow, including trusted calibrated proximity.
+**Session-less startup (P-4 / STD-6):** No operator conversation handle or
+bootstrap mapping is accepted. A pristine paired bridge starts capture-closed
+without opening Home or writing an active claim. The first physical wake must
+obtain Home's own grant and verified ready session under the applicable approved
+admission policy. A saved claim is retained only for verified retirement, never
+reopened as active at process startup. Restart and network reachability alone
+cannot authorize capture; the strict proximity path still denies without a
+qualified trusted provider.
 
 The firmware defaults to Direct Hermes so a local bridge outage does not
 disable capture. Build Home firmware with the explicit mode substitution so
@@ -604,17 +605,27 @@ venv-firmware/bin/esphome -s puck_home_transport true upload firmware/respeaker-
 The bridge stores the current opaque handle and mapping ID in
 `~/.hermes-relay-tui/home-claim-state/` with owner-only permissions. After a
 process restart it never reopens the saved handle as an active conversation.
-On the next physical wake, it attempts a bounded control-only close for an
-active or unconfirmed marker. If closure remains unconfirmed, later physical
-wakes may retry that close while capture stays closed. A verified close still
-requires fresh calibrated proximity evidence before Home grants a replacement.
-The Puck has no production evidence provider yet, so new Home claims remain
-denied, including initial operator handles whose binding cannot be verified.
-This is an existing rollout gate, not permission to substitute wake-model
-confidence, a fixed proximity score or touch admission. Home transport fails
-closed when pairing is absent and never falls back to Direct Hermes.
-Real Home enrollment/credentials and physical round trips remain integration gates;
-isolated local contract fixtures do not establish household rollout readiness.
+On the next physical wake, it attempts bounded control-only retirement for an
+active or unconfirmed marker. If that cannot confirm closure, Home's owned
+paired-claim close endpoint may return an exact matching HTTP200
+`paired_room`/`closed` receipt for a persisted own claim, including an already
+closed claim after restart. Unknown/foreign/non-paired/out-of-scope 404 and
+generic stale responses never confirm retirement; uncertain records stay intact.
+
+Only explicit authenticated `snapshot.wake_admission.mode: paired_room` approval
+selects Home's separate score-free paired-room claim route. Home enforces the
+approved endpoint/Room/mapping and sole eligible same-mapping Device household-wide.
+The owner-approved Living Room Puck may hear and answer Hey Missy outside its Room.
+Each new physical paired wake retires the prior claim and obtains its own grant;
+bounded follow-ups retain the existing logical conversation. Policy removal,
+revision change or denial invalidates old authority without a Profile fallback.
+
+Without explicit paired-room approval, strict wake still requires a qualified
+trusted calibrated proximity provider; production supplies none. Wake confidence,
+VNR/RMS, fixed scores and touch admission are not substitutes. Home transport
+fails closed when pairing is absent and never falls back to Direct Hermes.
+Actual Standard audio-format/route and physical round-trip evidence remain
+separate rollout gates; local API fixtures do not establish household readiness.
 
 Confirmed Home `unauthorized`/revoked-credential errors persist a refusal in
 `~/.hermes-relay-tui/home-identity-state/`, scoped to the Home authority, Device

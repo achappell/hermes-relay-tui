@@ -30,7 +30,8 @@
 # transport: voice-session
 # url: wss://home.example/api/v1/bridge/ws   # required when transport: home
 # Home pairing stays in the private profile_env file, never in YAML or a URL.
-# HOME_DEVICE_CREDENTIAL=... and HOME_CONVERSATION_HANDLE=... are required.
+# Puck Home uses HOME_DEVICE_CREDENTIAL and HOME_DEVICE_ID; startup is session-less.
+# Conversation handles come only from a fresh verified Home admission, not config.
 # hermes_profile: amanda       # direct Standard server profile; not Home routing
 
 # Direct legacy/Standard bearer token. Prefer VOICE_SESSION_TOKEN in your shell
