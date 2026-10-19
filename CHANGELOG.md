@@ -11,6 +11,7 @@
 
 ### Bug fixes
 
+- Keep Puck internal wake models out of public capture routing (P-10). Carry declared model role across the inference queue, fail closed for unspecified event provenance, and guard public entity listing and callback dispatch consistently. Internal control detections are content-safe diagnostics only, never capture/admission/upload/Profile/Hermes turn initiation or public stop-after-detection. Preserve public wake and exact spoken-stop semantics; physical acoustic acceptance remains open.
 - Make ReSpeaker RX I2S startup/teardown fail-safe (P-9): initialize all shared driver fields, unwind partial starts immediately, release the owned lock exactly once, disable only enabled channels, log cleanup faults with RX-port context, and expose the original startup operation/error. Prevent a pending microphone task's live driver from being torn down by a duplicate start. Native fault injection compiles the actual component source; speaker pacing is unchanged and physical acceptance remains open.
 - Record owner-confirmed Living Room paired-room Puck full-turn acceptance on TUI6b288939 / av18.1.0 / Home831e55e / firmware212. Automatic follow-up hitting the 8-second buffer limit remains an open defect/limit; repeated-wake and physical authority/recovery acceptance are not implied.
 
