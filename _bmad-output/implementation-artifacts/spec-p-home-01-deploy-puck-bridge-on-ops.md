@@ -48,11 +48,17 @@ adds no bridge behavior.
    `PrivateTmp`, `ReadWritePaths` limited to the state directory. Credentials
    and tokens live only in operator-created 0600 files in the state
    directory, never in the unit, argv, the repository or logs. The bridge
-   listens on the ops LAN address on port 8766 (verified free 2026-10-18),
-   never on a Tailscale interface.
-3. The bridge's claim-recovery state lives under the service state directory
-   so it persists across restarts, as P-4 requires (P-4 Implementation Notes,
-   "Persist the current Home handle").
+   listens on the ops LAN address on the bridge's default port 8766
+   (`puck_bridge/server.py:46`; reported free by a 2026-10-18 read-only check,
+   reconfirm at rollout), never on a Tailscale interface.
+3. The bridge's claim-recovery state persists across restarts, as P-4
+   requires (P-4 Implementation Notes, "Persist the current Home handle").
+   The bridge writes it under `Path.home()/.hermes-relay-tui/home-claim-state/`
+   (`puck_bridge/home_admission.py:60-62`, no path override). The unit must
+   therefore set `Environment=HOME=<state directory>` (or give the service
+   user that home) so the default path resolves inside `ReadWritePaths`;
+   otherwise `ProtectHome` makes startup fail (`server.py:274`). No bridge
+   code change.
 4. A runbook (`docs/puck-ops-deployment.md`) covering install, start/restart,
    upgrade, rollback, removal, firmware flash steps from
    `firmware/respeaker-lite/README.md` ("Build & Flashing"), and the ordered
@@ -119,7 +125,8 @@ owning story, not here:
   values, and a LAN-only bind; secret files are 0600 and owned by the
   service user.
 - Given `systemctl restart` or a host reboot on the disposable host, then the
-  unit returns without manual action and claim-recovery state persists.
+  unit returns without manual action, and the claim-recovery record exists
+  under the state directory and survives the restart.
 - Given the runbook, then every step is labelled exercised or unexercised,
   each live check names its owning story for evidence, and no step offers a
   direct-Hermes fallback.
@@ -153,7 +160,6 @@ owning story, not here:
 - [ ] PID-1 systemd sandboxing and a true host reboot. Unexercised: this
   needs a privileged container or a VM, which is not available without
   elevating privileges on a shared host.
-
 ## Never
 
 - Implement pairing, renewal, admission, evidence or arbitration behavior.
@@ -184,8 +190,20 @@ owning story, not here:
   retained state, and that procedure sits outside the deploy helper. After a
   failed first deploy, re-running `deploy` is not a recovery: the leftover
   record makes the bridge listen without ever contacting Home.
+- STD-6 tracker/spec status was reconciled on 2026-10-18 (see STD-6 spec
+  note); confirm the owner accepts done-with-deferred-gate.
 
 ## Dependencies
 
 Code: `tui:STD-6`, `tui:P-4`, `tui:P-6`. Rollout: `home:HOME-NW-17-room-device-admission`,
 `tui:3-P-2`, the P-4 trusted provider. Feeds hermes-relay-home MIG-09 AC-5.
+
+## Main reconciliation verification (2026-10-19)
+
+Normal merge of `origin/main` at `cce15704457a51ed587b30bd6d780e106da629f5`, without rebase/force. The worktree was clean before the merge. Manual conflicts were this spec, `sprint-status.yaml` and `story-index.yaml`; retained the implemented tooling/review evidence and all main refinements, including the explicit state-directory `HOME` binding, rollout-time port reconfirmation, exact persistence acceptance and STD-6 deferred-gate distinction. No runtime code conflicted.
+
+- `python -m pytest -q tests/test_deploy_puck_bridge.py tests/test_puck_bridge_shutdown.py`: **106 passed** (7.34s).
+- Full `python -m pytest -q` with only the two previously reported macOS Bash 3.2 `test_ops_web_deployment.py` cases deselected: **2263 passed, 4 skipped, 2 deselected**, six existing websockets deprecation warnings (347.05s).
+- `git diff --check` passed. No live host action, deployment, microphone access or firmware flash occurred.
+
+The original release-only helper contract and historical smoke/rollout gates above are unchanged. PRs #249 and #254 separately own the newer identity and explicitly Home-approved paired-room/session-less behavior; this merge does not claim those consumer changes or close their physical gates.
