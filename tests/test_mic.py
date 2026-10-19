@@ -336,3 +336,31 @@ def test_transcribe_pcm_treats_an_empty_capture_as_no_speech(monkeypatch):
     )
 
     assert voice_module.transcribe_pcm(b"") == {"success": True, "transcript": ""}
+
+
+def test_faster_whisper_decodes_a_real_wav_when_voice_is_installed():
+    from importlib.util import find_spec
+    from io import BytesIO
+    import struct
+    import wave
+
+    if find_spec("faster_whisper") is None:
+        pytest.skip("requires the optional voice extra")
+
+    from faster_whisper.audio import decode_audio
+    import numpy as np
+
+    source = BytesIO()
+    with wave.open(source, "wb") as wav:
+        wav.setnchannels(1)
+        wav.setsampwidth(2)
+        wav.setframerate(16000)
+        wav.writeframes(struct.pack("<4h", 0, 8192, -8192, 16384) * 400)
+    source.seek(0)
+
+    decoded = decode_audio(source)
+
+    assert decoded.dtype == np.float32
+    np.testing.assert_array_equal(
+        decoded, np.tile(np.array([0, 0.25, -0.25, 0.5], dtype=np.float32), 400)
+    )
