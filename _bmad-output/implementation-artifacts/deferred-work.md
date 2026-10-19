@@ -319,3 +319,7 @@
 - source_spec: `_bmad-output/implementation-artifacts/spec-1-p-9-fail-safe-i2s-lifecycle.md`
   summary: OPEN — controlled physical RX lifecycle/wake/capture/playback regression for P-9.
   evidence: Actual-source native IDF fault injection and a separate alternating-failure smoke check software ownership, safe cleanup attempts and retry; both firmware variants compile. They do not prove physical IDF resource release when the driver reports failure. Only tui-p7-pcm-diagnostics owns hardware; raw PCM diagnostics stay off, and installation-owned configuration is required. Trusted-proximity rollout evidence remains a separate locked blocker.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-p3-followup-no-speech.md`
+  summary: OPEN — preexisting cached VAD-high restart can select the speech path during an acoustically quiet follow-up; actual physical attribution remains unverified.
+  evidence: `micro_wake_word.h:100,118` returns the last bool, updated only by `micro_wake_word.cpp:652`; stop/start does not provide a fresh-result epoch. P-3's approved deterministic repair covers `speech_seen=false` completion only and does not authorize a model/freshness change, threshold/gain tuning or shorter window. An Amanda/parent-authorized custodian observation of existing phase/VAD state, without raw audio, is needed to distinguish stale result, echo or room noise before expanding scope; the earlier speaker error is separately unattributed.

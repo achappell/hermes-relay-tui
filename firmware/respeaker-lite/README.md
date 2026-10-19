@@ -711,11 +711,24 @@ After the Puck finishes a successful response, `puck_response.h` holds wake
 mode while the firmware asks the bridge to admit an eight-second follow-up
 capture. In Home mode the bridge checks the connected session's exact mapping
 and grant revision again, and does not create a new Home claim for a follow-up.
-VAD can end the window after
-800ms of silence once speech has started; if nobody speaks, the hard
-eight-second deadline closes it and sends one empty upload. The host bridge
-turns that empty upload into a `silent` response status, so the Puck returns to
-wake mode without a refusal sound or an empty Hermes request.
+VAD can end the window after 800ms of silence once speech has started. If
+no speech has been detected, either the eight-second deadline or a full
+buffer completes with an immutable zero-byte result; an in-flight microphone
+callback cannot turn that completed silence into an audio upload. The firmware
+sends one control-only empty final POST, not buffered PCM. The bridge settles
+the mailbox as `silent`, and the firmware confirms its exact sequence-scoped
+status without opening `/response` in the media player. Normal silence returns
+to wake mode without STT, an empty Hermes turn, refusal audio or a new
+Unavailable indication. The owner-chosen eight-second window is unchanged.
+
+This optimization applies to locally known-empty captures. Speech captures
+whose transcription is empty or exactly `stop` retain their existing silent
+response handling. The wake model's VAD result is cached across stop/start;
+a stale/current true result can still select the speech path. Neither the
+accepted turn's acoustic cause nor this limitation is diagnosed or fixed by
+the no-speech completion repair; physical quiet/follow-up acceptance remains
+open. Home claim retirement remains owned by existing next-wake, shutdown and
+recovery flows, not by local silent mailbox cleanup.
 
 The bridge reuses `HandsFreeCoordinator`'s normalized session contract. Each
 non-empty follow-up is admitted through a thread-safe one-capture mailbox and

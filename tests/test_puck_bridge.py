@@ -688,6 +688,69 @@ def test_turn_runner_reuses_one_session_for_followups_and_stops_silently():
     assert silent_status == "silent"
 
 
+def test_empty_follow_up_control_completes_production_mailbox_without_stt_or_turn(tmp_path):
+    from puck_bridge.response import ResponseStream
+
+    session = FakeSession()
+    stream = ResponseStream()
+    runner = TurnRunner(session, player=FakePlayer(), response_stream=stream)
+    transcribe = _fake_transcribe(transcript="must not run")
+    handler = make_handler(
+        expected_token="s3cret",
+        on_transcript=runner.submit_transcript_outcome,
+        set_response_seq=runner.set_response_seq,
+        on_capture_silent=runner.submit_capture_silent,
+        on_follow_up_admission=runner.admit_follow_up,
+        transcribe_fn=transcribe,
+        work_dir=tmp_path,
+        response_stream=stream,
+    )
+    server = _start_server(handler)
+    port = server.server_address[1]
+    initial_result = []
+    initial = threading.Thread(
+        target=lambda: initial_result.append(runner.submit_transcript("first question"))
+    )
+    runner.start()
+    try:
+        assert stream.expect(seq=1)
+        runner.set_response_seq(1)
+        initial.start()
+        for _ in range(100):
+            if runner.coordinator.state == "capturing":
+                break
+            threading.Event().wait(0.01)
+        assert runner.coordinator.state == "capturing"
+        assert _get_follow_up_admission(
+            port, seq=1, token="s3cret", token_in_query=True
+        ) == (200, b"admitted:1")
+
+        assert _post_chunk(
+            port, seq=2, chunk=0, total=1, body=b"", token="s3cret"
+        ) == 200
+        initial.join(timeout=2.0)
+        assert not initial.is_alive()
+        assert _get_response_status(
+            port, seq=2, token="s3cret"
+        ) == (200, b'{"seq": 2, "status": "silent"}')
+        assert runner.coordinator.state == "idle"
+        assert not runner._follow_up_admission
+        assert not runner._follow_up_waiting
+        assert session.is_connected()  # No new claim-retirement policy.
+        assert _get_follow_up_admission(
+            port, seq=2, token="s3cret"
+        ) == (200, b"denied:2")
+        assert initial_result == [True]
+        assert session.turns == [("first question", "local")]
+        assert transcribe.calls == []
+    finally:
+        if initial.is_alive():
+            runner.request_stop()
+            initial.join(timeout=2.0)
+        runner.stop()
+        server.shutdown()
+
+
 def test_turn_runner_does_not_open_a_followup_after_a_failed_response(monkeypatch):
     from puck_bridge.response import ResponseStream
 

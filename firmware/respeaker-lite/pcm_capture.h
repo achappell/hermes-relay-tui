@@ -346,13 +346,14 @@ static const uint32_t VAD_SILENCE_DEBOUNCE_MS = 800;
 static const uint32_t CAPTURE_LISTEN_TIMEOUT_MS = WAKE_CAPTURE_SECONDS * 1000;
 
 static uint8_t *buffer = nullptr;
-static size_t write_pos = 0;
-static bool capturing = false;
-static bool capture_done = false;
-static bool capture_pending_upload = false;
+static std::atomic<size_t> write_pos{0};
+static std::atomic<bool> capturing{false};
+static std::atomic<bool> capture_done{false};
+static std::atomic<bool> capture_pending_upload{false};
+static std::atomic<size_t> completed_capture_bytes{0};
 static uint32_t silence_start_ms = 0;
 static uint32_t capture_started_ms = 0;
-static bool speech_seen = false;
+static std::atomic<bool> speech_seen{false};
 static bool follow_up_capture = false;
 static uint32_t sample_index = 0;
 
@@ -370,6 +371,7 @@ static bool last_wake_refused = false;
 // records it, rather than the automation re-deriving it and risking the
 // two drifting apart.
 static bool last_upload_delivered = false;
+static bool last_delivered_empty = false;
 
 // Set when a completed capture could not be confirmed by the bridge. The
 // normal wake path has no response state to advance, while a follow-up uses
@@ -383,7 +385,7 @@ static bool last_upload_failed = false;
 // the very question being captured (measured: transcript went from good
 // to empty). Signalled at the close instead -- which also says something
 // more useful than "I heard a wake word": "I have your question".
-static bool last_capture_captured = false;
+static std::atomic<bool> last_capture_captured{false};
 
 // 1-p-2 task 7: the wake automation sets this before playing the short
 // acknowledgement, then starts capture only after the acknowledgement has
@@ -444,6 +446,7 @@ inline bool begin_capture(bool is_follow_up) {
   write_pos = 0;
   capture_done = false;
   capture_pending_upload = false;
+  completed_capture_bytes = 0;
   silence_start_ms = 0;
   capture_started_ms = millis();
   speech_seen = false;
@@ -525,6 +528,22 @@ inline void start(const std::string &wake_word) {
   start_pending();
 }
 
+inline void finish_capture(size_t captured_bytes) {
+  // Only one of the microphone callback and deadline tick owns completion.
+  // A callback already inside memcpy may still advance the live cursor;
+  // upload must use this finalized snapshot, never that mutable cursor.
+  if (!capturing.exchange(false)) {
+    return;
+  }
+  if (captured_bytes == 0) {
+    write_pos = 0;
+  }
+  completed_capture_bytes = captured_bytes;
+  last_capture_captured = captured_bytes > 0;
+  capture_done = true;
+  capture_pending_upload = true;
+}
+
 // Called from the microphone's real-time on_data callback, alongside the
 // existing training-data `pcm_capture::write()` above. Bounded,
 // allocation-free -- the same single-memcpy shape as that function.
@@ -537,16 +556,21 @@ inline void write(const uint8_t *data, size_t len) {
   memcpy(buffer + write_pos, data, to_copy);
   write_pos += to_copy;
   if (write_pos >= WAKE_CAPTURE_BYTES) {
+    // The audio callback can fill the buffer before the interval observes
+    // the equally bounded no-speech deadline. Neither path may upload PCM
+    // when this follow-up has never detected speech.
+    if (follow_up_capture && !speech_seen) {
+      finish_capture(0);
+      ESP_LOGI(TAG, "follow-up buffer filled without speech (empty)");
+      return;
+    }
     // The buffer filled before VAD ever reported silence -- still a valid,
     // bounded capture; end it rather than overrun.
-    capturing = false;
-    capture_done = true;
-    capture_pending_upload = true;
     // Acknowledge this close too. Setting it only on the VAD-silence path
     // meant a question long enough to fill the buffer -- the case where
     // someone has been talking longest and most wants to hear "I have
     // your question" -- got no chirp at all.
-    last_capture_captured = write_pos > 0;
+    finish_capture(write_pos.load());
     ESP_LOGW(TAG, "wake capture reached the %us buffer limit before VAD silence", (unsigned) WAKE_CAPTURE_SECONDS);
   }
 }
@@ -572,14 +596,9 @@ inline void tick(bool vad_active) {
     if (now - capture_started_ms < CAPTURE_LISTEN_TIMEOUT_MS) {
       return;
     }
-    capturing = false;
-    capture_done = true;
-    capture_pending_upload = true;
     // Mic frames collected during the wake-free wait are silence/noise, not
-    // an utterance. Discard them before the explicit empty upload so a quiet
-    // follow-up cannot become a false Hermes turn.
-    write_pos = 0;
-    last_capture_captured = false;
+    // an utterance. Complete the mailbox without sending those frames.
+    finish_capture(0);
     ESP_LOGI(TAG, "capture ended on the %ums no-speech deadline (empty)",
              (unsigned) CAPTURE_LISTEN_TIMEOUT_MS);
     return;
@@ -589,10 +608,7 @@ inline void tick(bool vad_active) {
     return;
   }
   if (now - silence_start_ms >= VAD_SILENCE_DEBOUNCE_MS) {
-    capturing = false;
-    capture_done = true;
-    capture_pending_upload = true;
-    last_capture_captured = write_pos > 0;
+    finish_capture(write_pos.load());
     ESP_LOGI(TAG, "wake capture ended on VAD silence (%u bytes)", (unsigned) write_pos);
   }
 }
@@ -609,13 +625,14 @@ inline void upload(esphome::http_request::HttpRequestComponent *client, const st
     return;
   }
   capture_pending_upload = false;
+  const size_t captured_bytes = completed_capture_bytes.load();
 
   // A no-speech follow-up still sends one empty final chunk. The bridge can
   // then close the admitted response as `silent`, allowing the Puck to poll
   // that honest result and resume wake mode instead of waiting for a request
   // that will never be produced.
   size_t total_chunks = std::max<size_t>(
-      1, (write_pos + pcm_capture::UPLOAD_CHUNK_BYTES - 1) /
+      1, (captured_bytes + pcm_capture::UPLOAD_CHUNK_BYTES - 1) /
              pcm_capture::UPLOAD_CHUNK_BYTES);
   bool ok = true;
   bool reassembly_confirmed = false;
@@ -623,8 +640,8 @@ inline void upload(esphome::http_request::HttpRequestComponent *client, const st
   const uint32_t upload_started_ms = millis();
   for (size_t chunk = 0; chunk < total_chunks; ++chunk) {
     size_t offset = chunk * pcm_capture::UPLOAD_CHUNK_BYTES;
-    size_t len = write_pos > offset
-                     ? std::min(pcm_capture::UPLOAD_CHUNK_BYTES, write_pos - offset)
+    size_t len = captured_bytes > offset
+                     ? std::min(pcm_capture::UPLOAD_CHUNK_BYTES, captured_bytes - offset)
                      : 0;
     std::string body(reinterpret_cast<const char *>(buffer + offset), len);
     std::string full_url = url + "?seq=" + std::to_string(sample_index) + "&chunk=" + std::to_string(chunk) +
@@ -697,9 +714,10 @@ inline void upload(esphome::http_request::HttpRequestComponent *client, const st
   last_upload_delivered = ok && reassembly_confirmed;
   last_upload_failed = !last_upload_delivered;
   last_delivered_seq = sample_index;
+  last_delivered_empty = captured_bytes == 0;
   if (ok && reassembly_confirmed) {
     ESP_LOGI(TAG, "Wake capture %u delivered (%u bytes, %u chunks, %ums)", (unsigned) sample_index,
-             (unsigned) write_pos, (unsigned) total_chunks, (unsigned) elapsed_ms);
+             (unsigned) captured_bytes, (unsigned) total_chunks, (unsigned) elapsed_ms);
   } else if (ok) {
     // Every chunk was accepted but the bridge never confirmed a complete
     // reassembly -- almost certainly its TTL evicting a capture we were
@@ -707,10 +725,10 @@ inline void upload(esphome::http_request::HttpRequestComponent *client, const st
     // success; say so plainly, with the timing that explains it.
     ESP_LOGE(TAG, "Wake capture %u LOST: all %u chunks accepted but the bridge never confirmed reassembly "
                    "(%u bytes in %ums -- likely exceeded the receiver's reassembly TTL)",
-             (unsigned) sample_index, (unsigned) total_chunks, (unsigned) write_pos, (unsigned) elapsed_ms);
+             (unsigned) sample_index, (unsigned) total_chunks, (unsigned) captured_bytes, (unsigned) elapsed_ms);
   } else {
     ESP_LOGE(TAG, "Wake capture %u FAILED: chunk upload errors (%u bytes, %u chunks, %ums)",
-             (unsigned) sample_index, (unsigned) write_pos, (unsigned) total_chunks, (unsigned) elapsed_ms);
+             (unsigned) sample_index, (unsigned) captured_bytes, (unsigned) total_chunks, (unsigned) elapsed_ms);
   }
 
   sample_index++;

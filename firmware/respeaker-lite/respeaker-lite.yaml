@@ -877,11 +877,16 @@ interval:
             - lambda: pcm_capture::wake_capture::last_upload_delivered = false;
             - lambda: |-
                 puck_response::begin(
-                    pcm_capture::wake_capture::last_delivered_seq);
-            - media_player.play_media:
-                id: puck_media_player
-                media_url: !lambda |-
-                  return std::string("http://${puck_bridge_host}:${puck_bridge_port}/response?seq=") +
-                  std::to_string(pcm_capture::wake_capture::last_delivered_seq) +
-                  "&token=" + puck_response::url_encode("${puck_device_token}");
-                announcement: true
+                    pcm_capture::wake_capture::last_delivered_seq,
+                    pcm_capture::wake_capture::last_delivered_empty);
+            - if:
+                condition:
+                  lambda: return !pcm_capture::wake_capture::last_delivered_empty;
+                then:
+                  - media_player.play_media:
+                      id: puck_media_player
+                      media_url: !lambda |-
+                        return std::string("http://${puck_bridge_host}:${puck_bridge_port}/response?seq=") +
+                        std::to_string(pcm_capture::wake_capture::last_delivered_seq) +
+                        "&token=" + puck_response::url_encode("${puck_device_token}");
+                      announcement: true

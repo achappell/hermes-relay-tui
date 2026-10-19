@@ -42,6 +42,7 @@ static uint32_t response_seq = 0;
 static uint32_t retry_started_ms = 0;
 static uint32_t next_poll_ms = 0;
 static uint32_t refusal_started_ms = 0;
+static bool silent_completion_only = false;
 static bool home_admission_needed = false;
 static bool home_admission_pending = false;
 static bool home_admission_granted_flag = false;
@@ -101,18 +102,20 @@ inline std::string url_encode(const std::string &value) {
   return encoded;
 }
 
-inline void begin(uint32_t seq) {
+inline void begin(uint32_t seq, bool empty_capture = false) {
   response_seq = seq;
-  retry_started_ms = 0;
-  next_poll_ms = 0;
+  silent_completion_only = empty_capture;
+  retry_started_ms = empty_capture ? millis() : 0;
+  next_poll_ms = retry_started_ms;
   refusal_started_ms = 0;
   home_admission_pending = false;
   home_admission_granted_flag = false;
   follow_up_admission_pending = false;
   follow_up_admission_granted_flag = false;
-  state = State::WAITING_FOR_MEDIA_IDLE;
-  ESP_LOGI(TAG, "response admitted seq=%u build=%s; waiting for media idle",
-           (unsigned) response_seq, BUILD_IDENTITY);
+  state = empty_capture ? State::POLLING : State::WAITING_FOR_MEDIA_IDLE;
+  ESP_LOGI(TAG, "response admitted seq=%u build=%s; %s",
+           (unsigned) response_seq, BUILD_IDENTITY,
+           empty_capture ? "confirming empty capture" : "waiting for media idle");
 }
 
 inline uint32_t sequence() { return response_seq; }
@@ -274,7 +277,8 @@ inline void note_status(int status, const std::string &body) {
   }
 
   const uint32_t now = millis();
-  if (status == 200 && body == terminal_body(response_seq, "complete")) {
+  if (!silent_completion_only && status == 200 &&
+      body == terminal_body(response_seq, "complete")) {
     state = State::FOLLOW_UP_PENDING;
     ESP_LOGI(TAG, "response seq=%u confirmed complete (build=%s); follow-up window pending",
              (unsigned) response_seq, BUILD_IDENTITY);
@@ -312,7 +316,7 @@ inline void note_status(int status, const std::string &body) {
     puck_identity::note_upload_status(status);
     refuse("status authentication rejected");
   } else if (status >= 200 && status < 300) {
-    refuse("terminal status was not complete");
+    refuse("terminal status did not match expected response");
   } else {
     refuse("status request failed");
   }
