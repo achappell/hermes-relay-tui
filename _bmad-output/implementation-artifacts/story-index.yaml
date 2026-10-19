@@ -229,7 +229,7 @@ stories:
     title: Make raw PCM diagnostics explicitly opt-in and bounded.
     surface: P
     kind: surface
-    spec: _bmad-output/planning-artifacts/epics.md
+    spec: _bmad-output/implementation-artifacts/spec-1-p-7-make-raw-pcm-diagnostics-explicitly-opt-in-and-bounded.md
     tracker_key: 1-p-7-make-raw-pcm-diagnostics-explicitly-opt-in-and-bounded
     product_epic: 3
     owner: hermes-relay-tui
