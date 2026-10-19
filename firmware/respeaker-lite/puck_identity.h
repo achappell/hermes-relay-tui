@@ -44,6 +44,30 @@ enum class State : uint8_t {
 
 static State state = State::UNAUTHORIZED;  // fail closed until proven otherwise
 
+// Solid on-board orange USER_LED means Unavailable. This is presentation,
+// separate from P-1's Direct-mode DEGRADED capture policy.
+using UnavailableIndicator = void (*)(bool);
+static UnavailableIndicator unavailable_indicator = nullptr;
+static bool unavailable_visible = true;
+
+inline void show_unavailable(bool unavailable) {
+  unavailable_visible = unavailable;
+  if (unavailable_indicator != nullptr) {
+    unavailable_indicator(unavailable);
+  }
+}
+
+inline void setup_indicator(UnavailableIndicator indicator) {
+  unavailable_indicator = indicator;
+  show_unavailable(unavailable_visible);
+}
+
+inline void show_verified_available() {
+  if (state != State::UNAUTHORIZED) {
+    show_unavailable(false);
+  }
+}
+
 inline const char *state_name(State s) {
   switch (s) {
     case State::AUTHORIZED:
@@ -59,13 +83,15 @@ inline const char *state_name(State s) {
 // Called once at boot with the compile-time token. Deliberately starts in
 // UNAUTHORIZED above rather than defaulting open: a build that somehow
 // ships without a token must refuse, not capture.
-inline void setup(const std::string &token) {
+inline void setup(const std::string &token, bool home_transport = false) {
   if (token.empty()) {
     state = State::UNAUTHORIZED;
+    show_unavailable(true);
     ESP_LOGE(TAG, "no device token configured -- wake capture will fail closed");
     return;
   }
   state = State::AUTHORIZED;
+  show_unavailable(home_transport);
   ESP_LOGI(TAG, "device token configured (%u chars) -- state=%s", (unsigned) token.size(), state_name(state));
 }
 
@@ -96,6 +122,7 @@ inline void note_upload_status(int status) {
       }
     }
     state = State::UNAUTHORIZED;
+    show_unavailable(true);
     return;
   }
   // Once rejected, stay rejected. A 2xx from somewhere else must not
@@ -127,6 +154,7 @@ inline void reject_authority(const char *authority) {
              authority ? authority : "configured authority");
   }
   state = State::UNAUTHORIZED;
+  show_unavailable(true);
 }
 
 }  // namespace puck_identity

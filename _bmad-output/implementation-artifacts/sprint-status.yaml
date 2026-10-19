@@ -48,7 +48,7 @@ development_status:
   3-p-2-apply-approved-room-credential-and-wake-mapping-configuratio: backlog
   3-p-3-enforce-the-selected-wake-mapping-and-profile-before-capture: backlog
   3-p-4-participate-in-single-winner-wake-arbitration-and-remain-sil: backlog
-  3-p-5-reject-revoked-unavailable-or-unverified-identity-before-cap: backlog
+  3-p-5-reject-revoked-unavailable-or-unverified-identity-before-cap: review # done-with-deferred-gate; physical visibility, real Home and calibrated provider open
   3-p-6-retire-revoked-credentials-and-require-the-ordered-setup-flo: backlog
   standard-6-puck-migrate-respeaker-puck-path: done
   standard-7-esp32-add-touch-display-audio-session-adapter: done

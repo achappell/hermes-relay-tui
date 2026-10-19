@@ -178,6 +178,7 @@ inline void dispatch_wake_capture(bool admitted, AdmitFn admit,
 
 inline void refuse_home_admission(const char *reason) {
   home_admission_pending = false;
+  puck_identity::show_unavailable(true);
   home_admission_granted_flag = false;
   response_seq = home_admission_seq;
   state = State::REFUSAL_PENDING;
@@ -193,6 +194,7 @@ inline void note_home_admission(int status, const std::string &body) {
       body == std::string("admitted:") + std::to_string(home_admission_seq)) {
     home_admission_pending = false;
     home_admission_granted_flag = true;
+    puck_identity::show_verified_available();
     home_admission_needed = false;
     ESP_LOGI(TAG, "Home wake admission granted for seq=%u; capture may open",
              (unsigned) home_admission_seq);
@@ -289,6 +291,7 @@ inline void note_status(int status, const std::string &body) {
   if (status == 200 &&
       body == home_admission_terminal_body(response_seq)) {
     home_admission_needed = true;
+    puck_identity::show_unavailable(true);
     refuse("Home claim retired; fresh admission required");
     return;
   }
@@ -347,6 +350,7 @@ inline void note_follow_up_admission(int status, const std::string &body) {
       state == State::FOLLOW_UP_PENDING) {
     follow_up_admission_pending = false;
     follow_up_admission_granted_flag = true;
+    puck_identity::show_verified_available();
     ESP_LOGI(TAG, "follow-up admission granted for seq=%u",
              (unsigned) follow_up_admission_seq);
     return;
@@ -358,6 +362,7 @@ inline void note_follow_up_admission(int status, const std::string &body) {
   } else if (status == 401) {
     puck_identity::note_upload_status(status);
   }
+  puck_identity::show_unavailable(true);
   refuse("follow-up admission denied or unavailable");
 }
 
