@@ -35,3 +35,11 @@ Controlled hardware check, not performed:
 
 1. Flash the default build. Confirm the boot log shows `raw PCM diagnostics disabled (default)`, shows no `PCMDUMP` line and makes no `/upload` traffic outside wake turns. Then complete one wake round trip.
 2. Flash an opt-in build pointed at `tools/receiver.py`. Confirm the boot warning, exactly 15 received `.raw` captures and a `complete` log. Then reflash the default build.
+
+## Review follow-up (2026-10-18)
+
+- Added `test_raw_pcm_diagnostic_export_drops_a_claimed_window_after_identity_loss`: the exporter claims a `READY` window after a 403 with no intervening callback. The window is dropped with no POST, counted, and left `IDLE`, and it stays stopped until reboot.
+- Added `test_raw_pcm_diagnostics_reach_the_bound_when_every_upload_fails`: with every POST returning 500, each window is abandoned after 2 chunks and still counts. The device reaches `COMPLETE` after 15 windows (30 POSTs), and identity is unaffected.
+- Mutation check: removing the exporter-discard `captures_exported++` fails only the first new test, and removing the post-upload increment fails only the second. The header was restored afterwards.
+- README/spec wording: after authorization loss, the window is dropped and never exported. PSRAM is not zeroed, only overwritten later, and diagnostics stay stopped until reboot.
+- Reran `venv/bin/pytest -q tests/test_puck_firmware.py -rs`: **20 passed**, including the ESPHome config gate. `esphome compile` passed for both the default and the opt-in variants, with no `pcm_capture.h` warnings (flash 1,860,467 / 1,860,827 B).

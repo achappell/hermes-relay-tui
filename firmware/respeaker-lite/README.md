@@ -625,8 +625,10 @@ uploads at most 15 two-second windows (3,840,000 bytes) per boot before
 stopping until reboot. A diagnostic flag without a URL stays disabled. The
 microphone callback and the export tick hand the buffer over through an
 atomic `CAPTURING -> READY -> EXPORTING` state, so export never reads a
-window that is still being written. Identity revocation discards buffered
-audio exactly as before. Wake capture, VAD endpointing, upload, and
+window that is still being written. If device authorization is lost, the
+in-progress or finished window is dropped and never exported (its PSRAM
+bytes are not zeroed, only overwritten by a later window), and diagnostics
+stay stopped until reboot because identity fails closed. Wake capture, VAD endpointing, upload, and
 response playback do not depend on this path.
 
 ### Verification

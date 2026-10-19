@@ -22,7 +22,7 @@ context:
 
 ## Boundaries & Constraints
 
-**Always:** Keep default household firmware free of diagnostic PCM retention or export. Keep the identity gate on the diagnostic path, so revocation discards buffered audio. Keep the content-safe `mic_diag` amplitude and `mww_diag` status logs separate from raw PCM. Allocate once and never free while the callback may run.
+**Always:** Keep default household firmware free of diagnostic PCM retention or export. Keep the identity gate on the diagnostic path, so revocation drops the in-progress or finished window without exporting it (PSRAM bytes are not zeroed, only overwritten by a later window) and diagnostics stay stopped until reboot. Keep the content-safe `mic_diag` amplitude and `mww_diag` status logs separate from raw PCM. Allocate once and never free while the callback may run.
 
 **Never:** Change wake capture, VAD endpointing, wake upload, follow-up, response playback, bridge or Hermes behavior. Do not write raw or base64 PCM to logs or serial. Do not flash, deploy or touch production configuration as part of this implementation.
 
@@ -35,7 +35,7 @@ context:
 | Explicit opt-in | `true` + URL | Boot `RAW MICROPHONE PCM DIAGNOSTICS ENABLED` warning; capture and export 2 s windows | Allocation failure stays disabled |
 | Bound reached | 15 windows exported or abandoned | `COMPLETE`; no further capture until reboot | Abandoned/discarded windows count toward the limit |
 | Concurrent callback/export | Mic task writes while main loop exports | Export reads only a window it claimed `READY -> EXPORTING`; writer touches buffer only in `CAPTURING` | No torn window, overrun or use-after-reset |
-| Identity revoked | 4xx from wake upload | Capturing or ready window discarded; not re-armed | — |
+| Identity revoked | 4xx from wake upload | Capturing or ready window dropped by the callback or the exporter and never exported; no re-arm until reboot (identity fails closed) | PSRAM bytes not zeroed, only overwritten later |
 
 </frozen-after-approval>
 

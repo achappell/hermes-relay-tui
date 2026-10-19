@@ -758,6 +758,89 @@ def test_raw_pcm_diagnostics_discard_buffered_audio_when_identity_is_revoked(tmp
     )
 
 
+def test_raw_pcm_diagnostic_export_drops_a_claimed_window_after_identity_loss(tmp_path):
+    compiler = shutil.which("clang++") or shutil.which("c++")
+    if compiler is None:
+        pytest.skip("no C++ compiler available for the diagnostic capture harness")
+    _write_capture_stubs(tmp_path)
+    _compile_and_run_capture_harness(
+        tmp_path,
+        compiler,
+        """
+        #include "pcm_capture.h"
+        #include <cassert>
+        #include <vector>
+
+        std::uint32_t fake_millis = 0;
+        namespace pc = pcm_capture;
+
+        int main() {
+          puck_identity::setup("configured");
+          pc::setup(true, "http://receiver/upload");
+          pc::start();
+          std::vector<std::uint8_t> frame(pc::CAPTURE_BYTES, 0x22);
+          pc::write(frame.data(), frame.size());
+          assert(pc::state.load() == pc::DiagState::READY);
+
+          // Revocation lands with no further mic callback, so the exporter
+          // claims the window itself and must drop it, not export it.
+          puck_identity::note_upload_status(403);
+          esphome::http_request::HttpRequestComponent client;
+          pc::upload_and_restart(&client);
+          assert(client.urls.empty());
+          assert(pc::captures_exported == 1);
+          assert(pc::write_pos == 0);
+          assert(pc::state.load() == pc::DiagState::IDLE);
+          // Fail-closed identity keeps diagnostics stopped until reboot.
+          pc::start();
+          pc::write(frame.data(), frame.size());
+          pc::upload_and_restart(&client);
+          assert(client.urls.empty() && pc::state.load() == pc::DiagState::IDLE);
+          return 0;
+        }
+        """,
+    )
+
+
+def test_raw_pcm_diagnostics_reach_the_bound_when_every_upload_fails(tmp_path):
+    compiler = shutil.which("clang++") or shutil.which("c++")
+    if compiler is None:
+        pytest.skip("no C++ compiler available for the diagnostic capture harness")
+    _write_capture_stubs(tmp_path)
+    _compile_and_run_capture_harness(
+        tmp_path,
+        compiler,
+        """
+        #include "pcm_capture.h"
+        #include <cassert>
+        #include <vector>
+
+        std::uint32_t fake_millis = 0;
+        namespace pc = pcm_capture;
+
+        int main() {
+          puck_identity::setup("configured");
+          pc::setup(true, "http://receiver/upload");
+          pc::start();
+          esphome::http_request::HttpRequestComponent client;
+          client.response.status_code = 500;
+          std::vector<std::uint8_t> frame(pc::CAPTURE_BYTES, 0x33);
+          for (std::uint32_t i = 0; i < pc::MAX_DIAGNOSTIC_CAPTURES + 5; ++i) {
+            pc::write(frame.data(), frame.size());
+            pc::upload_and_restart(&client);
+          }
+          // Each window is abandoned after two failed chunks, yet counts.
+          assert(pc::captures_exported == pc::MAX_DIAGNOSTIC_CAPTURES);
+          assert(client.urls.size() == pc::MAX_DIAGNOSTIC_CAPTURES * 2);
+          assert(pc::state.load() == pc::DiagState::COMPLETE);
+          // The diagnostic receiver is not an identity authority.
+          assert(puck_identity::may_capture());
+          return 0;
+        }
+        """,
+    )
+
+
 def test_raw_pcm_diagnostic_export_never_reads_a_window_being_written(tmp_path):
     compiler = shutil.which("clang++") or shutil.which("c++")
     if compiler is None:
