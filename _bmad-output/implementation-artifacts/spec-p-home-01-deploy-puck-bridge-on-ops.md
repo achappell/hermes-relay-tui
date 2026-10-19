@@ -87,8 +87,9 @@ non-active record, or Home restarts is refused
 (`puck_bridge/home_admission.py:247-248`). This story neither resolves nor
 reopens that decision. Released bridges up to `v0.13.1` (the releases
 exercised in this story's smoke) serve only their initially configured claim
-until the provider exists. 3-P-5 (PR #249, unreleased) additionally rejects
-an initial handle that Home cannot verify. Either way, the rollout cannot
+until the provider exists. 3-P-5 (PR #249, unreleased) binds admission to a
+Home wake-configuration revision that only a calibrated fresh admission
+sets, so it serves no claim at all without the provider. Either way, the rollout cannot
 show service that survives restarts.
 
 ## Prerequisites and gates
@@ -180,7 +181,9 @@ owning story, not here:
   plus fresh calibrated admission, never from erasing state. This story's
   runbook forbids operators from deleting or editing the record. Only a full
   device retirement after explicit Home credential revocation may remove
-  retained state, and that procedure sits outside the deploy helper.
+  retained state, and that procedure sits outside the deploy helper. After a
+  failed first deploy, re-running `deploy` is not a recovery: the leftover
+  record makes the bridge listen without ever contacting Home.
 
 ## Dependencies
 

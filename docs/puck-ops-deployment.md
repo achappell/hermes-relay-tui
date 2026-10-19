@@ -29,9 +29,11 @@ Two releases behave differently here:
 
 - Released bridges up to `v0.13.1`, the ones exercised in the smoke below,
   serve only their initially configured claim.
-- 3-P-5 (PR #249, not yet released) makes the bridge refuse an initial
-  handle that Home cannot verify, so even that claim works only after
-  verified Home admission.
+- 3-P-5 (PR #249, not yet released) binds wake admission to a verified Home
+  wake-configuration revision. That revision is set only by a calibrated
+  fresh admission. With no evidence provider, an initial handle can never be
+  verified, so a 3-P-5 bridge serves no claim at all until the provider
+  exists. It fails closed.
 
 ### First-connect failure (P-4/STD-6 implementation blocker)
 
@@ -62,7 +64,9 @@ P-4's recovery and no-replay guarantees.
   `systemctl is-active` plus a TCP connection to `<bind>:<port>`;
 - on restart or health failure restores the previous release and its unit
   (or, on a first deploy, stops and removes the new unit) and deletes the
-  failed release so the tag can be retried;
+  failed release. The release itself can be redeployed, but if the bridge
+  had already started once, it left a claim-recovery record behind. Re-running
+  `deploy` is then **not** a recovery: see "First-connect failure" above;
 - on success enables the unit and keeps the old release as `previous`;
 - uses only `hermes-puck-bridge.service`. It never touches
   `hermes-home-browser.service`, its state or pairing, or any other unit.
@@ -127,7 +131,7 @@ no household credentials were used. Observed:
 
 Fixture note: inside the throwaway container, the synthetic claim-recovery
 state was deleted between runs. That reset the fixture after it had hit the
-first-connect blocker, and it also showed that a fresh record reopens Home.
+first-connect blocker, and it also showed that a start without a record reconnects to Home.
 It was a test-fixture reset only, never an operator step; see "First-connect
 failure" above.
 
@@ -197,10 +201,15 @@ remain unverified until a VM or the first ops install.
    `systemctl status hermes-home-browser` is unchanged.
 5. **[smoke-only]** Confirm the first start reached Home. The journal must
    show `puck bridge connecting through Home` followed by `listening`, with
-   no `HomeBridgeTransportError`. If the first start failed to reach Home,
-   stop the unit and leave the claim-recovery record untouched. Record the
-   failure against the first-connect blocker above. Do not retry by clearing
-   state; recovery waits on the P-4/STD-6 fix.
+   no `HomeBridgeTransportError`. If the first start failed to reach Home:
+   - the helper has already removed the unit and release, or you should stop
+     the unit if it is still present;
+   - leave the claim-recovery record untouched;
+   - **do not re-run `deploy`**. It would report "active and listening"
+     while never contacting Home, because the record makes it skip the
+     connect.
+   Record the failure against the first-connect blocker above. Recovery
+   waits on the P-4/STD-6 fix.
 
 ## Start, stop, restart
 
@@ -208,7 +217,9 @@ remain unverified until a VM or the first ops install.
   returns without manual action (`Restart=on-failure`, enabled at boot).
 - **[smoke-only]** After a restart or reboot, confirm the claim-recovery file
   persists under `/var/lib/hermes-puck-bridge/.hermes-relay-tui/home-claim-state/`
-  (mode 0600). Per the blocker above, new claims stay refused after restart.
+  (mode 0600). Per the blocker above, released bridges refuse new claims
+  after a restart; a 3-P-5 bridge refuses all claims until the provider
+  exists.
 - **[unexercised]** `sudo systemctl stop hermes-puck-bridge` stops the bridge;
   the Puck then reports unavailable.
 
