@@ -3,7 +3,7 @@ id: P-HOME-01
 title: 'Deploy the Puck bridge to ops as a systemd service and write the Puck Home rollout runbook'
 type: 'feature'
 created: '2026-10-18'
-status: 'draft'
+status: 'review'
 route: 'dispatch'
 story_key: 'p-home-01-deploy-puck-bridge-on-ops'
 baseline_commit: '95809e1'
@@ -19,7 +19,7 @@ context:
 
 # P-HOME-01 — Puck bridge on ops: deployment and rollout runbook
 
-Draft scope only. Nothing is implemented, deployed or flashed.
+Tooling, unit, tests and runbook are implemented. Nothing is deployed or flashed.
 
 ## Intent
 
@@ -121,6 +121,26 @@ owning story, not here:
   each live check names its owning story for evidence, and no step offers a
   direct-Hermes fallback.
 - Repository checks for the new script and its tests pass.
+
+## Tasks
+
+- [x] `scripts/deploy_puck_bridge.py deploy|rollback`: tagged build, `releases/<sha>`
+  with atomic `current`/`previous`, lock, overwrite refusal, automatic rollback
+  on restart or health failure, only `hermes-puck-bridge.service`; `--bind` LAN
+  IPv4 only, `--port` default 8766 (8765/8875 refused), `--transport home` only,
+  `--home-url` exact Home bridge URL.
+- [x] Hardened unit rendered by the script (user `hermes-puck`, state dir 0700,
+  `EnvironmentFile` in the state dir with an `ExecStartPre` presence/owner/mode
+  check, `HOME`/`XDG_CACHE_HOME`/`HF_HOME` under the state dir, LAN-only bind,
+  no secret values).
+- [x] `tests/test_deploy_puck_bridge.py`: unit content and flags against the real
+  bridge parser, argument validation, embedded remote script run locally with
+  fake privileged commands (deploy, overwrite, automatic rollback, rollback,
+  preconditions, lock), `ExecStartPre` check. No network.
+- [x] `docs/puck-ops-deployment.md` with every step labelled; firmware README
+  pointer; CHANGELOG.
+- [ ] Disposable Linux host run (deploy, rollback, restart/reboot persistence,
+  secret file ownership on host). Unexercised; needs operational authorization.
 
 ## Never
 

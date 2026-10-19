@@ -1,0 +1,192 @@
+# Puck bridge on ops: deployment and Home rollout runbook (P-HOME-01)
+
+This runbook installs `puck_bridge` on the household host `ops` as
+`hermes-puck-bridge.service`, in Home transport only, and orders the Puck Home
+rollout. It adds no bridge behaviour. Spec:
+`_bmad-output/implementation-artifacts/spec-p-home-01-deploy-puck-bridge-on-ops.md`.
+
+Every step carries a label:
+
+- **[exercised]** — run in this repository, with the evidence named.
+- **[unexercised]** — not yet run anywhere. Every step that touches ops, Home,
+  the network or the Puck is unexercised. Running this runbook needs
+  separate operational authorization; writing it does not grant any.
+
+There is no direct-Hermes fallback. Legacy direct mode and the voice-session
+endpoint are retired; the deploy tool refuses any transport other than `home`.
+If Home is unavailable, the Puck stays unavailable.
+
+## Known blocker
+
+The Puck can only admit a new Home claim with calibrated proximity evidence
+from a trusted hardware provider (P-4). Production wiring passes no provider,
+so after a claim is retired, the bridge restarts with a non-active record, or
+Home restarts, every wake is refused. Until the provider exists, a deployed
+bridge serves only its initially configured claim. Do not work around this.
+
+## What the tooling does
+
+`scripts/deploy_puck_bridge.py deploy|rollback`:
+
+- builds from an existing `vX.Y.Z` release tag (`git archive`, test suite,
+  wheel) whose source contains `puck_bridge/home_admission.py`;
+- installs `/opt/hermes-puck-bridge/releases/<sha>` with the `voice` extra,
+  under a lock (`~/.hermes-puck-bridge-deploy.lock`), refusing to overwrite
+  an existing release;
+- switches the `current` symlink atomically, restarts the unit and waits for
+  `systemctl is-active` plus a TCP connection to `<bind>:<port>`;
+- on restart or health failure restores the previous release and its unit
+  (or, on a first deploy, stops and removes the new unit) and deletes the
+  failed release so the tag can be retried;
+- on success enables the unit and keeps the old release as `previous`;
+- uses only `hermes-puck-bridge.service`. It never touches
+  `hermes-home-browser.service`, its state or pairing, or any other unit.
+
+The unit runs as `hermes-puck` with `StateDirectory=hermes-puck-bridge`
+(0700), `UMask=0077`, `NoNewPrivileges`, `ProtectSystem=strict`,
+`ProtectHome`, `PrivateTmp` and `ReadWritePaths=/var/lib/hermes-puck-bridge`.
+`HOME`, `XDG_CACHE_HOME` and `HF_HOME` point into the state directory, so the
+claim-recovery records (`~/.hermes-relay-tui/home-claim-state/`) and the
+Whisper model cache persist across restarts. Credentials come only from
+`EnvironmentFile=/var/lib/hermes-puck-bridge/bridge.env`; an `ExecStartPre`
+check stops the unit with a clear message when that file is missing, not a
+regular file, not owned by `hermes-puck` or not mode 0600. The command line is:
+
+```
+/opt/hermes-puck-bridge/current/venv/bin/python -m puck_bridge \
+  --transport home --host <bind> --port <port> --home-url <wss://…/api/v1/bridge/ws>
+```
+
+Arguments: `--bind` must be one private LAN IPv4 address (not `0.0.0.0`,
+loopback or Tailscale `100.64.0.0/10`); `--port` defaults to 8766 and refuses
+8765 (legacy) and 8875 (browser appliance); `--home-url` must be an exact
+`wss://<host>/api/v1/bridge/ws`.
+
+**[exercised]** Repository checks: `venv/bin/pytest tests/test_deploy_puck_bridge.py`
+renders and checks the unit, validates arguments, runs the embedded remote
+script locally against temporary directories with fake `sudo`/`systemctl`
+(deploy, overwrite refusal, automatic rollback on restart and health
+failure, first-deploy failure, rollback, preconditions, lock) and runs the
+`ExecStartPre` check against a temporary env file. No host was contacted.
+
+## Prerequisites
+
+1. **[unexercised]** Code prerequisites STD-6, P-4 and P-6 are in a published
+   release tag. Use that tagged checkout to run the helper.
+2. **[unexercised]** Rollout prerequisites: the Puck is paired in Home under
+   3-P-2's ordered flow (needs hermes-relay-home
+   `HOME-NW-17-room-device-admission`) and the P-4 trusted provider exists.
+   The tooling can be installed before these; the household rollout cannot.
+3. **[unexercised]** Choose a stable ops LAN address (DHCP reservation) and
+   confirm port 8766 is still free: `ss -ltn 'sport = :8766'`.
+4. **[unexercised]** On ops: `python3.14`, `flock`, and the PortAudio runtime
+   needed by the `voice` extra (`sudo apt install libportaudio2`).
+
+## Install
+
+1. **[unexercised]** Create the service user and private state directory:
+
+   ```bash
+   sudo useradd --system --home-dir /var/lib/hermes-puck-bridge --shell /usr/sbin/nologin hermes-puck
+   sudo install -d -o hermes-puck -g hermes-puck -m 0700 /var/lib/hermes-puck-bridge
+   ```
+
+2. **[unexercised]** Create the env file yourself, on the host, without
+   putting values in shell history, the repository or any log:
+
+   ```bash
+   sudo install -o hermes-puck -g hermes-puck -m 0600 /dev/null /var/lib/hermes-puck-bridge/bridge.env
+   sudoedit /var/lib/hermes-puck-bridge/bridge.env
+   ```
+
+   Keys (values come from the Home pairing and the Puck firmware secrets):
+   `PUCK_DEVICE_TOKEN`, `HOME_DEVICE_CREDENTIAL`, `HOME_DEVICE_ID`,
+   `HOME_CONVERSATION_HANDLE`, and `HOME_WAKE_MAPPING_ID` when Home has more
+   than one active mapping. The deploy tool checks only the file's presence,
+   owner and mode; it never reads or writes values. Do not reuse the browser
+   appliance's pairing.
+
+3. **[unexercised]** From the tagged checkout on the operator machine:
+
+   ```bash
+   venv/bin/python scripts/deploy_puck_bridge.py deploy --ops-host ops \
+     --bind <ops-lan-ip> --home-url wss://<home-host>/api/v1/bridge/ws --tag vX.Y.Z
+   ```
+
+4. **[unexercised]** Verify: `systemctl status hermes-puck-bridge`,
+   `ss -ltnp 'sport = :8766'` shows only `<ops-lan-ip>`, and
+   `systemctl status hermes-home-browser` is unchanged.
+
+## Start, stop, restart
+
+- **[unexercised]** `sudo systemctl restart hermes-puck-bridge` — the unit
+  returns without manual action (`Restart=on-failure`, enabled at boot).
+- **[unexercised]** After a restart or reboot, confirm the claim-recovery file
+  persists under `/var/lib/hermes-puck-bridge/.hermes-relay-tui/home-claim-state/`
+  (mode 0600). Per the blocker above, new claims stay refused after restart.
+- **[unexercised]** `sudo systemctl stop hermes-puck-bridge` stops the bridge;
+  the Puck then reports unavailable.
+
+## Upgrade
+
+**[unexercised]** Run `deploy` with the new tag. A failed restart or health
+check restores the previous release automatically and exits non-zero.
+
+## Rollback
+
+**[unexercised]** Run `rollback` with the same `--bind`, `--port` and
+`--home-url` the previous release was installed with:
+
+```bash
+venv/bin/python scripts/deploy_puck_bridge.py rollback --ops-host ops \
+  --bind <ops-lan-ip> --home-url wss://<home-host>/api/v1/bridge/ws
+```
+
+It refuses when no previous release exists or its saved unit differs.
+
+## Removal
+
+**[unexercised]**
+
+```bash
+sudo systemctl disable --now hermes-puck-bridge
+sudo rm /etc/systemd/system/hermes-puck-bridge.service
+sudo systemctl daemon-reload
+sudo rm -rf /opt/hermes-puck-bridge
+```
+
+Delete `/var/lib/hermes-puck-bridge` (credentials, claim records, model
+cache) only after revoking the device in Home (3-P-6).
+
+## Firmware flash
+
+**[unexercised]** Follow `firmware/respeaker-lite/README.md`, "Build &
+Flashing", with the Home transport substitution so wakes stay closed until
+the bridge confirms admission:
+
+```bash
+venv-firmware/bin/esphome -s puck_home_transport true compile firmware/respeaker-lite/respeaker-lite.yaml
+venv-firmware/bin/esphome -s puck_home_transport true upload firmware/respeaker-lite/respeaker-lite.yaml --device respeaker-lite.local
+```
+
+Point the firmware's bridge address at `<ops-lan-ip>:8766`. The 2026-09-12
+build's secrets are lost; decide on a rollback image before flashing.
+
+## Ordered rollout
+
+Each live check records its evidence in the owning story, not here.
+
+1. **[unexercised]** Install and verify the bridge (above). Evidence: this story.
+2. **[unexercised]** Pair the Puck in Home and apply Room, credential and Wake
+   Mapping. Evidence: 3-P-2 and hermes-relay-home `HOME-NW-17-room-device-admission`.
+3. **[unexercised]** Flash Home-transport firmware (above).
+4. **[unexercised]** P-7 controlled hardware check (P-7 spec, Verification).
+   Evidence: P-7.
+5. **[unexercised]** STD-6 deferred external gate (STD-6 spec, Tasks:
+   "Deferred external gate"). Evidence: STD-6.
+6. **[unexercised]** Restart and reboot persistence on ops. Evidence: this story.
+7. **[unexercised]** Puck row of hermes-relay-home MIG-09 AC-5, including
+   renewal and revocation. Evidence: MIG-09.
+
+If a step fails, stop the bridge or roll back. Never switch the Puck or the
+bridge to direct Hermes.
