@@ -90,3 +90,14 @@ This is a read-only readiness disposition, not a new story or closure of another
 | **3-P-6** | Consume explicit confirmed revocation; show unavailable; powered/reachable device captures/submits nothing; reconnect does not restore readiness; restoration requires explicit approval and the ordered setup again, never old-credential restoration; unconfirmed revocation/re-enrollment stays pending/failed (`epics.md:1379-1414`, Puck map row 279). | Home's credential authority already supplies revocation and fresh approved enrollment. P5 consumes denial and never reactivates by reachability; it is not credential retirement or the ordered enrollment/install/Ready flow. Current bridge reads Home credentials from configured environment/file (`puck_bridge/server.py`); no reviewed physical-Puck enrollment/credential-install/retirement binding completes the same unresolved P1/P2 device path. | **Ordered setup/credential-lifecycle integration prerequisite.** Existing Home APIs make isolated lifecycle tests possible, but they cannot replace the full approved-device retirement/re-enrollment consumer flow. Need that binding, then implement P6 without deleting refusal markers to fake recovery or silently restoring old credentials. |
 
 No additional **complete, dependency-ready** 3-P slice was selected after P5. Locally tractable fragments were deliberately not published as finished stories. The separate P-8–P-11 and hardware workstreams were not touched.
+
+## Main reconciliation before stacked deployment (2026-10-19)
+
+Merged `origin/main` at `cce15704457a51ed587b30bd6d780e106da629f5` without rebase or force. The only manual conflict was the additive 3-P-5/P-8 CHANGELOG entries; both were retained. Main's P-8 deterministic PCM implementation and P-7 evidence are preserved.
+
+- Focused `pytest -q tests/test_puck_home_session.py tests/test_puck_bridge.py tests/test_puck_firmware.py`: **277 passed** (157.92s).
+- Full `pytest -q`, with the same two known macOS Bash 3.2 `test_ops_web_deployment.py` deselections: **2225 passed, 2 skipped, 2 deselected**, six existing websockets deprecation warnings (343.02s).
+- `git diff --check` passed.
+- The first focused attempt had **276 passed, 1 failed** because this worktree's installed ESPHome environment required the previously removed local `secrets.yaml`; the full suite did not run on that attempt. The successful rerun used temporary example-only values, including a public all-zero example API key; that temporary file was removed afterward. No live secrets were read, no firmware was flashed, and no host changed.
+
+This merge is source reconciliation, not new physical acceptance. PR #254 remains the separate explicit paired-room/session-less amendment; strict proximity and all outstanding hardware gates remain as documented.

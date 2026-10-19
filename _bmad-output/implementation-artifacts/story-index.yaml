@@ -201,7 +201,7 @@ stories:
     owner: hermes-relay-tui
     release_scope: migration
     depends_on: []
-    evidence_note: 'PR #204 recovery retained; owner-approved paired-room implementation amendment spec-p4-home-fresh-startup.md and validation-p4-home-paired-room-full-turn.md cover session-less startup, explicit fresh Home grants and owned retirement. Physical full turn and real Standard audio evidence remain open; strict endpoints still require a qualified calibrated provider.'
+    evidence_note: 'PR #204 merged; original recovery owner accepted and tracker set done on 2026-10-07 (ce38a72). Owner-approved paired-room amendment spec-p4-home-fresh-startup.md and validation-p4-home-paired-room-full-turn.md retain recovery and cover session-less startup, fresh Home grants and owned retirement. Physical full turn and real Standard audio evidence remain open; strict endpoints still require a qualified calibrated provider.'
     acceptance_overlay: _bmad-output/implementation-artifacts/course-correction-2026-09-23.md
   - id: P-5
     title: Complete streamed response playback without underrun.
@@ -240,7 +240,7 @@ stories:
     title: Make the vendored reSpeaker audio-format boundary deterministic and testable.
     surface: P
     kind: surface
-    spec: _bmad-output/planning-artifacts/epics.md
+    spec: _bmad-output/implementation-artifacts/spec-1-p-8-deterministic-respeaker-audio-format.md
     tracker_key: 1-p-8-make-the-vendored-respeaker-audio-format-boundary-determinis
     product_epic: 3
     owner: hermes-relay-tui
@@ -279,6 +279,21 @@ stories:
     owner: hermes-relay-tui
     release_scope: migration
     depends_on: []
+    acceptance_overlay: _bmad-output/implementation-artifacts/course-correction-2026-09-23.md
+  - id: P-HOME-01
+    title: Deploy the Puck bridge to ops as a systemd service and write the Puck Home rollout runbook
+    surface: P
+    kind: course-correction
+    spec: _bmad-output/implementation-artifacts/spec-p-home-01-deploy-puck-bridge-on-ops.md
+    tracker_key: p-home-01-deploy-puck-bridge-on-ops
+    product_epic: 3
+    owner: hermes-relay-tui
+    release_scope: migration
+    depends_on:
+      - tui:STD-6
+      - tui:P-4
+      - tui:P-6
+    evidence_note: 'Draft 2026-10-18. Code dependencies only. Household rollout additionally needs home:HOME-NW-17-room-device-admission, tui:3-P-2 and the P-4 calibrated trusted proximity provider (existing blocker). STD-6 gate, P-7 hardware check and MIG-09 AC-5 are performed during rollout; their evidence goes to the owning stories.'
     acceptance_overlay: _bmad-output/implementation-artifacts/course-correction-2026-09-23.md
   - id: E-1
     title: Authorized voice capture.

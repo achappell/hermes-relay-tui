@@ -98,3 +98,13 @@ Observation about replacement handoff lacking immediate HTTP fallback was nonblo
 5. Repeated wake, bounded follow-up, exact stop, revocation/recovery and clean shutdown evidence where required by the owning stories.
 
 No physical gate is marked done by local fixtures. Raw diagnostic capture remains OFF.
+
+## Bottom-up main reconciliation (2026-10-19)
+
+Merged updated PR #249 branch at `c0b318f447abe14f5bf6119a3a897354d18886fe`, which incorporates `origin/main` at `cce15704457a51ed587b30bd6d780e106da629f5`. This is a normal merge, not a rebase. Manual conflicts were limited to `sprint-status.yaml`, `story-index.yaml` and `surface-coverage-matrix.md`: preserved historical accepted recovery, the current paired-room review/physical gates, main's P-8 deterministic PCM evidence and the separate P-HOME-01 backlog row. No runtime code conflicted.
+
+- Focused `pytest -q tests/test_config.py tests/test_puck_bridge.py tests/test_puck_home_session.py tests/test_puck_firmware.py`: **385 passed, 1 skipped** (159.32s).
+- Full `pytest -q` with exactly the two Bash 3.2 deselections named above: **2269 passed, 4 skipped, 2 deselected**, six existing websockets warnings (333.15s).
+- `git diff --check` passed. The additional main/P-8 Python firmware-boundary test needs this worktree's absent firmware environment; the existing native signed PCM fixture ran in the full suite.
+
+Earlier actual CLI/API smoke and independent implementation reviews above remain the behavior evidence; this source-only reconciliation adds no physical acceptance or live operations. The newly built exact-head wheel supersedes the earlier `d5cb6c5` deployment artifact; deployment still requires both exact-source CI success and the coordinator's approved plan.
