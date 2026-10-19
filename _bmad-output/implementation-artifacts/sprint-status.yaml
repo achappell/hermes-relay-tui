@@ -25,8 +25,8 @@ development_status:
   tui-std-01: done
   epic-3: in-progress
   1-p-1-authorized-wake-and-capture: done
-  1-p-2-status-and-response-audio-delivery: done
-  1-p-3-bounded-follow-up-and-exact-stop: review # deterministic no-speech completion repair; eight-second timing retained; physical quiet/follow-up acceptance OPEN
+  1-p-2-status-and-response-audio-delivery: review # a47 initial cue physically absent; successful output-drain receipt repair awaits authorized acoustic acceptance
+  1-p-3-bounded-follow-up-and-exact-stop: review # a47 quiet retest FAILED (cached/current VAD true); fresh-VAD/output-settle repair retains eight seconds; physical gate OPEN
   1-p-4-recovery-without-replay: review # paired-room FIRST full-turn physical gate CLOSED; automatic follow-up physical acceptance and lifecycle regressions open
   1-p-5-complete-streamed-response-playback-without-underrun: done
   1-p-6-graceful-bridge-service-shutdown-and-entry-point-coverage: done

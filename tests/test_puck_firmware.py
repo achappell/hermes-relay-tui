@@ -1,3 +1,4 @@
+import re
 import shutil
 import subprocess
 import textwrap
@@ -88,6 +89,64 @@ def test_response_status_is_checked_after_idle_before_wake_resumes():
 
 def _write_capture_stubs(tmp_path):
     """Host stand-ins for the ESP-IDF/ESPHome headers pcm_capture.h includes."""
+    (tmp_path / "puck_audio_wiring_stubs.h").write_text(textwrap.dedent(r"""
+        #pragma once
+        #include "puck_audio_handoff.h"
+        #include <cstdint>
+        #include <string>
+        namespace media_player {
+        enum MediaPlayerState { MEDIA_PLAYER_STATE_IDLE, MEDIA_PLAYER_STATE_ANNOUNCING };
+        }
+        namespace media_source {
+        enum class MediaSourceState { IDLE, READING, ERROR };
+        }
+        namespace puck_firmware_fixture {
+        struct VADSnapshot {
+          bool valid = false, detected = false;
+          std::uint32_t generation = 0;
+        };
+        struct Detector {
+          bool running = true, stop_completes = true;
+          unsigned starts = 0, stops = 0, diagnostic_starts = 0, diagnostic_finishes = 0;
+          VADSnapshot vad;
+          bool is_running() const { return running; }
+          void start() { ++starts; running = true; }
+          void stop() { ++stops; if (stop_completes) running = false; }
+          VADSnapshot get_vad_snapshot() const { return vad; }
+          bool get_vad_state() const { return vad.valid && vad.detected; }
+          void begin_capture_diagnostics() { ++diagnostic_starts; }
+          void finish_capture_diagnostics() { ++diagnostic_finishes; }
+        };
+        struct OutputDevice {
+          bool stopped = true, buffered = false, failed = false;
+          std::uint32_t generation = 0, completed = 0, errors = 0;
+          std::uint32_t (*error_reader)() = nullptr;
+          void (*audio_callback)(std::uint32_t, std::int64_t) = nullptr;
+          bool is_stopped() const { return stopped; }
+          bool has_buffered_data() const { return buffered; }
+          bool is_failed() const { return failed; }
+          std::uint32_t playback_generation() const { return generation; }
+          std::uint32_t completed_playback_generation() const { return completed; }
+          std::uint32_t playback_error_generation() const { return errors; }
+          void set_output_error_generation_callback(std::uint32_t (*reader)()) { error_reader = reader; }
+          void add_audio_output_callback(void (*callback)(std::uint32_t, std::int64_t)) { audio_callback = callback; }
+        };
+        struct MediaPlayer {
+          media_player::MediaPlayerState state = media_player::MEDIA_PLAYER_STATE_IDLE;
+          std::string last_media_url;
+          bool failed = false;
+          bool is_failed() const { return failed; }
+        };
+        struct HttpSource {
+          media_source::MediaSourceState state = media_source::MediaSourceState::IDLE;
+          media_source::MediaSourceState get_state() const { return state; }
+        };
+        inline Detector mww;
+        inline OutputDevice puck_resampler, puck_speaker;
+        inline MediaPlayer puck_media_player;
+        inline HttpSource puck_http_source, puck_local_source;
+        }
+    """))
     (tmp_path / "esphome/core").mkdir(parents=True)
     (tmp_path / "esphome/components/http_request").mkdir(parents=True)
     (tmp_path / "freertos").mkdir()
@@ -111,12 +170,14 @@ def _write_capture_stubs(tmp_path):
         "struct Application { void safe_reboot() {} void feed_wdt() {} };\n"
         "inline Application App;\n"
         "}\n"
+        '#include "puck_audio_wiring_stubs.h"\n'
     )
     (tmp_path / "esphome/core/hal.h").write_text(
         "#pragma once\n"
         "#include <cstdint>\n"
         "extern std::uint32_t fake_millis;\n"
         "inline std::uint32_t millis() { return fake_millis; }\n"
+        "inline std::uint32_t next_vad_generation() { static std::uint32_t value = 0; return ++value; }\n"
     )
     (tmp_path / "esphome/core/log.h").write_text(
         "#pragma once\n"
@@ -186,6 +247,11 @@ def _compile_and_run_capture_harness(tmp_path, compiler, source, extra_flags=())
     return run_result.stdout
 
 
+def _configured_ids_cpp(source):
+    """Resolve ESPHome lambda IDs without leaking a macro into system headers."""
+    return re.sub(r"\bid\(([A-Za-z_]\w*)\)", r"puck_firmware_fixture::\1", source)
+
+
 def _response_handoff_cpp():
     """Execute the configured ESPHome handoff with a counted media action."""
     path = Path(__file__).resolve().parents[1] / "firmware/respeaker-lite/respeaker-lite.yaml"
@@ -205,12 +271,16 @@ def _response_handoff_cpp():
                     f"if ([&]() {{ {condition} }}()) {{ {render(branch['then'])} }}"
                 )
             elif "media_player.play_media" in action:
-                statements.append("++media_requests;")
+                media_url = action["media_player.play_media"]["media_url"]
+                statements.append(
+                    f"puck_firmware_fixture::puck_media_player.last_media_url = "
+                    f"[&]() -> std::string {{ {media_url} }}(); ++media_requests;"
+                )
             else:
                 raise AssertionError(f"unhandled response handoff action: {action}")
         return "\n".join(statements)
 
-    return render([handoff])
+    return _configured_ids_cpp(render([handoff]))
 
 
 @pytest.mark.parametrize("completion", ["deadline", "buffer_before_tick"])
@@ -270,11 +340,11 @@ def test_follow_up_no_speech_discards_buffered_pcm_before_empty_upload(tmp_path,
               assert(capturing && !wake_pending);
               const uint8_t wake_pcm[] = {1, 2, 3, 4};
               write(wake_pcm, sizeof(wake_pcm));
-              tick(true);
+              tick(true, true, next_vad_generation());
               fake_millis = 1;
-              tick(false);
+              tick(true, false, next_vad_generation());
               fake_millis += VAD_SILENCE_DEBOUNCE_MS;
-              tick(false);
+              tick(true, false, next_vad_generation());
               esphome::http_request::HttpRequestComponent wake_client;
               upload(&wake_client, "http://bridge/upload", "token");
               assert(wake_client.urls.size() == 1);
@@ -307,10 +377,10 @@ def test_follow_up_no_speech_discards_buffered_pcm_before_empty_upload(tmp_path,
                 assert(fake_warnings.find("buffer limit") == std::string::npos);
               } else {
                 fake_millis = capture_started_ms + CAPTURE_LISTEN_TIMEOUT_MS - 1;
-                tick(false);
+                tick(true, false, next_vad_generation());
                 assert(capturing);
                 fake_millis = capture_started_ms + CAPTURE_LISTEN_TIMEOUT_MS;
-                tick(false);
+                tick(true, false, next_vad_generation());
               }
               assert(!capturing);
               assert(capture_done);
@@ -398,7 +468,7 @@ def test_no_speech_completion_snapshot_survives_inflight_microphone_write(tmp_pa
             preempted = true;
             fake_millis = pcm_capture::wake_capture::capture_started_ms +
                           pcm_capture::wake_capture::CAPTURE_LISTEN_TIMEOUT_MS;
-            pcm_capture::wake_capture::tick(false);
+            pcm_capture::wake_capture::tick(true, false, next_vad_generation());
           }
           return result;
         }
@@ -427,7 +497,7 @@ def test_no_speech_completion_snapshot_survives_inflight_microphone_write(tmp_pa
           assert(last_upload_delivered && last_delivered_empty);
           // A late finalizer cannot publish a second capture after upload.
           finish_capture(WAKE_CAPTURE_BYTES);
-          tick(false);
+          tick(true, false, next_vad_generation());
           upload(&client, "http://bridge/upload", "token");
           assert(client.bodies.size() == 1);
           int media_requests = 0;
@@ -560,7 +630,7 @@ def test_follow_up_speech_retains_capture_limit_debounce_and_media(tmp_path, com
 
           const std::uint8_t speech_frame[] = {1, 2, 3, 4};
           write(speech_frame, sizeof(speech_frame));
-          tick(true);
+          tick(true, true, next_vad_generation());
           if (COMPLETE_BY_BUFFER) {
             std::vector<std::uint8_t> remainder(WAKE_CAPTURE_BYTES - write_pos, 0);
             write(remainder.data(), remainder.size());
@@ -568,12 +638,12 @@ def test_follow_up_speech_retains_capture_limit_debounce_and_media(tmp_path, com
             assert(fake_warnings.find("buffer limit") != std::string::npos);
           } else {
             ++fake_millis;
-            tick(false);
+            tick(true, false, next_vad_generation());
             fake_millis += VAD_SILENCE_DEBOUNCE_MS - 1;
-            tick(false);
+            tick(true, false, next_vad_generation());
             assert(capturing);
             ++fake_millis;
-            tick(false);
+            tick(true, false, next_vad_generation());
             assert(write_pos == sizeof(speech_frame));
           }
           assert(!capturing);
@@ -815,31 +885,60 @@ def test_response_status_state_machine_retries_then_refuses(tmp_path):
     assert run_result.returncode == 0, run_result.stderr
 
 
-def test_wake_acknowledgement_finishes_before_capture_opens():
-    yaml_source = (Path(__file__).resolve().parents[1] / "firmware/respeaker-lite/respeaker-lite.yaml").read_text()
-    capture_source = (Path(__file__).resolve().parents[1] / "firmware/respeaker-lite/pcm_capture.h").read_text()
-    assert "inline void prepare(const std::string &wake_word)" in capture_source
-    assert "inline void start_pending()" in capture_source
-    wake = yaml_source.split("  on_wake_word_detected:\n", 1)[1].split(
-        "# Lightweight health telemetry", 1
-    )[0]
-    admission = wake.index("/wake-admission?seq=")
-    prepare = wake.index("wake_capture::prepare(wake_word)")
-    acknowledgement = wake.index('media_url: "audio-file://heard_sound"')
-    delay = wake.index("delay: 150ms")
-    start = wake.index("wake_capture::start_pending()")
-    assert admission < prepare < acknowledgement < delay < start
-    assert "puck_response::begin_home_admission(" in wake
-    assert "puck_response::dispatch_wake_capture(" in wake
-    assert "puck_response::can_start_wake_capture()" in wake
-    assert 'puck_home_transport: "false"' in yaml_source
-    assert "lambda: return ${puck_home_transport};" in wake
-    assert wake.count("wake_capture::prepare(wake_word)") == 2
-    assert "puck_response::needs_home_admission()" not in wake
-    assert "!pcm_capture::wake_capture::capturing" in wake
-    assert "!pcm_capture::wake_capture::capture_pending_upload" in wake
-    assert "[&]() { pcm_capture::wake_capture::cancel_pending(); }" in wake
-    assert "puck_response::upload_failed(" in yaml_source
+def test_wake_acknowledgement_finishes_before_capture_opens(tmp_path):
+    compiler = shutil.which("clang++") or shutil.which("c++")
+    if compiler is None:
+        pytest.skip("no C++ compiler available")
+    _write_capture_stubs(tmp_path)
+    _compile_and_run_capture_harness(tmp_path, compiler, """
+        #include "pcm_capture.h"
+        #include "puck_audio_handoff.h"
+        #include <cassert>
+        std::uint32_t fake_millis = 0;
+        int begins = 0, ends = 0;
+        int main() {
+          using namespace puck_audio_handoff;
+          using namespace pcm_capture::wake_capture;
+          assert(!drained(current_output())); // Missing reader fails closed.
+          puck_identity::setup("configured");
+          setup();
+          set_capture_diagnostics([](){ ++begins; }, [](){ ++ends; });
+          assert(puck_response::begin_home_admission(0));
+          puck_response::note_home_admission(200, "admitted:0");
+          prepare("hey missy");
+          assert(wake_pending && !capturing);
+          Output output{true, true, true, false, true, 40, 40, false, 0, true};
+          wake_cue.begin(40, 0, CUE_MINIMUM_MS);
+          fake_millis = 150;
+          assert(wake_cue.poll(output) == Result::WAITING); // Queued, not accepted.
+          output.playback_generation = 41;
+          assert(wake_cue.poll(output) == Result::WAITING); // Fault/forced stop is not completion.
+          output.completed_generation = 41;
+          output.speaker_stopped = false;
+          assert(wake_cue.poll(output) == Result::WAITING); // Source IDLE is insufficient.
+          assert(!capturing && begins == 0);
+          output.speaker_stopped = true;
+          // No ANNOUNCING publication was needed: the actual drain receipt survives.
+          assert(wake_cue.poll(output) == Result::READY);
+          start_pending();
+          assert(capturing && !wake_pending && begins == 1);
+          finish_capture(0);
+          finish_capture(4);
+          assert(ends == 1); // Only the completion winner closes diagnostics.
+
+          Barrier failed;
+          failed.begin(40);
+          output.completed_generation = 40;
+          fake_millis += HANDOFF_TIMEOUT_MS - 1;
+          assert(failed.poll(output) == Result::WAITING);
+          ++fake_millis;
+          assert(failed.poll(output) == Result::FAILED);
+          assert(!capturing);
+          failed.begin(40);
+          output.playback_generation = 42;
+          assert(failed.poll(output) == Result::FAILED); // Not the requested cue.
+        }
+    """)
 
 
 def test_home_admission_automation_wires_response_and_transport_failure_callbacks():
@@ -1345,5 +1444,173 @@ def test_home_unavailable_is_visible_before_real_capture_and_not_cleared_by_reac
           puck_identity::note_upload_status(503);
           assert(puck_identity::may_capture());
           return 0;
+        }
+    """)
+
+
+def test_follow_up_waits_for_successful_output_drain_and_stable_settle(tmp_path):
+    compiler = shutil.which("clang++") or shutil.which("c++")
+    if compiler is None:
+        pytest.skip("no C++ compiler available")
+    _write_capture_stubs(tmp_path)
+    _compile_and_run_capture_harness(tmp_path, compiler, """
+        #include "puck_audio_handoff.h"
+        #include <cassert>
+        std::uint32_t fake_millis = 1000;
+        int main() {
+          using namespace puck_audio_handoff;
+          Output output{true, false, false, true, true, 11, 10, false, 0, false};
+          response_requested(10);
+          assert(poll_follow_up(output) == Result::WAITING);
+          assert(response_audio_requested); // No admission while tail is queued.
+          fake_millis = 1100;
+          output = {true, true, true, false, false, 11, 11, false, 0, true};
+          assert(poll_follow_up(output) == Result::WAITING); // Detector still STOPPING.
+          output.detector_stopped = true;
+          assert(poll_follow_up(output) == Result::WAITING);
+          fake_millis = 1299;
+          assert(poll_follow_up(output) == Result::WAITING);
+          output.buffered = true; // Renewed output invalidates prior settle time.
+          fake_millis = 1300;
+          assert(poll_follow_up(output) == Result::WAITING);
+          output.buffered = false;
+          fake_millis = 1400;
+          assert(poll_follow_up(output) == Result::WAITING);
+          fake_millis = 1599;
+          assert(poll_follow_up(output) == Result::WAITING);
+          fake_millis = 1600;
+          assert(poll_follow_up(output) == Result::READY);
+          assert(!response_audio_requested);
+
+          response_requested(11);
+          output = {true, true, true, false, true, 12, 11, false, 0, true}; // Faulted TX stopped.
+          assert(poll_follow_up(output) == Result::WAITING);
+          fake_millis += HANDOFF_TIMEOUT_MS;
+          assert(poll_follow_up(output) == Result::FAILED);
+          assert(!response_audio_requested);
+
+          Barrier wrap;
+          fake_millis = UINT32_MAX - 50;
+          wrap.begin(UINT32_MAX, FOLLOW_UP_SETTLE_MS);
+          output = {true, true, true, false, true, 0, 0, false, 0, true};
+          assert(wrap.poll(output) == Result::WAITING);
+          fake_millis = 149;
+          assert(wrap.poll(output) == Result::READY);
+        }
+    """)
+
+
+@pytest.mark.parametrize("scenario", [
+    "stale_true", "repeated_generation", "invalid_resets_silence",
+    "late_speech", "stalled_input", "initial_stalled_input",
+])
+def test_capture_requires_fresh_vad_and_keeps_hard_eight_second_bound(tmp_path, scenario):
+    compiler = shutil.which("clang++") or shutil.which("c++")
+    if compiler is None:
+        pytest.skip("no C++ compiler available")
+    _write_capture_stubs(tmp_path)
+    _compile_and_run_capture_harness(tmp_path, compiler, """
+        #include "pcm_capture.h"
+        #include <cassert>
+        #include <string>
+        std::uint32_t fake_millis = 10000;
+        int main() {
+          using namespace pcm_capture::wake_capture;
+          puck_identity::setup("configured");
+          setup();
+          const std::string scenario = "SCENARIO";
+          if (scenario == "initial_stalled_input") {
+            assert(puck_response::begin_home_admission(0));
+            puck_response::note_home_admission(200, "admitted:0");
+            prepare("hey missy");
+            start_pending();
+          } else {
+            puck_response::state = puck_response::State::FOLLOW_UP_PENDING;
+            assert(puck_response::begin_follow_up_admission(0));
+            puck_response::note_follow_up_admission(200, "admitted:0");
+            assert(start_follow_up());
+            puck_response::follow_up_started();
+          }
+          assert(capturing);
+          const bool stalled = scenario.find("stalled_input") != std::string::npos;
+          const std::uint8_t frame[] = {1, 2, 3, 4};
+          if (!stalled) write(frame, sizeof(frame));
+          tick(false, true, 99); // Old true/partial window can never mark speech.
+          assert(!speech_seen && capturing);
+          if (scenario == "stale_true" || stalled) {
+            fake_millis = capture_started_ms + CAPTURE_LISTEN_TIMEOUT_MS - 1;
+            tick(false, true, 99);
+            assert(capturing && !speech_seen);
+            ++fake_millis;
+            tick(false, true, 99);
+          } else if (scenario == "late_speech") {
+            fake_millis = capture_started_ms + CAPTURE_LISTEN_TIMEOUT_MS - 1;
+            tick(true, true, 1);
+            assert(capturing && speech_seen);
+            ++fake_millis;
+            tick(true, true, 2); // Speech never extends the original clock.
+          } else {
+            tick(true, true, 1);
+            fake_millis = capture_started_ms + 100;
+            tick(true, false, 2);
+            fake_millis += VAD_SILENCE_DEBOUNCE_MS;
+            if (scenario == "repeated_generation") {
+              tick(true, false, 2);
+              assert(capturing); // Re-reading an old false cannot end speech.
+            }
+            tick(false, false, 2); // Stale inference resets the debounce.
+            assert(capturing);
+            ++fake_millis;
+            tick(true, false, 3);
+            fake_millis += VAD_SILENCE_DEBOUNCE_MS - 1;
+            tick(true, false, 4);
+            assert(capturing);
+            ++fake_millis;
+            tick(true, false, 5);
+          }
+          assert(!capturing && capture_pending_upload);
+          const bool empty = scenario == "stale_true" || stalled;
+          assert(completed_capture_bytes == (empty ? 0 : sizeof(frame)));
+          esphome::http_request::HttpRequestComponent client;
+          upload(&client, "http://bridge/upload", "synthetic-token");
+          assert(client.bodies.size() == 1);
+          assert(client.bodies.front().size() == (empty ? 0 : sizeof(frame)));
+          assert(last_delivered_empty == empty);
+        }
+    """.replace("SCENARIO", scenario))
+
+
+def test_first_fresh_vad_generation_zero_is_not_a_sentinel(tmp_path):
+    compiler = shutil.which("clang++") or shutil.which("c++")
+    if compiler is None:
+        pytest.skip("no C++ compiler available")
+    _write_capture_stubs(tmp_path)
+    _compile_and_run_capture_harness(tmp_path, compiler, r"""
+        #include "pcm_capture.h"
+        #include <cassert>
+        std::uint32_t fake_millis = 1000;
+        int main() {
+          using namespace pcm_capture::wake_capture;
+          puck_identity::setup("configured");
+          setup();
+          puck_response::state = puck_response::State::FOLLOW_UP_PENDING;
+          assert(puck_response::begin_follow_up_admission(0));
+          puck_response::note_follow_up_admission(200, "admitted:0");
+          assert(start_follow_up());
+          puck_response::follow_up_started();
+          const std::uint8_t frame[] = {1, 2, 3, 4};
+          write(frame, sizeof(frame));
+          tick(false, true, 0);
+          assert(!speech_seen && !has_vad_generation);
+          tick(true, true, 0); // A real generation can be zero after wrap.
+          assert(speech_seen && has_vad_generation && last_vad_generation == 0);
+          fake_millis += 100;
+          tick(true, false, 0); // Same generation cannot switch the decision.
+          assert(capturing && silence_start_ms == 0);
+          tick(true, false, 1);
+          assert(silence_start_ms == fake_millis);
+          fake_millis += VAD_SILENCE_DEBOUNCE_MS;
+          tick(true, false, 2);
+          assert(!capturing && completed_capture_bytes == sizeof(frame));
         }
     """)

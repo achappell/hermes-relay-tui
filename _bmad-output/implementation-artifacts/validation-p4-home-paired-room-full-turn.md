@@ -210,3 +210,85 @@ Fresh serial verification on that reconciled source supersedes the earlier count
 - Full command above, adding `-ra` for explicit skip reporting: **2370 passed, 2 skipped, 2 deselected, 6 existing warnings, 397.17 s**. Skips: `tests/test_display_contract.py:163` — ESP-IDF cJSON unavailable; `tests/test_wake_sherpa.py:216` — optional `wake` extra absent. Neither backs this repair's acceptance. The same two known Bash3.2 ops cases were the only deselections.
 - Current **synthetic-example-only, never-flash** Home hashes: factory `1c1e6a18d452f2bd18a86e47cf5fe96ff8baaccb0735ccfe4190bac02b820777`; OTA `c08107189bd7dc89ee2792181ea82a97ffde0e0678998c8e2c04473384645582`. All temporary secrets and the toolchain symlink were removed afterward.
 - No runtime source changed after those checks; the subsequent evidence commit records these observations only. No PR merge/flash/deploy/retest approval is implied. The sole custodian must privately build the final approved PR source under the prepared plan before any Amanda-authorized hardware action.
+
+## P-2/P-3 fresh output handoff repair — 2026-10-19
+
+### Physical retest that motivated this repair — NOT acceptance
+
+The subsequently authorized a47ded642f51db168ca9ea526379ca63bd7cdaeb flash/retest supersedes the earlier unexecuted-plan state, not the failed quiet gate. Amanda heard an answer but reported no initial wake beep/indicator, including on earlier firmware212. Content-free coordinator/custodian receipts recorded:
+
+- Primary: real grant, 1,024,000 bytes at the eight-second buffer limit, nonempty STT, Standard response, 58 TTS chunks and 325,376 source/delivered PCM bytes (24kHz mono S16). Primary VAD did not end speech before the limit.
+- Quiet follow-up: capture-start receipt 43.944s; external media-IDLE receipt 43.964s; cached VAD true and `i2s_audio.speaker` error at 43.974s; VAD close 44.876s; 115,376 bytes uploaded as seq1, STT invoked, EMPTY_TRANSCRIPT, one silent media GET, no second Standard turn. The E preceded upload/STT/204, so it is not evidence for the prior HTTP204 error candidate.
+- VAD was true in 45/57 telemetry polls, including quiet periods. These are cached-Boolean polls, not 57 fresh inferences. Numeric saturation, acoustic echo and the exact speaker error site cannot be inferred. Event times are observer receipts; the 20ms ordering alone is not proof of acoustic overlap.
+- Final native state was IDLE/MWW running. Host readback retained one ACTIVE claim; no zero-claim/owned-close or later fresh-wake acceptance is claimed. Observers/tunnels stopped; no further live operation accompanies this source work.
+
+The already accepted first paired-room full turn remains accepted. Quiet follow-up and current wake acknowledgement remain **FAILED/OPEN**, not silently narrowed or marked done.
+
+### Approved implementation and local evidence
+
+Owning intent remains P-2/P-3. [Repair spec](spec-p2-p3-fresh-audio-handoff.md) records the parent's explicit scoped approval. New branch `fix/p2-p3-audio-handoff` starts at fresh main `5b0ca37efb91f19bb8797454bf0825deb34c80f3`; PR255 had already merged, so this is not a duplicate stack.
+
+- Local ESPHome2026.9.1 resampler override records canonical wheel SHA, upstream commit `0b2b16e664ecfc0add37f3435db1c2140b8a687e`, unmodified member hashes and complete upstream license. Generated build output is not patched.
+- Graceful EOF drains upstream before TX finish and actual DMA stop. An accepted-playback generation is completed only after clean drain with an unchanged downstream monotonic fault generation. Immediate stop, failure and an absent callback cannot fake success. A review-found prior-fault baseline ordering bug was fixed so later fresh playback can recover.
+- Cue capture requires a positive completed-generation receipt, not queue submission or sampled ANNOUNCING. Follow-up waits actual stopped/empty output and 200ms stable settle, then existing admission. Five-second handoff watchdogs use existing bounded refusal/recovery, never capture.
+- VAD snapshot publication is synchronized and actual-invocation/epoch-qualified. Stop/reset/in-flight failures invalidate it; a full fresh probability window and bounded age are required. PCM still buffers during warm-up. Repeated/stale results cannot latch speech or debit silence; hard eight seconds starts at capture begin and is never extended by late speech. Gain4/channel1/cutoff0.05/current cue/volume/800ms remain unchanged.
+- One DEBUG-only capture summary reports unique fresh probabilities/counts and selected post-gain S16 rails, with explicit availability flags. Rail fraction is samples at digital limits, not calibrated distance or proof of acoustic clipping. DEBUG speaker diagnostics retain exact site and actual returned `esp_err_t`, or explicitly `not_provided`; no PCM/transcript/credential/VERBOSE logging is introduced.
+
+Preliminary focused command: `python -m pytest -q tests/test_puck_firmware.py tests/test_respeaker_resampler.py tests/test_respeaker_vad.py tests/test_respeaker_speaker.py` — **86 passed, 21.45s**, before the additional configured-action/review regressions below. Actual-source native harnesses cover buffered EOF/short cue/24kHz TTS, pending start+finish, passthrough, forced stop/fault recovery, real speaker failure sites/counters, stale/in-flight/partial/nonprogressing VAD, capture boundaries and diagnostic availability.
+
+Beyond tests, a throwaway native C++ executable used actual capture/response/handoff/VAD-store headers and the configured YAML response handoff over real libcurl to the production bridge HTTP receiver/mailbox. Both deadline and buffer-first cases observed **one control POST, zero uploaded PCM bytes, zero STT calls, zero new follow-up turns, zero media GETs**, matching silent status, native IDLE and disarmed mailbox; the existing initial synthetic Session turn remained exactly one. Runtime duration **1.90s**. Synthetic output/model/Session fixtures and simulated clock make this local contract proof, not hardware/Home/Standard/acoustic or wall-clock evidence. No raw microphone or real credentials were used.
+
+### Final observed local verification and independent review
+
+The final runtime diff passed independent blind-code, edge-case, verification and sole-custodian SPEC/CODE reviews with **no outstanding substantiated findings**. Fixed findings include prior-fault/start ordering, precise ring-buffer allocation attribution, valid generation zero, actual YAML/URL/status execution, IDLE-before-error ordering, late faults after SILENT/READY, stop-request versus actual cleanup acknowledgement, and undrained READY after follow-up ownership had already cleared. Cleanup now waits for both sources IDLE plus stopped/empty resampler/TX; five seconds without acknowledgement reports Unavailable once and remains capture-closed until actual later shutdown. A 30-second **lack-of-positive-output-progress** watchdog handles decoder/source failure or a missing IDLE; it does not cap valid long TTS. Matching authoritative SILENT stays quiet even after a legitimate exact-stop HTTP204 decoder failure; COMPLETE/unknown/unavailable cannot authorize follow-up on that failure path.
+
+Final focused command, using an isolated worktree-owned Python3.14.8 environment installed from `requirements-dev.txt`:
+
+```bash
+env PYTHONPATH=. venv/bin/python -m pytest -q \
+  tests/test_mic.py::test_faster_whisper_decodes_a_real_wav_when_voice_is_installed \
+  tests/test_puck_firmware.py tests/test_puck_audio_wiring.py \
+  tests/test_respeaker_resampler.py tests/test_respeaker_vad.py tests/test_respeaker_speaker.py
+```
+
+**123 passed, 33.81s**, including the real faster-whisper1.2.1 / av18.1.0 WAV decode, not a skip or mock. The five native/firmware modules alone had already passed **122 tests, 27.51s** on the same final source. The final standalone native/libcurl/production-bridge smoke again passed **both** deadline and buffer-first scenarios with the zero-audio/zero-STT/zero-new-turn/zero-media invariants above. Its clock/output/model/Session are isolated fixtures, not a real Home grant, Standard turn, wall-clock or acoustic proof.
+
+```bash
+env PYTHONPATH=. venv/bin/python -m pytest -q -ra \
+  --deselect=tests/test_ops_web_deployment.py::test_bootstrap_renders_and_installs_the_managed_service_and_caddy_site \
+  --deselect=tests/test_ops_web_deployment.py::test_bootstrap_rejects_a_caddy_directory_only_mentioned_in_a_comment
+```
+
+**2466 passed, 2 skipped, 2 deselected, 6 warnings, 392.38s.** Skips: `tests/test_display_contract.py:163` — ESP-IDF cJSON unavailable; `tests/test_wake_sherpa.py:216` — optional `wake` extra absent. Neither backs this repair's acceptance. The two deselections are the previously known macOS Bash3.2 deployment cases, not new failures; they were not rerun merely to reconfirm them. Existing warnings concern deprecated `websockets.legacy` / `ConnectionClosed` accessors. `uv pip check --python venv/bin/python` reported all 69 installed packages compatible. `venv/bin/python -m build --sdist --wheel` passed, producing the normal 0.13.1 distribution artifacts.
+
+An immediately preceding full run using a reused older environment observed **1 failed, 2465 passed, 2 skipped, 2 deselected**: the existing real decoder regression exposed that environment's PyAV19, which violates current `av<19`. No dependency pin, production source, test or deselection was weakened. The separate clean environment resolved av18.1.0 and passed the decoder plus full suite above; no other worktree environment was modified. An earlier ESPHome8.2 attempt exposed the obsolete second-model-constructor assignment (removed) and incompatible framework StaticTask API; actual9.1 is now the explicit configuration/firmware-extra minimum. Those failed attempts are not reported as successful builds.
+
+```bash
+venv-firmware/bin/esphome compile firmware/respeaker-lite/respeaker-lite.yaml
+venv-firmware/bin/esphome -s puck_home_transport true compile firmware/respeaker-lite/respeaker-lite.yaml
+```
+
+Both **actual ESPHome2026.9.1 / ESP-IDF5.5.5 builds passed** on the final reviewed source:
+
+| Build | Config hash | Build time (−0500) | RAM | Flash |
+|---|---|---|---|---|
+| Direct | `0xd0336ad8` | 2026-10-19 17:58:05 | 117487 / 341760 B | 1867295 / 3932160 B |
+| Home | `0x5447e3bd` | 2026-10-19 17:58:20 | 117487 / 341760 B | 1867299 / 3932160 B |
+
+Generated executable setup confirms Home transport `true` and `pcm_capture::setup(false, "")`; raw PCM diagnostics were OFF. Existing GPIO3-strapping/OTA-password warnings remain. **Public synthetic-example Home images, NEVER flash:** factory SHA256 `08b4ca14cd83f6ca3df97ddd17cc846745e470e44746aef2feb2be860efb8420`; OTA `daf2c3b3719eea1b5391a7d24f505c5038a395fc21c1925b4c88ca6481e4db21`. Temporary example secrets, throwaway smoke runner and the toolchain symlink are removed after verification. No real credentials, microphone, host, live service, deployed bridge or hardware were accessed.
+
+| Scoped acceptance | Exercised local consumer evidence | Still physical OPEN |
+|---|---|---|
+| Admitted wake cue before capture | Actual resampler source; configured fast-tick actions require positive completed generation, stopped source/TX and fresh VAD | Audible cue on the real speaker, prior to question capture |
+| Follow-up after drain/settle | Actual configured 100/250ms actions, source/TX tail, detector stop and 200ms stable settle | Actual playback tail/echo and microphone transition |
+| Fresh bounded speech/silence | Production invocation/window/snapshot helpers, concurrent epoch/reset, generation-zero/stalled/partial cases, hard-eight-second and 800ms capture regressions | Fresh real model probabilities/noise floor and primary end-of-speech |
+| Quiet final without processing/media | Both real loopback HTTP/mailbox scenarios: one empty control, zero PCM/STT/new turn/media GET | Amanda-quiet follow-up on installed candidate |
+| Content-free diagnostics and finite fault handling | Real speaker-source fault injection/site assertions; numerical summary/rail tests; real configured silent/fault/ack/no-ack/long-progress paths | Exact physical speaker fault attribution and numeric capture summaries |
+
+No skip backs a scoped acceptance row. This is a locally complete, independently reviewed software repair with deferred physical acceptance, not a claim that a47's failed quiet-follow-up or absent wake acknowledgement passed.
+
+### Next physical gate — requires parent GO, NOT executed here
+
+The sole firmware custodian must preserve the current private a47 Home image/settings plus the existing212 recovery image, privately rebuild the final approved PR source with real preserved settings, Home transport true and raw diagnostics OFF, and report exact firmware/config/image hashes before any separately approved flash. The public example-only compile output is never a flash candidate. No other observer/host actor acts concurrently.
+
+Under a later approved awake window, confirm fail-closed startup, genuine wake/grant, audible initial cue before capture, a question ending before the hard buffer limit when fresh VAD permits, full audible response, and quiet follow-up: actual drain/settle, fresh generations, no false speech, one empty control, no PCM/STT/new turn/media GET, and wake-listening. Retain only bounded numeric/site/status diagnostics to distinguish fresh-high VAD/rails from stale inference and attribute any speaker fault. Genuine follow-up/exact stop, later wake and revocation/recovery remain separate acceptance unless actually exercised. Rollback uses the custodian's preserved approved image/config; never erase Home state, bypass admission, use fixed scores or replay.

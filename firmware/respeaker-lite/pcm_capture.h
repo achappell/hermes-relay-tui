@@ -326,9 +326,8 @@ inline void upload_and_restart(esphome::http_request::HttpRequestComponent *clie
 // from `upload_and_restart`'s rolling-capture design in exactly the ways
 // story 5 needs: (a) sized for ~8s of audio, not a fixed 2s window -- long
 // enough for a real spoken question with lead/trail silence, (b) the
-// capture window ends when `micro_wake_word`'s own VAD model (already
-// proven responsive: `probability_cutoff: 0.05` in respeaker-lite.yaml)
-// reports silence for a debounce period, not when the buffer fills, and
+// capture window ends on generation-qualified VAD silence or the hard eight-
+// second limit. Cached/partial detector state is not speech evidence, and
 // (c) it can be re-armed once after a successful response for a bounded
 // wake-free follow-up. No continuous microphone hold is allowed: each
 // follow-up is its own eight-second window.
@@ -355,6 +354,15 @@ static uint32_t silence_start_ms = 0;
 static uint32_t capture_started_ms = 0;
 static std::atomic<bool> speech_seen{false};
 static bool follow_up_capture = false;
+static uint32_t last_vad_generation = 0;
+static bool has_vad_generation = false;
+static void (*capture_started_callback)() = nullptr;
+static void (*capture_finished_callback)() = nullptr;
+
+inline void set_capture_diagnostics(void (*started)(), void (*finished)()) {
+  capture_started_callback = started;
+  capture_finished_callback = finished;
+}
 static uint32_t sample_index = 0;
 
 // 1-p-1 task 3: set by start() when the identity gate refuses a wake, so
@@ -378,13 +386,8 @@ static bool last_delivered_empty = false;
 // this to leave FOLLOW_UP_CAPTURING instead of holding the wake gate forever.
 static bool last_upload_failed = false;
 
-// 1-p-2 task 7: set when a capture window closes with audio in it, so the
-// automation can acknowledge it. Deliberately NOT signalled at the wake:
-// the acknowledgement is audible, and the XMOS AEC suppresses the mic
-// while the speaker is active, so acknowledging during capture destroys
-// the very question being captured (measured: transcript went from good
-// to empty). Signalled at the close instead -- which also says something
-// more useful than "I heard a wake word": "I have your question".
+// Capture bookkeeping only. The wake acknowledgement remains before capture;
+// it must never be sounded here at the close.
 static std::atomic<bool> last_capture_captured{false};
 
 // 1-p-2 task 7: the wake automation sets this before playing the short
@@ -451,9 +454,12 @@ inline bool begin_capture(bool is_follow_up) {
   capture_started_ms = millis();
   speech_seen = false;
   follow_up_capture = is_follow_up;
+  last_vad_generation = 0;
+  has_vad_generation = false;
   last_capture_captured = false;
   last_upload_delivered = false;
   last_upload_failed = false;
+  if (capture_started_callback) capture_started_callback();
   capturing = true;
   return true;
 }
@@ -542,6 +548,7 @@ inline void finish_capture(size_t captured_bytes) {
   last_capture_captured = captured_bytes > 0;
   capture_done = true;
   capture_pending_upload = true;
+  if (capture_finished_callback) capture_finished_callback();
 }
 
 // Called from the microphone's real-time on_data callback, alongside the
@@ -566,50 +573,46 @@ inline void write(const uint8_t *data, size_t len) {
     }
     // The buffer filled before VAD ever reported silence -- still a valid,
     // bounded capture; end it rather than overrun.
-    // Acknowledge this close too. Setting it only on the VAD-silence path
-    // meant a question long enough to fill the buffer -- the case where
-    // someone has been talking longest and most wants to hear "I have
-    // your question" -- got no chirp at all.
     finish_capture(write_pos.load());
     ESP_LOGW(TAG, "wake capture reached the %us buffer limit before VAD silence", (unsigned) WAKE_CAPTURE_SECONDS);
   }
 }
 
-// Called from a fast `interval:` tick (not the real-time audio path) with
-// the current VAD state. Ends the capture window on debounced silence --
-// this is what makes the window VAD-gated instead of a fixed timer.
-inline void tick(bool vad_active) {
-  if (!capturing) {
+// Called from the fast interval with a coherent, current-run VAD result.
+// PCM collection does not wait for model warm-up. Unknown/stale results count
+// as neither speech nor silence, and repeated generations cannot end speech.
+inline void tick(bool vad_valid, bool vad_active, uint32_t generation) {
+  if (!capturing) return;
+  const uint32_t now = millis();
+  // This wall-clock bound also covers stalled microphone/model input. Speech
+  // near expiry never restarts or extends the owner's eight-second window.
+  if (now - capture_started_ms >= CAPTURE_LISTEN_TIMEOUT_MS) {
+    const bool empty = follow_up_capture && !speech_seen;
+    finish_capture(empty ? 0 : write_pos.load());
+    ESP_LOGI(TAG, "capture ended on the %ums deadline (%s)",
+             (unsigned) CAPTURE_LISTEN_TIMEOUT_MS, empty ? "empty" : "bounded");
     return;
   }
-  uint32_t now = millis();
+  if (!vad_valid) {
+    silence_start_ms = 0;
+    return;
+  }
+  if (has_vad_generation && generation == last_vad_generation) return;
+  last_vad_generation = generation;
+  has_vad_generation = true;
   if (vad_active) {
     speech_seen = true;
     silence_start_ms = 0;
     return;
   }
-  // VAD silence before any speech is not an end-of-utterance for a follow-up.
-  // Keep that wake-free window bounded by a hard eight-second deadline
-  // instead of closing immediately on the detector's idle state. Preserve
-  // the initial wake capture's established debounce behavior.
-  if (follow_up_capture && !speech_seen) {
-    if (now - capture_started_ms < CAPTURE_LISTEN_TIMEOUT_MS) {
-      return;
-    }
-    // Mic frames collected during the wake-free wait are silence/noise, not
-    // an utterance. Complete the mailbox without sending those frames.
-    finish_capture(0);
-    ESP_LOGI(TAG, "capture ended on the %ums no-speech deadline (empty)",
-             (unsigned) CAPTURE_LISTEN_TIMEOUT_MS);
-    return;
-  }
+  if (follow_up_capture && !speech_seen) return;
   if (silence_start_ms == 0) {
     silence_start_ms = now;
     return;
   }
   if (now - silence_start_ms >= VAD_SILENCE_DEBOUNCE_MS) {
     finish_capture(write_pos.load());
-    ESP_LOGI(TAG, "wake capture ended on VAD silence (%u bytes)", (unsigned) write_pos);
+    ESP_LOGI(TAG, "wake capture ended on fresh VAD silence (%u bytes)", (unsigned) write_pos);
   }
 }
 

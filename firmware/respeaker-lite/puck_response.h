@@ -15,6 +15,7 @@
 #include "puck_identity.h"
 
 #include <cstdint>
+#include <atomic>
 #include <string>
 
 namespace puck_response {
@@ -25,6 +26,10 @@ static const char *const BUILD_IDENTITY = "respeaker-lite-p5";
 static constexpr uint32_t STATUS_RETRY_INTERVAL_MS = 250;
 static constexpr uint32_t STATUS_RETRY_WINDOW_MS = 2000;
 static constexpr uint32_t REFUSAL_WATCHDOG_MS = 2000;
+// Existing device HTTP fetch budget is approximately 30s without progress.
+// This is inactivity, never a cap on a valid long spoken response.
+static constexpr uint32_t PLAYBACK_PROGRESS_TIMEOUT_MS = 30000;
+static constexpr uint32_t PLAYBACK_CLEANUP_TIMEOUT_MS = 5000;
 
 enum class State : uint8_t {
   IDLE,
@@ -50,6 +55,48 @@ static uint32_t home_admission_seq = 0;
 static bool follow_up_admission_pending = false;
 static bool follow_up_admission_granted_flag = false;
 static uint32_t follow_up_admission_seq = 0;
+static std::atomic<uint32_t> playback_progress_marker{0};
+static uint32_t last_playback_progress_marker = 0;
+static uint32_t last_playback_progress_ms = 0;
+static bool playback_announcement_seen = false;
+static bool playback_cleanup_pending = false;
+static bool playback_cleanup_stop_requested = false;
+static bool playback_cleanup_unavailable = false;
+static uint32_t playback_cleanup_started_ms = 0;
+
+// Called by the actual TX audio-output callback. No logging/clock work on its task.
+inline void playback_progress() {
+  playback_progress_marker.fetch_add(1, std::memory_order_release);
+}
+
+inline void request_playback_cleanup() {
+  if (playback_cleanup_pending) return;
+  playback_cleanup_pending = true;
+  playback_cleanup_stop_requested = false;
+  playback_cleanup_unavailable = false;
+  playback_cleanup_started_ms = millis();
+}
+
+inline void observe_playback_cleanup(bool stopped_and_empty) {
+  if (!playback_cleanup_pending || !playback_cleanup_stop_requested) return;
+  if (stopped_and_empty) {
+    playback_cleanup_pending = false;
+    ESP_LOGD(TAG, "failed output cleanup confirmed for seq=%u", (unsigned) response_seq);
+  } else if (!playback_cleanup_unavailable &&
+             uint32_t(millis() - playback_cleanup_started_ms) >= PLAYBACK_CLEANUP_TIMEOUT_MS) {
+    playback_cleanup_unavailable = true;
+    puck_identity::show_unavailable(true);
+    ESP_LOGW(TAG, "output stop unconfirmed for seq=%u; unavailable, capture stays closed",
+             (unsigned) response_seq);
+  }
+}
+
+inline void announcement_started() {
+  if (state == State::WAITING_FOR_MEDIA_IDLE && !playback_announcement_seen) {
+    playback_announcement_seen = true;
+    playback_progress();
+  }
+}
 
 inline const char *state_name(State value) {
   switch (value) {
@@ -112,6 +159,12 @@ inline void begin(uint32_t seq, bool empty_capture = false) {
   home_admission_granted_flag = false;
   follow_up_admission_pending = false;
   follow_up_admission_granted_flag = false;
+  last_playback_progress_marker = playback_progress_marker.load(std::memory_order_acquire);
+  last_playback_progress_ms = millis();
+  playback_announcement_seen = false;
+  playback_cleanup_pending = false;
+  playback_cleanup_stop_requested = false;
+  playback_cleanup_unavailable = false;
   state = empty_capture ? State::POLLING : State::WAITING_FOR_MEDIA_IDLE;
   ESP_LOGI(TAG, "response admitted seq=%u build=%s; %s",
            (unsigned) response_seq, BUILD_IDENTITY,
@@ -222,6 +275,18 @@ inline void note_home_admission_transport_failure() {
   note_home_admission(0, "");
 }
 
+inline void wake_acknowledgement_failed(uint32_t seq) {
+  home_admission_pending = false;
+  home_admission_granted_flag = false;
+  follow_up_admission_pending = false;
+  follow_up_admission_granted_flag = false;
+  response_seq = seq;
+  state = State::REFUSAL_PENDING;
+  puck_identity::show_unavailable(true);
+  ESP_LOGW(TAG, "wake acknowledgement failed for seq=%u; capture stays closed",
+           (unsigned) seq);
+}
+
 inline void initial_upload_failed(uint32_t seq) {
   response_seq = seq;
   retry_started_ms = 0;
@@ -269,6 +334,35 @@ inline void refuse(const char *reason) {
   state = State::REFUSAL_PENDING;
   ESP_LOGW(TAG, "response seq=%u unavailable (%s); playing one refusal",
            (unsigned) response_seq, reason);
+}
+
+inline void check_playback_progress(bool failed) {
+  if (state == State::READY_TO_RESUME && failed) request_playback_cleanup();
+  if (state == State::POLLING && failed && !silent_completion_only) {
+    // IDLE may have been published before the next periodic error check.
+    // Retain the existing confirmation deadline, but never accept COMPLETE.
+    silent_completion_only = true;
+    request_playback_cleanup();
+  }
+  if (state != State::WAITING_FOR_MEDIA_IDLE) return;
+  const uint32_t now = millis();
+  const uint32_t marker = playback_progress_marker.load(std::memory_order_acquire);
+  if (!failed && marker != last_playback_progress_marker) {
+    last_playback_progress_marker = marker;
+    last_playback_progress_ms = now;
+    return;
+  }
+  if (!failed && now - last_playback_progress_ms < PLAYBACK_PROGRESS_TIMEOUT_MS) return;
+  // A decoder error can be an authoritative silent/stop response (HTTP204).
+  // Confirm that terminal without accepting COMPLETE as playback success or
+  // sounding a refusal for exact stop. Unknown/failed status stays bounded.
+  silent_completion_only = true;
+  request_playback_cleanup();
+  retry_started_ms = now;
+  next_poll_ms = now;
+  state = State::POLLING;
+  ESP_LOGW(TAG, "response seq=%u playback %s; confirming silent-only terminal",
+           (unsigned) response_seq, failed ? "failed" : "stalled");
 }
 
 inline void note_status(int status, const std::string &body) {
@@ -419,10 +513,12 @@ inline void refusal_recovered() {
   }
 }
 
-inline bool ready_to_resume() { return state == State::READY_TO_RESUME; }
+inline bool ready_to_resume() {
+  return state == State::READY_TO_RESUME && !playback_cleanup_pending;
+}
 
 inline void wake_resumed() {
-  if (state == State::READY_TO_RESUME) {
+  if (ready_to_resume()) {
     ESP_LOGI(TAG, "wake detection resumed after response seq=%u",
              (unsigned) response_seq);
     state = State::IDLE;

@@ -45,6 +45,7 @@ substitutions:
 
 esphome:
   name: respeaker-lite
+  min_version: 2026.9.1
   friendly_name: "Hermes Puck (reSpeaker Lite)"
   # P-7: pcm_capture.h holds the wake capture and the opt-in, bounded raw
   # PCM diagnostic capture, which is off unless `puck_pcm_diagnostics` is
@@ -55,6 +56,7 @@ esphome:
     - puck_identity.h
     # P-5: response terminal confirmation and post-playback wake hand-off.
     - puck_response.h
+    - puck_audio_handoff.h
   # micro_wake_word does not start listening on its own -- MicroWakeWord::setup()
   # never calls start(), and its own data callback explicitly drops audio while
   # state_ == STOPPED. Without a voice_assistant: component (which normally
@@ -85,6 +87,28 @@ esphome:
               else id(puck_unavailable_led).turn_off();
             });
             puck_identity::setup("${puck_device_token}", ${puck_home_transport});
+        - lambda: |-
+            id(puck_resampler).set_output_error_generation_callback(
+                []() -> uint32_t { return id(puck_speaker).playback_error_generation(); });
+            id(puck_resampler).add_audio_output_callback([](uint32_t frames, int64_t) {
+              if (frames > 0) puck_response::playback_progress();
+            });
+            puck_audio_handoff::set_output_reader([]() -> puck_audio_handoff::Output {
+              return {
+                  id(puck_media_player).state == media_player::MEDIA_PLAYER_STATE_IDLE,
+                  id(puck_resampler).is_stopped(), id(puck_speaker).is_stopped(),
+                  id(puck_resampler).has_buffered_data() || id(puck_speaker).has_buffered_data(),
+                  !id(mww).is_running(),
+                  id(puck_resampler).playback_generation(),
+                  id(puck_resampler).completed_playback_generation(),
+                  id(puck_http_source).get_state() == media_source::MediaSourceState::ERROR,
+                  id(puck_speaker).playback_error_generation(),
+                  id(puck_http_source).get_state() == media_source::MediaSourceState::IDLE &&
+                      id(puck_local_source).get_state() == media_source::MediaSourceState::IDLE};
+            });
+            pcm_capture::wake_capture::set_capture_diagnostics(
+                []() { id(mww).begin_capture_diagnostics(); },
+                []() { id(mww).finish_capture_diagnostics(); });
     - priority: -200  # after identity is established above
       then:
         # No-op unless P-7 raw PCM diagnostics were explicitly enabled.
@@ -256,6 +280,7 @@ external_components:
       - i2s_audio
       - micro_wake_word
       - respeaker_lite
+      - resampler
 
 # Required by respeaker_lite: below, to talk to the XMOS chip for the DFU
 # firmware update. Pins/frequency match formatBCE's reference config.
@@ -503,6 +528,7 @@ media_player:
     # benefit: the device cannot hear its own voice and self-trigger.
     on_announcement:
       - lambda: |-
+          puck_response::announcement_started();
           if (id(mww).is_running()) {
             ESP_LOGI("puck_audio", "pausing wake detection while speaking");
             id(mww).stop();
@@ -510,8 +536,12 @@ media_player:
     on_idle:
       - lambda: |-
           if (puck_response::holds_wake()) {
+            puck_response::check_playback_progress(
+                puck_audio_handoff::response_failed(puck_audio_handoff::current_output()));
             puck_response::media_idle();
-          } else if (!id(mww).is_running()) {
+          } else if (!pcm_capture::wake_capture::wake_pending &&
+                     !id(mww).is_running() &&
+                     puck_audio_handoff::drained(puck_audio_handoff::current_output())) {
             ESP_LOGI("puck_audio", "resuming wake detection after speaking");
             id(mww).start();
           }
@@ -606,6 +636,7 @@ micro_wake_word:
           lambda: |-
             return !pcm_capture::wake_capture::capturing &&
                    !pcm_capture::wake_capture::capture_pending_upload &&
+                   !pcm_capture::wake_capture::wake_pending &&
                    !puck_response::holds_wake() &&
                    !puck_response::home_admission_in_flight() &&
                    !puck_response::home_admission_granted();
@@ -658,13 +689,14 @@ micro_wake_word:
                                 condition:
                                   lambda: return pcm_capture::wake_capture::wake_pending;
                                 then:
+                                  - lambda: |-
+                                      puck_audio_handoff::wake_cue.begin(
+                                          id(puck_resampler).playback_generation(), 0,
+                                          puck_audio_handoff::CUE_MINIMUM_MS);
                                   - media_player.play_media:
                                       id: puck_media_player
                                       media_url: "audio-file://heard_sound"
                                       announcement: true
-                                  - delay: 150ms
-                                  - lambda: pcm_capture::wake_capture::start_pending();
-                                  - micro_wake_word.start
               else:
                 # Direct Hermes does not need Home claim admission. Keep the
                 # established capture path usable through bridge outages.
@@ -683,13 +715,14 @@ micro_wake_word:
                           condition:
                             lambda: return pcm_capture::wake_capture::wake_pending;
                           then:
+                            - lambda: |-
+                                puck_audio_handoff::wake_cue.begin(
+                                    id(puck_resampler).playback_generation(), 0,
+                                    puck_audio_handoff::CUE_MINIMUM_MS);
                             - media_player.play_media:
                                 id: puck_media_player
                                 media_url: "audio-file://heard_sound"
                                 announcement: true
-                            - delay: 150ms
-                            - lambda: pcm_capture::wake_capture::start_pending();
-                            - micro_wake_word.start
 
 # Lightweight health telemetry retained after Story 3: the boot state
 # transition (STOPPED -> STARTING -> DETECTING_WAKE_WORD) is easy to miss,
@@ -716,8 +749,10 @@ interval:
           // is stopped ON PURPOSE there (see the media_player block), and
           // restarting it would both undo that and fight the automation.
           if (!puck_response::holds_wake() &&
+              !pcm_capture::wake_capture::wake_pending &&
+              !puck_response::home_admission_in_flight() &&
               !id(mww).is_running() &&
-              id(puck_media_player).state != media_player::MEDIA_PLAYER_STATE_ANNOUNCING) {
+              puck_audio_handoff::drained(puck_audio_handoff::current_output())) {
             ESP_LOGW("mww_diag", "mww stopped -- restarting");
             id(mww).start();
           }
@@ -737,14 +772,58 @@ interval:
     then:
       - lambda: |-
           pcm_capture::upload_and_restart(id(http_client));
-  # Story 5: ends the VAD-gated wake capture window on debounced silence.
-  # 100ms keeps the end-of-utterance round-trip snappy without adding real
-  # load -- this is a cheap boolean check, a no-op whenever no wake capture
-  # is active (see pcm_capture::wake_capture::tick()).
+  # Fresh VAD decisions and cue readiness run on the normal component task.
+  # Audio still buffers while the model builds a new post-playback window.
   - interval: 100ms
     then:
       - lambda: |-
-          pcm_capture::wake_capture::tick(id(mww).get_vad_state());
+          const auto output = puck_audio_handoff::current_output();
+          puck_response::check_playback_progress(puck_audio_handoff::response_failed(output));
+          // A short stream can finish between player state publications.
+          // Its real successful drain still permits status confirmation.
+          if (puck_response::state == puck_response::State::WAITING_FOR_MEDIA_IDLE &&
+              puck_audio_handoff::response_audio_requested &&
+              output.playback_generation == puck_audio_handoff::response_baseline_generation + 1 &&
+              output.completed_generation == output.playback_generation &&
+              puck_audio_handoff::drained(output)) {
+            puck_response::media_idle();
+          }
+          if (puck_audio_handoff::wake_cue.active()) {
+            const auto result = puck_audio_handoff::wake_cue.poll(output);
+            if (result == puck_audio_handoff::Result::READY) {
+              ESP_LOGD("puck_audio", "wake cue drained generation=%u",
+                       (unsigned) output.completed_generation);
+              pcm_capture::wake_capture::start_pending();
+              if (pcm_capture::wake_capture::capturing) {
+                id(mww).start();
+              } else {
+                puck_response::wake_acknowledgement_failed(
+                    pcm_capture::wake_capture::pending_sequence());
+              }
+            } else if (result == puck_audio_handoff::Result::FAILED) {
+              pcm_capture::wake_capture::cancel_pending();
+              puck_response::wake_acknowledgement_failed(
+                  pcm_capture::wake_capture::pending_sequence());
+            }
+          }
+          const auto vad = id(mww).get_vad_snapshot();
+          pcm_capture::wake_capture::tick(vad.valid, vad.detected, vad.generation);
+      - if:
+          condition:
+            lambda: return puck_response::playback_cleanup_pending &&
+                !puck_response::playback_cleanup_stop_requested;
+          then:
+            - media_player.stop: puck_media_player
+            - lambda: puck_response::playback_cleanup_stop_requested = true;
+          else:
+            - lambda: |-
+                const bool pending = puck_response::playback_cleanup_pending;
+                puck_response::observe_playback_cleanup(
+                    puck_audio_handoff::drained(puck_audio_handoff::current_output()));
+                if (pending && !puck_response::playback_cleanup_pending) {
+                  puck_audio_handoff::response_audio_requested = false;
+                  puck_audio_handoff::follow_up.cancel();
+                }
       # 1-p-2 task 7 acknowledgement is issued by on_wake_word_detected
       # before capture begins. It must not be moved into this close path:
       # doing so violates the wake-time status contract.
@@ -788,12 +867,24 @@ interval:
       # playback/status confirmation and without another wake phrase.
       - if:
           condition:
-            lambda: return puck_response::follow_up_pending();
+            lambda: return puck_response::follow_up_pending() &&
+                !puck_response::follow_up_admission_in_flight();
           then:
+            - lambda: |-
+                const auto output = puck_audio_handoff::current_output();
+                const auto result = puck_audio_handoff::poll_follow_up(output);
+                if (result == puck_audio_handoff::Result::FAILED) {
+                  puck_response::follow_up_capture_failed();
+                } else if (result == puck_audio_handoff::Result::READY) {
+                  ESP_LOGD("puck_audio", "follow-up output drained generation=%u; settled %ums",
+                           (unsigned) output.completed_generation,
+                           (unsigned) puck_audio_handoff::FOLLOW_UP_SETTLE_MS);
+                }
             - if:
                 condition:
-                  lambda: return puck_response::begin_follow_up_admission(
-                      puck_response::sequence());
+                  lambda: return puck_response::follow_up_pending() &&
+                      !puck_audio_handoff::response_audio_requested &&
+                      puck_response::begin_follow_up_admission(puck_response::sequence());
                 then:
                   - micro_wake_word.stop
                   - http_request.get:
@@ -843,7 +934,23 @@ interval:
             - lambda: puck_response::refusal_recovered();
       - if:
           condition:
-            lambda: return puck_response::ready_to_resume();
+            lambda: |-
+              if (puck_response::state != puck_response::State::READY_TO_RESUME) return false;
+              const auto output = puck_audio_handoff::current_output();
+              if (puck_audio_handoff::response_failed(output)) {
+                puck_response::check_playback_progress(true);
+                return false;
+              }
+              if (!puck_audio_handoff::drained(output)) {
+                // Preserve the existing refusal's full drain window; a
+                // READY tail must not remain hidden forever if shutdown fails.
+                if (uint32_t(millis() - puck_response::refusal_started_ms) >=
+                    puck_response::REFUSAL_WATCHDOG_MS) {
+                  puck_response::request_playback_cleanup();
+                }
+                return false;
+              }
+              return puck_response::ready_to_resume();
           then:
             - micro_wake_word.start
             - lambda: puck_response::wake_resumed();
@@ -886,6 +993,9 @@ interval:
                   - media_player.play_media:
                       id: puck_media_player
                       media_url: !lambda |-
+                        id(mww).stop();
+                        puck_audio_handoff::response_requested(
+                            id(puck_resampler).playback_generation());
                         return std::string("http://${puck_bridge_host}:${puck_bridge_port}/response?seq=") +
                         std::to_string(pcm_capture::wake_capture::last_delivered_seq) +
                         "&token=" + puck_response::url_encode("${puck_device_token}");

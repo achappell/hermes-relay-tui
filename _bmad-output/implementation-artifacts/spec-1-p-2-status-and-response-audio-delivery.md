@@ -278,3 +278,9 @@ abandonment, or crash occurred. P-2 is closed.
 - `false` — The boot-order concern that wake capture can run before identity setup is not demonstrated: `puck_identity::state` starts `UNAUTHORIZED`, and the capture start path is gated by `may_capture()`. An immediate wake could be missed, but it cannot capture while the identity gate is closed.
 - `false` — The alleged mid-capture identity revocation race is unreachable in the reviewed wiring: identity state changes on upload responses after capture has closed, and no concurrent revocation path was found.
 - `false` — `speaker_tone.h` is an unused helper scaffold, but no behavior or build failure follows from it; removing or wiring it is cleanup, not a P-2 review correction.
+
+## Wake-cue/drain regression repair — 2026-10-19
+
+Amanda reported no initial acknowledgement on either installed212 or a47. Their cue/LED/asset/output configuration is unchanged; Home and Direct both request the same initial cue. Source inspection found asynchronous queue+150ms is not output completion, and the common resampler forwards TX finish before upstream drain. The approved [P-2/P-3 repair](spec-p2-p3-fresh-audio-handoff.md) pins the ESPHome2026.9.1 component locally, repairs graceful drain, and uses an accepted/successfully drained generation receipt rather than ANNOUNCING polling. Speaker faults invalidate the receipt and retain bounded exact-site/code DEBUG evidence. No asset, volume, threshold, channel, gain or listening-LED policy changes are approved.
+
+The original frozen intent is unchanged. Historical physical evidence above does not establish current cue audibility; the tracker is review with physical acknowledgement/drain acceptance open. Local synthetic proof and later exact target builds belong to [validation](validation-p4-home-paired-room-full-turn.md#p-2p-3-fresh-output-handoff-repair--2026-10-19). No hardware action is authorized by this document.

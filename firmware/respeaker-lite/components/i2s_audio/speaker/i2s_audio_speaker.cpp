@@ -25,11 +25,22 @@ static const char *const TAG = "i2s_audio.speaker";
 // Volumes in (0.0, 1.0) map linearly to a dB reduction in [-49.0, 0.0] dB.
 static constexpr float SOFTWARE_VOLUME_MIN_DB = -49.0f;
 
+void I2SAudioSpeakerBase::record_playback_error_(const char *site, esp_err_t error, bool has_error_code) {
+  const uint32_t generation = this->playback_error_generation_.fetch_add(1, std::memory_order_acq_rel) + 1;
+  if (has_error_code) {
+    ESP_LOGD(TAG, "fault generation=%" PRIu32 " site=%s esp_err=%s (%d)", generation, site,
+             esp_err_to_name(error), static_cast<int>(error));
+  } else {
+    ESP_LOGD(TAG, "fault generation=%" PRIu32 " site=%s esp_err=not_provided", generation, site);
+  }
+}
+
 void I2SAudioSpeakerBase::setup() {
   this->event_group_ = xEventGroupCreate();
 
   if (this->event_group_ == nullptr) {
     ESP_LOGE(TAG, "Event group creation failed");
+    this->record_playback_error_("event_group_create");
     this->mark_failed();
     return;
   }
@@ -74,6 +85,7 @@ void I2SAudioSpeakerBase::loop() {
     // when TASK_STOPPED is processed; log them here, exactly once, as the task winds down.
     if (event_group_bits & SpeakerEventGroupBits::ERR_DROPPED_EVENT) {
       ESP_LOGE(TAG, "ISR event queue overflow, restarting speaker task to recover timestamp sync");
+      this->record_playback_error_("isr_event_queue_overflow");
     }
     if (event_group_bits & SpeakerEventGroupBits::ERR_PARTIAL_WRITE) {
       ESP_LOGE(TAG, "Partial DMA write broke buffer alignment, restarting speaker task");
@@ -106,13 +118,15 @@ void I2SAudioSpeakerBase::loop() {
 
   // Handle the speaker's state
   switch (this->state_) {
-    case speaker::STATE_STARTING:
+    case speaker::STATE_STARTING: {
       if (this->status_has_error()) {
         break;
       }
 
-      if (this->start_i2s_driver(this->audio_stream_info_) != ESP_OK) {
+      const esp_err_t driver_error = this->start_i2s_driver(this->audio_stream_info_);
+      if (driver_error != ESP_OK) {
         ESP_LOGE(TAG, "Driver failed to start; retrying in 1 second");
+        this->record_playback_error_("driver_start", driver_error, true);
         this->status_momentary_error("driver-failure", 1000);
         break;
       }
@@ -123,11 +137,13 @@ void I2SAudioSpeakerBase::loop() {
 
         if (this->speaker_task_handle_ == nullptr) {
           ESP_LOGE(TAG, "Task failed to start, retrying in 1 second");
+          this->record_playback_error_("task_create");
           this->status_momentary_error("task-failure", 1000);
           this->stop_i2s_driver_();  // Stops the driver to return the lock; will be reloaded in next attempt
         }
       }
       break;
+    }
     case speaker::STATE_RUNNING:   // Intentional fallthrough
     case speaker::STATE_STOPPING:  // Intentional fallthrough
     case speaker::STATE_STOPPED:
@@ -185,6 +201,7 @@ void I2SAudioSpeakerBase::set_mute_state(bool mute_state) {
 size_t I2SAudioSpeakerBase::play(const uint8_t *data, size_t length, TickType_t ticks_to_wait) {
   if (this->is_failed()) {
     ESP_LOGE(TAG, "Setup failed; cannot play audio");
+    this->record_playback_error_("play_after_setup_failure");
     return 0;
   }
 
@@ -256,6 +273,7 @@ esp_err_t I2SAudioSpeakerBase::init_i2s_channel_(const i2s_chan_config_t &chan_c
   esp_err_t err = i2s_new_channel(&chan_cfg, &this->tx_handle_, NULL);
   if (err != ESP_OK) {
     ESP_LOGE(TAG, "I2S channel allocation failed: %s", esp_err_to_name(err));
+    this->record_playback_error_("channel_allocate", err, true);
     this->parent_->unlock();
     return err;
   }
@@ -263,6 +281,7 @@ esp_err_t I2SAudioSpeakerBase::init_i2s_channel_(const i2s_chan_config_t &chan_c
   err = i2s_channel_init_std_mode(this->tx_handle_, &std_cfg);
   if (err != ESP_OK) {
     ESP_LOGE(TAG, "Failed to initialize I2S channel");
+    this->record_playback_error_("channel_init", err, true);
     i2s_del_channel(this->tx_handle_);
     this->tx_handle_ = nullptr;
     this->parent_->unlock();
@@ -286,6 +305,7 @@ esp_err_t I2SAudioSpeakerBase::init_i2s_channel_(const i2s_chan_config_t &chan_c
 
   if (this->i2s_event_queue_ == nullptr || this->write_records_queue_ == nullptr) {
     ESP_LOGE(TAG, "Failed to allocate I2S event queue(s)");
+    this->record_playback_error_("event_queue_allocate");
     i2s_del_channel(this->tx_handle_);
     this->tx_handle_ = nullptr;
     this->parent_->unlock();
