@@ -190,6 +190,7 @@ stories:
     owner: hermes-relay-tui
     release_scope: migration
     depends_on: []
+    evidence_note: 'Original bounded follow-up/exact-stop implementation retained. Narrow repair spec-p3-followup-no-speech.md preserves eight-second policy and fixes no-speech buffer/deadline ownership plus known-empty status-only completion. Synthetic native-header/real HTTP smoke proves zero PCM/STT/new turn/media fetch; physical quiet/follow-up and cached-VAD freshness remain open. Claim lifecycle unchanged.'
     acceptance_overlay: _bmad-output/implementation-artifacts/course-correction-2026-09-23.md
   - id: P-4
     title: Recovery without replay.

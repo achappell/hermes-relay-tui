@@ -1,6 +1,6 @@
 # Active epic parents are in story-index.yaml; numeric story prefixes remain historical.
 generated: 09-08-2026 00:00
-last_updated: '2026-10-18'
+last_updated: '2026-10-19'
 project: hermes-relay-tui
 project_key: NOKEY
 tracking_system: file-system
@@ -26,8 +26,8 @@ development_status:
   epic-3: in-progress
   1-p-1-authorized-wake-and-capture: done
   1-p-2-status-and-response-audio-delivery: done
-  1-p-3-bounded-follow-up-and-exact-stop: done
-  1-p-4-recovery-without-replay: review # paired-room FIRST full-turn physical gate CLOSED; auto-follow-up buffer-limit defect and lifecycle regressions open
+  1-p-3-bounded-follow-up-and-exact-stop: review # deterministic no-speech completion repair; eight-second timing retained; physical quiet/follow-up acceptance OPEN
+  1-p-4-recovery-without-replay: review # paired-room FIRST full-turn physical gate CLOSED; automatic follow-up physical acceptance and lifecycle regressions open
   1-p-5-complete-streamed-response-playback-without-underrun: done
   1-p-6-graceful-bridge-service-shutdown-and-entry-point-coverage: done
   1-p-7-make-raw-pcm-diagnostics-explicitly-opt-in-and-bounded: review
