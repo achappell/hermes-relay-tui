@@ -32,8 +32,11 @@ bridge serves only its initially configured claim. Do not work around this.
   wheel) whose source contains `puck_bridge/home_admission.py`;
 - installs `/opt/hermes-puck-bridge/releases/<sha>` with the `voice` extra,
   under a lock (`~/.hermes-puck-bridge-deploy.lock`), refusing to overwrite
-  an existing release;
-- switches the `current` symlink atomically, restarts the unit and waits for
+  an existing release; a failure before activation (precondition, venv or
+  `pip install`) removes the release directory this run created and the
+  staging upload, so the same tag can be retried;
+- removes any stale `current.next`/`previous.next` link, then
+  switches the `current` symlink atomically, restarts the unit and waits for
   `systemctl is-active` plus a TCP connection to `<bind>:<port>`;
 - on restart or health failure restores the previous release and its unit
   (or, on a first deploy, stops and removes the new unit) and deletes the
@@ -65,9 +68,13 @@ loopback or Tailscale `100.64.0.0/10`); `--port` defaults to 8766 and refuses
 **[exercised]** Repository checks: `venv/bin/pytest tests/test_deploy_puck_bridge.py`
 renders and checks the unit, validates arguments, runs the embedded remote
 script locally against temporary directories with fake `sudo`/`systemctl`
-(deploy, overwrite refusal, automatic rollback on restart and health
-failure, first-deploy failure, rollback, preconditions, lock) and runs the
-`ExecStartPre` check against a temporary env file. No host was contacted.
+(deploy, overwrite refusal, failed `pip install` cleanup and retry,
+automatic rollback on restart and health failure, first-deploy failure,
+rollback, stale `current.next`, preconditions with staging cleanup, lock) and
+runs the `ExecStartPre` check against a temporary env file. No host was
+contacted. `flock`, GNU `mv -T`, `stat -c` and `sudo` were exercised only
+through fakes on macOS; their real behaviour on ops is unverified until the
+first live run.
 
 ## Prerequisites
 

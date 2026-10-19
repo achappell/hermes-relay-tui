@@ -126,9 +126,10 @@ owning story, not here:
 
 - [x] `scripts/deploy_puck_bridge.py deploy|rollback`: tagged build, `releases/<sha>`
   with atomic `current`/`previous`, lock, overwrite refusal, automatic rollback
-  on restart or health failure, only `hermes-puck-bridge.service`; `--bind` LAN
+  on restart or health failure, pre-activation cleanup of the new release and
+  staging upload, stale `current.next` removal, only `hermes-puck-bridge.service`; `--bind` LAN
   IPv4 only, `--port` default 8766 (8765/8875 refused), `--transport home` only,
-  `--home-url` exact Home bridge URL.
+  `--home-url` exact Home bridge URL with port 1-65535.
 - [x] Hardened unit rendered by the script (user `hermes-puck`, state dir 0700,
   `EnvironmentFile` in the state dir with an `ExecStartPre` presence/owner/mode
   check, `HOME`/`XDG_CACHE_HOME`/`HF_HOME` under the state dir, LAN-only bind,
@@ -141,6 +142,8 @@ owning story, not here:
   pointer; CHANGELOG.
 - [ ] Disposable Linux host run (deploy, rollback, restart/reboot persistence,
   secret file ownership on host). Unexercised; needs operational authorization.
+  `flock`, GNU `mv -T`, `stat -c` and `sudo` were exercised only through
+  fakes on macOS; their real behaviour on ops is unverified.
 
 ## Never
 
@@ -161,8 +164,6 @@ owning story, not here:
 - Renewal of the bridge's Home credential: 3-P-2/3-P-6 and MIG-09 AC-5 cover
   credential application and renewal acceptance, but no story names the
   bridge-side renewal implementation. Owner to assign.
-- STD-6 tracker/spec status was reconciled on 2026-10-18 (see STD-6 spec
-  note); confirm the owner accepts done-with-deferred-gate.
 
 ## Dependencies
 

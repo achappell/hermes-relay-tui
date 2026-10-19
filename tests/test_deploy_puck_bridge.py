@@ -115,10 +115,18 @@ def test_default_port_is_8766():
 @pytest.mark.parametrize("url", ["ws://home.example/api/v1/bridge/ws", "https://home.example/api/v1/bridge/ws",
                                  "wss://home.example/", "wss://home.example/api/v1/bridge/ws?token=x",
                                  "wss://user:pw@home.example/api/v1/bridge/ws", "wss://home.example/api/v1/bridge/ws#x",
-                                 "wss://HOME.example/api/v1/bridge/ws", "wss://home.example/api/v1/bridge/ws\n"])
+                                 "wss://HOME.example/api/v1/bridge/ws", "wss://home.example/api/v1/bridge/ws\n",
+                                 "wss://home.example:0/api/v1/bridge/ws", "wss://home.example:65536/api/v1/bridge/ws",
+                                 "wss://home.example:99999/api/v1/bridge/ws"])
 def test_home_url_is_exact_bridge_websocket(url):
     with pytest.raises(ValueError):
         deploy.home_bridge_url(url)
+
+
+@pytest.mark.parametrize("url", ["wss://home.example:1/api/v1/bridge/ws", "wss://home.example:65535/api/v1/bridge/ws",
+                                 "wss://home.example:8443/api/v1/bridge/ws"])
+def test_home_url_accepts_ports_in_range(url):
+    assert deploy.home_bridge_url(url) == url
 
 
 def forbid_host_contact(monkeypatch):
@@ -199,6 +207,8 @@ def test_remote_script_touches_only_the_bridge_unit():
 
 
 # --- Embedded remote bash, exercised locally with fake privileged commands ---
+# flock, GNU `mv -T`, `stat -c` and sudo are exercised ONLY through the fakes
+# below on macOS; their real behaviour on ops is not verified by these tests.
 
 FAKES = r'''
 sudo() { if [ "$1" = -u ]; then shift 2; fi; "$@"; }
@@ -211,7 +221,7 @@ stat() {
 mv() { if [ "$1" = -Tf ]; then rm -f "$3"; command mv "$2" "$3"; else command mv "$@"; fi; }
 python3.14() {
   mkdir -p "$3/bin"
-  printf '#!/bin/sh\necho "$@" >> "%s/pip.log"\n' "$FAKE" > "$3/bin/pip"
+  printf '#!/bin/sh\n[ -e "%s/fail-pip" ] && exit 1\necho "$@" >> "%s/pip.log"\n' "$FAKE" "$FAKE" > "$3/bin/pip"
   chmod +x "$3/bin/pip"
 }
 systemctl() {
@@ -366,3 +376,36 @@ def test_remote_preconditions_fail_before_any_change(host, break_state):
     assert host.systemctl() == []
     if break_state == "missing":
         assert "Missing operator-created" in result.stderr
+    assert not (host.base / "incoming-a").exists(), "staging upload is removed after a precondition failure"
+
+
+def test_remote_failed_install_removes_new_release_and_staging_so_tag_can_be_retried(host):
+    assert host.run("deploy", "a").returncode == 0
+    (host.fake / "fail-pip").write_text("")
+    result = host.run("deploy", "b")
+    assert result.returncode != 0
+    assert not (host.root / "releases/b").exists()
+    assert not (host.base / "incoming-b").exists()
+    assert (host.root / "releases/a").is_dir() and host.current() == "a"
+    assert host.systemctl().count("restart hermes-puck-bridge.service") == 1, "failed install never restarts the unit"
+    (host.fake / "fail-pip").unlink()
+    assert host.run("deploy", "b").returncode == 0
+    assert (host.current(), host.previous()) == ("b", "a")
+
+
+def test_remote_overwrite_refusal_keeps_the_existing_release(host):
+    assert host.run("deploy", "a").returncode == 0
+    assert host.run("deploy", "a").returncode == 1
+    assert (host.root / "releases/a/.puck-bridge-v1").is_file()
+
+
+@pytest.mark.parametrize("operation", ["deploy", "rollback"])
+def test_remote_replaces_a_stale_current_next_link(host, operation):
+    assert host.run("deploy", "a", "unit a").returncode == 0
+    assert host.run("deploy", "b", "unit a").returncode == 0
+    stale = host.root / "current.next"
+    stale.symlink_to(host.base / "nowhere")
+    result = host.run("deploy", "c", "unit a") if operation == "deploy" else host.run("rollback", unit_text="unit a")
+    assert result.returncode == 0, result.stderr
+    assert host.current() == ("c" if operation == "deploy" else "a")
+    assert not stale.is_symlink()

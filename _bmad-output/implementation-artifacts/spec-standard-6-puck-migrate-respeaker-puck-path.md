@@ -3,7 +3,7 @@ id: STANDARD-6-PUCK
 title: Migrate the ReSpeaker Puck path to the Standard Home boundary
 type: feature
 created: 2026-09-14
-status: done
+status: in-progress
 baseline_commit: ea54552dc65e327fb264e161f2d25bff8d3feb90
 github_issue: https://github.com/achappell/hermes-relay-tui/issues/183
 context:
@@ -20,14 +20,6 @@ deferred:
 ---
 
 # Standard-6 — Puck migration
-
-Status reconciliation (2026-10-18): implementation merged in #189 and the
-tracker was set `done` in #197; this frontmatter had stayed `in-progress`.
-It now matches the tracker under the repository's done-with-deferred-gate
-convention (STD-8 merged as `done` with its physical gate in `deferred:`).
-The deferred external gate below stays open. A later wake still needs P-4's
-calibrated trusted proximity provider, which remains absent. P-HOME-01 runs
-this gate during the Puck rollout and records the evidence here.
 
 ## Scope
 

@@ -66,6 +66,12 @@ def home_bridge_url(value: str) -> str:
         or not re.fullmatch(r"[a-z0-9.-]+(?::[0-9]{1,5})?", parts.netloc)
     ):
         raise ValueError(f"--home-url must be an exact wss://<host>{HOME_BRIDGE_PATH} URL")
+    try:
+        port = parts.port
+    except ValueError:
+        port = 0
+    if port is not None and not 1 <= port <= 65535:
+        raise ValueError("--home-url port must be 1-65535")
     return value
 
 
@@ -113,6 +119,14 @@ env_file="$state/bridge.env"
 unit=hermes-puck-bridge.service
 unit_path="/etc/systemd/system/$unit"
 marker=.puck-bridge-v1
+created=0; activated=0; target=""
+# Before activation, a failed run removes only what it created plus the
+# staging upload, so the same tag can be retried. Never an existing release.
+cleanup() {
+  if [ "$created" = 1 ] && [ "$activated" = 0 ] && [ -n "$target" ]; then sudo rm -rf -- "$target"; fi
+  if [ -n "$incoming" ]; then rm -rf -- "$incoming"; fi
+}
+trap cleanup EXIT
 exec 9>"$HOME/.hermes-puck-bridge-deploy.lock"
 flock -n 9 || { echo 'Another Puck bridge deployment holds the lock' >&2; exit 1; }
 id hermes-puck >/dev/null || { echo 'Create the hermes-puck system user first' >&2; exit 1; }
@@ -141,18 +155,22 @@ else
   [ ! -e "$target" ] || { echo 'Release already exists; refusing overwrite' >&2; exit 1; }
   sudo install -d -m 0755 "$root/releases"
   sudo install -d -m 0755 "$target"
+  created=1
   sudo python3.14 -m venv "$target/venv"
   for wheel in "$incoming/"*.whl; do sudo "$target/venv/bin/pip" install "$wheel[voice]"; done
   sudo install -m 0644 "$incoming/unit.service" "$target/unit.service"
   sudo touch "$target/$marker"
 fi
+activated=1
 sudo install -m 0644 "$target/unit.service" "$unit_path"
+sudo rm -f -- "$root/current.next"
 sudo ln -s "$target" "$root/current.next"
 sudo mv -Tf "$root/current.next" "$root/current"
 sudo systemctl daemon-reload
 if ! { sudo systemctl restart "$unit" && healthy; }; then
   echo 'Puck bridge restart or health check failed; restoring the previous release' >&2
   if [ -n "$old" ] && [ "$old" != "$target" ] && [ -f "$old/$marker" ]; then
+    sudo rm -f -- "$root/current.next"
     sudo ln -s "$old" "$root/current.next"
     sudo mv -Tf "$root/current.next" "$root/current"
     sudo install -m 0644 "$old/unit.service" "$unit_path"
@@ -164,15 +182,14 @@ if ! { sudo systemctl restart "$unit" && healthy; }; then
     sudo systemctl daemon-reload
   fi
   if [ "$operation" = deploy ]; then sudo rm -rf -- "$target"; fi
-  if [ -n "$incoming" ]; then rm -rf -- "$incoming"; fi
   exit 1
 fi
 sudo systemctl enable "$unit"
 if [ -n "$old" ] && [ "$old" != "$target" ] && [ -f "$old/$marker" ]; then
+  sudo rm -f -- "$root/previous.next"
   sudo ln -s "$old" "$root/previous.next"
   sudo mv -Tf "$root/previous.next" "$root/previous"
 fi
-if [ -n "$incoming" ]; then rm -rf -- "$incoming"; fi
 '''
 
 
