@@ -73,6 +73,7 @@ void I2SAudioMicrophone::start() {
 }
 
 bool I2SAudioMicrophone::start_driver_() {
+  this->driver_failure_ = {};
   if (!this->parent_->try_lock()) {
     return false;  // Waiting for another i2s to return lock
   }
@@ -89,7 +90,9 @@ bool I2SAudioMicrophone::start_driver_() {
   /* Allocate a new RX channel and get the handle of this channel */
   err = i2s_new_channel(&chan_cfg, NULL, &this->rx_handle_);
   if (err != ESP_OK) {
-    ESP_LOGE(TAG, "Error creating channel: %s", esp_err_to_name(err));
+    this->driver_failure_ = {RxDriverOperation::ALLOCATE, err};
+    ESP_LOGE(TAG, "allocate RX port=%d failed: %s", int(this->parent_->get_port()), esp_err_to_name(err));
+    this->stop_driver_();
     return false;
   }
 
@@ -161,16 +164,21 @@ bool I2SAudioMicrophone::start_driver_() {
     err = i2s_channel_init_std_mode(this->rx_handle_, &std_cfg);
   }
   if (err != ESP_OK) {
-    ESP_LOGE(TAG, "Error initializing channel: %s", esp_err_to_name(err));
+    this->driver_failure_ = {RxDriverOperation::INITIALIZE, err};
+    ESP_LOGE(TAG, "initialize RX port=%d failed: %s", int(this->parent_->get_port()), esp_err_to_name(err));
+    this->stop_driver_();
     return false;
   }
 
   /* Before reading data, start the RX channel first */
   err = i2s_channel_enable(this->rx_handle_);
   if (err != ESP_OK) {
-    ESP_LOGE(TAG, "Enabling failed: %s", esp_err_to_name(err));
+    this->driver_failure_ = {RxDriverOperation::ENABLE, err};
+    ESP_LOGE(TAG, "enable RX port=%d failed: %s", int(this->parent_->get_port()), esp_err_to_name(err));
+    this->stop_driver_();
     return false;
   }
+  this->channel_enabled_ = true;
 
   this->configure_stream_settings_();  // redetermine the settings in case some settings were changed after compilation
 
@@ -185,20 +193,21 @@ void I2SAudioMicrophone::stop() {
 }
 
 void I2SAudioMicrophone::stop_driver_() {
-  // There is no harm continuing to unload the driver if an error is ever returned by the various functions. This
-  // ensures that we stop/unload the driver when it only partially starts.
-
+  // The caller may repeat cleanup after a failed start. Local ownership is
+  // cleared even when IDF reports an error; never reuse a stale channel handle.
   esp_err_t err;
   if (this->rx_handle_ != nullptr) {
-    /* Have to stop the channel before deleting it */
-    err = i2s_channel_disable(this->rx_handle_);
-    if (err != ESP_OK) {
-      ESP_LOGW(TAG, "Error stopping: %s", esp_err_to_name(err));
+    if (this->channel_enabled_) {
+      err = i2s_channel_disable(this->rx_handle_);
+      if (err != ESP_OK) {
+        ESP_LOGW(TAG, "disable RX port=%d failed: %s", int(this->parent_->get_port()), esp_err_to_name(err));
+      }
     }
+    this->channel_enabled_ = false;
     /* If the handle is not needed any more, delete it to release the channel resources */
     err = i2s_del_channel(this->rx_handle_);
     if (err != ESP_OK) {
-      ESP_LOGW(TAG, "Error deleting channel: %s", esp_err_to_name(err));
+      ESP_LOGW(TAG, "delete RX port=%d failed: %s", int(this->parent_->get_port()), esp_err_to_name(err));
     }
     this->rx_handle_ = nullptr;
   }
@@ -403,6 +412,11 @@ void I2SAudioMicrophone::loop() {
   switch (this->state_) {
     case microphone::STATE_STARTING:
       if (this->status_has_error()) {
+        break;
+      }
+      // A task that has not published TASK_RUNNING already owns this driver.
+      // Do not retry startup (and clean it up) underneath that task.
+      if (this->task_handle_ != nullptr) {
         break;
       }
 

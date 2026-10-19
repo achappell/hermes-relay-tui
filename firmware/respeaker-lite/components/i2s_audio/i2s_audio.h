@@ -24,12 +24,12 @@ class I2SAudioBase : public Parented<I2SAudioComponent> {
 
  protected:
   i2s_role_t i2s_role_{};
-  i2s_slot_mode_t slot_mode_;
-  i2s_std_slot_mask_t std_slot_mask_;
-  i2s_slot_bit_width_t slot_bit_width_;
-  uint32_t sample_rate_;
-  bool use_apll_;
-  i2s_mclk_multiple_t mclk_multiple_;
+  i2s_slot_mode_t slot_mode_{I2S_SLOT_MODE_MONO};
+  i2s_std_slot_mask_t std_slot_mask_{I2S_STD_SLOT_BOTH};
+  i2s_slot_bit_width_t slot_bit_width_{I2S_SLOT_BIT_WIDTH_AUTO};
+  uint32_t sample_rate_{16000};
+  bool use_apll_{false};
+  i2s_mclk_multiple_t mclk_multiple_{I2S_MCLK_MULTIPLE_256};
 };
 
 class I2SAudioIn : public I2SAudioBase {};
@@ -61,6 +61,8 @@ class I2SAudioComponent final : public Component {
   i2s_port_t get_port() const { return static_cast<i2s_port_t>(this->port_); }
 #endif
 
+  // Each controller parent serializes one child's driver ownership. RX owns
+  // its channel and this lock through teardown; TX owns its separate parent.
   void lock() { this->lock_.lock(); }
   bool try_lock() { return this->lock_.try_lock(); }
   void unlock() { this->lock_.unlock(); }
@@ -72,7 +74,7 @@ class I2SAudioComponent final : public Component {
   I2SAudioOut *audio_out_{nullptr};
   int mclk_pin_{I2S_GPIO_UNUSED};
   int bclk_pin_{I2S_GPIO_UNUSED};
-  int lrclk_pin_;
+  int lrclk_pin_{I2S_GPIO_UNUSED};
   int port_{};
 };
 
