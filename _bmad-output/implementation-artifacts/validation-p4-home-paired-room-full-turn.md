@@ -89,7 +89,7 @@ Independent code review used blind, edge-case, verification-gap and acceptance l
 
 Observation about replacement handoff lacking immediate HTTP fallback was nonblocking: a subsequent physical wake already invokes authoritative fallback while capture remains closed. No speculative extra branch was added. The independent reviewer reread the complete amended diff and confirmed every targeted fix; all four layers completed with **no substantiated finding outstanding**. The reviewer executed no checks. Parent separately read the core diff and actual local API evidence before publication.
 
-## Open physical and integration gates
+## Original rollout gate inventory (first paired-room turn now accepted below)
 
 1. Reviewed Home paired-room implementation deployed through the coordinator's approved recovery plan; exact policy published through Home's revision-checked API.
 2. Distinct legitimate Puck token and existing paired credential applied privately; no operator conversation handle.
@@ -128,3 +128,14 @@ Observed fresh private **Python 3.14.8** environment: `uv pip install '.[voice]'
 - Independent spec and actual-code review: **no substantiated findings**. Reviewer checked real WAV/sample assertions, absent-package-only skip and both dependency entry points; reviewer ran no checks.
 
 Deployment must apply compatible **av18.1.0** as well as the new wheel: `--no-deps` on the wheel alone leaves an existing av19 installation broken. The live custodian owns targeted dependency application, old-environment backup, graceful stop/authoritative owned-close confirmation if needed, and the next explicitly authorized physical window. Never erase recovery state or use 404 as retirement proof. Physical full-turn acceptance remains OPEN.
+
+
+## Accepted paired-room first physical full turn — 2026-10-19
+
+Amanda confirmed a reasonable spoken answer from the Living Room Puck. The coordinator supplied the combined content-free receipt: fresh Home grant → 388,960-byte capture → upload → nonempty STT → unmodified Standard Amanda → 112 TTS chunks, 685,568 PCM bytes at 24kHz mono delivered/drained → firmware PLAYING → IDLE → authoritative owned-close HTTP200 → zero active claims. Deployed TUI source was `6b288939adf9bfdc2954301f53c8fec68080b681`, faster-whisper1.2.1 / av18.1.0, Home `831e55e730ab49f3774ecc55a5bd111c993d2f1a`, firmware `21223b44dffb5df773760073bea11e460716d85c`. This docs-only publication does not change those deployed identities.
+
+**P-4 / STD-6 approved paired-room first-full-turn physical gate: CLOSED.** Audible acceptance is Amanda's confirmation, not an inference from HTTP byte delivery. No transcript or physical audio is included here.
+
+**Open defect/limit — automatic follow-up is NOT accepted:** follow-up seq1 automatically captured until the 8-second buffer limit and ended `NO_QUESTION_OR_AUDIO`. This is not successful follow-up evidence. `speaker_E=1` was observed but remains unattributed; do not claim speaker-fault absence or invent its cause. Repeated wake, bounded follow-up, exact stop, physical revocation/recovery, interruption/reconnect and clean shutdown remain separate unexercised acceptance where required. Strict endpoints still require trusted calibrated proximity; this receipt closes no complete 3-P story, strict-provider gate or P-7 hardware check.
+
+The original broader STD-6 deferred regression gate remains open for these remaining cases. Tracker review status is retained with the scoped successful gate identified. No runtime code, dependencies, deployment or hardware changed in this evidence commit; prior source checks remain historical and new documentation-head CI is recorded in PR #254.

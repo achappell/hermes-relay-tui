@@ -10,6 +10,8 @@
 
 ### Bug fixes
 
+- Record owner-confirmed Living Room paired-room Puck full-turn acceptance on TUI6b288939 / av18.1.0 / Home831e55e / firmware212. Automatic follow-up hitting the 8-second buffer limit remains an open defect/limit; repeated-wake and physical authority/recovery acceptance are not implied.
+
 - Keep WAV speech-to-text compatible with faster-whisper 1.2.1 by constraining the voice extra and direct requirements to PyAV `<19`; PyAV 19 removed the `metadata_errors` argument that its decoder uses. A real synthetic WAV decoding regression runs when voice support is installed. Existing environments need the compatible PyAV dependency applied as well as the new wheel; no admission, gain, VAD or replay behavior changes.
 
 - Start the paired Puck bridge session-less without an operator conversation handle or premature active-claim marker, preserving saved-claim retirement and bounded shutdown. Consume Home's explicit paired-room wake policy through its separate score-free claim route; require the exact fresh grant, configuration revision and verified session before capture. Strict endpoints still require calibrated evidence; 403 policy denial does not revoke credentials, and every new paired physical wake retires the prior claim. Local startup/contract regressions are verified; real Standard speech format, deployed Home integration and physical full-turn acceptance remain open.

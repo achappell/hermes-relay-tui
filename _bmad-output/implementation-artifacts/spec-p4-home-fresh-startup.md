@@ -4,7 +4,7 @@ type: feature
 created: '2026-10-19'
 status: done
 disposition: done-with-deferred-gate
-physical_acceptance: open
+physical_acceptance: closed # approved paired-room first full turn only; remaining regressions below
 route: dispatch
 review_loop_iteration: 0
 story_id: P-4
@@ -77,8 +77,8 @@ Recovery contract addition approved by parent: `POST /api/v1/paired-room-claims/
 - [x] Implement exact paired-mode consumer and strict-mode preservation; retain private credential application without exposing secrets. Actual service application remains a rollout gate.
 - [x] Cover matrix, real CLI/HTTP and contract fixtures; run focused/full required checks.
 - [x] Independently review full spec/code and fix findings before PR; parent read core diff and local API evidence.
-- [ ] With custody authorization, prove actual gateway path and physical wake/STT/Amanda/TTS/playback; report precise remaining gates if unavailable.
-- [ ] After smoke update docs/changelog/validation; commit exact paths, normal push/non-draft PR and SHA equality. No automatic merge.
+- [x] Approved paired-room physical wake/STT/Amanda/TTS/playback accepted by Amanda and coordinator receipt; see validation. Remaining lifecycle/follow-up regressions are not accepted.
+- [x] After smoke publish docs/changelog/validation with exact-source checks and normal push/PR. No automatic merge.
 
 **Acceptance:** Given approved paired-room policy, when Hey Missy is spoken, then only a verified Home grant/ready session permits capture and one genuine Amanda response is audible. Given strict/malformed/removed policy, revoked identity or competing eligibility, when operation is attempted, then there is no unauthorized capture/turn or fallback. Given failed first connect/restart, when a later wake occurs, then saved authority is retired before a fresh verified grant. Given no session, when stopped, then cleanup completes.
 
@@ -125,3 +125,7 @@ Owner-authorized continuation of this full-turn slice, not a new story or policy
 - [ ] Custodial compatible-dependency application and another explicitly authorized physical window remain separate rollout gates. Exact-head wheel/metadata/hash and workflow-dispatch CI evidence are recorded on PR #254 before that cutover.
 
 Independent spec and actual-code review found no substantiated issue. This correction does not claim an end-to-end physical turn; the failed physical audio is not retained or replayed. Exact observed checks and upstream sources are recorded in validation.
+
+## Scoped physical acceptance
+
+The approved paired-room first full turn is accepted; see [content-free receipt and limitations](validation-p4-home-paired-room-full-turn.md#accepted-paired-room-first-physical-full-turn--2026-10-19). Automatic follow-up seq1 reached its 8-second buffer limit with NO_QUESTION_OR_AUDIO and remains an open defect/limit, not accepted. speaker_E=1 is unattributed. Repeated wake, follow-up and physical authority/recovery regressions remain separate gates.
