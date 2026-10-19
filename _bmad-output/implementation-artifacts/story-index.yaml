@@ -251,12 +251,12 @@ stories:
     title: Make ReSpeaker I2S channel startup and teardown fail-safe.
     surface: P
     kind: surface
-    spec: _bmad-output/planning-artifacts/epics.md
+    spec: _bmad-output/implementation-artifacts/spec-1-p-9-fail-safe-i2s-lifecycle.md
     tracker_key: 1-p-9-make-respeaker-i2s-channel-startup-and-teardown-fail-safe
     product_epic: 3
     owner: hermes-relay-tui
     release_scope: migration
-    depends_on: []
+    depends_on: [P-8]
     acceptance_overlay: _bmad-output/implementation-artifacts/course-correction-2026-09-23.md
   - id: P-10
     title: Keep internal wake models out of ordinary capture routing.
