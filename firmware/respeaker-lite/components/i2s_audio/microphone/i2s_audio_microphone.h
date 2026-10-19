@@ -3,6 +3,7 @@
 #ifdef USE_ESP32
 
 #include "../i2s_audio.h"
+#include "respeaker_pcm.h"
 
 #include "esphome/components/microphone/microphone.h"
 #include "esphome/core/component.h"
