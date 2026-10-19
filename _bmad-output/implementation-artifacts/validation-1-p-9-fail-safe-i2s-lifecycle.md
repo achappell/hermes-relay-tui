@@ -54,3 +54,5 @@ The earlier actual-source standalone lifecycle smoke remains applicable to the u
 ## Main reconciliation after249/250 landed
 
 Normal merge of main5f92cddba4c76a11e1fc1797efe037937b90d078; only manual conflict additive CHANGELOG, both retained. Independent actual firmware integration review CLEAN: P8 determinism, P9 RX ownership and inherited P5 pre-capture identity/LED gates preserved. Focused157passed12.80s; full2295passed/2skipped/2knownBashdeselections/6existingwarnings352.37s. Default/Home ESPHome2026.9.1 IDF5.5.5 compile both PASS: RAM117071 each, flash1861603/1861599; config5e5c355d/a2413bf6. Synthetic secrets removed; images NOT deployable, no hardware accessed. diff-check passed.
+
+Latest main fb1fe6f (254 landed): independent coexistence review CLEAN; focused191passed6.01s; full2342passed/2skipped/2knownBashdeselected/6warnings350.88s. Default/Home compile PASS RAM117071 flash1861603/1861599. Temporary missing-example failure190pass1fail preceded restored-example successful run; no suppression. No live actions.

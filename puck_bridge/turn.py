@@ -358,6 +358,8 @@ class TurnRunner:
             self._loop.call_soon_threadsafe(self._loop.stop)
 
     async def _close_session(self) -> None:
+        if self._session is None:
+            return
         warned = False
         while True:
             try:
@@ -729,6 +731,17 @@ class TurnRunner:
         if self._home_identity_rejected:
             return "identity_rejected"
         factory = self._home_claim_factory
+        # Paired-room permission is issued per physical wake. A connected
+        # prior conversation authorizes bounded follow-up, not another wake.
+        if (
+            not self._home_claim_retired
+            and getattr(self._session, "wake_admission_mode", "") == "paired_room"
+        ):
+            with self._follow_up_condition:
+                if self._coordinator.state != "idle":
+                    return "denied"
+            self._mark_home_admission_required()
+            await self._retire_home_claim()
 
         # The active claim admits only the wake mapping that owns it. A
         # physical phrase for a different configured mapping cannot borrow
@@ -857,7 +870,12 @@ class TurnRunner:
         if not self._record_home_retirement(handle, mapping_id, False):
             logger.error("Puck Home claim recovery state could not be written")
             return False
-        retire = getattr(session, "retire_uncertain_claim", None)
+        retire = (
+            getattr(session, "close_claim", None)
+            if self._session_is_connected()
+            and getattr(session, "wake_admission_mode", "") == "paired_room"
+            else getattr(session, "retire_uncertain_claim", None)
+        )
         if retire is None:
             logger.error("Puck Home claim cannot be retired; capture stays closed")
             return False
@@ -870,7 +888,7 @@ class TurnRunner:
                 "Puck Home claim retirement failed (%s)", type(exc).__name__
             )
             closed = False
-        confirmed = bool(closed)
+        confirmed = bool(closed) or await self._confirm_owned_paired_retirement(handle)
         persisted = self._record_home_retirement(handle, mapping_id, confirmed)
         self._home_claim_close_confirmed = confirmed and persisted
         if not self._home_claim_close_confirmed:
@@ -898,12 +916,24 @@ class TurnRunner:
                 "Puck Home claim retirement retry failed (%s)", type(exc).__name__
             )
             closed = False
-        confirmed = bool(closed)
+        confirmed = bool(closed) or await self._confirm_owned_paired_retirement(handle)
         persisted = self._record_home_retirement(handle, mapping_id, confirmed)
         self._home_claim_close_confirmed = confirmed and persisted
         if not self._home_claim_close_confirmed:
             logger.error("Puck Home claim close remains unconfirmed; capture stays closed")
         return self._home_claim_close_confirmed
+
+    async def _confirm_owned_paired_retirement(self, handle: str) -> bool:
+        close = getattr(self._home_claim_factory, "close_paired_claim", None)
+        if not callable(close) or not handle:
+            return False
+        try:
+            confirmed = bool(await close(handle))
+        except Exception:
+            confirmed = False
+        if getattr(self._home_claim_factory, "identity_rejected", False):
+            self._reject_home_identity()
+        return confirmed
 
     def _record_home_retirement(
         self, handle: str, mapping_id: str, confirmed: bool
