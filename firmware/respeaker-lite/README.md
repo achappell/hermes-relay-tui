@@ -571,6 +571,10 @@ export HOME_DEVICE_ID=puck-device-id
 venv/bin/python -m puck_bridge --transport home --port 8766
 ```
 
+To run the bridge permanently on the household host `ops`, use
+`scripts/deploy_puck_bridge.py` and the runbook in `docs/puck-ops-deployment.md`
+(P-HOME-01).
+
 `PUCK_DEVICE_TOKEN` remains the local firmware-to-bridge upload credential;
 the Home Device credential is a separate boundary credential. `HOME_DEVICE_ID`
 keys the bridge's private claim-recovery record. A capture-authorizing session

@@ -293,7 +293,7 @@ stories:
       - tui:STD-6
       - tui:P-4
       - tui:P-6
-    evidence_note: 'Draft 2026-10-18. Code dependencies only. Household rollout additionally needs home:HOME-NW-17-room-device-admission, tui:3-P-2 and the P-4 calibrated trusted proximity provider (existing blocker). STD-6 gate, P-7 hardware check and MIG-09 AC-5 are performed during rollout; their evidence goes to the owning stories.'
+    evidence_note: 'Review 2026-10-18: scripts/deploy_puck_bridge.py, hardened hermes-puck-bridge.service, tests/test_deploy_puck_bridge.py and docs/puck-ops-deployment.md delivered; no live host step exercised. Code dependencies only. Household rollout additionally needs home:HOME-NW-17-room-device-admission, tui:3-P-2 and the P-4 calibrated trusted proximity provider (existing blocker). STD-6 gate, P-7 hardware check and MIG-09 AC-5 are performed during rollout; their evidence goes to the owning stories.'
     acceptance_overlay: _bmad-output/implementation-artifacts/course-correction-2026-09-23.md
   - id: E-1
     title: Authorized voice capture.

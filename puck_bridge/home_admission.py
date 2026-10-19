@@ -351,6 +351,7 @@ class HomePuckSessionFactory:
         """Admit a fresh wake only after its new Home session is verified."""
         if self.identity_rejected:
             return HomeAdmissionResult("identity_rejected", reason="home_identity_rejected")
+
         if not self.device_id or not self.device_credential:
             return HomeAdmissionResult("denied", reason="device_configuration_missing")
 

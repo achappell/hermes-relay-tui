@@ -4113,7 +4113,6 @@ def test_paired_room_late_capture_change_denies_dispatch_without_replay(tmp_path
     finally:
         assert runner.stop()
 
-
 def test_home_confirmed_revocation_remains_closed_across_runner_restart(tmp_path):
     from puck_bridge.home_admission import (
         HomeClaimHTTPError, HomeIdentityRejectionState, HomePuckSessionFactory,
