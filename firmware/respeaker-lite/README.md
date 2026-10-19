@@ -457,7 +457,7 @@ Story 3 got wake-word detection working; story 5 makes a validated wake
 actually *do* something. `on_wake_word_detected:` (under `micro_wake_word:`)
 now starts a bounded, VAD-gated initial capture into a dedicated ~8s
 PSRAM buffer (`pcm_capture::wake_capture`, in `pcm_capture.h`) — separate
-from the pre-existing training-data capture buffer, which is unchanged.
+from the opt-in raw PCM diagnostic buffer described under Story P-7.
 A fast (100ms) `interval:` tick watches `micro_wake_word`'s own VAD state
 (`id(mww).get_vad_state()`, already proven responsive by story 3's
 `vad: probability_cutoff: 0.05`) and ends the capture window once VAD has
@@ -601,6 +601,35 @@ phrase such as `stop the music` remains an ordinary request. Upload,
 transcription, or response failure ends the follow-up without replaying its
 audio. This story changes the ReSpeaker Puck path only; ESP32 Touch remains a
 separate surface and is not modified here.
+
+### Story P-7: Raw PCM diagnostics are opt-in and bounded
+
+The story-3 training-data capture is now an explicit operator diagnostic.
+A default build (`puck_pcm_diagnostics: "false"`) allocates no diagnostic
+buffer, starts no capture, and exports nothing; the serial/base64 `PCMDUMP`
+path and its host parser were removed, so raw PCM is never written to logs.
+The content-safe `mic_diag` peak-amplitude and `mww_diag` status lines are
+unchanged and remain separate from raw PCM export.
+
+To collect diagnostic audio, a build must set both substitutions, for
+example with `tools/receiver.py` listening on the dev Mac:
+
+```bash
+venv-firmware/bin/esphome -s puck_pcm_diagnostics true \
+  -s puck_pcm_diagnostics_url http://dev-mac.local:8765/upload \
+  compile firmware/respeaker-lite/respeaker-lite.yaml
+```
+
+The device then logs `RAW MICROPHONE PCM DIAGNOSTICS ENABLED` at boot and
+uploads at most 15 two-second windows (3,840,000 bytes) per boot before
+stopping until reboot. A diagnostic flag without a URL stays disabled. The
+microphone callback and the export tick hand the buffer over through an
+atomic `CAPTURING -> READY -> EXPORTING` state, so export never reads a
+window that is still being written. If device authorization is lost, the
+in-progress or finished window is dropped and never exported (its PSRAM
+bytes are not zeroed, only overwritten by a later window), and diagnostics
+stay stopped until reboot because identity fails closed. Wake capture, VAD endpointing, upload, and
+response playback do not depend on this path.
 
 ### Verification
 

@@ -109,11 +109,8 @@ def test_response_status_is_checked_after_idle_before_wake_resumes():
     assert '#include "pcm_capture.h"' not in response_header
 
 
-def test_follow_up_no_speech_discards_buffered_pcm_before_empty_upload(tmp_path):
-    compiler = shutil.which("clang++") or shutil.which("c++")
-    if compiler is None:
-        pytest.skip("no C++ compiler available for the capture-state harness")
-
+def _write_capture_stubs(tmp_path):
+    """Host stand-ins for the ESP-IDF/ESPHome headers pcm_capture.h includes."""
     (tmp_path / "esphome/core").mkdir(parents=True)
     (tmp_path / "esphome/components/http_request").mkdir(parents=True)
     (tmp_path / "freertos").mkdir()
@@ -123,11 +120,14 @@ def test_follow_up_no_speech_discards_buffered_pcm_before_empty_upload(tmp_path)
         "#include <cstdint>\n"
         "#include <cstdlib>\n"
         "enum { MALLOC_CAP_SPIRAM = 1, MALLOC_CAP_INTERNAL = 2 };\n"
-        "inline void *heap_caps_malloc(std::size_t size, int) { return std::malloc(size); }\n"
+        "inline int fake_heap_allocations = 0;\n"
+        "inline void *heap_caps_malloc(std::size_t size, int) {\n"
+        "  ++fake_heap_allocations;\n"
+        "  return std::malloc(size);\n"
+        "}\n"
         "inline std::uint32_t heap_caps_get_free_size(int) { return 200000; }\n"
         "inline std::uint32_t heap_caps_get_minimum_free_size(int) { return 200000; }\n"
     )
-    (tmp_path / "esphome/core/alloc_helpers.h").write_text("#pragma once\n")
     (tmp_path / "esphome/core/application.h").write_text(
         "#pragma once\n"
         "namespace esphome {\n"
@@ -143,10 +143,13 @@ def test_follow_up_no_speech_discards_buffered_pcm_before_empty_upload(tmp_path)
     )
     (tmp_path / "esphome/core/log.h").write_text(
         "#pragma once\n"
+        "#include <string>\n"
+        "inline std::string fake_warnings;\n"
+        "template <typename... Args> inline const char *fake_format(const char *fmt, Args...) { return fmt; }\n"
         "#define ESP_LOGD(...) do {} while (0)\n"
         "#define ESP_LOGE(...) do {} while (0)\n"
         "#define ESP_LOGI(...) do {} while (0)\n"
-        "#define ESP_LOGW(...) do {} while (0)\n"
+        "#define ESP_LOGW(tag, ...) (fake_warnings += fake_format(__VA_ARGS__), fake_warnings += '\\n')\n"
     )
     (tmp_path / "freertos/FreeRTOS.h").write_text(
         "#pragma once\n"
@@ -179,15 +182,39 @@ def test_follow_up_no_speech_discards_buffered_pcm_before_empty_upload(tmp_path)
         "};\n"
         "}\n"
     )
-    (tmp_path / "esphome/core/alloc_helpers.h").write_text(
-        "#pragma once\n"
-        "#include <cstddef>\n"
-        "#include <cstdint>\n"
-        "#include <string>\n"
-        "namespace esphome {\n"
-        "inline std::string base64_encode(const std::uint8_t *, std::size_t) { return {}; }\n"
-        "}\n"
+    (tmp_path / "esphome/core/alloc_helpers.h").write_text("#pragma once\n")
+
+
+def _compile_and_run_capture_harness(tmp_path, compiler, source, extra_flags=()):
+    harness = tmp_path / "harness.cpp"
+    harness.write_text(textwrap.dedent(source))
+    executable = tmp_path / "harness"
+    compile_result = subprocess.run(
+        [
+            compiler,
+            "-std=c++17",
+            *extra_flags,
+            f"-I{tmp_path}",
+            f"-I{Path(__file__).resolve().parents[1] / 'firmware/respeaker-lite'}",
+            str(harness),
+            "-o",
+            str(executable),
+        ],
+        capture_output=True,
+        text=True,
     )
+    assert compile_result.returncode == 0, compile_result.stderr
+    run_result = subprocess.run([str(executable)], capture_output=True, text=True, timeout=120)
+    assert run_result.returncode == 0, run_result.stdout + run_result.stderr
+    return run_result.stdout
+
+
+def test_follow_up_no_speech_discards_buffered_pcm_before_empty_upload(tmp_path):
+    compiler = shutil.which("clang++") or shutil.which("c++")
+    if compiler is None:
+        pytest.skip("no C++ compiler available for the capture-state harness")
+
+    _write_capture_stubs(tmp_path)
     harness = tmp_path / "capture_state.cpp"
     harness.write_text(
         textwrap.dedent(
@@ -583,14 +610,309 @@ def test_speaker_volume_matches_the_documented_room_safety_policy():
     assert player["volume_max"] == "0.80"
 
 
-def test_rolling_pcm_capture_checks_identity_before_recording():
-    source = (Path(__file__).resolve().parents[1] / "firmware/respeaker-lite/pcm_capture.h").read_text()
-    start = source.index("inline void start()")
-    write = source.index("inline void write(const uint8_t *data, size_t len)")
-    rolling_capture = source[start:write]
-    assert "puck_identity::may_capture()" in rolling_capture
-    write_end = source.index("// Constructing a single std::string", write)
-    assert "puck_identity::may_capture()" in source[write:write_end]
+def test_default_firmware_build_keeps_raw_pcm_diagnostics_off():
+    root = Path(__file__).resolve().parents[1] / "firmware/respeaker-lite"
+    yaml_source = (root / "respeaker-lite.yaml").read_text()
+    capture_source = (root / "pcm_capture.h").read_text()
+    config = yaml.load(yaml_source, Loader=yaml.BaseLoader)
+    assert config["substitutions"]["puck_pcm_diagnostics"] == "false"
+    assert config["substitutions"]["puck_pcm_diagnostics_url"] == ""
+    assert (
+        'pcm_capture::setup(${puck_pcm_diagnostics}, "${puck_pcm_diagnostics_url}");' in yaml_source
+    )
+    # Only one export path exists, and the serial/base64 dump is gone.
+    assert yaml_source.count("pcm_capture::upload_and_restart(") == 1
+    assert "dump_over_serial" not in capture_source + yaml_source
+    assert "base64_encode" not in capture_source
+    assert "PCMDUMP" not in capture_source
+    assert not (root / "tools/collect_serial_dumps.py").exists()
+    # Content-safe amplitude and status diagnostics stay separate.
+    assert 'ESP_LOGI("mic_diag", "peak amplitude' in yaml_source
+    assert 'ESP_LOGI("mww_diag", "mww is_running' in yaml_source
+    # The wake path does not route through the diagnostic buffer.
+    wake = yaml_source.split("  on_wake_word_detected:\n", 1)[1]
+    assert "pcm_capture::start()" not in wake
+
+
+def test_raw_pcm_diagnostics_are_off_by_default_and_bounded_when_opted_in(tmp_path):
+    compiler = shutil.which("clang++") or shutil.which("c++")
+    if compiler is None:
+        pytest.skip("no C++ compiler available for the diagnostic capture harness")
+    _write_capture_stubs(tmp_path)
+    _compile_and_run_capture_harness(
+        tmp_path,
+        compiler,
+        """
+        #include "pcm_capture.h"
+        #include <cassert>
+        #include <string>
+        #include <vector>
+
+        std::uint32_t fake_millis = 0;
+        namespace pc = pcm_capture;
+
+        static void fill_window() {
+          std::vector<std::uint8_t> frame(4096, 0x5a);
+          for (std::size_t n = 0; n < pc::CAPTURE_BYTES; n += frame.size()) {
+            pc::write(frame.data(), frame.size());
+          }
+        }
+
+        int main() {
+          puck_identity::setup("configured");
+          esphome::http_request::HttpRequestComponent client;
+
+          // Default build: nothing allocated, captured, or exported.
+          pc::setup(false, "http://receiver/upload");
+          pc::start();
+          assert(!pc::diagnostics_enabled());
+          assert(pc::buffer == nullptr && fake_heap_allocations == 0);
+          for (int i = 0; i < 40; ++i) {
+            fill_window();
+            pc::upload_and_restart(&client);
+          }
+          assert(client.urls.empty());
+          assert(fake_warnings.find("RAW MICROPHONE") == std::string::npos);
+
+          // The flag alone, without an export URL, stays disabled.
+          pc::setup(true, "");
+          assert(!pc::diagnostics_enabled() && fake_heap_allocations == 0);
+
+          // Explicit opt-in is visible and warns.
+          pc::setup(true, "http://receiver/upload");
+          assert(pc::diagnostics_enabled() && fake_heap_allocations == 1);
+          assert(fake_warnings.find("RAW MICROPHONE PCM DIAGNOSTICS ENABLED") != std::string::npos);
+          pc::start();
+          assert(pc::state.load() == pc::DiagState::CAPTURING);
+
+          // A window is not exported until it is complete.
+          std::uint8_t half[8] = {};
+          pc::write(half, sizeof(half));
+          pc::upload_and_restart(&client);
+          assert(client.urls.empty());
+
+          // Bounded: extra windows past the limit are never captured.
+          for (std::uint32_t i = 0; i < pc::MAX_DIAGNOSTIC_CAPTURES + 5; ++i) {
+            fill_window();
+            pc::upload_and_restart(&client);
+          }
+          const std::size_t chunks = (pc::CAPTURE_BYTES + pc::UPLOAD_CHUNK_BYTES - 1) / pc::UPLOAD_CHUNK_BYTES;
+          assert(client.urls.size() == pc::MAX_DIAGNOSTIC_CAPTURES * chunks);
+          std::size_t exported = 0;
+          for (const auto &body : client.bodies) exported += body.size();
+          assert(exported == pc::MAX_DIAGNOSTIC_CAPTURES * pc::CAPTURE_BYTES);
+          assert(pc::state.load() == pc::DiagState::COMPLETE);
+          assert(fake_warnings.find("raw PCM diagnostics complete") != std::string::npos);
+          pc::start();
+          fill_window();
+          pc::upload_and_restart(&client);
+          assert(client.urls.size() == pc::MAX_DIAGNOSTIC_CAPTURES * chunks);
+          return 0;
+        }
+        """,
+    )
+
+
+def test_raw_pcm_diagnostics_discard_buffered_audio_when_identity_is_revoked(tmp_path):
+    compiler = shutil.which("clang++") or shutil.which("c++")
+    if compiler is None:
+        pytest.skip("no C++ compiler available for the diagnostic capture harness")
+    _write_capture_stubs(tmp_path)
+    _compile_and_run_capture_harness(
+        tmp_path,
+        compiler,
+        """
+        #include "pcm_capture.h"
+        #include <cassert>
+        #include <vector>
+
+        std::uint32_t fake_millis = 0;
+        namespace pc = pcm_capture;
+
+        int main() {
+          // Unauthorized at boot: opt-in allocates but never starts capture.
+          pc::setup(true, "http://receiver/upload");
+          pc::start();
+          assert(pc::state.load() == pc::DiagState::IDLE);
+
+          puck_identity::setup("configured");
+          pc::start();
+          assert(pc::state.load() == pc::DiagState::CAPTURING);
+          std::vector<std::uint8_t> frame(pc::CAPTURE_BYTES, 0x11);
+          pc::write(frame.data(), frame.size());
+          assert(pc::state.load() == pc::DiagState::READY);
+
+          // A 4xx from the wake path revokes identity; the finished window
+          // is discarded by the next callback instead of being exported.
+          puck_identity::note_upload_status(401);
+          pc::write(frame.data(), 4);
+          assert(pc::state.load() == pc::DiagState::IDLE);
+          esphome::http_request::HttpRequestComponent client;
+          pc::upload_and_restart(&client);
+          assert(client.urls.empty());
+          pc::start();
+          assert(pc::state.load() == pc::DiagState::IDLE);
+          return 0;
+        }
+        """,
+    )
+
+
+def test_raw_pcm_diagnostic_export_drops_a_claimed_window_after_identity_loss(tmp_path):
+    compiler = shutil.which("clang++") or shutil.which("c++")
+    if compiler is None:
+        pytest.skip("no C++ compiler available for the diagnostic capture harness")
+    _write_capture_stubs(tmp_path)
+    _compile_and_run_capture_harness(
+        tmp_path,
+        compiler,
+        """
+        #include "pcm_capture.h"
+        #include <cassert>
+        #include <vector>
+
+        std::uint32_t fake_millis = 0;
+        namespace pc = pcm_capture;
+
+        int main() {
+          puck_identity::setup("configured");
+          pc::setup(true, "http://receiver/upload");
+          pc::start();
+          std::vector<std::uint8_t> frame(pc::CAPTURE_BYTES, 0x22);
+          pc::write(frame.data(), frame.size());
+          assert(pc::state.load() == pc::DiagState::READY);
+
+          // Revocation lands with no further mic callback, so the exporter
+          // claims the window itself and must drop it, not export it.
+          puck_identity::note_upload_status(403);
+          esphome::http_request::HttpRequestComponent client;
+          pc::upload_and_restart(&client);
+          assert(client.urls.empty());
+          assert(pc::captures_exported == 1);
+          assert(pc::write_pos == 0);
+          assert(pc::state.load() == pc::DiagState::IDLE);
+          // Fail-closed identity keeps diagnostics stopped until reboot.
+          pc::start();
+          pc::write(frame.data(), frame.size());
+          pc::upload_and_restart(&client);
+          assert(client.urls.empty() && pc::state.load() == pc::DiagState::IDLE);
+          return 0;
+        }
+        """,
+    )
+
+
+def test_raw_pcm_diagnostics_reach_the_bound_when_every_upload_fails(tmp_path):
+    compiler = shutil.which("clang++") or shutil.which("c++")
+    if compiler is None:
+        pytest.skip("no C++ compiler available for the diagnostic capture harness")
+    _write_capture_stubs(tmp_path)
+    _compile_and_run_capture_harness(
+        tmp_path,
+        compiler,
+        """
+        #include "pcm_capture.h"
+        #include <cassert>
+        #include <vector>
+
+        std::uint32_t fake_millis = 0;
+        namespace pc = pcm_capture;
+
+        int main() {
+          puck_identity::setup("configured");
+          pc::setup(true, "http://receiver/upload");
+          pc::start();
+          esphome::http_request::HttpRequestComponent client;
+          client.response.status_code = 500;
+          std::vector<std::uint8_t> frame(pc::CAPTURE_BYTES, 0x33);
+          for (std::uint32_t i = 0; i < pc::MAX_DIAGNOSTIC_CAPTURES + 5; ++i) {
+            pc::write(frame.data(), frame.size());
+            pc::upload_and_restart(&client);
+          }
+          // Each window is abandoned after two failed chunks, yet counts.
+          assert(pc::captures_exported == pc::MAX_DIAGNOSTIC_CAPTURES);
+          assert(client.urls.size() == pc::MAX_DIAGNOSTIC_CAPTURES * 2);
+          assert(pc::state.load() == pc::DiagState::COMPLETE);
+          // The diagnostic receiver is not an identity authority.
+          assert(puck_identity::may_capture());
+          return 0;
+        }
+        """,
+    )
+
+
+def test_raw_pcm_diagnostic_export_never_reads_a_window_being_written(tmp_path):
+    compiler = shutil.which("clang++") or shutil.which("c++")
+    if compiler is None:
+        pytest.skip("no C++ compiler available for the diagnostic capture harness")
+    _write_capture_stubs(tmp_path)
+    source = """
+        #include "pcm_capture.h"
+        #include <cassert>
+        #include <cstdio>
+        #include <cstring>
+        #include <map>
+        #include <thread>
+
+        std::uint32_t fake_millis = 0;
+        namespace pc = pcm_capture;
+
+        int main() {
+          puck_identity::setup("configured");
+          pc::setup(true, "http://receiver/upload");
+          pc::start();
+          esphome::http_request::HttpRequestComponent client;
+
+          // Mic task: a monotonically increasing counter per frame.
+          std::thread mic([] {
+            std::uint32_t counter = 1;
+            while (pc::state.load() != pc::DiagState::COMPLETE) {
+              std::uint8_t frame[sizeof(counter)];
+              std::memcpy(frame, &counter, sizeof(counter));
+              pc::write(frame, sizeof(frame));
+              ++counter;
+            }
+          });
+          // Main loop: export concurrently until the bound is reached.
+          while (pc::state.load() != pc::DiagState::COMPLETE) {
+            pc::upload_and_restart(&client);
+          }
+          mic.join();
+
+          std::map<std::string, std::string> windows;
+          for (std::size_t i = 0; i < client.urls.size(); ++i) {
+            const std::string &url = client.urls[i];
+            std::string seq = url.substr(url.find("seq="), url.find("&chunk=") - url.find("seq="));
+            windows[seq] += client.bodies[i];
+          }
+          assert(windows.size() == pc::MAX_DIAGNOSTIC_CAPTURES);
+          for (const auto &entry : windows) {
+            const std::string &pcm = entry.second;
+            assert(pcm.size() == pc::CAPTURE_BYTES);
+            std::uint32_t previous = 0;
+            for (std::size_t offset = 0; offset < pcm.size(); offset += 4) {
+              std::uint32_t value;
+              std::memcpy(&value, pcm.data() + offset, sizeof(value));
+              // A torn or overwritten window would break strict ordering.
+              assert(value == previous + 1 || offset == 0);
+              previous = value;
+            }
+          }
+          std::printf("windows=%zu\\n", windows.size());
+          return 0;
+        }
+        """
+    flags = ["-pthread", "-O1"]
+    sanitizer = subprocess.run(
+        [compiler, "-fsanitize=thread", "-x", "c++", "-", "-o", str(tmp_path / "probe")],
+        input="int main() { return 0; }\n",
+        capture_output=True,
+        text=True,
+    )
+    if sanitizer.returncode == 0 and subprocess.run([str(tmp_path / "probe")]).returncode == 0:
+        flags.append("-fsanitize=thread")
+    output = _compile_and_run_capture_harness(tmp_path, compiler, source, flags)
+    assert "windows=15" in output
 
 
 def test_wake_upload_aborts_a_rejected_chunk_before_the_generic_breaker():

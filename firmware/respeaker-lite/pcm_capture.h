@@ -1,18 +1,25 @@
-// Training-data capture pipeline for story 3's custom wake-word model
-// (Hermes Relay TUI, follow-up after cross-validation proved the pipeline
-// itself is correct and the remaining gap is acoustic -- this hardware's
-// processed audio doesn't match what pretrained models expect). Captures
-// short rolling windows of the exact audio micro_wake_word's own
-// MicrophoneSource delivers, and uploads each one over WiFi via
-// http_request as soon as it fills, then immediately restarts -- so a
-// human/TTS speaking near the device gets continuously captured without
-// any per-sample trigger round-trip.
+// Raw-PCM diagnostic capture for story 3's custom wake-word model work
+// (Hermes Relay TUI). P-7: this path is OFF by default. A default build
+// allocates no diagnostic buffer, starts no capture, and never writes raw
+// PCM or base64 PCM to logs, serial, or the network. An operator must set
+// both `puck_pcm_diagnostics: "true"` and a non-empty
+// `puck_pcm_diagnostics_url` substitution; the device then logs a warning
+// at boot and captures at most MAX_DIAGNOSTIC_CAPTURES windows of
+// CAPTURE_BYTES each before stopping permanently until reboot.
 //
 // Same safety pattern as the original diagnostic version: a single
-// heap_caps_malloc call made once in setup() (never resized), and the
-// real-time mic callback only ever does a bounded memcpy -- no
-// allocation, growth, or blocking I/O on that path. The upload (which
-// blocks on a POST) only ever runs from a slow `interval:` tick.
+// heap_caps_malloc call made once in setup() (never resized or freed), and
+// the real-time mic callback only ever does a bounded memcpy -- no
+// allocation, growth, or blocking I/O on that path. Export (which blocks
+// on a POST) only ever runs from a slow `interval:` tick.
+//
+// Ownership between the mic task (writer) and the main loop (exporter) is
+// an atomic state machine: the writer owns `buffer`/`write_pos` only while
+// CAPTURING and publishes them with a release store of READY; the exporter
+// claims READY -> EXPORTING with a compare-exchange before reading, and
+// resets `write_pos` only while it owns IDLE or EXPORTING. Neither side
+// touches the buffer in a state it does not own, and the buffer is never
+// freed.
 #pragma once
 
 #include "esp_heap_caps.h"
@@ -30,6 +37,7 @@
 #include "puck_response.h"
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
+#include <atomic>
 #include <algorithm>
 #include <cstdint>
 #include <cstddef>
@@ -45,49 +53,96 @@ static const char *const TAG = "pcm_capture";
 // hold one spoken utterance with lead/trail silence, short enough to
 // upload quickly and keep the rolling capture cadence tight.
 static const size_t CAPTURE_BYTES = 16000 * 4 * 2 * 2;
+static const uint32_t CAPTURE_MS = 2000;
+
+// P-7: hard per-boot bound on diagnostic capture/export -- 15 two-second
+// windows (30 s, 3,840,000 bytes). Matches the largest dump series proven
+// safe on hardware in story 3 session 16.
+static const uint32_t MAX_DIAGNOSTIC_CAPTURES = 15;
+
+enum class DiagState : uint8_t { DISABLED, IDLE, CAPTURING, READY, EXPORTING, COMPLETE };
 
 static uint8_t *buffer = nullptr;
 static size_t write_pos = 0;
-static bool capturing = false;
-static bool capture_done = false;
+static std::atomic<DiagState> state{DiagState::DISABLED};
+// Main-loop only: windows whose export finished, was abandoned, or was
+// discarded. Never reset, so the bound holds for the whole boot.
+static uint32_t captures_exported = 0;
 static uint32_t sample_index = 0;
+static std::string export_url;
 
-inline void setup() {
+inline bool diagnostics_enabled() { return state.load(std::memory_order_acquire) != DiagState::DISABLED; }
+
+// Called once from on_boot with the `puck_pcm_diagnostics` and
+// `puck_pcm_diagnostics_url` substitutions.
+inline void setup(bool opted_in, const std::string &url) {
+  if (!opted_in) {
+    ESP_LOGI(TAG, "raw PCM diagnostics disabled (default) -- no capture buffer allocated");
+    return;
+  }
+  if (url.empty()) {
+    ESP_LOGE(TAG, "raw PCM diagnostics requested without puck_pcm_diagnostics_url -- staying disabled");
+    return;
+  }
   buffer = static_cast<uint8_t *>(heap_caps_malloc(CAPTURE_BYTES, MALLOC_CAP_SPIRAM));
   if (buffer == nullptr) {
-    ESP_LOGE(TAG, "Failed to allocate %u bytes of PSRAM for PCM capture", (unsigned) CAPTURE_BYTES);
-  } else {
-    ESP_LOGI(TAG, "Allocated %u bytes of PSRAM for PCM capture", (unsigned) CAPTURE_BYTES);
+    ESP_LOGE(TAG, "Failed to allocate %u bytes of PSRAM for PCM diagnostics -- staying disabled",
+             (unsigned) CAPTURE_BYTES);
+    return;
   }
+  export_url = url;
+  state.store(DiagState::IDLE, std::memory_order_release);
+  ESP_LOGW(TAG,
+           "RAW MICROPHONE PCM DIAGNOSTICS ENABLED: microphone audio will be captured and exported, "
+           "bounded to %u captures of %u bytes (%u ms each) per boot",
+           (unsigned) MAX_DIAGNOSTIC_CAPTURES, (unsigned) CAPTURE_BYTES, (unsigned) CAPTURE_MS);
+}
+
+// Main loop only, called while it owns IDLE or EXPORTING. Arms the next
+// window, or stops permanently once the per-boot bound is reached.
+inline void arm_next() {
+  write_pos = 0;
+  if (captures_exported >= MAX_DIAGNOSTIC_CAPTURES) {
+    state.store(DiagState::COMPLETE, std::memory_order_release);
+    ESP_LOGW(TAG, "raw PCM diagnostics complete after %u captures -- capture stopped until reboot",
+             (unsigned) captures_exported);
+    return;
+  }
+  // The diagnostic buffer is still a capture path. Do not let it bypass
+  // the same identity precondition as the wake-triggered buffer.
+  if (!puck_identity::may_capture()) {
+    state.store(DiagState::IDLE, std::memory_order_release);
+    return;
+  }
+  state.store(DiagState::CAPTURING, std::memory_order_release);
 }
 
 inline void start() {
-  if (buffer == nullptr || !puck_identity::may_capture()) {
-    // The diagnostic buffer is still a capture path. Do not let it bypass
-    // the same identity precondition as the wake-triggered buffer.
-    capturing = false;
-    capture_done = false;
-    write_pos = 0;
+  if (state.load(std::memory_order_acquire) != DiagState::IDLE) {
     return;
   }
-  write_pos = 0;
-  capture_done = false;
-  capturing = true;
+  arm_next();
 }
 
 // Called from the microphone's real-time on_data callback. Bounded,
 // allocation-free: a single memcpy per call, clamped to the pre-sized
-// buffer. Never grows or reallocates anything.
+// buffer. One atomic load makes it a no-op in the default build.
 inline void write(const uint8_t *data, size_t len) {
-  // Check authorization before the cheap early return so a 4xx received by
-  // another upload path also clears any already-buffered diagnostic audio.
-  if (!puck_identity::may_capture()) {
-    capturing = false;
-    capture_done = false;
-    write_pos = 0;
+  DiagState current = state.load(std::memory_order_acquire);
+  if (current != DiagState::CAPTURING && current != DiagState::READY) {
     return;
   }
-  if (!capturing || buffer == nullptr) {
+  // Check authorization before recording so a 4xx received by another
+  // upload path also discards any already-buffered diagnostic audio.
+  if (!puck_identity::may_capture()) {
+    if (current == DiagState::CAPTURING) {
+      write_pos = 0;
+    }
+    // Exactly one of this CAS and the exporter's claim of READY wins.
+    state.compare_exchange_strong(current, DiagState::IDLE, std::memory_order_acq_rel);
+    return;
+  }
+  if (current != DiagState::CAPTURING) {
     return;
   }
   size_t remaining = CAPTURE_BYTES - write_pos;
@@ -95,9 +150,14 @@ inline void write(const uint8_t *data, size_t len) {
   memcpy(buffer + write_pos, data, to_copy);
   write_pos += to_copy;
   if (write_pos >= CAPTURE_BYTES) {
-    capturing = false;
-    capture_done = true;
+    state.store(DiagState::READY, std::memory_order_release);
   }
+}
+
+// Main loop only: take exclusive ownership of a finished window.
+inline bool claim_ready() {
+  DiagState expected = DiagState::READY;
+  return state.compare_exchange_strong(expected, DiagState::EXPORTING, std::memory_order_acq_rel);
 }
 
 // Constructing a single std::string from the whole ~256KB capture buffer
@@ -139,11 +199,19 @@ static const size_t UPLOAD_CHUNK_BYTES = 16000;  // ~16KB per POST body
 
 // Called from a slow `interval:` tick, never from the real-time audio
 // path. Blocks on each POST (fine here -- main loop, not the mic task),
-// then immediately re-arms capture for the next window once fully sent.
-inline void upload_and_restart(esphome::http_request::HttpRequestComponent *client, const std::string &url) {
-  if (!capture_done || buffer == nullptr) {
+// then re-arms the next window until the per-boot bound is reached.
+inline void upload_and_restart(esphome::http_request::HttpRequestComponent *client) {
+  if (!claim_ready()) {
     return;
   }
+  if (!puck_identity::may_capture()) {
+    // Discard rather than export; it still counts toward the bound.
+    sample_index++;
+    captures_exported++;
+    arm_next();
+    return;
+  }
+  const std::string &url = export_url;
 
   // Per-chunk retry was tried and reverted (see story 3, follow-up session
   // 12): once esp_http_client wedges into ESP_FAIL, *each individual POST
@@ -249,7 +317,8 @@ inline void upload_and_restart(esphome::http_request::HttpRequestComponent *clie
   }
 
   sample_index++;
-  start();
+  captures_exported++;
+  arm_next();
 }
 
 // VAD-gated, single-shot, wake-triggered capture (story 5). Reuses this
@@ -650,70 +719,5 @@ inline void upload(esphome::http_request::HttpRequestComponent *client, const st
 }
 
 }  // namespace wake_capture
-
-// Serial-dump path (story 3, session 16 -- see story doc for the full
-// history). A prior version dumped the *full* ~256KB capture (~1280 chunks)
-// continuously, immediately re-arming after every 2s window, indefinitely;
-// it hung the device on first live test with no crash marker. Root-caused
-// later the same session (loopTask watchdog starvation, fixed via
-// App.feed_wdt() below) and proven safe one-shot at full capture size.
-// This step re-arms, but only for a small, bounded number of repeats
-// (MAX_DUMPS) -- not an indefinite loop -- to test whether *repeated*
-// captures are safe before ever going back to continuous.
-static const size_t DUMP_CHUNK_BYTES = 200;
-static const size_t DUMP_MAX_CHUNKS = 1280;  // full ~256KB/2s capture
-// Verified at 15 (session 16 step 5): 15/15 full captures completed clean,
-// zero crash markers, chunk-corruption rate held flat (~0.05%, no worse
-// than smaller runs). Still bounded, not indefinite -- see story doc.
-static const uint32_t MAX_DUMPS = 15;
-
-inline void dump_over_serial() {
-  static uint32_t dumps_done = 0;
-  if (dumps_done >= MAX_DUMPS || !capture_done || buffer == nullptr) {
-    return;
-  }
-
-  size_t full_chunks = (write_pos + DUMP_CHUNK_BYTES - 1) / DUMP_CHUNK_BYTES;
-  size_t total_chunks = std::min(full_chunks, DUMP_MAX_CHUNKS);
-  size_t total_bytes = std::min(write_pos, total_chunks * DUMP_CHUNK_BYTES);
-
-  ESP_LOGI(TAG, "PCMDUMP begin seq=%u total_bytes=%u total_chunks=%u", (unsigned) sample_index,
-           (unsigned) total_bytes, (unsigned) total_chunks);
-  for (size_t chunk = 0; chunk < total_chunks; ++chunk) {
-    size_t offset = chunk * DUMP_CHUNK_BYTES;
-    size_t len = std::min(DUMP_CHUNK_BYTES, write_pos - offset);
-    std::string b64 = esphome::base64_encode(buffer + offset, len);
-    ESP_LOGI(TAG, "PCMDUMP seq=%u chunk=%u total=%u b64=%s", (unsigned) sample_index, (unsigned) chunk,
-             (unsigned) total_chunks, b64.c_str());
-    // Session 16 step 2 (300 chunks) tripped ESPHome's own loopTask
-    // watchdog (task_wdt: Aborting) partway through -- ESPHome only feeds
-    // it once per loop() iteration, and this whole dump runs inside a
-    // single interval callback, so a long enough dump starves it even
-    // though vTaskDelay below yields the CPU. http_request's own component
-    // hits this same class of problem and fixes it the same way (see
-    // http_request.h: `App.feed_wdt()` inside its own long-running loops)
-    // -- App.feed_wdt() is ESPHome's own rate-limited public API for this,
-    // not a raw ESP-IDF watchdog bypass like session 14's dangerous
-    // connection-reuse attempt.
-    esphome::App.feed_wdt();
-    // Deliberate breathing room -- session 15 speculated the hang may have
-    // been the host-side reader unable to drain fast enough at high serial
-    // volume. This dump is small enough that this delay barely matters for
-    // total time, but keep it for consistency with what will be tried at
-    // larger scale later.
-    vTaskDelay(pdMS_TO_TICKS(10));
-  }
-  ESP_LOGI(TAG, "PCMDUMP end seq=%u", (unsigned) sample_index);
-  sample_index++;
-  dumps_done++;
-  if (dumps_done < MAX_DUMPS) {
-    // Bounded re-arm: start the next 2s capture. capture_done goes false
-    // again immediately, so this function no-ops on subsequent interval
-    // ticks until the new capture fills, exactly like the first one.
-    start();
-  } else {
-    ESP_LOGI(TAG, "PCMDUMP series complete after %u dumps -- not re-arming further", (unsigned) dumps_done);
-  }
-}
 
 }  // namespace pcm_capture
