@@ -76,6 +76,35 @@ as a toggleable Home Assistant entity.
 
 ---
 
+## Microphone format contract (P-8)
+
+The locally vendored microphone accepts only external, non-PDM **48 kHz,
+32-bit, stereo, secondary I2S**, without DC correction. Other rates, widths,
+channels and clock modes fail configuration validation instead of silently
+passing through a hardcoded converter. Speaker format support is unchanged.
+
+Each little-endian input frame contains signed 32-bit ch0 followed by ch1.
+The converter retains frame **0, 3, 6, ...**, unchanged, yielding **16 kHz per
+channel**, still 32-bit stereo. Ch0 remains ASR-optimized and ch1 remains the
+wake-word input selected by `channels: 1`. There is no FIR or anti-aliasing
+filter: this preserves the board's empirically proven nearest-frame path.
+Decimation phase and an incomplete frame survive driver-read boundaries;
+a new microphone task starts at frame zero. Unlike the former per-read
+implementation, trailing frames are not silently discarded at each read.
+Read/output buffers are reserved once per task, not allocated per callback.
+
+The content-safe amplitude diagnostic uses the same byte-safe signed decoder
+as the native fixture and unsigned magnitudes, including **2147483648** for
+`INT32_MIN`; it never exports PCM. Raw PCM diagnostics remain **off by default**.
+Synthetic input and independently specified expected output are retained in
+`tests/firmware/respeaker_pcm_fixture.json`; `tests/test_respeaker_pcm.py`
+executes the production header under AddressSanitizer/UndefinedBehaviorSanitizer
+and validates the format guard with real ESPHome. Native checks cannot prove
+acoustic wake recognition: a controlled wake/VAD/upload/playback regression
+on the compiled build remains an explicit hardware gate.
+
+---
+
 ## Build & Flashing
 
 ESPHome lives in its own dedicated venv (`venv-firmware/`, Python 3.12),

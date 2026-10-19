@@ -352,21 +352,19 @@ microphone:
     on_data:
       - lambda: |-
           static uint32_t last_log_ms = 0;
-          static int32_t running_max_ch0 = 0;
-          static int32_t running_max_ch1 = 0;
+          static uint32_t running_max_ch0 = 0;
+          static uint32_t running_max_ch1 = 0;
           // Stereo, 32-bit: each frame is 8 bytes -- ch0 first 4 bytes, ch1 next 4.
           for (size_t i = 0; i + 7 < x.size(); i += 8) {
-            int32_t sample0 = (int32_t)(x[i] | (x[i+1] << 8) | (x[i+2] << 16) | (x[i+3] << 24));
-            int32_t sample1 = (int32_t)(x[i+4] | (x[i+5] << 8) | (x[i+6] << 16) | (x[i+7] << 24));
-            int32_t abs0 = sample0 < 0 ? -sample0 : sample0;
-            int32_t abs1 = sample1 < 0 ? -sample1 : sample1;
+            const uint32_t abs0 = esphome::i2s_audio::respeaker_pcm::magnitude_s32le(&x[i]);
+            const uint32_t abs1 = esphome::i2s_audio::respeaker_pcm::magnitude_s32le(&x[i + 4]);
             if (abs0 > running_max_ch0) running_max_ch0 = abs0;
             if (abs1 > running_max_ch1) running_max_ch1 = abs1;
           }
           uint32_t now = millis();
           if (now - last_log_ms > 1000) {
-            ESP_LOGI("mic_diag", "peak amplitude last ~1s -- ch0: %d, ch1: %d (bytes this callback: %d)",
-                     (int) running_max_ch0, (int) running_max_ch1, (int) x.size());
+            ESP_LOGI("mic_diag", "peak amplitude last ~1s -- ch0: %lu, ch1: %lu (bytes this callback: %u)",
+                     (unsigned long) running_max_ch0, (unsigned long) running_max_ch1, (unsigned) x.size());
             running_max_ch0 = 0;
             running_max_ch1 = 0;
             last_log_ms = now;
