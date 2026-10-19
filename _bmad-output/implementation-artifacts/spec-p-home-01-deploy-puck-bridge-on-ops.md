@@ -48,11 +48,17 @@ adds no bridge behavior.
    `PrivateTmp`, `ReadWritePaths` limited to the state directory. Credentials
    and tokens live only in operator-created 0600 files in the state
    directory, never in the unit, argv, the repository or logs. The bridge
-   listens on the ops LAN address on port 8766 (verified free 2026-10-18),
-   never on a Tailscale interface.
-3. The bridge's claim-recovery state lives under the service state directory
-   so it persists across restarts, as P-4 requires (P-4 Implementation Notes,
-   "Persist the current Home handle").
+   listens on the ops LAN address on the bridge's default port 8766
+   (`puck_bridge/server.py:46`; reported free by a 2026-10-18 read-only check,
+   reconfirm at rollout), never on a Tailscale interface.
+3. The bridge's claim-recovery state persists across restarts, as P-4
+   requires (P-4 Implementation Notes, "Persist the current Home handle").
+   The bridge writes it under `Path.home()/.hermes-relay-tui/home-claim-state/`
+   (`puck_bridge/home_admission.py:60-62`, no path override). The unit must
+   therefore set `Environment=HOME=<state directory>` (or give the service
+   user that home) so the default path resolves inside `ReadWritePaths`;
+   otherwise `ProtectHome` makes startup fail (`server.py:274`). No bridge
+   code change.
 4. A runbook (`docs/puck-ops-deployment.md`) covering install, start/restart,
    upgrade, rollback, removal, firmware flash steps from
    `firmware/respeaker-lite/README.md` ("Build & Flashing"), and the ordered
@@ -116,7 +122,8 @@ owning story, not here:
   values, and a LAN-only bind; secret files are 0600 and owned by the
   service user.
 - Given `systemctl restart` or a host reboot on the disposable host, then the
-  unit returns without manual action and claim-recovery state persists.
+  unit returns without manual action, and the claim-recovery record exists
+  under the state directory and survives the restart.
 - Given the runbook, then every step is labelled exercised or unexercised,
   each live check names its owning story for evidence, and no step offers a
   direct-Hermes fallback.

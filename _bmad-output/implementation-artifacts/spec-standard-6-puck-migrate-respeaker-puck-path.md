@@ -26,8 +26,8 @@ tracker was set `done` in #197; this frontmatter had stayed `in-progress`.
 It now matches the tracker under the repository's done-with-deferred-gate
 convention (STD-8 merged as `done` with its physical gate in `deferred:`).
 The deferred external gate below stays open. A later wake still needs P-4's
-calibrated trusted proximity provider, which remains absent. P-HOME-01 runs
-this gate during the Puck rollout and records the evidence here.
+calibrated trusted proximity provider, which remains absent. The gate is
+performed during the P-HOME-01 rollout; its evidence is recorded in this spec.
 
 ## Scope
 
