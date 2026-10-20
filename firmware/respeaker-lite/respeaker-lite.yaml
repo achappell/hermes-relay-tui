@@ -241,6 +241,12 @@ binary_sensor:
 wifi:
   ssid: !secret wifi_ssid
   password: !secret wifi_password
+  # ESP32 Wi-Fi defaults to LIGHT modem sleep, which parks the radio between
+  # DTIM beacons and delivers streamed TCP in bursts. The 2026-10-20 retest
+  # answer was "patchy, like starved for audio" throughout although the
+  # bridge had the whole answer queued. Streaming media devices run with the
+  # radio awake; this costs idle power on a mains-powered puck only.
+  power_save_mode: none
 
   # Fallback hotspot in case WiFi connection fails, so the device is still
   # reachable to fix configuration.

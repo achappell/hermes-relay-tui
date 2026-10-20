@@ -4624,3 +4624,104 @@ def test_retired_claim_marker_does_not_deny_without_asking_home():
     finally:
         runner.stop()
     assert calls == ["cwFRTHkU"]
+
+
+@pytest.mark.parametrize("ending", ["silent_follow_up", "window_expired", "failed_turn"])
+def test_paired_room_claim_is_retired_when_the_conversation_ends(monkeypatch, ending):
+    """2026-10-20 retest #2: an empty follow-up ended the conversation but the
+    paired-room claim stayed active at Home for 30+ minutes. Every way a
+    paired conversation ends must close its claim exactly once."""
+    from types import SimpleNamespace
+
+    from puck_bridge.response import ResponseStream
+
+    import puck_bridge.turn as turn_module
+
+    monkeypatch.setattr(turn_module, "FOLLOW_UP_CAPTURE_WAIT_SECONDS", 0.3)
+    closes = []
+
+    class PairedSession(FakeSession):
+        wake_mapping_id = "hey-missy"
+        wake_configuration_revision = 4
+        wake_admission_mode = "paired_room"
+        conversation_handle = "eeuVbnKJ"
+
+        async def close_claim(self):
+            closes.append(self.conversation_handle)
+            self.connected = False
+            return True
+
+    events = [{"type": "error"}] if ending == "failed_turn" else None
+    session = PairedSession(events=events)
+    stream = ResponseStream()
+
+    class Factory:
+        async def verify_mapping_id(self, mapping_id, revision):
+            return True
+
+        async def admit_wake(self, phrase, *, previous_handle):
+            return SimpleNamespace(status="denied", session=None, reason="x")
+
+    runner = TurnRunner(session, player=FakePlayer(), response_stream=stream,
+                        home_claim_factory=Factory())
+    runner.start()
+    try:
+        asyncio.run_coroutine_threadsafe(session.connect(), runner._loop).result(2)
+        assert stream.expect(seq=1)
+        runner.set_response_seq(1)
+        done = threading.Event()
+        threading.Thread(
+            target=lambda: (runner.submit_transcript("question"), done.set()),
+            daemon=True,
+        ).start()
+        if ending == "silent_follow_up":
+            for _ in range(200):
+                if runner._follow_up_waiting:
+                    break
+                time.sleep(0.01)
+            assert runner._follow_up_waiting
+            assert stream.expect(seq=2)
+            runner.set_response_seq(2)
+            assert runner.submit_capture_silent(2) == "silent"
+        assert done.wait(5)
+    finally:
+        runner.stop()
+    assert closes == ["eeuVbnKJ"]
+
+
+def test_prebuffer_exceeds_the_largest_observed_producer_gap():
+    """2026-10-20 retest #2: a 3.29 s producer gap drained the 1.5 s cushion."""
+    from puck_bridge.response import PREBUFFER_SECONDS, STREAM_STALL_SECONDS
+
+    assert 3.29 < PREBUFFER_SECONDS < STREAM_STALL_SECONDS
+
+
+def test_streamed_response_logs_per_chunk_cadence_at_debug(tmp_path, caplog):
+    import logging
+
+    from puck_bridge.response import ResponseStream
+
+    stream = ResponseStream()
+    assert stream.expect(seq=3)
+    stream.begin(3, (24000, 1, 2))
+    stream.write(b"\x00\x01" * 100, seq=3)
+    stream.finish()
+    handler_cls = make_handler(
+        expected_token="s3cret",
+        on_transcript=_RecordingSink(),
+        transcribe_fn=_fake_transcribe(),
+        work_dir=tmp_path,
+        response_stream=stream,
+    )
+    server = _start_server(handler_cls)
+    try:
+        with caplog.at_level(logging.DEBUG, logger="hermes_relay_tui.puck_bridge.receiver"):
+            status, _ = _get_response(server.server_address[1], token="s3cret", seq=3)
+    finally:
+        server.shutdown()
+    assert status == 200
+    assert any(
+        "puck response chunk seq=3 bytes=200 gap_ms=" in r.getMessage()
+        and "queued_bytes=" in r.getMessage()
+        for r in caplog.records
+    )
