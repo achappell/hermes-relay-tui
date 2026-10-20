@@ -736,9 +736,11 @@ def make_handler(
             # the expect() comment describes.
             if finished_capture is not None and response_stream is not None:
                 if not response_stream.expect(seq):
-                    logger.info(
-                        "puck bridge: a previous answer is still streaming; "
-                        "dropping this capture before transcription"
+                    logger.warning(
+                        "puck bridge: response stream busy (%s); dropping "
+                        "capture seq=%d before transcription",
+                        response_stream.busy_reason() or "unknown",
+                        seq,
                     )
                     # This is temporary capacity pressure, not a bad device
                     # credential. The firmware treats 4xx as authoritative

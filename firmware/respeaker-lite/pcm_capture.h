@@ -640,6 +640,11 @@ inline void upload(esphome::http_request::HttpRequestComponent *client, const st
   bool ok = true;
   bool reassembly_confirmed = false;
   int consecutive_failures = 0;
+  // The final summary must name the failing chunk and HTTP status itself: the
+  // 2026-10-19 retest kept only W/E counts, and a 503 on the last chunk
+  // (bridge refused the completed capture) looked like any transport fault.
+  int failed_status = 0;
+  size_t failed_chunk = 0;
   const uint32_t upload_started_ms = millis();
   for (size_t chunk = 0; chunk < total_chunks; ++chunk) {
     size_t offset = chunk * pcm_capture::UPLOAD_CHUNK_BYTES;
@@ -675,6 +680,10 @@ inline void upload(esphome::http_request::HttpRequestComponent *client, const st
                (unsigned) sample_index, (unsigned) chunk, response ? response->status_code : -1,
                (unsigned) heap_before, (unsigned) heap_after,
                (unsigned) heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL));
+      if (ok) {
+        failed_status = status;
+        failed_chunk = chunk;
+      }
       ok = false;
       consecutive_failures++;
     } else {
@@ -730,6 +739,10 @@ inline void upload(esphome::http_request::HttpRequestComponent *client, const st
                    "(%u bytes in %ums -- likely exceeded the receiver's reassembly TTL)",
              (unsigned) sample_index, (unsigned) total_chunks, (unsigned) captured_bytes, (unsigned) elapsed_ms);
   } else {
+    ESP_LOGW(TAG, "Wake capture %u FAILED at chunk %u/%u with HTTP status %d (-1 = no response) "
+                  "(%u bytes, %ums)",
+             (unsigned) sample_index, (unsigned) failed_chunk, (unsigned) total_chunks, failed_status,
+             (unsigned) captured_bytes, (unsigned) elapsed_ms);
     ESP_LOGE(TAG, "Wake capture %u FAILED: chunk upload errors (%u bytes, %u chunks, %ums)",
              (unsigned) sample_index, (unsigned) captured_bytes, (unsigned) total_chunks, (unsigned) elapsed_ms);
   }

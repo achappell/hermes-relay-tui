@@ -602,10 +602,13 @@ post-gain S16 sample count/rail fraction and availability. Rail fraction means
 samples at the S16 bounds, not proof of acoustic clipping or calibrated
 distance. Speaker faults retain their exact site and available `esp_err_t`;
 operations without a returned code say `not_provided`. No PCM, transcript,
-credential or per-frame VERBOSE logging is added. Gain4, channel1, cutoff0.05,
-cue/volume, eight seconds and 800ms remain unchanged. Fresh-high noise/echo
-versus stale inference and the earlier physical speaker error still need the
-next separately approved content-free window; do not tune from cached polls.
+credential or per-frame VERBOSE logging is added. Gain4, channel1, eight
+seconds and 800ms remain unchanged. After the 17a1eb1 retest (fresh VAD
+latched speech to the deadline, whole-capture mean 0.61; cue drained but the
+owner heard nothing) the
+VAD cutoff is the model default 0.5 and `tools/generate_sounds.sh` renders
+`heard.wav`/`refused.wav` at −6 dBFS peak (previously −30 dBFS). A failed
+wake upload logs a WARN naming the first failed chunk and HTTP status.
 
 The a47 physical retest did **not** accept quiet follow-up: stale/current VAD
 latched speech and 115,376 bytes reached STT. This source repair is locally

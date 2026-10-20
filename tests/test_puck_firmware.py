@@ -181,13 +181,22 @@ def _write_capture_stubs(tmp_path):
     )
     (tmp_path / "esphome/core/log.h").write_text(
         "#pragma once\n"
+        "#include <cstdio>\n"
         "#include <string>\n"
         "inline std::string fake_warnings;\n"
+        "inline std::string fake_formatted_warnings;\n"
         "template <typename... Args> inline const char *fake_format(const char *fmt, Args...) { return fmt; }\n"
+        "template <typename... Args> inline int fake_record(const char *fmt, Args... args) {\n"
+        "  char line[512];\n"
+        "  std::snprintf(line, sizeof(line), fmt, args...);\n"
+        "  fake_formatted_warnings += line;\n"
+        "  fake_formatted_warnings += '\\n';\n"
+        "  return 0;\n"
+        "}\n"
         "#define ESP_LOGD(...) do {} while (0)\n"
         "#define ESP_LOGE(...) do {} while (0)\n"
         "#define ESP_LOGI(...) do {} while (0)\n"
-        "#define ESP_LOGW(tag, ...) (fake_warnings += fake_format(__VA_ARGS__), fake_warnings += '\\n')\n"
+        "#define ESP_LOGW(tag, ...) (fake_warnings += fake_format(__VA_ARGS__), fake_warnings += '\\n', fake_record(__VA_ARGS__))\n"
     )
     (tmp_path / "freertos/FreeRTOS.h").write_text(
         "#pragma once\n"
@@ -208,10 +217,12 @@ def _write_capture_stubs(tmp_path):
         " public:\n"
         "  std::vector<std::string> urls;\n"
         "  std::vector<std::string> bodies;\n"
+        "  std::vector<int> statuses;\n"
         "  Response response;\n"
         "  Response *post(const std::string &url, const std::string &body, const std::vector<Header> &) {\n"
         "    urls.push_back(url);\n"
         "    bodies.push_back(body);\n"
+        "    if (urls.size() <= statuses.size()) response.status_code = statuses[urls.size() - 1];\n"
         "    return &response;\n"
         "  }\n"
         "  Response *post(const std::string &url, const std::string &body) {\n"
@@ -1614,3 +1625,54 @@ def test_first_fresh_vad_generation_zero_is_not_a_sentinel(tmp_path):
           assert(!capturing && completed_capture_bytes == sizeof(frame));
         }
     """)
+
+
+def test_full_capture_upload_failure_names_chunk_and_http_status_at_warn(tmp_path):
+    """2026-10-19 retest: an 8 s capture (64 chunks) lost its final chunk to a
+    bridge 503 and the device kept only W/E counts. The WARN summary must name
+    the failing chunk and HTTP status so the next window cannot miss it."""
+    compiler = shutil.which("clang++") or shutil.which("c++")
+    if compiler is None:
+        pytest.skip("no C++ compiler available for the capture-state harness")
+    _write_capture_stubs(tmp_path)
+    output = _compile_and_run_capture_harness(
+        tmp_path,
+        compiler,
+        """
+        #include "pcm_capture.h"
+        #include <cassert>
+        #include <cstdint>
+        #include <cstdio>
+        #include <vector>
+
+        std::uint32_t fake_millis = 0;
+
+        int main() {
+          using namespace pcm_capture::wake_capture;
+          puck_identity::setup("configured");
+          setup();
+          const auto seq = pending_sequence();
+          assert(puck_response::begin_home_admission(seq));
+          const std::string grant = "admitted:" + std::to_string(seq);
+          puck_response::note_home_admission(200, grant.c_str());
+          prepare("hey missy");
+          start_pending();
+          assert(capturing);
+          std::vector<std::uint8_t> pcm(WAKE_CAPTURE_BYTES, 0);
+          write(pcm.data(), pcm.size());
+          assert(!capturing && capture_pending_upload);
+          assert(completed_capture_bytes == 1024000);
+
+          esphome::http_request::HttpRequestComponent client;
+          client.statuses.assign(63, 202);
+          client.statuses.push_back(503);
+          upload(&client, "http://bridge/upload", "token");
+          assert(client.urls.size() == 64);
+          assert(!last_upload_delivered && last_upload_failed);
+          std::printf("%s", fake_formatted_warnings.c_str());
+          return 0;
+        }
+        """,
+    )
+    assert "Wake upload 0 chunk 63 failed (status 503)" in output
+    assert "FAILED at chunk 63/64 with HTTP status 503" in output

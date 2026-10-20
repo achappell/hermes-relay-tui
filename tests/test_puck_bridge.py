@@ -4002,6 +4002,62 @@ def test_a_stale_capture_fetch_is_refused_not_answered_with_the_wrong_audio(tmp_
     assert body[44:] == b"answer-for-seven"
 
 
+@pytest.mark.parametrize("rebooted_seq", [0, 7])
+def test_a_rebooted_puck_restarting_its_sequence_is_answered_not_dropped(tmp_path, rebooted_seq):
+    """2026-10-19 physical retest: the Puck's wake sequence is a RAM counter
+    that restarts at 0 after a flash, while the long-running bridge still
+    held the last answered sequence. The final chunk of a full 8 s capture
+    (64 x 16000 bytes, the firmware's exact framing) was refused with 503
+    "previous answer is still streaming" on an idle stream and the turn was
+    lost."""
+    from puck_bridge.response import ResponseStream
+
+    stream = ResponseStream()
+    assert stream.expect(seq=7)
+    stream.begin(7, (24000, 1, 2))
+    stream.write(b"previous-answer")
+    stream.finish()
+    sink = _RecordingSink()
+    transcribe = _fake_transcribe(transcript="after reboot")
+    handler_cls = make_handler(
+        expected_token="s3cret",
+        on_transcript=sink,
+        transcribe_fn=transcribe,
+        work_dir=tmp_path,
+        response_stream=stream,
+    )
+    server = _start_server(handler_cls)
+    port = server.server_address[1]
+    try:
+        delivered, _ = _get_response(port, token="s3cret", seq=7)
+        assert delivered == 200
+        assert stream.busy_reason() is None
+        total = 64
+        statuses = [
+            _post_chunk(port, seq=rebooted_seq, chunk=index, total=total,
+                        body=b"\x00" * 16000, token="s3cret")
+            for index in range(total)
+        ]
+        assert sink.event.wait(5)
+    finally:
+        server.shutdown()
+
+    assert statuses[:-1] == [202] * (total - 1)
+    assert statuses[-1] == 200, "a restarted device's capture must be accepted"
+    assert len(transcribe.calls) == 1
+    assert sink.transcripts == ["after reboot"]
+
+
+def test_busy_stream_still_refuses_a_new_capture_with_its_reason():
+    from puck_bridge.response import ResponseStream
+
+    stream = ResponseStream()
+    assert stream.expect(seq=3)
+    assert stream.busy_reason() == "expecting"
+    assert not stream.expect(seq=4)
+    assert not stream.expect(seq=0)
+
+
 def test_the_file_fallback_goes_to_the_device_not_the_host():
     """MEDIUM. The audio_file_end fallback always played on the host, so a
     response delivered only as a file (no streamed chunks) came out of the

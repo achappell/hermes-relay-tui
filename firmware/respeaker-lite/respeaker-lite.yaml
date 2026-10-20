@@ -594,7 +594,12 @@ micro_wake_word:
       id: hey_skippy
   vad:
     model: wake_models/vad.json
-    probability_cutoff: 0.05
+    # Model default (wake_models/vad.json). At 0.05 the 2026-10-19 retest's
+    # fresh VAD (260 generations, whole-capture mean 0.61, max 0.99) latched
+    # speech until the 8s deadline; no 800ms silence debounce completed first.
+    # Whether 0.5 ends real turns promptly is a physical-retest question; the
+    # 8s bound still caps every capture.
+    probability_cutoff: 0.5
   # Root cause of the "~1s VAD truncation" finding (2026-09-10 hardware
   # session): this option defaults to TRUE in micro_wake_word/__init__.py,
   # and this file never set it. With it true, the DETECTING_WAKE_WORD case

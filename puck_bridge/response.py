@@ -198,6 +198,24 @@ class ResponseStream:
             self._mark_unavailable_locked(reason="shutdown")
             self._cv.notify_all()
 
+    def busy_reason(self) -> str | None:
+        """Best-effort current busy state for the drop log, read after `expect()`.
+
+        Not an atomic receipt of why `expect()` refused under concurrency.
+        """
+        with self._cv:
+            if self._shutdown:
+                return "shutdown"
+            if self._reader_active:
+                return "reader_active"
+            if self._expecting:
+                return "expecting"
+            if self._eof_pending:
+                return "eof_pending"
+            if self._queued_bytes and self._source_terminal != "complete":
+                return "unfinished_queue"
+            return None
+
     def expect(self, seq: int | None = None) -> bool:
         """Declare that a capture is being processed and audio may follow.
 
@@ -227,8 +245,15 @@ class ResponseStream:
             # later response.
             if self._queued_bytes and self._source_terminal != "complete":
                 return False
-            if seq is not None and self._seq is not None and seq <= self._seq:
-                return False
+            # Every in-flight case was refused above, so the stream is idle
+            # here. The Puck's capture sequence is a RAM counter that restarts
+            # at 0 on every boot (flash, OTA, power cycle) while this bridge
+            # keeps the last answered sequence, so the sequence is a
+            # correlation ID for the current response, not a monotonic
+            # clock. An idle stream therefore allows a reused ID; it does not
+            # prove a reboot. Refusing it dropped post-reboot captures with a
+            # 503 logged as "a previous answer is still streaming" until the
+            # new counter overtook the old one (2026-10-19 retest).
             self._expecting = True
             self._audio_format = None
             self._source_terminal = None
