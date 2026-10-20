@@ -4293,3 +4293,93 @@ def test_home_operator_handle_without_grant_revision_never_infers_capture_author
         assert runner.submit_transcript("not an authorized handle") is False
     finally:
         runner.stop()
+
+
+def test_a_device_re_fetch_before_first_audio_supersedes_the_waiting_fetch(tmp_path):
+    """2026-10-20 retest: first PCM arrived ~8.9s after the fetch. The device's
+    HTTP reader re-opens a NEW request after its 5s header timeout; the stale
+    waiting fetch claimed the reader, wrote into an abandoned socket (0 bytes)
+    and the live re-fetch was refused 409, losing the answer."""
+    import socket
+    from puck_bridge.response import ResponseStream
+
+    stream = ResponseStream()
+    assert stream.expect(seq=4)
+    handler_cls = make_handler(
+        expected_token="s3cret",
+        on_transcript=_RecordingSink(),
+        transcribe_fn=_fake_transcribe(),
+        work_dir=tmp_path,
+        response_stream=stream,
+    )
+    server = _start_server(handler_cls)
+    port = server.server_address[1]
+    try:
+        stale = socket.create_connection(("127.0.0.1", port), timeout=5)
+        stale.sendall(
+            b"GET /response?seq=4&token=s3cret HTTP/1.1\r\nHost: puck\r\n\r\n"
+        )
+        deadline = time.monotonic() + 5
+        while stream._fetch_generation < 1 and time.monotonic() < deadline:
+            time.sleep(0.01)
+        result: dict[str, object] = {}
+
+        def live_fetch():
+            result["response"] = _get_response(port, token="s3cret", seq=4)
+
+        worker = threading.Thread(target=live_fetch)
+        worker.start()
+        while stream._fetch_generation < 2 and time.monotonic() < deadline:
+            time.sleep(0.01)
+        stream.begin(4, (24000, 1, 2))
+        stream.write(b"the-answer", seq=4)
+        stream.finish()
+        worker.join(10)
+        stale_reply = stale.recv(4096)
+        stale.close()
+    finally:
+        server.shutdown()
+
+    status, body = result["response"]
+    assert status == 200, "the live re-fetch must receive the answer"
+    assert body[44:] == b"the-answer"
+    assert stale_reply == b"", "the superseded fetch is closed without a reply"
+
+
+def test_every_wake_admission_result_is_logged_with_elapsed_time(tmp_path, caplog):
+    import logging
+
+    handler_cls = make_handler(
+        expected_token="s3cret",
+        on_transcript=_RecordingSink(),
+        transcribe_fn=_fake_transcribe(),
+        work_dir=tmp_path,
+        on_wake_admission=lambda phrase, seq: "denied",
+    )
+    server = _start_server(handler_cls)
+    try:
+        with caplog.at_level(logging.INFO, logger="hermes_relay_tui.puck_bridge"):
+            status, body = _get_wake_admission(
+                server.server_address[1], seq=3, wake="hey missy", token="s3cret"
+            )
+    finally:
+        server.shutdown()
+    assert (status, body) == (200, b"denied:3")
+    assert any(
+        "wake admission seq=3 result=denied elapsed=" in r.getMessage()
+        for r in caplog.records
+    )
+
+
+def test_device_request_timeout_covers_the_bridge_admission_contract():
+    from pathlib import Path
+
+    import yaml
+
+    from puck_bridge.receiver import DEVICE_ADMISSION_TIMEOUT_SECONDS
+
+    config = yaml.load(
+        (Path(__file__).resolve().parents[1] / "firmware/respeaker-lite/respeaker-lite.yaml").read_text(),
+        Loader=yaml.BaseLoader,
+    )
+    assert config["http_request"]["timeout"] == f"{DEVICE_ADMISSION_TIMEOUT_SECONDS:g}s"

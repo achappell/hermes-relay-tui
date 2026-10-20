@@ -308,3 +308,17 @@ Amanda heard nothing: no wake cue, no answer. Content-free receipts: Home grant 
 ### Local evidence
 
 A throwaway native harness compiled the actual `pcm_capture.h` with a libcurl `http_request` stand-in against the real `make_handler` receiver over loopback, with a prior answered seq 7 delivered: base bridge → 64 POSTs, last 503, `Wake capture 0 FAILED at chunk 63/64 with HTTP status 503`, zero transcripts; fixed bridge → last 200, delivered, one transcript. Regressions: `test_a_rebooted_puck_restarting_its_sequence_is_answered_not_dropped` (seq 0 and equal seq; fails on the old guard), `test_busy_stream_still_refuses_a_new_capture_with_its_reason`, `test_full_capture_upload_failure_names_chunk_and_http_status_at_warn`. Custodian read-only review approved the runtime change after these evidence-wording fixes. The bridge fix only takes effect after a live bridge cutover; firmware alone cannot clear the deployed sequence floor. Physical cue audibility, VAD end-of-speech timing and full turn remain **OPEN** until a separately authorized retest.
+
+## P-2/P-3 response re-fetch and admission-timeout repair — 2026-10-20
+
+### PR257 (85cb984) physical retest — NOT acceptance
+
+Amanda heard the wake cue (cue level fix confirmed). Ops journal (Mac/ops clocks within 0.2 s): 00:57:10.33Z a 70 ms sound and one `puck_response` W, wake resumed, no bridge INFO line; 00:57:21.93Z `Home claim admitted`; 00:57:32.76Z STT (5.08 s audio); 00:57:41.50Z second concurrent `/response` fetch refused 409; 00:57:42.88Z device closed after 0 bytes, first_pcm_seconds 8.93; 00:57:43.19Z ResponseStreamError, no replay.
+
+### Root causes
+
+1. **Lost answer (confirmed in source).** micro-decoder's `esp/http_client.cpp` (ESPHome 2026.9.1 `audio_http`) waits 5 s for response headers, then opens a fresh GET for the same URL. The bridge sends no headers until the first audio format exists (WAV header needs the rate), here ~8.9 s. Two fetches for one seq were waiting; when audio arrived, the stale one claimed the single reader and wrote into a socket the device had closed (0 bytes → terminal), and the live one got 409. Fix: each fetch registers a generation; only the newest may claim the reader, and superseded fetches close without a reply or abandoning the stream.
+2. **Wake refused after the cue sound, no bridge INFO (inference from source and timing; the W text was not retained).** Device `http_request.timeout` was 5 s; the bridge's Home wake admission (retire previous claim + open a new one) is bounded at ~31 s and the only INFO line is on success. The 11.6 s gap from 10.33 to `Home claim admitted` at 21.93 matches a device-side 5 s admission timeout (`puck_response` W "admission service unreachable"), a short refusal sound, and a late grant the device never used. Fixes: device timeout 15 s (upload chunks share this bound); the bridge logs every admission result with seq and elapsed (WARN past the device timeout); the device W includes elapsed ms.
+3. **8.9 s to first PCM** is measured from the bridge's expect at upload completion; STT finished at 32.76 and the first audio format arrived ~8.7 s later, i.e. Hermes answer + TTS latency. Not changed here.
+
+Regressions: `test_a_device_re_fetch_before_first_audio_supersedes_the_waiting_fetch` (fails on the old code), `test_every_wake_admission_result_is_logged_with_elapsed_time`, `test_device_request_timeout_covers_the_bridge_admission_contract`. Physical answer playback remains **OPEN**.

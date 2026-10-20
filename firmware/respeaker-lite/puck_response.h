@@ -52,6 +52,7 @@ static bool home_admission_needed = false;
 static bool home_admission_pending = false;
 static bool home_admission_granted_flag = false;
 static uint32_t home_admission_seq = 0;
+static uint32_t home_admission_started_ms = 0;
 static bool follow_up_admission_pending = false;
 static bool follow_up_admission_granted_flag = false;
 static uint32_t follow_up_admission_seq = 0;
@@ -209,6 +210,7 @@ inline bool begin_home_admission(uint32_t seq) {
   home_admission_pending = true;
   home_admission_granted_flag = false;
   home_admission_seq = seq;
+  home_admission_started_ms = millis();
   return true;
 }
 
@@ -238,8 +240,8 @@ inline void refuse_home_admission(const char *reason) {
   home_admission_granted_flag = false;
   response_seq = home_admission_seq;
   state = State::REFUSAL_PENDING;
-  ESP_LOGW(TAG, "Home wake admission refused for seq=%u (%s); capture stays closed",
-           (unsigned) response_seq, reason);
+  ESP_LOGW(TAG, "Home wake admission refused for seq=%u (%s) after %ums; capture stays closed",
+           (unsigned) response_seq, reason, (unsigned) (millis() - home_admission_started_ms));
 }
 
 inline void note_home_admission(int status, const std::string &body) {

@@ -175,6 +175,11 @@ class ResponseStream:
         # refused rather than silently corrupting the first.
         self._reader_active = False
         self._reader_seq: int | None = None
+        # Latest /response fetch per sequence. The device's HTTP reader gives
+        # up on headers after 5s and reopens a NEW request while the bridge is
+        # still waiting for the first audio format; only the newest fetch has
+        # a live socket behind it.
+        self._fetch_generation = 0
         self._source_bytes = 0
         self._source_hash = hashlib.sha256()
         self._delivered_bytes = 0
@@ -564,11 +569,29 @@ class ResponseStream:
         with self._cv:
             return self._seq == seq and self._home_admission_required
 
-    def acquire_reader(self, seq: int | None = None) -> bool:
+    def register_fetch(self) -> int:
+        """Record a new device fetch; returns its generation token.
+
+        A newer fetch for the same sequence supersedes any older fetch that
+        is still waiting for the first audio format, so the older handler
+        must not claim the reader slot (2026-10-20 retest: the stale fetch
+        won, wrote into a socket the device had already abandoned, and the
+        live re-fetch was refused 409).
+        """
+        with self._cv:
+            self._fetch_generation += 1
+            return self._fetch_generation
+
+    def fetch_superseded(self, generation: int) -> bool:
+        with self._cv:
+            return generation != self._fetch_generation
+
+    def acquire_reader(self, seq: int | None = None, fetch: int | None = None) -> bool:
         """Claim the single consumer slot for one sequence."""
         with self._cv:
             if (
-                self._reader_active
+                (fetch is not None and fetch != self._fetch_generation)
+                or self._reader_active
                 or not self._matches_locked(seq)
                 or self._delivery_terminal is not None
             ):
