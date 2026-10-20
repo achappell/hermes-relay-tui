@@ -659,7 +659,7 @@ class TurnRunner:
             return "identity_rejected"
         factory = self._home_claim_factory
         if not self._home_admission_lock.acquire(blocking=False):
-            return "denied"
+            return self._deny_wake("admission_in_progress")
         try:
             future = asyncio.run_coroutine_threadsafe(
                 self._admit_home_wake(wake_phrase, seq), self._loop
@@ -680,7 +680,7 @@ class TurnRunner:
                     "Puck Home pre-capture admission failed (%s)",
                     type(exc).__name__,
                 )
-                return "denied"
+                return self._deny_wake("admission_timeout_or_error")
         finally:
             self._home_admission_lock.release()
 
@@ -774,6 +774,12 @@ class TurnRunner:
         self._disarm_follow_up_admission()
         return "denied"
 
+    @staticmethod
+    def _deny_wake(reason: str) -> str:
+        """Deny a physical wake and say why; bare denials were undiagnosable."""
+        logger.warning("Puck Home wake admission denied (%s)", reason)
+        return "denied"
+
     async def _admit_home_wake(self, wake_phrase: str, seq: int) -> str:
         del seq  # The HTTP reply binds this result to the request sequence.
         if self._stopping.is_set():
@@ -789,7 +795,7 @@ class TurnRunner:
         ):
             with self._follow_up_condition:
                 if self._coordinator.state != "idle":
-                    return "denied"
+                    return self._deny_wake("conversation_busy")
             self._mark_home_admission_required()
             await self._retire_home_claim()
 
@@ -802,10 +808,10 @@ class TurnRunner:
             if not mapping_id or type(revision) is not int or revision < 0:
                 self._mark_home_admission_required()
                 await self._retire_home_claim()
-                return "denied"
+                return self._deny_wake("active_claim_mapping_invalid")
             resolve_mapping = getattr(factory, "current_mapping_id", None)
             if not callable(resolve_mapping):
-                return "denied"
+                return self._deny_wake("mapping_lookup_unavailable")
             try:
                 resolved = await resolve_mapping(
                     wake_phrase, mapping_id, configuration_revision=revision,
@@ -819,13 +825,13 @@ class TurnRunner:
                 )
                 self._mark_home_admission_required()
                 await self._retire_home_claim()
-                return "denied"
+                return self._deny_wake("mapping_check_failed")
             if self._home_claim_retired or not self._session_is_connected():
                 if not self._home_claim_retired:
                     await self._retire_home_claim()
-                return "denied"
+                return self._deny_wake("active_claim_disconnected")
             if not resolved:
-                return "denied"
+                return self._deny_wake("wake_phrase_not_mapped_to_active_claim")
             return "admitted"
 
         if not self._home_claim_retired:
@@ -836,10 +842,10 @@ class TurnRunner:
             return (
                 "identity_rejected"
                 if self._home_identity_rejected
-                else "denied"
+                else self._deny_wake("previous_claim_close_unconfirmed")
             )
         if factory is None:
-            return "denied"
+            return self._deny_wake("no_claim_factory")
         result = await factory.admit_wake(
             wake_phrase,
             previous_handle=str(
@@ -851,21 +857,23 @@ class TurnRunner:
             self._reject_home_identity()
             return status
         if status != "admitted":
-            return "denied"
+            return self._deny_wake(
+                "home:" + str(getattr(result, "reason", "") or "unspecified")
+            )
         replacement = getattr(result, "session", None)
         if replacement is None:
-            return "denied"
+            return self._deny_wake("grant_without_session")
         mapping_id = str(getattr(replacement, "wake_mapping_id", "") or "")
         if not mapping_id:
             await self._retire_replacement_home_claim(replacement)
-            return "denied"
+            return self._deny_wake("grant_without_mapping")
         try:
             ready = bool(replacement.is_connected())
         except Exception:
             ready = False
         if not ready:
             await self._retire_replacement_home_claim(replacement)
-            return "denied"
+            return self._deny_wake("fresh_session_not_connected")
 
         self._session = replacement
         self._home_claim_retired = False
@@ -874,7 +882,11 @@ class TurnRunner:
         # new claim can recover an unavailable mapping/transport.
         self._needs_reconnect = False
         if not await self._verify_home_mapping():
-            return "identity_rejected" if self._home_identity_rejected else "denied"
+            return (
+                "identity_rejected"
+                if self._home_identity_rejected
+                else self._deny_wake("fresh_mapping_unverified")
+            )
         logger.info("Puck Home claim admitted for a fresh physical wake")
         return "admitted"
 
