@@ -4037,6 +4037,10 @@ def test_a_rebooted_puck_restarting_its_sequence_is_answered_not_dropped(tmp_pat
     try:
         delivered, _ = _get_response(port, token="s3cret", seq=7)
         assert delivered == 200
+        # The handler releases the reader slot just after the final byte.
+        deadline = time.monotonic() + 5
+        while stream.busy_reason() is not None and time.monotonic() < deadline:
+            time.sleep(0.01)
         assert stream.busy_reason() is None
         total = 64
         statuses = [
