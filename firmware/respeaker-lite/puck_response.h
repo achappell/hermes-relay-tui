@@ -381,6 +381,18 @@ inline void note_status(int status, const std::string &body) {
     return;
   }
 
+  // A follow-up that Hermes never answered ends quietly; the bridge has
+  // retired the claim, so the next wake still needs fresh Home admission.
+  if (status == 200 &&
+      body == std::string("{\"seq\": ") + std::to_string(response_seq) +
+                  ", \"status\": \"silent\", \"needs_home_admission\": true}") {
+    home_admission_needed = true;
+    state = State::READY_TO_RESUME;
+    ESP_LOGI(TAG, "response seq=%u ended silent; fresh Home admission required for next wake",
+             (unsigned) response_seq);
+    return;
+  }
+
   if (status == 200 && body == terminal_body(response_seq, "silent")) {
     state = State::READY_TO_RESUME;
     ESP_LOGI(TAG, "response seq=%u confirmed silent; wake may resume",

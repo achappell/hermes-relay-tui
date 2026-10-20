@@ -2529,11 +2529,17 @@ def test_streaming_wav_header_declares_a_sentinel_length():
     assert struct.unpack("<I", header[40:44])[0] != 0
 
 
-def test_response_format_budget_matches_turn_first_audio_budget():
+def test_response_format_budget_covers_turn_budget_inside_device_header_window():
+    """The reader must outlast transcription + the turn's first-audio budget
+    (so a late first audio is never orphaned behind a 504), and still answer
+    before the Puck's audio reader gives up on headers (6 x 5 s)."""
     import puck_bridge.response as response_mod
     import puck_bridge.turn as turn_mod
 
-    assert response_mod.FORMAT_WAIT_SECONDS == turn_mod.FIRST_EVENT_TIMEOUT_SECONDS
+    assert response_mod.FORMAT_WAIT_SECONDS >= turn_mod.FIRST_EVENT_TIMEOUT_SECONDS + 3.0
+    assert response_mod.FORMAT_WAIT_SECONDS < 30.0
+    # 2026-10-20: an ordinary answer took 17 s from transcript to first audio.
+    assert turn_mod.FIRST_EVENT_TIMEOUT_SECONDS >= 25.0
 
 
 def test_response_stream_delivers_chunks_in_order_then_ends():
@@ -4448,3 +4454,108 @@ def test_direct_empty_capture_does_not_touch_any_claim():
         assert stream.status_for(2) == "silent"
     finally:
         runner.stop()
+
+
+def test_unanswered_follow_up_ends_silent_not_unavailable(monkeypatch):
+    """2026-10-20 retest: a follow-up captured room noise while the owner
+    stayed quiet; Hermes produced no audio and the Puck played the refusal
+    tone. An unanswered follow-up now ends quietly (still requiring fresh
+    admission); an unanswered initial question stays unavailable."""
+    from puck_bridge.response import ResponseStream
+
+    import puck_bridge.turn as turn_module
+
+    monkeypatch.setattr(turn_module, "FIRST_EVENT_TIMEOUT_SECONDS", 0.2)
+
+    class Session(FakeSession):
+        def send_turn(self, text, *, stt_source="local"):
+            self.turns.append((text, stt_source))
+            events = self._events if len(self.turns) == 1 else []
+
+            async def _events():
+                for event in events:
+                    yield event
+                if len(self.turns) > 1:
+                    await asyncio.sleep(5)
+
+            return _events()
+
+    session = Session()
+    stream = ResponseStream()
+    runner = TurnRunner(session, player=FakePlayer(), response_stream=stream)
+    runner.start()
+    initial = threading.Thread(target=lambda: runner.submit_transcript("first question"))
+    try:
+        assert stream.expect(seq=20)
+        runner.set_response_seq(20)
+        initial.start()
+        for _ in range(200):
+            if runner.coordinator.state == "capturing":
+                break
+            threading.Event().wait(0.01)
+        assert runner.coordinator.state == "capturing"
+        assert stream.expect(seq=21)
+        runner.set_response_seq(21)
+        runner.submit_transcript_outcome("thank you")
+        for _ in range(300):
+            if stream.status_for(21) not in (None, "active"):
+                break
+            threading.Event().wait(0.01)
+        assert stream.status_for(21) == "silent"
+    finally:
+        runner.request_stop()
+        initial.join(timeout=3.0)
+        runner.stop()
+    assert [t for t, _ in session.turns] == ["first question", "thank you"]
+
+
+def test_wav_header_is_held_until_the_prebuffer_is_ready(tmp_path):
+    """2026-10-20 retest: crackle at the START of the answer. The WAV header
+    used to leave before the prebuffer, letting the Puck's decoder start the
+    speaker with no PCM behind it. Header and cushion now leave together."""
+    import socket
+
+    from puck_bridge.response import PREBUFFER_SECONDS, ResponseStream
+
+    stream = ResponseStream()
+    assert stream.expect(seq=6)
+    stream.begin(6, (24000, 1, 2))
+    stream.write(b"\x00\x00" * 100, seq=6)
+    handler_cls = make_handler(
+        expected_token="s3cret",
+        on_transcript=_RecordingSink(),
+        transcribe_fn=_fake_transcribe(),
+        work_dir=tmp_path,
+        response_stream=stream,
+    )
+    server = _start_server(handler_cls)
+    try:
+        sock = socket.create_connection(("127.0.0.1", server.server_address[1]), timeout=5)
+        sock.sendall(b"GET /response?seq=6&token=s3cret HTTP/1.1\r\nHost: puck\r\n\r\n")
+        received = b""
+        sock.settimeout(0.5)
+        try:
+            while True:
+                data = sock.recv(4096)
+                if not data:
+                    break
+                received += data
+        except socket.timeout:
+            pass
+        head, _, body = received.partition(b"\r\n\r\n")
+        assert head.startswith(b"HTTP/1.1 200")
+        assert body == b"", "no WAV header may precede the prebuffer"
+        stream.write(b"\x01\x00" * int(24000 * PREBUFFER_SECONDS), seq=6)
+        stream.finish()
+        sock.settimeout(5)
+        while not received.endswith(b"0\r\n\r\n"):
+            data = sock.recv(65536)
+            if not data:
+                break
+            received += data
+        sock.close()
+    finally:
+        server.shutdown()
+    body = received.partition(b"\r\n\r\n")[2]
+    size_line, _, rest = body.partition(b"\r\n")
+    assert rest[:4] == b"RIFF" and int(size_line, 16) == 44

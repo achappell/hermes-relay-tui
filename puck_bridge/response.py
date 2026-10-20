@@ -35,11 +35,10 @@ from typing import Callable
 logger = logging.getLogger("hermes_relay_tui.puck_bridge.response")
 
 # How long a reader waits for the turn to declare its first audio format before
-# giving up. This is the same 20-second responsiveness budget used by the turn
-# runner. Keeping the endpoint and producer on one budget matters: a valid
+# giving up. This covers the turn runner's first-audio budget plus transcription. Keeping the endpoint and producer on one budget matters: a valid
 # first audio event arriving after one side has already given the Puck a 504
 # is a silent delivery failure.
-FIRST_AUDIO_TIMEOUT_SECONDS = 20.0
+FIRST_AUDIO_TIMEOUT_SECONDS = 28.0  # turn budget 25s + ~3s STT; under the Puck's 30s
 FORMAT_WAIT_SECONDS = FIRST_AUDIO_TIMEOUT_SECONDS
 
 # How long a reader blocks for the next chunk before checking whether the

@@ -351,6 +351,13 @@ static std::atomic<bool> capture_done{false};
 static std::atomic<bool> capture_pending_upload{false};
 static std::atomic<size_t> completed_capture_bytes{0};
 static uint32_t silence_start_ms = 0;
+// Echo guard for wake-free follow-ups: the mic opens ~200ms after the answer
+// drains, and the 2026-10-20 retest recorded 5.8s of "speech" while the owner
+// stayed quiet. A follow-up counts as spoken only after VAD reports speech
+// continuously for this long; brief room/echo blips cannot open the turn.
+static const uint32_t FOLLOW_UP_MIN_SPEECH_MS = 300;
+static uint32_t speech_run_started_ms = 0;
+static bool speech_run_active = false;
 static uint32_t capture_started_ms = 0;
 static std::atomic<bool> speech_seen{false};
 static bool follow_up_capture = false;
@@ -453,6 +460,7 @@ inline bool begin_capture(bool is_follow_up) {
   silence_start_ms = 0;
   capture_started_ms = millis();
   speech_seen = false;
+  speech_run_active = false;
   follow_up_capture = is_follow_up;
   last_vad_generation = 0;
   has_vad_generation = false;
@@ -601,10 +609,17 @@ inline void tick(bool vad_valid, bool vad_active, uint32_t generation) {
   last_vad_generation = generation;
   has_vad_generation = true;
   if (vad_active) {
-    speech_seen = true;
+    if (!speech_run_active) {
+      speech_run_active = true;
+      speech_run_started_ms = now;
+    }
+    if (!follow_up_capture || now - speech_run_started_ms >= FOLLOW_UP_MIN_SPEECH_MS) {
+      speech_seen = true;
+    }
     silence_start_ms = 0;
     return;
   }
+  speech_run_active = false;
   // Silence before the first speech is the user drawing breath after the
   // cue, not the end of the turn. With the 0.5 cutoff an initial wake ended
   // ~1s after the cue on 2026-10-20 with no speech captured. Both capture

@@ -336,3 +336,17 @@ Admission 0.62 s (timeout fix held). STT received 1.077 s of audio, VAD-filtered
 3. **Claim left ACTIVE.** Paired-room claims were only retired at the next wake. An empty initial wake now closes its claim after the silent terminal is published, serialized with wake admission.
 
 Regressions (all fail on e31a406): `test_initial_wake_waits_for_speech_before_silence_can_end_it[True/False]`, `test_configured_silent_204_source_error_is_stopped_directly_and_wake_resumes`, `test_paired_room_empty_wake_capture_closes_its_claim_after_silent_terminal`. Physical empty-wake recovery and full turn remain **OPEN**.
+
+## P-2/P-3 follow-up echo guard, quiet unanswered follow-up, first-audio budget — 2026-10-20
+
+### PR259 (da68ab5) physical retest — NOT acceptance
+
+seq0: admission 0.53 s; capture waited through the pause and ended on VAD (381,616 B); STT 2.98 s; three superseded fetches (re-fetch fix held); first PCM 18.95 s; 231,680 B (4.827 s, 24 kHz mono S16) delivered, sha match; PLAYING 02:38:35.42 → IDLE 41.29 (5.87 s); COMPLETE confirmed. Amanda: slight crackle, unsure it finished. seq1 follow-up while Amanda stayed quiet: 742,744 B, STT 5.80 s (VAD removed 3.72 s), non-empty transcript (not retained); no first audio, turn abandoned at 20 s; device played the refusal. Wake resumed; claim closed.
+
+### Findings
+
+1. **Crackle at the start of the answer (Amanda) — likely cause, inferred from source.** No truncation: the "24 chunks / 4471 ms" figure is the seq0 *upload* line, playback lasted 5.87 s for 4.827 s of audio, delivered = source sha, COMPLETE. Superseded fetches are closed before any byte is written, so they cannot inject a stale header or partial samples, and each accepted fetch writes exactly one 44-byte WAV header followed by contiguous PCM (format 24 kHz mono S16 matched). The bridge however sent the WAV header *before* waiting for its 1.5 s prebuffer, so the Puck's decoder parsed the format and started the resampler/speaker with no PCM behind it: playback began by underrunning. Fix: the WAV header is now written together with the prebuffered audio. An amplifier pop on speaker enable is not ruled out (the cue shares the path without a reported crackle). Physical confirmation needed.
+2. **Follow-up false capture / refusal.** The mic opens ~200 ms after the answer drains, and VAD treated short activity as speech. Follow-ups now require 300 ms of continuous VAD speech before they count as spoken (initial wakes unchanged). The 20 s first-audio budget was below observed Hermes latency (seq0 needed 17 s after transcription), so seq1 was most likely still being answered; the bridge first-audio budget is now 25 s (reader 28 s, under the Puck's 6 × 5 s header window). A follow-up turn that still produces no audio now ends with a silent terminal (`needs_home_admission`), and the firmware resumes wake without the refusal tone.
+3. **19 s to first PCM.** Upload confirmed 02:38:15.36 → faster-whisper lazy model load + HF revision check 15.49–16.18 (~0.7 s, first capture after start only) → STT done ~17.2 → Hermes LLM + TTS first audio 34.26 (~17 s). Bridge-side cost ≈ 2 s; the rest is Hermes. Not changed beyond the budget.
+
+Regressions (fail on da68ab5): `test_wav_header_is_held_until_the_prebuffer_is_ready`, `test_follow_up_needs_sustained_speech_not_an_echo_blip[100]`, `test_unanswered_follow_up_ends_silent_not_unavailable`, `test_silent_terminal_needing_home_admission_resumes_without_refusal`, `test_response_format_budget_covers_turn_budget_inside_device_header_window`. Physical acceptance remains **OPEN**.
