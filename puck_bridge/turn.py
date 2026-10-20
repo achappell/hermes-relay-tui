@@ -58,7 +58,13 @@ logger = logging.getLogger("hermes_relay_tui.puck_bridge.turn")
 # How long Hermes may leave a gap before the FIRST AUDIO event. Activity,
 # thinking, and tool events do not mean that the spoken response has begun;
 # keep this budget until audio_start (or an audio-file fallback) arrives.
-FIRST_EVENT_TIMEOUT_SECONDS = 20.0
+#
+# 25s, not 20s (2026-10-20 retest): Hermes needed 17s from transcript to first
+# audio for an ordinary answer, and a follow-up was abandoned at 20s. The
+# Puck's audio reader allows 6 x 5s = 30s for response headers from its first
+# fetch, and transcription precedes this budget by ~2-3s, so 25s keeps the
+# bridge's verdict inside the device's window.
+FIRST_EVENT_TIMEOUT_SECONDS = 25.0
 
 # Maximum gap BETWEEN events once the stream has started. A healthy
 # response emits audio chunks continuously, so a long silence mid-stream
@@ -212,6 +218,8 @@ class TurnRunner:
         self._loop: asyncio.AbstractEventLoop | None = None
         self._loop_thread: threading.Thread | None = None
         self._pending_transcript: str | None = None
+        # True while the running turn came from a wake-free follow-up capture.
+        self._turn_is_follow_up = False
         self._delivery_succeeded = False
         self._follow_up_queue: deque[tuple[str, str]] = deque()
         self._follow_up_waiting = False
@@ -1097,6 +1105,7 @@ class TurnRunner:
 
     def _take_pending_transcript(self) -> str:
         with self._follow_up_condition:
+            self._turn_is_follow_up = False
             transcript = self._pending_transcript or ""
             self._pending_transcript = None
             return transcript
@@ -1120,6 +1129,7 @@ class TurnRunner:
                     self._follow_up_admission = False
                     return ""
                 disposition, transcript = self._follow_up_queue.popleft()
+                self._turn_is_follow_up = disposition == TRANSCRIPT_ACCEPTED
                 if disposition != TRANSCRIPT_ACCEPTED:
                     self._follow_up_admission = False
                 return transcript if disposition == TRANSCRIPT_ACCEPTED else ""
@@ -1467,6 +1477,21 @@ class TurnRunner:
                         )
                         if not completed:
                             response_delivery_failed = True
+                    elif (
+                        self._turn_is_follow_up
+                        and not spoke
+                        and self._response_stream.silent(
+                            self._response_seq, reason="follow_up_no_answer"
+                        )
+                    ):
+                        # A wake-free follow-up nobody clearly asked (room
+                        # noise, echo) that Hermes never answers ends the
+                        # conversation quietly. The refusal tone is for a
+                        # wake the user deliberately made; the claim is still
+                        # retired above, so the next wake needs admission.
+                        logger.info(
+                            "puck bridge follow-up produced no answer; ending quietly"
+                        )
                     else:
                         self._response_stream.fail_delivery(
                             self._response_seq, reason="turn_failure"
