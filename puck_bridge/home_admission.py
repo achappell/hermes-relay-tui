@@ -467,7 +467,13 @@ class HomePuckSessionFactory:
             if is_home_identity_rejection(exc):
                 self.reject_identity()
                 return HomeAdmissionResult("identity_rejected", reason="home_identity_rejected")
-            return HomeAdmissionResult("denied", reason="home_service_unavailable")
+            # Status and Home's error code are content-free and are the only
+            # way to tell a refused claim from an outage in the journal.
+            return HomeAdmissionResult(
+                "denied",
+                reason=f"home_service_unavailable_http_{exc.status}"
+                + (f"_{exc.code}" if exc.code else ""),
+            )
         except BaseException as exc:
             if granted_session is not None:
                 cleanup = asyncio.create_task(

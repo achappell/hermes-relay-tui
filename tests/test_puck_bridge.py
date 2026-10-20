@@ -4563,3 +4563,64 @@ def test_wav_header_is_held_until_the_prebuffer_is_ready(tmp_path):
     body = received.partition(b"\r\n\r\n")[2]
     size_line, _, rest = body.partition(b"\r\n")
     assert rest[:4] == b"RIFF" and int(size_line, 16) == 44
+
+
+@pytest.mark.parametrize(
+    "home_reason", ["wake_mapping_unavailable", "home_service_unavailable_http_503"]
+)
+def test_home_wake_denial_logs_its_reason_at_warn(caplog, home_reason):
+    """2026-10-20: after the #260 deploy two wakes were denied in ~0.05 s with
+    no journal reason. Every denial now names its cause at WARN."""
+    import logging
+    from types import SimpleNamespace
+
+    class Factory:
+        async def admit_wake(self, phrase, *, previous_handle):
+            return SimpleNamespace(status="denied", session=None, reason=home_reason)
+
+    runner = TurnRunner(
+        FakeSession(),
+        home_claim_factory=Factory(),
+        home_claim_retired=True,
+        home_claim_close_confirmed=True,
+    )
+    runner.start()
+    try:
+        with caplog.at_level(logging.WARNING, logger="hermes_relay_tui.puck_bridge.turn"):
+            assert runner.admit_wake("Hey Missy", 0) == "denied"
+    finally:
+        runner.stop()
+    assert any(
+        r.levelno == logging.WARNING
+        and f"wake admission denied (home:{home_reason})" in r.getMessage()
+        for r in caplog.records
+    )
+
+
+def test_retired_claim_marker_does_not_deny_without_asking_home():
+    """A confirmed-retired marker (the post-#259 state) must reach Home's
+    claim API, not deny locally."""
+    from types import SimpleNamespace
+
+    calls = []
+
+    class Factory:
+        async def admit_wake(self, phrase, *, previous_handle):
+            calls.append(previous_handle)
+            return SimpleNamespace(status="denied", session=None, reason="claim_denied")
+
+    class Retired(FakeSession):
+        conversation_handle = "cwFRTHkU"
+
+    runner = TurnRunner(
+        Retired(),
+        home_claim_factory=Factory(),
+        home_claim_retired=True,
+        home_claim_close_confirmed=True,
+    )
+    runner.start()
+    try:
+        runner.admit_wake("Hey Missy", 0)
+    finally:
+        runner.stop()
+    assert calls == ["cwFRTHkU"]
