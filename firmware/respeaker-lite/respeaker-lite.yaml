@@ -186,7 +186,12 @@ ota:
 # enabled, bounded diagnostic export. See pcm_capture.h.
 http_request:
   id: http_client
-  timeout: 5s
+  # 15s, not 5s: Home wake admission retires the previous claim and opens a
+  # new one before replying, which took ~11.6s on the 2026-10-20 retest. At 5s
+  # the device gave up, refused the wake, and the bridge's late grant was
+  # orphaned. Must match DEVICE_ADMISSION_TIMEOUT_SECONDS in
+  # puck_bridge/receiver.py. Upload chunks share this bound.
+  timeout: 15s
 
 # Volume/transport control that does not require Home Assistant. The API
 # above only helps if something speaks it; this project's bridge does not,
