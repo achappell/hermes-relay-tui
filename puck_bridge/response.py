@@ -70,8 +70,15 @@ CHUNK_POLL_SECONDS = 0.5
 # counted Hermes thinking before any audio existed as generation time. It
 # pointed at an architecture change that was not warranted.)
 #
+# Raised to 3.5s (2026-10-20 retest #2): a 21.5s answer was produced at
+# barely real time with a 3.29s producer gap, so a 1.5s cushion ran dry and
+# playback was "patchy, like starved" throughout. The cushion must exceed the
+# largest observed producer gap. A short answer finishes producing before
+# this fills (`wait_for_prebuffer` returns on source completion), so only a
+# slow, long answer pays the extra start delay.
+#
 # Well inside the device's ~30s no-read failure budget.
-PREBUFFER_SECONDS = 1.5
+PREBUFFER_SECONDS = 3.5
 
 # Total silence a reader tolerates mid-stream before declaring the producer
 # dead. Deliberately under the device's ~30s budget so the bridge ends the

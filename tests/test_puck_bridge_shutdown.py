@@ -570,7 +570,7 @@ def test_active_http_response_shutdown_truncates_body_without_success_terminator
     stream.begin(4, (16000, 1, 2))
     # Enough PCM to pass the ordinary prebuffer while leaving the producer
     # active, so the reader genuinely waits in the streaming body.
-    stream.write(b'\x01\x02' * 32000, seq=4)
+    stream.write(b'\x01\x02' * 64000, seq=4)  # beyond the 3.5s prebuffer
     handler = make_handler(expected_token='fake', on_transcript=lambda _: True, response_stream=stream)
     server = ThreadingHTTPServer(('127.0.0.1', 0), handler)
     serving = threading.Thread(target=server.serve_forever, kwargs={'poll_interval': .02})
@@ -841,7 +841,7 @@ class Session:
         Path({str(turn_file)!r}).touch()
         try:
             yield {{"type": "audio_start", "sample_rate": 16000, "channels": 1, "sample_width": 2}}
-            yield {{"type": "audio_chunk", "data": b"aa" * 32000}}
+            yield {{"type": "audio_chunk", "data": b"aa" * 64000}}
             Path({str(ready)!r}).touch()
             await asyncio.sleep(60)
         finally:

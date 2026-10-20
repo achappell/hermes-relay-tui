@@ -1823,3 +1823,13 @@ def test_silent_terminal_needing_home_admission_resumes_without_refusal(tmp_path
         }
         """,
     )
+
+
+def test_wifi_modem_sleep_is_disabled_for_streamed_playback():
+    """2026-10-20: answer playback was patchy throughout; ESP32 LIGHT modem
+    sleep (the ESPHome default) batches streamed TCP delivery."""
+    config = yaml.load(
+        (Path(__file__).resolve().parents[1] / "firmware/respeaker-lite/respeaker-lite.yaml").read_text(),
+        Loader=yaml.BaseLoader,
+    )
+    assert config["wifi"]["power_save_mode"] == "none"
