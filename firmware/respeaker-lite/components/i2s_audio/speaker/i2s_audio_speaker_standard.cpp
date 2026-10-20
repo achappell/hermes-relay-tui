@@ -131,7 +131,11 @@ void I2SAudioSpeaker::run_speaker_task() {
       // audio_source is nullptr if the ring buffer fails to allocate
       this->audio_ring_buffer_ = temp_ring_buffer;
       successful_setup = true;
+    } else {
+      this->record_playback_error_(temp_ring_buffer ? "audio_source_allocate" : "ring_buffer_allocate");
     }
+  } else {
+    this->record_playback_error_("silence_buffer_allocate");
   }
 
   if (successful_setup) {
@@ -142,6 +146,7 @@ void I2SAudioSpeaker::run_speaker_task() {
       size_t bytes_loaded = 0;
       esp_err_t err = i2s_channel_preload_data(this->tx_handle_, silence_buffer, dma_buffer_bytes, &bytes_loaded);
       if (err != ESP_OK || bytes_loaded != dma_buffer_bytes) {
+        this->record_playback_error_(err != ESP_OK ? "dma_preload" : "dma_preload_partial", err, true);
         ESP_LOGV(TAG, "Failed to preload silence into DMA buffer %u (err=%d, loaded=%u)", (unsigned) i, (int) err,
                  (unsigned) bytes_loaded);
         successful_setup = false;
@@ -149,6 +154,7 @@ void I2SAudioSpeaker::run_speaker_task() {
       }
       uint32_t zero_real_frames = 0;
       if (xQueueSend(this->write_records_queue_, &zero_real_frames, 0) != pdTRUE) {
+        this->record_playback_error_("preload_record_queue_full");
         // Should never happen: the queue was just reset and is sized for DMA_BUFFERS_COUNT * 2 entries.
         ESP_LOGV(TAG, "Failed to push preload write record");
         successful_setup = false;
@@ -161,9 +167,14 @@ void I2SAudioSpeaker::run_speaker_task() {
     // Register the on_sent callback BEFORE enabling the channel so the very first transmitted buffer
     // generates a queued event that pairs with the first preloaded silence record.
     const i2s_event_callbacks_t callbacks = {.on_sent = i2s_on_sent_cb};
-    i2s_channel_register_event_callback(this->tx_handle_, &callbacks, this);
+    const esp_err_t callback_error = i2s_channel_register_event_callback(this->tx_handle_, &callbacks, this);
+    if (callback_error != ESP_OK) {
+      this->record_playback_error_("dma_callback_register", callback_error, true);
+    }
 
-    if (i2s_channel_enable(this->tx_handle_) != ESP_OK) {
+    const esp_err_t enable_error = i2s_channel_enable(this->tx_handle_);
+    if (enable_error != ESP_OK) {
+      this->record_playback_error_("channel_enable", enable_error, true);
       ESP_LOGV(TAG, "Failed to enable I2S channel");
       successful_setup = false;
     }
@@ -223,6 +234,7 @@ void I2SAudioSpeaker::run_speaker_task() {
         uint32_t real_frames = 0;
         if (xQueueReceive(this->write_records_queue_, &real_frames, 0) != pdTRUE) {
           // Should never happen: would indicate the lockstep invariant is broken.
+          this->record_playback_error_("event_without_write_record");
           ESP_LOGV(TAG, "Event without matching write record");
           xEventGroupSetBits(this->event_group_, SpeakerEventGroupBits::ERR_LOCKSTEP_DESYNC);
           lockstep_broken = true;
@@ -297,7 +309,11 @@ void I2SAudioSpeaker::run_speaker_task() {
           this->swap_esp32_mono_samples_(chunk, output_bytes);
 
           size_t bw = 0;
-          i2s_channel_write(this->tx_handle_, chunk, output_bytes, &bw, WRITE_TIMEOUT_TICKS);
+          const esp_err_t write_error =
+              i2s_channel_write(this->tx_handle_, chunk, output_bytes, &bw, WRITE_TIMEOUT_TICKS);
+          if (write_error != ESP_OK || bw != output_bytes) {
+            this->record_playback_error_(bw != output_bytes ? "dma_real_partial" : "dma_real_write", write_error, true);
+          }
           if (bw != output_bytes) {
             // A short real-audio write breaks DMA descriptor alignment for every subsequent event;
             // the only safe recovery is to restart the task.
@@ -322,7 +338,11 @@ void I2SAudioSpeaker::run_speaker_task() {
       const size_t silence_bytes = dma_buffer_bytes - bytes_written_total;
       if (silence_bytes > 0) {
         size_t bw = 0;
-        i2s_channel_write(this->tx_handle_, silence_buffer, silence_bytes, &bw, WRITE_TIMEOUT_TICKS);
+        const esp_err_t write_error =
+            i2s_channel_write(this->tx_handle_, silence_buffer, silence_bytes, &bw, WRITE_TIMEOUT_TICKS);
+        if (write_error != ESP_OK || bw != silence_bytes) {
+          this->record_playback_error_(bw != silence_bytes ? "dma_silence_partial" : "dma_silence_write", write_error, true);
+        }
         if (bw != silence_bytes) {
           // Same descriptor-alignment hazard as a partial real-audio write.
           ESP_LOGV(TAG, "Partial silence write: %u of %u bytes", (unsigned) bw, (unsigned) silence_bytes);
@@ -335,6 +355,7 @@ void I2SAudioSpeaker::run_speaker_task() {
       // succeeds even with a transient backlog of unprocessed events; if it ever fails the lockstep
       // invariant is broken and every subsequent timestamp would be silently wrong, so bail.
       if (xQueueSend(this->write_records_queue_, &real_frames_total, 0) != pdTRUE) {
+        this->record_playback_error_("write_record_queue_full");
         ESP_LOGV(TAG, "Exiting: write records queue full");
         xEventGroupSetBits(this->event_group_, SpeakerEventGroupBits::ERR_LOCKSTEP_DESYNC);
         break;
@@ -368,6 +389,7 @@ esp_err_t I2SAudioSpeaker::start_i2s_driver(audio::AudioStreamInfo &audio_stream
   if ((this->i2s_role_ & I2S_ROLE_SLAVE) && (this->sample_rate_ != audio_stream_info.get_sample_rate())) {  // NOLINT
     // Can't reconfigure I2S bus, so the sample rate must match the configured value
     ESP_LOGE(TAG, "Incompatible stream settings");
+    this->record_playback_error_("incompatible_stream", ESP_ERR_NOT_SUPPORTED, true);
     return ESP_ERR_NOT_SUPPORTED;
   }
 
@@ -393,12 +415,14 @@ esp_err_t I2SAudioSpeaker::start_i2s_driver(audio::AudioStreamInfo &audio_stream
   // as long as it narrows to a 16- or 32-bit slot.
   if (output_bits_per_sample % 16 != 0) {
     ESP_LOGE(TAG, "ESP32 supports only 16- or 32-bit output, got %u-bit", (unsigned) output_bits_per_sample);
+    this->record_playback_error_("unsupported_slot_width", ESP_ERR_NOT_SUPPORTED, true);
     return ESP_ERR_NOT_SUPPORTED;
   }
 #endif  // USE_ESP32_VARIANT_ESP32
 
   if (!this->parent_->try_lock()) {
     ESP_LOGE(TAG, "Parent bus is busy");
+    this->record_playback_error_("parent_bus_busy", ESP_ERR_INVALID_STATE, true);
     return ESP_ERR_INVALID_STATE;
   }
 

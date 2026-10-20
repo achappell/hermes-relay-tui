@@ -5,6 +5,7 @@
 #include "preprocessor_settings.h"
 #include "detection_event.h"
 #include "model_data.h"
+#include "vad_snapshot.h"
 
 #include "esphome/core/preferences.h"
 
@@ -58,6 +59,11 @@ class StreamingModel {
   bool has_model_data() const { return this->model_start_ != nullptr; }
 
   bool get_unprocessed_probability_status() const { return this->unprocessed_probability_status_; }
+  uint32_t get_inference_generation() const { return this->inference_progress_.generation(); }
+  bool has_fresh_window() const { return this->inference_progress_.full_window(this->sliding_window_size_); }
+  uint32_t get_inference_cadence_ms(uint8_t feature_step_ms) const {
+    return uint32_t(this->inference_stride_) * feature_step_ms;
+  }
 
   // Quantized probability cutoffs mapping 0.0 - 1.0 to 0 - 255
   uint8_t get_default_probability_cutoff() const { return this->default_probability_cutoff_; }
@@ -81,7 +87,8 @@ class StreamingModel {
   bool enabled_{true};
   bool tensor_arena_size_probed_{false};
   bool unprocessed_probability_status_{false};
-  uint8_t current_stride_step_{0};
+  StreamingInferenceProgress inference_progress_;
+  uint8_t inference_stride_{1};
   int16_t ignore_windows_{-MIN_SLICES_BEFORE_DETECTION};
 
   // TEMPORARY diagnostic (see perform_streaming_inference): per-instance

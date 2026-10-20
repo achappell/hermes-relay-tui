@@ -30,6 +30,16 @@ enum State {
   STOPPING,
   STOPPED,
 };
+#ifdef USE_MICRO_WAKE_WORD_VAD
+class VADSnapshotMutex {
+ public:
+  void lock() { portENTER_CRITICAL(&this->mux_); }
+  void unlock() { portEXIT_CRITICAL(&this->mux_); }
+
+ protected:
+  portMUX_TYPE mux_ = portMUX_INITIALIZER_UNLOCKED;
+};
+#endif
 
 class MicroWakeWord final : public Component
 #ifdef USE_OTA_STATE_LISTENER
@@ -96,8 +106,15 @@ class MicroWakeWord final : public Component
   void add_vad_model(const uint8_t *model_start, uint8_t probability_cutoff, size_t sliding_window_size,
                      size_t tensor_arena_size);
 
-  // Intended for the voice assistant component to fetch VAD status
-  bool get_vad_state() { return this->vad_state_; }
+  // Framework compatibility only. Capture consumers must use the coherent,
+  // age-qualified snapshot and require a new generation for every decision.
+  bool get_vad_state() {
+    const auto snapshot = this->get_vad_snapshot();
+    return snapshot.valid && snapshot.detected;
+  }
+  VADSnapshot get_vad_snapshot() const;
+  void begin_capture_diagnostics();
+  void finish_capture_diagnostics();
 #endif
 
   // Intended for the voice assistant component to access which wake words are available
@@ -115,7 +132,8 @@ class MicroWakeWord final : public Component
 
 #ifdef USE_MICRO_WAKE_WORD_VAD
   std::unique_ptr<VADModel> vad_model_;
-  bool vad_state_{false};
+  VADSnapshotStore<VADSnapshotMutex> vad_snapshot_;
+  uint32_t vad_inference_epoch_{0};  // worker-owned token captured before Invoke
 #endif
 
   bool pending_start_{false};

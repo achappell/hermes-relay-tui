@@ -126,6 +126,11 @@ void MicroWakeWord::setup() {
   }
 
   this->microphone_source_->add_data_callback([this](const std::vector<uint8_t> &data) {
+#if defined(USE_MICRO_WAKE_WORD_VAD) && ESPHOME_LOG_LEVEL >= ESPHOME_LOG_LEVEL_DEBUG
+    // MicrophoneSource has already selected the configured channel, converted
+    // to S16 mono, and applied its configured gain before this callback.
+    this->vad_snapshot_.record_selected_pcm(data.data(), data.size());
+#endif
     if (this->state_ == State::STOPPED) {
       return;
     }
@@ -420,6 +425,31 @@ void MicroWakeWord::add_vad_model(const uint8_t *model_start, uint8_t probabilit
                                   size_t tensor_arena_size) {
   this->vad_model_ = make_unique<VADModel>(model_start, probability_cutoff, sliding_window_size, tensor_arena_size);
 }
+
+VADSnapshot MicroWakeWord::get_vad_snapshot() const { return this->vad_snapshot_.snapshot(millis()); }
+
+void MicroWakeWord::begin_capture_diagnostics() {
+#if ESPHOME_LOG_LEVEL >= ESPHOME_LOG_LEVEL_DEBUG
+  this->vad_snapshot_.begin_capture();
+#endif
+}
+
+void MicroWakeWord::finish_capture_diagnostics() {
+#if ESPHOME_LOG_LEVEL >= ESPHOME_LOG_LEVEL_DEBUG
+  VADCaptureDiagnostics summary;
+  if (!this->vad_snapshot_.finish_capture(summary))
+    return;
+  ESP_LOGD(TAG,
+           "Capture VAD: fresh_generations=%" PRIu32 " probability_summary_available=%s "
+           "mean_probability=%.4f maximum_probability=%.4f "
+           "selected_post_gain_s16_samples=%llu rail_summary_available=%s rail_fraction=%.6f",
+           summary.fresh_generations, summary.fresh_generations ? "true" : "false",
+           summary.fresh_generations ? summary.probability_sum / summary.fresh_generations : 0.0,
+           summary.maximum_probability, static_cast<unsigned long long>(summary.selected_samples),
+           summary.selected_samples ? "true" : "false",
+           summary.selected_samples ? double(summary.selected_rail_samples) / summary.selected_samples : 0.0);
+#endif
+}
 #endif
 
 void MicroWakeWord::suspend_task_() {
@@ -564,12 +594,21 @@ void MicroWakeWord::start() {
   }
 
   ESP_LOGD(TAG, "Starting wake word detection");
+#ifdef USE_MICRO_WAKE_WORD_VAD
+  this->vad_snapshot_.start();
+#endif
 
   this->pending_start_ = true;
   this->pending_stop_ = false;
 }
 
 void MicroWakeWord::stop() {
+#ifdef USE_MICRO_WAKE_WORD_VAD
+  // Invalidate before checking state: stop during STARTING/STOPPING must also
+  // reject an Invoke already executing on the inference task.
+  this->vad_snapshot_.invalidate();
+#endif
+  this->pending_start_ = false;
   if (this->state_ == STOPPED)
     return;
 
@@ -647,9 +686,17 @@ bool MicroWakeWord::generate_features_(const int16_t *audio_buffer, size_t sampl
 
 void MicroWakeWord::process_probabilities_() {
 #ifdef USE_MICRO_WAKE_WORD_VAD
+  const bool new_vad_probability = this->vad_model_->get_unprocessed_probability_status();
   DetectionEvent vad_state = this->vad_model_->determine_detected();
 
-  this->vad_state_ = vad_state.detected;  // atomic write, so thread safe
+  // This worker-local result still gates wake models as before. Public capture
+  // state is published only after an actual new VAD Invoke, not every feature.
+  if (new_vad_probability) {
+    this->vad_snapshot_.publish(this->vad_inference_epoch_, this->vad_model_->get_inference_generation(), millis(),
+                                this->vad_model_->has_fresh_window(), vad_state.detected,
+                                vad_state.average_probability, vad_state.max_probability,
+                                this->vad_model_->get_inference_cadence_ms(this->features_step_size_));
+  }
 #endif
 
   for (auto &model : this->wake_word_models_) {
@@ -678,6 +725,9 @@ void MicroWakeWord::process_probabilities_() {
 }
 
 void MicroWakeWord::unload_models_() {
+#ifdef USE_MICRO_WAKE_WORD_VAD
+  this->vad_snapshot_.invalidate();
+#endif
   for (auto &model : this->wake_word_models_) {
     model->unload_model();
   }
@@ -694,7 +744,12 @@ bool MicroWakeWord::update_model_probabilities_(const int8_t audio_features[PREP
     success = success & model->perform_streaming_inference(audio_features);
   }
 #ifdef USE_MICRO_WAKE_WORD_VAD
-  success = success & this->vad_model_->perform_streaming_inference(audio_features);
+  this->vad_inference_epoch_ = this->vad_snapshot_.epoch();
+  const bool vad_success = this->vad_model_->perform_streaming_inference(audio_features);
+  success = success & vad_success;
+  if (!success || !this->vad_model_->is_enabled()) {
+    this->vad_snapshot_.invalidate();
+  }
 #endif
 
   return success;

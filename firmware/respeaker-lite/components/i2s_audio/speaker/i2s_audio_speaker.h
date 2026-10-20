@@ -8,6 +8,8 @@
 #include <freertos/queue.h>
 #include <freertos/FreeRTOS.h>
 
+#include <atomic>
+
 #include "esphome/components/audio/audio.h"
 #include "esphome/components/ring_buffer/ring_buffer.h"
 #include "esphome/components/speaker/speaker.h"
@@ -59,6 +61,11 @@ class I2SAudioSpeakerBase : public I2SAudioOut, public speaker::Speaker, public 
   /// @brief Get the I2S TX channel handle
   i2s_chan_handle_t get_tx_handle() const { return this->tx_handle_; }
 
+  // Monotonic across stop/restart: a drained-but-faulted TX is not a cue receipt.
+  uint32_t playback_error_generation() const {
+    return this->playback_error_generation_.load(std::memory_order_acquire);
+  }
+
   void start() override;
   void stop() override;
   void finish() override;
@@ -90,6 +97,9 @@ class I2SAudioSpeakerBase : public I2SAudioOut, public speaker::Speaker, public 
   void set_mute_state(bool mute_state) override;
 
  protected:
+  void record_playback_error_(const char *site, esp_err_t error = ESP_OK, bool has_error_code = false);
+  std::atomic<uint32_t> playback_error_generation_{0};
+
   /// @brief FreeRTOS task entry point. Casts params to I2SAudioSpeakerBase and calls run_speaker_task_().
   /// @param params I2SAudioSpeakerBase component pointer
   static void speaker_task(void *params);

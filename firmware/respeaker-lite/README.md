@@ -167,7 +167,7 @@ TUI install per `AGENTS.md`'s convention, and ESPHome's dependency stack
 ```bash
 # from the repo root
 /path/to/python3.12 -m venv venv-firmware
-venv-firmware/bin/pip install "esphome>=2025.9.0"
+venv-firmware/bin/pip install "esphome>=2026.9.1"
 ```
 
 That version constraint matches `pyproject.toml`'s `firmware` extra —
@@ -537,10 +537,13 @@ actually *do* something. `on_wake_word_detected:` (under `micro_wake_word:`)
 now starts a bounded, VAD-gated initial capture into a dedicated ~8s
 PSRAM buffer (`pcm_capture::wake_capture`, in `pcm_capture.h`) — separate
 from the opt-in raw PCM diagnostic buffer described under Story P-7.
-A fast (100ms) `interval:` tick watches `micro_wake_word`'s own VAD state
-(`id(mww).get_vad_state()`, already proven responsive by story 3's
-`vad: probability_cutoff: 0.05`) and ends the capture window once VAD has
-reported silence for 800ms — not a fixed timer. A slower (1s) `interval:`
+A fast (100ms) interval consumes a coherent `get_vad_snapshot()` containing
+validity, actual-invocation generation and probability metadata. It ignores
+pre-playback/partial/stale results and repeated generations, while PCM buffers
+during the new model window. Fresh silence ends speech after 800ms; both
+initial and follow-up captures also have a hard eight-second clock from
+capture start, including stalled input. Speech near expiry does not extend it.
+A slower (1s) interval
 tick then uploads the finished capture, chunked, over the same wire shape
 `tools/receiver.py` already proved out for training data
 (`POST /upload?seq=N&chunk=C&total=T`, 16KB chunk bodies) — reusing that
@@ -550,6 +553,65 @@ pipeline's `upload_and_restart()`, this capture does **not** re-arm itself
 when the upload finishes — the initial wake remains one upload, then the P-3
 response hand-off can offer one bounded follow-up window without another wake
 phrase. No continuous rolling capture or unbounded microphone hold is used.
+
+### P-2/P-3 output completion and fresh capture
+
+Home admission still precedes the unchanged initial `heard_sound` cue and
+capture. Queuing that 80ms file or publishing media IDLE is not proof of
+audible completion. The local `components/resampler` override is pinned to
+ESPHome2026.9.1 (exact upstream commit, package/member hashes and license in
+`speaker/resampler_speaker.h`): graceful EOF drains upstream before finishing
+TX, then waits for actual TX stop/DMA drain. A successful generation receipt
+requires accepted PCM and no change to the I2S speaker's monotonic fault
+generation. Forced stops/errors never authorize capture. Short-file completion
+does not require a sampled ANNOUNCING state.
+
+The wake handoff retains the 150ms minimum but also requires that positive
+receipt and actual empty/stopped output. Follow-up requires the matching
+successful response output, a stopped detector and 200ms stable output settle
+before its existing admission request. A blocked handoff fails after five
+seconds into the existing refusal/two-second recovery watchdog, with capture
+closed. The model is explicitly stopped before response playback; stop/reset
+invalidates VAD, and a complete fresh window is required after restart.
+
+While waiting for media IDLE, decoder/source or TX errors immediately start
+bounded silent-only terminal confirmation and cancel failed playback.
+Otherwise 30 seconds without real output progress starts the same cleanup.
+Matching authoritative SILENT returns quietly (including exact stop/HTTP204);
+COMPLETE, unavailable or unknown status cannot authorize follow-up and uses
+existing bounded refusal. Cleanup must finish before wake resumes.
+Positive-frame TX completions or the first announcement transition advance
+progress; polling, repeated announcements and zero-real-frame DMA padding do
+not. This is not a total playback cap: a long response with continuing real
+audio remains valid. A clean short-stream drain can start status confirmation
+even if the player missed its state publication. Errors arriving after IDLE
+are checked before accepting COMPLETE or opening follow-up.
+
+Stop submission is not cleanup acknowledgement: a later observation must
+confirm both HTTP/local sources IDLE, resampler/TX stopped and buffers empty.
+If that acknowledgement is absent after five seconds, the Puck visibly stays
+Unavailable/capture-closed; it never fabricates completion or reboots itself.
+Actual later shutdown can release the hold, but only a fresh verified Home
+grant makes the next capture available. Credentials are not revoked by an
+audio fault. The Puck configuration and firmware extra require ESPHome9.1
+(2026.9.1) or later; the vendored source baseline itself remains pinned9.1.
+
+Normal DEBUG builds emit one content-free VAD summary per capture: unique
+fresh generations, probability mean/maximum and availability, selected
+post-gain S16 sample count/rail fraction and availability. Rail fraction means
+samples at the S16 bounds, not proof of acoustic clipping or calibrated
+distance. Speaker faults retain their exact site and available `esp_err_t`;
+operations without a returned code say `not_provided`. No PCM, transcript,
+credential or per-frame VERBOSE logging is added. Gain4, channel1, cutoff0.05,
+cue/volume, eight seconds and 800ms remain unchanged. Fresh-high noise/echo
+versus stale inference and the earlier physical speaker error still need the
+next separately approved content-free window; do not tune from cached polls.
+
+The a47 physical retest did **not** accept quiet follow-up: stale/current VAD
+latched speech and 115,376 bytes reached STT. This source repair is locally
+testable, not physical acceptance or flash approval. See the owning
+[validation](../../_bmad-output/implementation-artifacts/validation-p4-home-paired-room-full-turn.md).
+
 
 Each chunk POST carries an `X-Puck-Token` header — the hardcoded shared
 token (`puck_device_token` in `secrets.yaml`) standing in for Story 4's

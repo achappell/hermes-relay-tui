@@ -190,6 +190,7 @@ size_t StreamingModel::probe_arena_size_() {
 }
 
 void StreamingModel::unload_model() {
+  this->reset_probabilities();
   this->interpreter_.reset();
 
   RAMAllocator<uint8_t> arena_allocator;
@@ -231,16 +232,16 @@ bool StreamingModel::perform_streaming_inference(const int8_t features[PREPROCES
   if (this->loaded_) {
     TfLiteTensor *input = this->interpreter_->input(0);
 
-    uint8_t stride = this->interpreter_->input(0)->dims->data[1];
-    this->current_stride_step_ = this->current_stride_step_ % stride;
+    const uint8_t stride = this->interpreter_->input(0)->dims->data[1];
+    this->inference_stride_ = stride;
+    const size_t slot = this->inference_progress_.next_feature_slot(stride);
 
-    std::memmove(
-        (int8_t *) (tflite::GetTensorData<int8_t>(input)) + PREPROCESSOR_FEATURE_SIZE * this->current_stride_step_,
-        features, PREPROCESSOR_FEATURE_SIZE);
-    ++this->current_stride_step_;
+    std::memmove((int8_t *) (tflite::GetTensorData<int8_t>(input)) + PREPROCESSOR_FEATURE_SIZE * slot,
+                 features, PREPROCESSOR_FEATURE_SIZE);
 
-    if (this->current_stride_step_ >= stride) {
+    if (this->inference_progress_.ready(stride)) {
       TfLiteStatus invoke_status = this->interpreter_->Invoke();
+      this->inference_progress_.invoked(invoke_status == kTfLiteOk, this->sliding_window_size_);
       if (invoke_status != kTfLiteOk) {
         ESP_LOGW(TAG, "Streaming interpreter invoke failed");
         return false;
@@ -294,6 +295,9 @@ bool StreamingModel::perform_streaming_inference(const int8_t features[PREPROCES
 }
 
 void StreamingModel::reset_probabilities() {
+  this->inference_progress_.reset();
+  this->last_n_index_ = 0;
+  this->unprocessed_probability_status_ = false;
   for (auto &prob : this->recent_streaming_probabilities_) {
     prob = 0;
   }
@@ -312,7 +316,6 @@ WakeWordModel::WakeWordModel(const std::string &id, const uint8_t *model_start, 
   this->wake_word_ = wake_word;
   this->tensor_arena_size_ = tensor_arena_size;
   this->register_streaming_ops_(this->streaming_op_resolver_);
-  this->current_stride_step_ = 0;
   this->internal_only_ = internal_only;
 
   this->pref_ = global_preferences->make_preference<bool>(fnv1_hash(id));
@@ -347,7 +350,6 @@ WakeWordModel::WakeWordModel(const std::string &id, std::shared_ptr<ModelData> m
   this->trained_languages_ = std::move(trained_languages);
   this->tensor_arena_size_ = tensor_arena_size;
   this->register_streaming_ops_(this->streaming_op_resolver_);
-  this->current_stride_step_ = 0;
   this->internal_only_ = false;  // Runtime models are always exposed to Home Assistant
 
   this->pref_ = global_preferences->make_preference<bool>(fnv1_hash(id));
@@ -421,14 +423,12 @@ DetectionEvent VADModel::determine_detected() {
     return detection_event;
   }
 
-  uint32_t sum = 0;
-  for (auto &prob : this->recent_streaming_probabilities_) {
-    detection_event.max_probability = std::max(detection_event.max_probability, prob);
-    sum += prob;
-  }
-
-  detection_event.average_probability = sum / this->sliding_window_size_;
-  detection_event.detected = sum > (this->probability_cutoff_ * this->sliding_window_size_);
+  const auto result = summarize_vad_window(this->recent_streaming_probabilities_.data(), this->sliding_window_size_,
+                                           this->probability_cutoff_);
+  detection_event.average_probability = result.average_probability;
+  detection_event.max_probability = result.maximum_probability;
+  this->unprocessed_probability_status_ = false;
+  detection_event.detected = result.detected;
 
   return detection_event;
 }
