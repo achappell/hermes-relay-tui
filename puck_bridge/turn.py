@@ -560,6 +560,13 @@ class TurnRunner:
                 self._delivery_succeeded = False
 
             accepted = self._coordinator.on_wake(True)
+            # on_wake returns only when the whole conversation has ended:
+            # answered with no follow-up, empty/silent or failed follow-up,
+            # follow-up window expiry, local stop, or a failed turn. Every
+            # one of those leaves the per-wake paired-room claim with no
+            # further use (2026-10-20: an empty follow-up left eeuVbnKJ
+            # active at Home for 30+ minutes).
+            self._retire_unused_paired_claim()
             return (
                 TRANSCRIPT_ACCEPTED
                 if accepted and self._delivery_succeeded
@@ -589,12 +596,12 @@ class TurnRunner:
         return TRANSCRIPT_SILENT
 
     def _retire_unused_paired_claim(self) -> None:
-        """Close a paired-room claim whose wake produced no question.
+        """Close a paired-room claim once its wake's conversation is over.
 
-        A paired-room claim is issued per physical wake. When that wake's
-        capture is empty there is no conversation and no follow-up window, so
-        the claim would otherwise stay ACTIVE at Home until the next wake
-        (2026-10-20 retest). Runs after the silent terminal is published, so
+        A paired-room claim is issued per physical wake. It is called for an
+        empty first capture and whenever the conversation ends, so the claim
+        never stays ACTIVE at Home until the next wake (2026-10-20 retests).
+        A no-op when the claim is already retired. Runs after the silent terminal is published, so
         the device's status confirmation never waits on Home.
         """
         loop = self._loop
