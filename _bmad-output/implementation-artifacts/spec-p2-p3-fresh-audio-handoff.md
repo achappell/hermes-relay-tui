@@ -73,6 +73,8 @@ The approved custodian fixes also bound `WAITING_FOR_MEDIA_IDLE`: explicit HTTP-
 
 ## Spec Change Log
 
+- 2026-10-19, after the 17a1eb1 physical retest (owner heard nothing), parent-approved: cue and refusal assets regenerated at −6 dBFS peak (were −30 dBFS); VAD cutoff 0.05 → model default 0.5 (fresh VAD latched speech to the deadline in the retest); bridge accepts a restarted device's sequence on an idle response stream. These supersede the "cutoff 0.05, current cue asset" constraint above; all other bounds stay. Evidence: [validation](validation-p4-home-paired-room-full-turn.md).
+
 ## Review Triage Log
 
 - Medium/spec — Timer origin and expiry ambiguity: clarified hard eight seconds from `begin_capture`, no extension for late speech; fixed/tested as existing policy.

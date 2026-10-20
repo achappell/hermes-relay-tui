@@ -175,6 +175,11 @@ class ResponseStream:
         # refused rather than silently corrupting the first.
         self._reader_active = False
         self._reader_seq: int | None = None
+        # Latest /response fetch per sequence. The device's HTTP reader gives
+        # up on headers after 5s and reopens a NEW request while the bridge is
+        # still waiting for the first audio format; only the newest fetch has
+        # a live socket behind it.
+        self._fetch_generation = 0
         self._source_bytes = 0
         self._source_hash = hashlib.sha256()
         self._delivered_bytes = 0
@@ -197,6 +202,24 @@ class ResponseStream:
             self._shutdown = True
             self._mark_unavailable_locked(reason="shutdown")
             self._cv.notify_all()
+
+    def busy_reason(self) -> str | None:
+        """Best-effort current busy state for the drop log, read after `expect()`.
+
+        Not an atomic receipt of why `expect()` refused under concurrency.
+        """
+        with self._cv:
+            if self._shutdown:
+                return "shutdown"
+            if self._reader_active:
+                return "reader_active"
+            if self._expecting:
+                return "expecting"
+            if self._eof_pending:
+                return "eof_pending"
+            if self._queued_bytes and self._source_terminal != "complete":
+                return "unfinished_queue"
+            return None
 
     def expect(self, seq: int | None = None) -> bool:
         """Declare that a capture is being processed and audio may follow.
@@ -227,8 +250,15 @@ class ResponseStream:
             # later response.
             if self._queued_bytes and self._source_terminal != "complete":
                 return False
-            if seq is not None and self._seq is not None and seq <= self._seq:
-                return False
+            # Every in-flight case was refused above, so the stream is idle
+            # here. The Puck's capture sequence is a RAM counter that restarts
+            # at 0 on every boot (flash, OTA, power cycle) while this bridge
+            # keeps the last answered sequence, so the sequence is a
+            # correlation ID for the current response, not a monotonic
+            # clock. An idle stream therefore allows a reused ID; it does not
+            # prove a reboot. Refusing it dropped post-reboot captures with a
+            # 503 logged as "a previous answer is still streaming" until the
+            # new counter overtook the old one (2026-10-19 retest).
             self._expecting = True
             self._audio_format = None
             self._source_terminal = None
@@ -539,11 +569,29 @@ class ResponseStream:
         with self._cv:
             return self._seq == seq and self._home_admission_required
 
-    def acquire_reader(self, seq: int | None = None) -> bool:
+    def register_fetch(self) -> int:
+        """Record a new device fetch; returns its generation token.
+
+        A newer fetch for the same sequence supersedes any older fetch that
+        is still waiting for the first audio format, so the older handler
+        must not claim the reader slot (2026-10-20 retest: the stale fetch
+        won, wrote into a socket the device had already abandoned, and the
+        live re-fetch was refused 409).
+        """
+        with self._cv:
+            self._fetch_generation += 1
+            return self._fetch_generation
+
+    def fetch_superseded(self, generation: int) -> bool:
+        with self._cv:
+            return generation != self._fetch_generation
+
+    def acquire_reader(self, seq: int | None = None, fetch: int | None = None) -> bool:
         """Claim the single consumer slot for one sequence."""
         with self._cv:
             if (
-                self._reader_active
+                (fetch is not None and fetch != self._fetch_generation)
+                or self._reader_active
                 or not self._matches_locked(seq)
                 or self._delivery_terminal is not None
             ):

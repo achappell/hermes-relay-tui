@@ -17,11 +17,16 @@ render_pair() {
   local tone_duration="$4"
   local fade_end="$5"
 
+  # lavfi `sine` renders at amplitude 1/8 (-18 dBFS). The original gain of
+  # 0.25 left both tones at -30 dBFS peak before the 0.40 media volume
+  # (2026-10-19 retest: cue drained, owner heard nothing).
+  # Gain 4.0 puts each tone at 0.5 full scale, -6 dBFS peak, leaving headroom
+  # for the resampler. Duration, frequencies and fades are unchanged.
   "${ffmpeg_bin}" -hide_banner -loglevel error -y \
     -f lavfi -i "sine=frequency=${first_hz}:duration=${tone_duration}:sample_rate=16000" \
     -f lavfi -i "sine=frequency=${second_hz}:duration=${tone_duration}:sample_rate=16000" \
     -filter_complex \
-      "[0:a]volume=0.25,afade=t=in:st=0:d=0.005,afade=t=out:st=${fade_end}:d=0.005[a];[1:a]volume=0.25,afade=t=in:st=0:d=0.005,afade=t=out:st=${fade_end}:d=0.005[b];[a][b]concat=n=2:v=0:a=1,aresample=16000" \
+      "[0:a]volume=4.0,afade=t=in:st=0:d=0.005,afade=t=out:st=${fade_end}:d=0.005[a];[1:a]volume=4.0,afade=t=in:st=0:d=0.005,afade=t=out:st=${fade_end}:d=0.005[b];[a][b]concat=n=2:v=0:a=1,aresample=16000" \
     -ac 1 -ar 16000 -c:a pcm_s16le "${output_dir}/${output_name}"
 }
 

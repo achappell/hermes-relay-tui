@@ -76,6 +76,8 @@ FOLLOW_UP_ADMISSION_PATH = "/follow-up-admission"
 # reader forever. Keep this aligned with the response stream's stall budget;
 # tests may shorten it to exercise the failure path without waiting 20s.
 RESPONSE_WRITE_TIMEOUT_SECONDS = 20.0
+# Must match `http_request.timeout` in firmware/respeaker-lite/respeaker-lite.yaml.
+DEVICE_ADMISSION_TIMEOUT_SECONDS = 15.0
 
 
 def _log_response_trace(response_stream: ResponseStream, *, framing: str) -> None:
@@ -376,6 +378,7 @@ def make_handler(
             # never produced audio. The first is routine -- an empty
             # transcript, a false wake -- and the second is a real fault.
             was_expecting = response_stream.expecting
+            fetch_generation = response_stream.register_fetch()
             # Validate the requested capture. The firmware builds
             # /response?seq=<the capture the bridge confirmed>, and
             # pcm_capture.h documents it as "so the response fetch asks for
@@ -429,6 +432,17 @@ def make_handler(
                 return
 
             audio_format = response_stream.wait_for_format()
+            if response_stream.fetch_superseded(fetch_generation):
+                # The device already re-requested this sequence after its
+                # 5s header timeout and closed this socket. Leave the answer
+                # to the newer fetch; do not write, refuse or abandon here.
+                logger.info(
+                    "puck bridge response: fetch for seq=%d superseded by a "
+                    "newer device re-fetch; closing it without a reply",
+                    requested_seq,
+                )
+                self.close_connection = True
+                return
             if audio_format is None:
                 if response_stream.terminal_status == "silent":
                     self._respond(204)
@@ -471,7 +485,7 @@ def make_handler(
             # Single consumer: a second concurrent fetch would pop from
             # the same queue and split the answer between the two, so both
             # would play garbage. Refuse rather than corrupt.
-            if not response_stream.acquire_reader(requested_seq):
+            if not response_stream.acquire_reader(requested_seq, fetch_generation):
                 logger.warning(
                     "puck bridge response: a second concurrent fetch was "
                     "refused; one is already streaming"
@@ -615,6 +629,7 @@ def make_handler(
             if seq < 0 or seq > 0xFFFFFFFF or not wake_phrase or len(wake_phrase) > 128:
                 self._respond(400, b"invalid wake admission request")
                 return
+            started = time.monotonic()
             try:
                 result = on_wake_admission(wake_phrase, seq)
             except Exception as exc:
@@ -625,6 +640,25 @@ def make_handler(
             if result not in {"admitted", "denied", "identity_rejected", "unavailable"}:
                 logger.warning("puck Home wake admission returned an invalid result")
                 result = "unavailable"
+            elapsed = time.monotonic() - started
+            # Every result is logged: a denied or late wake was previously
+            # invisible at INFO, so a cue/refusal on the device had no bridge
+            # counterpart in the journal (2026-10-20 retest).
+            log = (
+                logger.warning
+                if elapsed >= DEVICE_ADMISSION_TIMEOUT_SECONDS
+                else logger.info
+            )
+            log(
+                "puck bridge wake admission seq=%d result=%s elapsed=%.2fs%s",
+                seq,
+                result,
+                elapsed,
+                " (past the device request timeout; the Puck has already "
+                "refused this wake)"
+                if elapsed >= DEVICE_ADMISSION_TIMEOUT_SECONDS
+                else "",
+            )
             body = f"{result}:{seq}".encode("ascii")
             self._respond(200, body, content_type="text/plain; charset=utf-8")
 
@@ -736,9 +770,11 @@ def make_handler(
             # the expect() comment describes.
             if finished_capture is not None and response_stream is not None:
                 if not response_stream.expect(seq):
-                    logger.info(
-                        "puck bridge: a previous answer is still streaming; "
-                        "dropping this capture before transcription"
+                    logger.warning(
+                        "puck bridge: response stream busy (%s); dropping "
+                        "capture seq=%d before transcription",
+                        response_stream.busy_reason() or "unknown",
+                        seq,
                     )
                     # This is temporary capacity pressure, not a bad device
                     # credential. The firmware treats 4xx as authoritative
