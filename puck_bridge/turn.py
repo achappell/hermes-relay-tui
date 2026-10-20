@@ -577,7 +577,49 @@ class TurnRunner:
             if self._coordinator.state != "idle":
                 return TRANSCRIPT_REJECTED
         self._mark_silent(seq, reason="empty_capture")
+        self._retire_unused_paired_claim()
         return TRANSCRIPT_SILENT
+
+    def _retire_unused_paired_claim(self) -> None:
+        """Close a paired-room claim whose wake produced no question.
+
+        A paired-room claim is issued per physical wake. When that wake's
+        capture is empty there is no conversation and no follow-up window, so
+        the claim would otherwise stay ACTIVE at Home until the next wake
+        (2026-10-20 retest). Runs after the silent terminal is published, so
+        the device's status confirmation never waits on Home.
+        """
+        loop = self._loop
+        if (
+            self._home_claim_factory is None
+            or loop is None
+            or self._stopping.is_set()
+            or self._home_claim_retired
+            or getattr(self._session, "wake_admission_mode", "") != "paired_room"
+        ):
+            return
+        # Serialize with wake admission, which retires/claims on the same state.
+        if not self._home_admission_lock.acquire(
+            timeout=HOME_CLAIM_RETIRE_CALL_TIMEOUT_SECONDS
+        ):
+            return
+        try:
+            future = asyncio.run_coroutine_threadsafe(self._retire_home_claim(), loop)
+            try:
+                closed = future.result(timeout=HOME_CLAIM_RETIRE_CALL_TIMEOUT_SECONDS + 1.0)
+            except Exception as exc:
+                future.cancel()
+                logger.warning(
+                    "Puck Home claim close after empty capture failed (%s)",
+                    type(exc).__name__,
+                )
+                return
+            logger.info(
+                "Puck Home claim closed after an empty wake capture (confirmed=%s)",
+                closed,
+            )
+        finally:
+            self._home_admission_lock.release()
 
     def submit_capture_failure(self, seq: int) -> str:
         """End a failed Puck capture without replaying its uncertain audio."""

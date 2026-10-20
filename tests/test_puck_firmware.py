@@ -99,6 +99,7 @@ def _write_capture_stubs(tmp_path):
         }
         namespace media_source {
         enum class MediaSourceState { IDLE, READING, ERROR };
+        enum class MediaSourceCommand { STOP };
         }
         namespace puck_firmware_fixture {
         struct VADSnapshot {
@@ -139,7 +140,13 @@ def _write_capture_stubs(tmp_path):
         };
         struct HttpSource {
           media_source::MediaSourceState state = media_source::MediaSourceState::IDLE;
+          unsigned direct_stops = 0;
           media_source::MediaSourceState get_state() const { return state; }
+          // Real micro-decoder stop() moves FAILED to IDLE.
+          void handle_command(media_source::MediaSourceCommand) {
+            ++direct_stops;
+            if (state == media_source::MediaSourceState::ERROR) state = media_source::MediaSourceState::IDLE;
+          }
         };
         inline Detector mww;
         inline OutputDevice puck_resampler, puck_speaker;
@@ -1658,6 +1665,7 @@ def test_full_capture_upload_failure_names_chunk_and_http_status_at_warn(tmp_pat
           prepare("hey missy");
           start_pending();
           assert(capturing);
+          tick(true, true, next_vad_generation());
           std::vector<std::uint8_t> pcm(WAKE_CAPTURE_BYTES, 0);
           write(pcm.data(), pcm.size());
           assert(!capturing && capture_pending_upload);
@@ -1676,3 +1684,56 @@ def test_full_capture_upload_failure_names_chunk_and_http_status_at_warn(tmp_pat
     )
     assert "Wake upload 0 chunk 63 failed (status 503)" in output
     assert "FAILED at chunk 63/64 with HTTP status 503" in output
+
+
+@pytest.mark.parametrize("speaks", [True, False])
+def test_initial_wake_waits_for_speech_before_silence_can_end_it(tmp_path, speaks):
+    """2026-10-20 retest: with the 0.5 cutoff an initial wake capture ended
+    ~1 s after the cue (800 ms of pre-speech silence) and STT received no
+    speech. Silence may only end a capture after speech; a wake with no
+    speech ends empty at the eight-second deadline."""
+    compiler = shutil.which("clang++") or shutil.which("c++")
+    if compiler is None:
+        pytest.skip("no C++ compiler available for the capture-state harness")
+    _write_capture_stubs(tmp_path)
+    _compile_and_run_capture_harness(
+        tmp_path,
+        compiler,
+        """
+        #include "pcm_capture.h"
+        #include <cassert>
+        #include <cstdint>
+        std::uint32_t fake_millis = 0;
+        int main() {
+          using namespace pcm_capture::wake_capture;
+          puck_identity::setup("configured");
+          setup();
+          const auto seq = pending_sequence();
+          assert(puck_response::begin_home_admission(seq));
+          puck_response::note_home_admission(200, "admitted:" + std::to_string(seq));
+          prepare("hey missy");
+          start_pending();
+          assert(capturing);
+          const std::uint8_t frame[64] = {7};
+          for (int i = 0; i < 30; ++i) {  // 3 s of breath after the cue
+            write(frame, sizeof(frame));
+            tick(true, false, next_vad_generation());
+            fake_millis += 100;
+          }
+          assert(capturing);
+          if (SPEAKS) {
+            tick(true, true, next_vad_generation());
+            fake_millis += 100;
+            tick(true, false, next_vad_generation());
+            fake_millis += VAD_SILENCE_DEBOUNCE_MS;
+            tick(true, false, next_vad_generation());
+            assert(!capturing && completed_capture_bytes > 0);
+          } else {
+            fake_millis = capture_started_ms + CAPTURE_LISTEN_TIMEOUT_MS;
+            tick(true, false, next_vad_generation());
+            assert(!capturing && completed_capture_bytes == 0);
+          }
+          return 0;
+        }
+        """.replace("SPEAKS", str(speaks).lower()),
+    )

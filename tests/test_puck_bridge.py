@@ -4383,3 +4383,68 @@ def test_device_request_timeout_covers_the_bridge_admission_contract():
         Loader=yaml.BaseLoader,
     )
     assert config["http_request"]["timeout"] == f"{DEVICE_ADMISSION_TIMEOUT_SECONDS:g}s"
+
+
+def test_paired_room_empty_wake_capture_closes_its_claim_after_silent_terminal():
+    """2026-10-20 retest: an empty initial capture ended silent but the
+    paired-room claim opened for that wake stayed ACTIVE at Home."""
+    from types import SimpleNamespace
+
+    from puck_bridge.response import ResponseStream
+
+    events = []
+    stream = ResponseStream()
+
+    class PairedSession(FakeSession):
+        wake_mapping_id = "hey-missy"
+        wake_configuration_revision = 4
+        wake_admission_mode = "paired_room"
+
+        def __init__(self, handle):
+            super().__init__()
+            self.conversation_handle = handle
+
+        async def close_claim(self):
+            events.append(("close", self.conversation_handle, stream.status_for(9)))
+            self.connected = False
+            return True
+
+    class Factory:
+        async def verify_mapping_id(self, mapping_id, revision):
+            return True
+
+        async def admit_wake(self, phrase, *, previous_handle):
+            events.append(("claim", previous_handle))
+            replacement = PairedSession("fresh")
+            await replacement.connect()
+            return SimpleNamespace(status="admitted", session=replacement)
+
+    session = PairedSession("initial")
+    runner = TurnRunner(session, home_claim_factory=Factory(), response_stream=stream)
+    runner.start()
+    try:
+        assert runner.admit_wake("Hey Missy", 9) == "admitted"
+        events.clear()
+        assert stream.expect(seq=9)
+        assert runner.submit_capture_silent(9) == "silent"
+        assert events == [("close", "fresh", "silent")]
+        # The next physical wake opens a new claim without a second close.
+        assert runner.admit_wake("Hey Missy", 10) == "admitted"
+        assert events == [("close", "fresh", "silent"), ("claim", "fresh")]
+        assert session.turns == []
+    finally:
+        assert runner.stop()
+
+
+def test_direct_empty_capture_does_not_touch_any_claim():
+    from puck_bridge.response import ResponseStream
+
+    stream = ResponseStream()
+    runner = TurnRunner(FakeSession(), response_stream=stream)
+    runner.start()
+    try:
+        assert stream.expect(seq=2)
+        assert runner.submit_capture_silent(2) == "silent"
+        assert stream.status_for(2) == "silent"
+    finally:
+        runner.stop()

@@ -730,3 +730,30 @@ def test_configured_early_refusal_idle_waits_for_natural_tail_without_truncation
           assert(admission_requests == 0 && !capture::capturing);
         }
     ''')
+
+
+def test_configured_silent_204_source_error_is_stopped_directly_and_wake_resumes(tmp_path):
+    """2026-10-20 retest: /response answered 204 for an empty capture, the
+    HTTP source failed before PLAYING so it never became the pipeline's
+    active source, media_player.stop never reached it, and wake detection
+    stayed off indefinitely with media IDLE."""
+    _native(tmp_path, r'''
+        int main() {
+          setup_fixture();
+          request_nonempty_response();
+          puck_http_source.state = media_source::MediaSourceState::ERROR;
+          fast_observation();
+          confirm_status("silent");
+          fast_cleanup();
+          // The player and speaker settle; only an explicit source STOP
+          // clears the errored HTTP source.
+          puck_media_player.state = media_player::MEDIA_PLAYER_STATE_IDLE;
+          puck_resampler.stopped = puck_speaker.stopped = true;
+          puck_resampler.buffered = puck_speaker.buffered = false;
+          assert(puck_http_source.direct_stops == 1);
+          assert(puck_local_source.direct_stops == 0);
+          fast_tick();
+          recovery_tick();
+          assert(puck_response::state == puck_response::State::IDLE && mww.starts == 1);
+        }
+    ''')

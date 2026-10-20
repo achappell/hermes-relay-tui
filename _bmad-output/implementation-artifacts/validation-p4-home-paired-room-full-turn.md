@@ -322,3 +322,17 @@ Amanda heard the wake cue (cue level fix confirmed). Ops journal (Mac/ops clocks
 3. **8.9 s to first PCM** is measured from the bridge's expect at upload completion; STT finished at 32.76 and the first audio format arrived ~8.7 s later, i.e. Hermes answer + TTS latency. Not changed here.
 
 Regressions: `test_a_device_re_fetch_before_first_audio_supersedes_the_waiting_fetch` (fails on the old code), `test_every_wake_admission_result_is_logged_with_elapsed_time`, `test_device_request_timeout_covers_the_bridge_admission_contract`. Physical answer playback remains **OPEN**.
+
+## P-2/P-3 empty-wake repair: speech wait, silent resume, claim close — 2026-10-20
+
+### PR258 (e31a406) physical retest — NOT acceptance
+
+Admission 0.62 s (timeout fix held). STT received 1.077 s of audio, VAD-filtered to nothing; empty transcript → silent terminal (empty_capture). Afterwards media IDLE but micro_wake_word stopped (4/4 polls over 8 s, minutes later); paired_room claim opened 01:45:29.99Z still ACTIVE. No fetch/409.
+
+### Root causes (from source; exact device log lines not retained)
+
+1. **~1 s capture.** `wake_capture::tick` let pre-speech silence end an *initial* wake (only follow-ups waited for speech). With cutoff 0.5, 800 ms of breath after the cue ended the turn. Now both capture kinds require speech before the silence debounce; no speech ends empty at the 8 s deadline.
+2. **Wake never resumed.** `/response` answered 204, the HTTP source failed before PLAYING, so ESPHome's speaker_source never made it the pipeline's active source. `media_player.stop` targets only active/last source, so the HTTP source stayed ERROR, `drained()` stayed false and READY_TO_RESUME could never restart wake. The old harness hid this by forcing sources IDLE. Cleanup now STOPs any errored source directly (micro-decoder `stop()` moves FAILED→IDLE).
+3. **Claim left ACTIVE.** Paired-room claims were only retired at the next wake. An empty initial wake now closes its claim after the silent terminal is published, serialized with wake admission.
+
+Regressions (all fail on e31a406): `test_initial_wake_waits_for_speech_before_silence_can_end_it[True/False]`, `test_configured_silent_204_source_error_is_stopped_directly_and_wake_resumes`, `test_paired_room_empty_wake_capture_closes_its_claim_after_silent_terminal`. Physical empty-wake recovery and full turn remain **OPEN**.

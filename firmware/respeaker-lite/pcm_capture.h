@@ -565,10 +565,10 @@ inline void write(const uint8_t *data, size_t len) {
   if (write_pos >= WAKE_CAPTURE_BYTES) {
     // The audio callback can fill the buffer before the interval observes
     // the equally bounded no-speech deadline. Neither path may upload PCM
-    // when this follow-up has never detected speech.
-    if (follow_up_capture && !speech_seen) {
+    // when this capture has never detected speech.
+    if (!speech_seen) {
       finish_capture(0);
-      ESP_LOGI(TAG, "follow-up buffer filled without speech (empty)");
+      ESP_LOGI(TAG, "capture buffer filled without speech (empty)");
       return;
     }
     // The buffer filled before VAD ever reported silence -- still a valid,
@@ -587,7 +587,7 @@ inline void tick(bool vad_valid, bool vad_active, uint32_t generation) {
   // This wall-clock bound also covers stalled microphone/model input. Speech
   // near expiry never restarts or extends the owner's eight-second window.
   if (now - capture_started_ms >= CAPTURE_LISTEN_TIMEOUT_MS) {
-    const bool empty = follow_up_capture && !speech_seen;
+    const bool empty = !speech_seen;
     finish_capture(empty ? 0 : write_pos.load());
     ESP_LOGI(TAG, "capture ended on the %ums deadline (%s)",
              (unsigned) CAPTURE_LISTEN_TIMEOUT_MS, empty ? "empty" : "bounded");
@@ -605,7 +605,11 @@ inline void tick(bool vad_valid, bool vad_active, uint32_t generation) {
     silence_start_ms = 0;
     return;
   }
-  if (follow_up_capture && !speech_seen) return;
+  // Silence before the first speech is the user drawing breath after the
+  // cue, not the end of the turn. With the 0.5 cutoff an initial wake ended
+  // ~1s after the cue on 2026-10-20 with no speech captured. Both capture
+  // kinds wait for speech; the eight-second deadline still bounds them.
+  if (!speech_seen) return;
   if (silence_start_ms == 0) {
     silence_start_ms = now;
     return;
