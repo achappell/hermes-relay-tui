@@ -4995,29 +4995,6 @@ def test_audio_abort_log_names_its_branch(caplog, monkeypatch):
     assert any("audio_abort: transport_lost_after_text" in r.getMessage() for r in caplog.records)
 
 
-def test_parse_playback_report_validates_fields():
-    from puck_bridge.receiver import parse_playback_report
-
-    good = {"pb_wall_ms": ["7750"], "pb_played_ms": ["6080"], "pb_underruns": ["3"],
-            "pb_longest_underrun_ms": ["420"], "pb_rssi_min": ["-71"], "pb_rssi_avg": ["-64"]}
-    assert parse_playback_report({"seq": ["1"]}) is None
-    assert parse_playback_report(good)["pb_underruns"] == 3
-    no_rssi = {k: v for k, v in good.items() if not k.startswith("pb_rssi")}
-    assert parse_playback_report(no_rssi)["pb_played_ms"] == 6080
-    for bad in (
-        {**good, "pb_underruns": ["-1"]},
-        {**good, "pb_rssi_avg": ["12"]},
-        {**good, "pb_wall_ms": ["x"]},
-        {**good, "pb_wall_ms": ["1", "2"]},
-        {k: v for k, v in good.items() if k != "pb_played_ms"},
-        {k: v for k, v in good.items() if k != "pb_rssi_avg"},
-    ):
-        with pytest.raises(ValueError):
-            parse_playback_report(bad)
-
-
-def test_status_poll_with_playback_report_logs_one_joined_line(tmp_path, caplog):
-    import logging
 def test_follow_up_window_is_bounded_after_delivery_whatever_the_queue_size():
     """#267 tradeoff: deriving the guard from the 16 MB queue made the
     no-capture worst case ~510 s. The fixed part now covers only the Puck's
@@ -5041,41 +5018,6 @@ def test_follow_up_without_capture_expires_soon_after_delivery_ends(monkeypatch)
     from puck_bridge.response import ResponseStream
 
     stream = ResponseStream()
-    assert stream.expect(seq=4)
-    stream.begin(4, (24000, 1, 2))
-    stream.write(b"\x00\x00" * 24000, seq=4)
-    stream.finish()
-    server = _start_server(make_handler(
-        expected_token="s3cret", on_transcript=_RecordingSink(),
-        transcribe_fn=_fake_transcribe(), work_dir=tmp_path, response_stream=stream))
-    port = server.server_address[1]
-    suffix = ("&pb_wall_ms=7750&pb_played_ms=6080&pb_underruns=3"
-              "&pb_longest_underrun_ms=420&pb_rssi_min=-71&pb_rssi_avg=-64")
-    try:
-        status, _ = _get_response(port, token="s3cret", seq=4)
-        assert status == 200
-        with caplog.at_level(logging.INFO, logger="hermes_relay_tui.puck_bridge.receiver"):
-            for _ in range(3):  # retried polls log once
-                conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
-                conn.request("GET", "/response-status?seq=4&token=s3cret" + suffix)
-                response = conn.getresponse()
-                body = response.read()
-                conn.close()
-                assert response.status == 200 and b'"complete"' in body
-            conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
-            conn.request("GET", "/response-status?seq=4&token=s3cret&pb_wall_ms=oops")
-            assert conn.getresponse().status == 200, "telemetry never changes the status answer"
-            conn.close()
-    finally:
-        server.shutdown()
-    lines = [r.getMessage() for r in caplog.records if "puck playback report seq=4" in r.getMessage()]
-    assert len(lines) == 1
-    line = lines[0]
-    assert "delivered_seconds=1.000" in line and "played_seconds=6.080" in line
-    assert "wall_minus_played_seconds=1.670" in line and "underruns=3" in line
-    assert "longest_underrun_ms=420" in line and "rssi_min=-71" in line and "rssi_avg=-64" in line
-    assert "first_pcm_seconds=" in line and "producer_gap_max_seconds=" in line
-    assert any("playback report rejected" in r.getMessage() for r in caplog.records)
     runner = _follow_up_runner(monkeypatch, stream)
     runner.start()
     try:
@@ -5116,3 +5058,67 @@ def test_follow_up_window_waits_out_a_long_answer_still_being_delivered(monkeypa
         assert result == ["and Saturn?"]
     finally:
         runner.stop()
+
+
+def test_parse_playback_report_validates_fields():
+    from puck_bridge.receiver import parse_playback_report
+
+    good = {"pb_wall_ms": ["7750"], "pb_played_ms": ["6080"], "pb_underruns": ["3"],
+            "pb_longest_underrun_ms": ["420"], "pb_rssi_min": ["-71"], "pb_rssi_avg": ["-64"]}
+    assert parse_playback_report({"seq": ["1"]}) is None
+    assert parse_playback_report(good)["pb_underruns"] == 3
+    no_rssi = {k: v for k, v in good.items() if not k.startswith("pb_rssi")}
+    assert parse_playback_report(no_rssi)["pb_played_ms"] == 6080
+    for bad in (
+        {**good, "pb_underruns": ["-1"]},
+        {**good, "pb_rssi_avg": ["12"]},
+        {**good, "pb_wall_ms": ["x"]},
+        {**good, "pb_wall_ms": ["1", "2"]},
+        {k: v for k, v in good.items() if k != "pb_played_ms"},
+        {k: v for k, v in good.items() if k != "pb_rssi_avg"},
+    ):
+        with pytest.raises(ValueError):
+            parse_playback_report(bad)
+
+
+def test_status_poll_with_playback_report_logs_one_joined_line(tmp_path, caplog):
+    import logging
+
+    from puck_bridge.response import ResponseStream
+
+    stream = ResponseStream()
+    assert stream.expect(seq=4)
+    stream.begin(4, (24000, 1, 2))
+    stream.write(b"\x00\x00" * 24000, seq=4)
+    stream.finish()
+    server = _start_server(make_handler(
+        expected_token="s3cret", on_transcript=_RecordingSink(),
+        transcribe_fn=_fake_transcribe(), work_dir=tmp_path, response_stream=stream))
+    port = server.server_address[1]
+    suffix = ("&pb_wall_ms=7750&pb_played_ms=6080&pb_underruns=3"
+              "&pb_longest_underrun_ms=420&pb_rssi_min=-71&pb_rssi_avg=-64")
+    try:
+        status, _ = _get_response(port, token="s3cret", seq=4)
+        assert status == 200
+        with caplog.at_level(logging.INFO, logger="hermes_relay_tui.puck_bridge.receiver"):
+            for _ in range(3):  # retried polls log once
+                conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+                conn.request("GET", "/response-status?seq=4&token=s3cret" + suffix)
+                response = conn.getresponse()
+                body = response.read()
+                conn.close()
+                assert response.status == 200 and b'"complete"' in body
+            conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+            conn.request("GET", "/response-status?seq=4&token=s3cret&pb_wall_ms=oops")
+            assert conn.getresponse().status == 200, "telemetry never changes the status answer"
+            conn.close()
+    finally:
+        server.shutdown()
+    lines = [r.getMessage() for r in caplog.records if "puck playback report seq=4" in r.getMessage()]
+    assert len(lines) == 1
+    line = lines[0]
+    assert "delivered_seconds=1.000" in line and "played_seconds=6.080" in line
+    assert "wall_minus_played_seconds=1.670" in line and "underruns=3" in line
+    assert "longest_underrun_ms=420" in line and "rssi_min=-71" in line and "rssi_avg=-64" in line
+    assert "first_pcm_seconds=" in line and "producer_gap_max_seconds=" in line
+    assert any("playback report rejected" in r.getMessage() for r in caplog.records)
