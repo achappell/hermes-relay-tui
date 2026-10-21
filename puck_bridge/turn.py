@@ -1356,7 +1356,9 @@ class TurnRunner:
                     )
                     return False
                 if kind == "audio_start":
-                    awaiting_first_audio = False
+                    # Keep the first-audio budget until real PCM arrives:
+                    # Hermes announces audio_start before a long answer's
+                    # first synthesized chunk exists.
                     audio_format = (
                         event["sample_rate"],
                         event["channels"],

@@ -4725,3 +4725,83 @@ def test_streamed_response_logs_per_chunk_cadence_at_debug(tmp_path, caplog):
         and "queued_bytes=" in r.getMessage()
         for r in caplog.records
     )
+
+
+def test_prebuffer_stall_clock_starts_at_audio_announcement_not_upload():
+    """2026-10-20: STT + Hermes thinking before audio_start counted against
+    the 20 s prebuffer stall, so long answers died at source_bytes=0."""
+    from puck_bridge.response import ResponseStream
+
+    class Clock:
+        now = 0.0
+
+        def __call__(self):
+            return self.now
+
+    clock = Clock()
+    stream = ResponseStream(stall_timeout=20.0, clock=clock)
+    assert stream.expect(seq=1)
+    clock.now = 18.0  # STT + LLM before the answer's audio is announced
+    stream.begin(1, (24000, 1, 2))
+    clock.now = 30.0  # 12 s after audio_start, still within budget
+    stream.write(b"\x00\x00" * 24000 * 4, seq=1)
+    stream.finish()
+    assert stream.wait_for_prebuffer((24000, 1, 2)) is True
+    assert stream.terminal_status != "unavailable"
+
+
+def test_audio_start_without_pcm_keeps_the_first_audio_budget(monkeypatch):
+    import puck_bridge.turn as turn_module
+    from puck_bridge.response import ResponseStream
+
+    monkeypatch.setattr(turn_module, "FIRST_EVENT_TIMEOUT_SECONDS", 0.6)
+    monkeypatch.setattr(turn_module, "STALL_TIMEOUT_SECONDS", 0.2)
+
+    class Slow(FakeSession):
+        def send_turn(self, text, *, stt_source="local"):
+            self.turns.append((text, stt_source))
+
+            async def _events():
+                yield {"type": "audio_start", "sample_rate": 24000, "channels": 1, "sample_width": 2}
+                await asyncio.sleep(0.4)  # longer than mid-stream stall, under first-audio
+                yield {"type": "audio_chunk", "data": b"\x01\x00" * 10}
+
+            return _events()
+
+    stream = ResponseStream()
+    runner = TurnRunner(Slow(), response_stream=stream)
+    runner.start()
+    try:
+        assert stream.expect(seq=5)
+        runner.set_response_seq(5)
+        assert runner._send("tell me about the planets") is True
+    finally:
+        runner.stop()
+
+
+def test_unmapped_wake_phrase_denial_names_phrase_and_match_count():
+    from puck_bridge.home_admission import _count_phrase_matches, _matching_mapping
+
+    config = {"schema": 1, "snapshot": {"revision": 1, "wake_mappings": [
+        {"id": "hey-missy", "phrase": "Hey Missy"}]}}
+    assert _matching_mapping(config, "Hey Bestie") is None
+    assert _count_phrase_matches(config, "Hey Bestie") == 0
+    assert _count_phrase_matches(config, "hey  missy") == 1
+
+
+@pytest.mark.parametrize("value,expected", [(None, 20), ("DEBUG", 10), ("bogus", 20)])
+def test_bridge_log_level_comes_from_environment(monkeypatch, value, expected):
+    import logging
+
+    import puck_bridge.server as server
+
+    seen = {}
+    monkeypatch.setattr(logging, "basicConfig", lambda **kw: seen.update(kw))
+    if value is None:
+        monkeypatch.delenv("PUCK_BRIDGE_LOG_LEVEL", raising=False)
+    else:
+        monkeypatch.setenv("PUCK_BRIDGE_LOG_LEVEL", value)
+    monkeypatch.setattr(server.config, "_option_value", lambda *a: (_ for _ in ()).throw(SystemExit(0)))
+    with pytest.raises(SystemExit):
+        server.main(["--help-not-a-flag"])
+    assert seen["level"] == expected

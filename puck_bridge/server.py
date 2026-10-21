@@ -161,7 +161,11 @@ def _home_profile_context(remaining_argv: Sequence[str]) -> tuple[Path, str]:
 
 
 def main(argv: list[str] | None = None) -> int:
-    logging.basicConfig(level=logging.INFO)
+    # PUCK_BRIDGE_LOG_LEVEL=DEBUG enables per-chunk cadence and other DEBUG
+    # traces for a test window; default INFO. Unknown values fall back to INFO.
+    level_name = os.environ.get("PUCK_BRIDGE_LOG_LEVEL", "INFO").strip().upper()
+    level = logging.getLevelName(level_name)
+    logging.basicConfig(level=level if isinstance(level, int) else logging.INFO)
     raw_argv = list(sys.argv[1:] if argv is None else argv)
     args, remaining = build_arg_parser().parse_known_args(raw_argv)
     transport = getattr(args, "transport", "legacy")

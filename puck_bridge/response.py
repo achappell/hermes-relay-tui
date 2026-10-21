@@ -372,6 +372,13 @@ class ResponseStream:
                 self._cv.notify_all()
                 return
             self._audio_format = audio_format
+            # The stall clock was anchored at expect() (upload completion), so
+            # STT and Hermes thinking before audio_start counted against the
+            # prebuffer's 20s stall budget: long answers failed with
+            # "prebuffer stalled" at source_bytes=0 (2026-10-20). Producer
+            # progress for PCM starts when the answer's audio is announced.
+            if self._source_bytes == 0:
+                self._last_source_progress = self._clock()
             self._cv.notify_all()
         logger.debug("puck response stream opened seq=%s format=%s", seq, audio_format)
 

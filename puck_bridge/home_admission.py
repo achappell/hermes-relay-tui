@@ -380,7 +380,18 @@ class HomePuckSessionFactory:
                 )
                 mapping = _matching_mapping(configuration, wake_phrase)
                 if mapping is None:
-                    return HomeAdmissionResult("denied", reason="wake_mapping_unavailable")
+                    # Name the phrase (a configured wake-model name, never
+                    # captured speech) and how many Home mappings matched it,
+                    # so an unmapped A/B model is distinguishable from an
+                    # ambiguous Home configuration.
+                    return HomeAdmissionResult(
+                        "denied",
+                        reason="wake_mapping_unavailable:%s:matches=%d"
+                        % (
+                            _normalize_phrase(wake_phrase) or "-",
+                            _count_phrase_matches(configuration, wake_phrase),
+                        ),
+                    )
                 revision = configuration["snapshot"]["revision"]
                 claim_id = f"claim-{uuid.uuid4().hex}"
                 claim = {
@@ -623,6 +634,18 @@ def _api_base_from_bridge(url: str) -> str:
 
 def _normalize_phrase(value: str) -> str:
     return " ".join(unicodedata.normalize("NFKC", value).split()).casefold()
+
+
+def _count_phrase_matches(configuration: dict[str, Any], wake_phrase: str) -> int:
+    wanted = _normalize_phrase(wake_phrase)
+    mappings = configuration.get("snapshot", {}).get("wake_mappings", [])
+    return sum(
+        1
+        for mapping in mappings
+        if isinstance(mapping, dict)
+        and isinstance(mapping.get("phrase"), str)
+        and _normalize_phrase(mapping["phrase"]) == wanted
+    )
 
 
 def _matching_mapping(
