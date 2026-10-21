@@ -657,10 +657,42 @@ static void recovery_after_worker_fault() {
   }
 }
 
+static void playback_stats() {
+  // 48 kHz output, 480-frame (10 ms) DMA buffers.
+  i2s_audio::PlaybackStatsTracker probe;
+  // Leading silence before any audio is not an underrun.
+  probe.note_dma_buffer(0, 480, 48000);
+  probe.note_dma_buffer(480, 480, 48000);
+  probe.note_dma_buffer(480, 480, 48000);
+  // A 30 ms gap (half-buffer tail + 2 empty buffers + half-buffer head is
+  // 240 + 960 frames = 25 ms), then audio resumes: one underrun.
+  probe.note_dma_buffer(240, 480, 48000);
+  probe.note_dma_buffer(0, 480, 48000);
+  probe.note_dma_buffer(0, 480, 48000);
+  probe.note_dma_buffer(480, 480, 48000);
+  // A shorter 10 ms gap: second underrun, longest unchanged.
+  probe.note_dma_buffer(0, 480, 48000);
+  probe.note_dma_buffer(480, 480, 48000);
+  // Trailing silence after the last real audio is not an underrun.
+  probe.note_dma_buffer(0, 480, 48000);
+  probe.note_dma_buffer(0, 480, 48000);
+  auto stats = probe.stats();
+  assert(stats.underruns == 2);
+  assert(stats.longest_underrun_ms == 25);
+  assert(stats.played_ms == (480 * 4 + 240) * 1000 / 48000);
+  probe.request_reset();
+  probe.note_dma_buffer(0, 480, 48000);
+  stats = probe.stats();
+  assert(stats.underruns == 0 && stats.longest_underrun_ms == 0 && stats.played_ms == 0);
+  probe.note_dma_buffer(480, 480, 48000);  // reset also forgets the old gap
+  assert(probe.stats().underruns == 0);
+}
+
 int main(int argc, char **argv) {
   assert(argc == 2);
   const std::string scenario = argv[1];
   fake::scenario = scenario;
+  if (scenario == "playback-stats") { playback_stats(); return 0; }
   if (scenario == "setup") setup_failure();
   else if (scenario == "recovery") recovery_after_worker_fault();
   else if (scenario == "channel-allocate" || scenario == "channel-init" || scenario == "queue-first" ||
@@ -721,3 +753,10 @@ def test_actual_speaker_fault_receipt_and_diagnostic(speaker_binary, scenario):
         [str(speaker_binary), scenario], capture_output=True, text=True, timeout=10,
     )
     assert result.returncode == 0, f"{scenario}:\n{result.stdout}{result.stderr}"
+
+
+def test_speaker_counts_audible_underruns_but_not_leading_or_trailing_silence(speaker_binary):
+    result = subprocess.run(
+        [str(speaker_binary), "playback-stats"], capture_output=True, text=True, timeout=10,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr

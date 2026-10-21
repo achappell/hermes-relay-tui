@@ -7,7 +7,7 @@
 # wake engine on top of that base. Identity/credential logic and
 # audio-streaming-to-host logic are later story boundaries; follow-on Puck
 # slices now also appear below but are not Story 3 ownership. The current wake
-# candidates are `hey_missy`, `hey_bestie`, and `hey_skippy`, not "hey hermes";
+# candidates are `hey_missy` and `hey_skippy`, not "hey hermes";
 # see README.md's "Wake Models" section for the model history and boundaries.
 #
 # Adapted from Seeed's own reSpeaker Lite ESPHome reference config
@@ -71,7 +71,6 @@ esphome:
         # __init__.py's "default_enabled = i == 0") -- hey_missy, listed
         # first below, gets this for free. Every model after it needs its
         # own explicit enable_model call or it's silently never invoked.
-        - micro_wake_word.enable_model: hey_bestie
         - micro_wake_word.enable_model: hey_skippy
         - lambda: pcm_capture::setup(${puck_pcm_diagnostics}, "${puck_pcm_diagnostics_url}");
         # Story 5: the VAD-gated, single-shot, wake-triggered capture
@@ -93,6 +92,12 @@ esphome:
             id(puck_resampler).add_audio_output_callback([](uint32_t frames, int64_t) {
               if (frames > 0) puck_response::playback_progress();
             });
+            puck_response::set_playback_stats_source(
+                []() -> puck_response::PlaybackStats {
+                  const auto stats = id(puck_speaker).playback_stats();
+                  return {stats.played_ms, stats.underruns, stats.longest_underrun_ms};
+                },
+                []() { id(puck_speaker).reset_playback_stats(); });
             puck_audio_handoff::set_output_reader([]() -> puck_audio_handoff::Output {
               return {
                   id(puck_media_player).state == media_player::MEDIA_PLAYER_STATE_IDLE,
@@ -569,7 +574,7 @@ media_player:
       num_channels: 1
 
 # On-device wake-word detection. Wake phrase candidates are microwakeword.com-
-# trained models (hey_missy/hey_bestie/hey_skippy below), A/B'd live against
+# trained models (hey_missy/hey_skippy below), A/B'd live against
 # each other on real hardware -- see README.md for the "not hey hermes"
 # history. The `stop` model is ESPHome's bundled internal model, kept
 # internal (not exposed as a separately toggleable Home Assistant entity).
@@ -594,13 +599,12 @@ micro_wake_word:
     - model: wake_models/stop.json
       id: stop
       internal: true
+    # hey_bestie was removed from the build on 2026-10-21: Home has no
+    # mapping for it, and it fired (probably on "Hey Missy") into two
+    # wake_mapping_unavailable refusals that day. Its model file stays in
+    # wake_models/ as a test fixture only.
     # Also trained via microwakeword.com, same A/B purpose as hey_missy
     # above -- comparing candidate wake phrases live, not primary.
-    - model: wake_models/hey_bestie.json
-      id: hey_bestie
-    # Also trained via microwakeword.com, same A/B purpose as hey_missy
-    # and hey_bestie above -- comparing candidate wake phrases live, not
-    # primary.
     - model: wake_models/hey_skippy.json
       id: hey_skippy
   vad:
@@ -794,6 +798,9 @@ interval:
     then:
       - lambda: |-
           const auto output = puck_audio_handoff::current_output();
+          if (puck_response::playback_in_progress() && wifi::global_wifi_component != nullptr) {
+            puck_response::sample_rssi(wifi::global_wifi_component->wifi_rssi());
+          }
           puck_response::check_playback_progress(puck_audio_handoff::response_failed(output));
           // A short stream can finish between player state publications.
           // Its real successful drain still permits status confirmation.
@@ -869,7 +876,8 @@ interval:
                 url: !lambda |-
                   return std::string("http://${puck_bridge_host}:${puck_bridge_port}/response-status?seq=") +
                   std::to_string(puck_response::sequence()) +
-                  "&token=" + puck_response::url_encode("${puck_device_token}");
+                  "&token=" + puck_response::url_encode("${puck_device_token}") +
+                  puck_response::telemetry_query();
                 capture_response: true
                 max_response_buffer_size: 128
                 on_response:

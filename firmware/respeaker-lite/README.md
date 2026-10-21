@@ -51,9 +51,11 @@ are documented and owned separately.
 ## Wake Models (Story 3)
 
 The current production build listens for the locally trained candidates
-**`hey_missy`**, **`hey_bestie`**, and **`hey_skippy`**. `hey_missy` is listed
-first and is the default; the other two are explicitly enabled for live A/B
-testing because ESPHome enables only the first model by default. The internal
+**`hey_missy`** and **`hey_skippy`**. `hey_missy` is listed first and is the
+default; `hey_skippy` is explicitly enabled for live A/B testing because
+ESPHome enables only the first model by default. `hey_bestie` was removed from
+the build on 2026-10-21: Home has no mapping for it and it caused
+`wake_mapping_unavailable` refusals. The internal
 `stop` model remains a helper for the Puck's local flow, not a household
 Profile mapping, and `vad` supports endpointing.
 
@@ -261,7 +263,7 @@ audio is too loud and a browser is not already open.
    Assistant/ESPHome via mDNS (`respeaker-lite.local`) and the `api:`
    component.
 5. **Wake-word check (Story 3):** with `esphome logs` attached, speak one
-   configured candidate (`hey_missy`, `hey_bestie`, or `hey_skippy`) clearly
+   configured candidate (`hey_missy` or `hey_skippy`) clearly
    near the physical device. A `micro_wake_word` detection log line with the
    corresponding model id should appear shortly after — this is the actual
    on-hardware proof that the I2S audio path and wake engine work, not just
@@ -271,7 +273,7 @@ audio is too loud and a browser is not already open.
 ## Known Limitation
 
 The on-device wake pipeline is verified on the physical Puck. The current
-production candidates are `hey_missy`, `hey_bestie`, and `hey_skippy`, using
+production candidates are `hey_missy` and `hey_skippy`, using
 XMOS firmware 1.1.0 and the reference unfiltered decimation. The remaining
 installation limitation is that the flashed device currently uses placeholder
 WiFi credentials (`placeholder-ssid`); it will not join the household network

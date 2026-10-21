@@ -131,6 +131,14 @@ def _write_capture_stubs(tmp_path):
           std::uint32_t playback_error_generation() const { return errors; }
           void set_output_error_generation_callback(std::uint32_t (*reader)()) { error_reader = reader; }
           void add_audio_output_callback(void (*callback)(std::uint32_t, std::int64_t)) { audio_callback = callback; }
+          struct Stats { std::uint32_t played_ms = 0, underruns = 0, longest_underrun_ms = 0; } stats;
+          unsigned stats_resets = 0;
+          Stats playback_stats() const { return stats; }
+          void reset_playback_stats() { ++stats_resets; stats = Stats{}; }
+        };
+        struct WifiFixture {
+          float rssi = -60.0f;
+          float wifi_rssi() const { return rssi; }
         };
         struct MediaPlayer {
           media_player::MediaPlayerState state = media_player::MEDIA_PLAYER_STATE_IDLE;
@@ -149,9 +157,13 @@ def _write_capture_stubs(tmp_path):
           }
         };
         inline Detector mww;
+        inline WifiFixture wifi_fixture;
         inline OutputDevice puck_resampler, puck_speaker;
         inline MediaPlayer puck_media_player;
         inline HttpSource puck_http_source, puck_local_source;
+        }
+        namespace wifi {
+        inline puck_firmware_fixture::WifiFixture *global_wifi_component = &puck_firmware_fixture::wifi_fixture;
         }
     """))
     (tmp_path / "esphome/core").mkdir(parents=True)
@@ -1833,3 +1845,65 @@ def test_wifi_modem_sleep_is_disabled_for_streamed_playback():
         Loader=yaml.BaseLoader,
     )
     assert config["wifi"]["power_save_mode"] == "none"
+
+
+def test_playback_telemetry_rides_on_the_status_poll_only_after_real_playback(tmp_path):
+    compiler = shutil.which("clang++") or shutil.which("c++")
+    if compiler is None:
+        pytest.skip("no C++ compiler available for the response-state harness")
+    _write_capture_stubs(tmp_path)
+    _compile_and_run_capture_harness(tmp_path, compiler, r"""
+        #include "pcm_capture.h"
+        #include <cassert>
+        std::uint32_t fake_millis = 1000;
+        static unsigned resets = 0;
+        int main() {
+          puck_identity::setup("configured");
+          puck_response::set_playback_stats_source(
+              []() -> puck_response::PlaybackStats { return {6080, 3, 420}; },
+              []() { ++resets; });
+          // Empty capture: nothing played, nothing reported.
+          puck_response::begin(1, true);
+          assert(resets == 1 && puck_response::telemetry_query().empty());
+          puck_response::begin(2, false);
+          assert(resets == 2);
+          puck_response::sample_rssi(-50.0f);  // before playback: ignored
+          fake_millis = 2000;
+          puck_response::announcement_started();
+          assert(puck_response::playback_in_progress());
+          puck_response::sample_rssi(-60.0f);
+          puck_response::sample_rssi(-70.0f);
+          puck_response::sample_rssi(0.0f);  // not a real RSSI
+          assert(puck_response::telemetry_query().empty());  // still playing
+          fake_millis = 9750;
+          puck_response::media_idle();
+          puck_response::sample_rssi(-90.0f);  // after playback: ignored
+          assert(!puck_response::playback_in_progress());
+          assert(puck_response::telemetry_query() ==
+                 "&pb_wall_ms=7750&pb_played_ms=6080&pb_underruns=3"
+                 "&pb_longest_underrun_ms=420&pb_rssi_min=-70&pb_rssi_avg=-65");
+          return 0;
+        }
+    """)
+
+
+def test_status_poll_url_carries_playback_telemetry():
+    config = (Path(__file__).resolve().parents[1] / "firmware/respeaker-lite/respeaker-lite.yaml").read_text()
+    assert "/response-status?seq=" in config
+    status_block = config[config.index("/response-status?seq="):]
+    assert "puck_response::telemetry_query()" in status_block[:400]
+    assert "set_playback_stats_source" in config
+    assert "puck_response::sample_rssi(wifi::global_wifi_component->wifi_rssi())" in config
+
+
+def test_unmapped_hey_bestie_is_not_built_or_enabled():
+    """2026-10-21: hey_bestie has no Home mapping and caused two
+    wake_mapping_unavailable refusals; it is out of the build."""
+    config = yaml.load(
+        (Path(__file__).resolve().parents[1] / "firmware/respeaker-lite/respeaker-lite.yaml").read_text(),
+        Loader=yaml.BaseLoader,
+    )
+    ids = [model["id"] for model in config["micro_wake_word"]["models"]]
+    assert ids == ["hey_missy", "stop", "hey_skippy"]
+    assert "enable_model: hey_bestie" not in (
+        Path(__file__).resolve().parents[1] / "firmware/respeaker-lite/respeaker-lite.yaml").read_text()
