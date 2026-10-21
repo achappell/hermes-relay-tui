@@ -370,3 +370,21 @@ The short answer played smoothly. The long answer ("tell me about the planets") 
 - **`home:wake_mapping_unavailable`.** Home denies with this reason when the device configuration has zero or more than one mapping whose NFKC-casefolded phrase equals the detected wake phrase (`home_admission.py` `_matching_mapping`). The Puck runs public A/B models "Hey Bestie" and "Hey Skippy" alongside "Hey Missy". A false or A/B detection of a phrase that Home does not map produces exactly this denial [INFERENCE: the phrase was not logged]. The reason now carries the normalized phrase and the match count.
 - **Log level.** Set `PUCK_BRIDGE_LOG_LEVEL` (default INFO) to change the bridge's log level; DEBUG enables the per-chunk cadence lines.
 - **Follow-up silence guard:** unchanged (low priority, no per-capture firmware probabilities retained).
+
+### Producer-side evidence and the thinking hold — 2026-10-21
+
+Read-only on the Home host (CaticornQueen): the Home runtime drives the Hermes turn and forwards text deltas to the streaming TTS sidecar. That sidecar is `qwen3_streaming_server.py` on :8767, `mode=stream format=pcm`, with sentence-sized requests of 37–84 characters. Its log (local time UTC−5) and Home's safe-event export show:
+
+| Failure | Home turn started | First TTS request | Outcome |
+|---|---|---|---|
+| 22:26:52Z | 22:27:05Z | none before the bridge gave up | no text reached TTS |
+| 22:36:29Z | 22:36:37Z | none before the bridge gave up | no text reached TTS |
+| 02:00:05Z (planets) | 02:00:20Z | 02:00:44.7Z; first audio 0.68 s later | the bridge and Puck had already failed at 02:00:45.27; TTS logged `synthesis_aborted` / client disconnected |
+| 02:00:53Z | 02:01:04Z | none before the 25 s abandonment at 02:01:30Z | no text reached TTS |
+
+The TTS server was up throughout (health lines every 60 s, busy=0). When called, it streamed first audio in 0.38–0.68 s. **Streaming TTS is already in place and was not the gap.** The gap is the LLM: on these questions it took 25 s or more to yield its first speakable text. The bridge's 20–25 s first-audio budgets and the Puck's ~30 s header window then turned that slowness into a refusal. No TTS error was found, apart from the abort that followed the bridge giving up. The LLM's own logs are not on this host.
+
+Fix in this branch (no duplicate TTS streaming):
+- If the answer is not ready 2 s after a `/response` fetch, the bridge commits the response: a WAV header (24 kHz mono S16), a soft two-pulse "thinking" earcon (−20 dBFS, 0.32 s), then real-time silence until the answer's first PCM. The device's per-attempt header timeout is never reached.
+- The first-audio budgets are now 60 s for the turn and 63 s for the reader. These are bounded by how long a person will wait, not by the device's header window.
+- An answer that turns out silent ends the stream cleanly. A real failure still ends it without EOF, which plays the refusal.

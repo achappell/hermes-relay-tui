@@ -2529,18 +2529,17 @@ def test_streaming_wav_header_declares_a_sentinel_length():
     assert struct.unpack("<I", header[40:44])[0] != 0
 
 
-def test_response_format_budget_covers_turn_budget_inside_device_header_window():
-    """The reader must outlast transcription + the turn's first-audio budget
-    (so a late first audio is never orphaned behind a 504), and still answer
-    before the Puck's audio reader gives up on headers (6 x 5 s)."""
+def test_response_budgets_rely_on_thinking_keepalive_not_the_device_window():
+    """The reader outlasts transcription plus the turn's first-audio budget,
+    and a slow answer is held open by the thinking keepalive, which starts
+    well before the Puck's 5 s per-attempt header timeout."""
+    import puck_bridge.receiver as receiver_mod
     import puck_bridge.response as response_mod
     import puck_bridge.turn as turn_mod
 
     assert response_mod.FORMAT_WAIT_SECONDS >= turn_mod.FIRST_EVENT_TIMEOUT_SECONDS + 3.0
-    assert response_mod.FORMAT_WAIT_SECONDS < 30.0
-    # 2026-10-20: an ordinary answer took 17 s from transcript to first audio.
+    assert receiver_mod.THINKING_DELAY_SECONDS < 5.0
     assert turn_mod.FIRST_EVENT_TIMEOUT_SECONDS >= 25.0
-
 
 def test_response_stream_delivers_chunks_in_order_then_ends():
     from puck_bridge.response import ResponseStream
@@ -3674,7 +3673,9 @@ def test_a_second_concurrent_response_fetch_is_refused(tmp_path):
     stream = ResponseStream()
     stream.expect()
     stream.begin(1, (24000, 1, 2))
-    stream.write(b"hold")
+    # Enough to clear the prebuffer, so the first reader is really streaming
+    # (a fetch still waiting for its prebuffer is superseded, not refused).
+    stream.write(b"\x00\x00" * 24000 * 4)
 
     handler_cls = make_handler(
         expected_token="s3cret",
@@ -3732,7 +3733,7 @@ def test_active_sequence_rejects_duplicate_future_and_stale_fetches(tmp_path):
     first = threading.Thread(target=_first, daemon=True)
     first.start()
     try:
-        deadline = _time.monotonic() + 2.0
+        deadline = _time.monotonic() + 6.0
         while not stream._reader_active and _time.monotonic() < deadline:
             _time.sleep(0.01)
         assert stream._reader_active, "the first fetch never claimed ownership"
@@ -4513,7 +4514,7 @@ def test_unanswered_follow_up_ends_silent_not_unavailable(monkeypatch):
     assert [t for t, _ in session.turns] == ["first question", "thank you"]
 
 
-def test_wav_header_is_held_until_the_prebuffer_is_ready(tmp_path):
+def test_wav_header_is_held_until_the_prebuffer_is_ready(tmp_path, monkeypatch):
     """2026-10-20 retest: crackle at the START of the answer. The WAV header
     used to leave before the prebuffer, letting the Puck's decoder start the
     speaker with no PCM behind it. Header and cushion now leave together."""
@@ -4521,6 +4522,9 @@ def test_wav_header_is_held_until_the_prebuffer_is_ready(tmp_path):
 
     from puck_bridge.response import PREBUFFER_SECONDS, ResponseStream
 
+    import puck_bridge.receiver as receiver_mod
+
+    monkeypatch.setattr(receiver_mod, "THINKING_DELAY_SECONDS", 30.0)
     stream = ResponseStream()
     assert stream.expect(seq=6)
     stream.begin(6, (24000, 1, 2))
@@ -4547,8 +4551,7 @@ def test_wav_header_is_held_until_the_prebuffer_is_ready(tmp_path):
         except socket.timeout:
             pass
         head, _, body = received.partition(b"\r\n\r\n")
-        assert head.startswith(b"HTTP/1.1 200")
-        assert body == b"", "no WAV header may precede the prebuffer"
+        assert b"RIFF" not in received, "no WAV header may precede the prebuffer"
         stream.write(b"\x01\x00" * int(24000 * PREBUFFER_SECONDS), seq=6)
         stream.finish()
         sock.settimeout(5)
@@ -4805,3 +4808,111 @@ def test_bridge_log_level_comes_from_environment(monkeypatch, value, expected):
     with pytest.raises(SystemExit):
         server.main(["--help-not-a-flag"])
     assert seen["level"] == expected
+
+
+def _read_chunked_stream(sock, until_eof=True, limit_seconds=10.0):
+    import time as _t
+
+    sock.settimeout(0.2)
+    data = b""
+    end = _t.monotonic() + limit_seconds
+    while _t.monotonic() < end:
+        try:
+            piece = sock.recv(65536)
+        except OSError:
+            continue
+        if not piece:
+            break
+        data += piece
+        if until_eof and data.endswith(b"0\r\n\r\n"):
+            break
+    return data
+
+
+def _dechunk(body: bytes) -> bytes:
+    out = b""
+    while body:
+        size_line, _, rest = body.partition(b"\r\n")
+        size = int(size_line, 16)
+        if size == 0:
+            break
+        out += rest[:size]
+        body = rest[size + 2:]
+    return out
+
+
+def test_slow_answer_gets_thinking_ack_and_keepalive_then_plays(tmp_path, monkeypatch):
+    """2026-10-20: long answers produced no audio within 25 s; the Puck gave
+    up on headers ~30 s after its fetch and played the refusal. A slow answer
+    now gets an immediate earcon + real-time silence, then the real audio
+    on the same connection."""
+    import socket
+
+    import puck_bridge.receiver as receiver_mod
+    from puck_bridge.response import ResponseStream
+
+    monkeypatch.setattr(receiver_mod, "THINKING_DELAY_SECONDS", 0.2)
+    stream = ResponseStream()
+    assert stream.expect(seq=8)
+    handler_cls = make_handler(
+        expected_token="s3cret",
+        on_transcript=_RecordingSink(),
+        transcribe_fn=_fake_transcribe(),
+        work_dir=tmp_path,
+        response_stream=stream,
+    )
+    server = _start_server(handler_cls)
+    try:
+        sock = socket.create_connection(("127.0.0.1", server.server_address[1]), timeout=5)
+        sock.sendall(b"GET /response?seq=8&token=s3cret HTTP/1.1\r\nHost: puck\r\n\r\n")
+        early = _read_chunked_stream(sock, until_eof=False, limit_seconds=1.0)
+        head, _, body = early.partition(b"\r\n\r\n")
+        assert head.startswith(b"HTTP/1.1 200")
+        assert len(_dechunk(body)) > 44 + len(receiver_mod.thinking_earcon_pcm())
+        assert _dechunk(body)[:4] == b"RIFF"
+        stream.begin(8, (24000, 1, 2))
+        answer = b"\x11\x22" * 24000 * 4
+        stream.write(answer, seq=8)
+        stream.finish()
+        rest = _read_chunked_stream(sock)
+        sock.close()
+    finally:
+        server.shutdown()
+    payload = _dechunk(body + rest)
+    assert payload.endswith(answer)
+    assert payload.count(b"RIFF") == 1
+
+
+def test_slow_empty_answer_after_thinking_ends_cleanly(tmp_path, monkeypatch):
+    import socket
+
+    import puck_bridge.receiver as receiver_mod
+    from puck_bridge.response import ResponseStream
+
+    monkeypatch.setattr(receiver_mod, "THINKING_DELAY_SECONDS", 0.2)
+    stream = ResponseStream()
+    assert stream.expect(seq=9)
+    server = _start_server(make_handler(
+        expected_token="s3cret", on_transcript=_RecordingSink(),
+        transcribe_fn=_fake_transcribe(), work_dir=tmp_path, response_stream=stream))
+    try:
+        sock = socket.create_connection(("127.0.0.1", server.server_address[1]), timeout=5)
+        sock.sendall(b"GET /response?seq=9&token=s3cret HTTP/1.1\r\nHost: puck\r\n\r\n")
+        _read_chunked_stream(sock, until_eof=False, limit_seconds=0.6)
+        assert stream.silent(9, reason="empty_transcript") or stream.status_for(9) == "silent"
+        tail = _read_chunked_stream(sock)
+        sock.close()
+    finally:
+        server.shutdown()
+    assert tail.endswith(b"0\r\n\r\n")
+    assert stream.status_for(9) == "silent"
+
+
+def test_thinking_earcon_is_soft_and_short():
+    import array
+
+    from puck_bridge.receiver import thinking_earcon_pcm
+
+    pcm = array.array("h", thinking_earcon_pcm())
+    assert 0.2 < len(pcm) / 24000 < 0.5
+    assert max(abs(v) for v in pcm) <= int(0.1 * 32767) + 1

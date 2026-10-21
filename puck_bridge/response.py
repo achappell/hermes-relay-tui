@@ -38,7 +38,12 @@ logger = logging.getLogger("hermes_relay_tui.puck_bridge.response")
 # giving up. This covers the turn runner's first-audio budget plus transcription. Keeping the endpoint and producer on one budget matters: a valid
 # first audio event arriving after one side has already given the Puck a 504
 # is a silent delivery failure.
-FIRST_AUDIO_TIMEOUT_SECONDS = 28.0  # turn budget 25s + ~3s STT; under the Puck's 30s
+#
+# 63s (turn budget 60s + ~3s STT). The Puck's ~30s header window no longer
+# bounds this: once an answer is slow the reader holds the device's
+# connection open with the thinking acknowledgement and keepalive silence
+# (receiver.py), so a long answer is waited for instead of refused.
+FIRST_AUDIO_TIMEOUT_SECONDS = 63.0
 FORMAT_WAIT_SECONDS = FIRST_AUDIO_TIMEOUT_SECONDS
 
 # How long a reader blocks for the next chunk before checking whether the
@@ -309,7 +314,13 @@ class ResponseStream:
         with self._cv:
             if (
                 not self._matches_locked(seq)
-                or self._reader_active
+                # A reader holding the connection with the thinking keepalive
+                # has sent no answer audio yet, so a silent outcome is still
+                # truthful; once answer audio exists, silent is not.
+                or (
+                    self._reader_active
+                    and (self._audio_format is not None or self._source_bytes)
+                )
                 or self._eof_pending
             ):
                 return False
@@ -796,6 +807,42 @@ class ResponseStream:
             )
             return self._audio_format
 
+    @property
+    def audio_format(self) -> tuple[int, int, int] | None:
+        with self._cv:
+            return self._audio_format
+
+    @property
+    def source_bytes(self) -> int:
+        with self._cv:
+            return self._source_bytes
+
+    def answer_ready(self, seconds: float = PREBUFFER_SECONDS) -> bool:
+        """True once the reader could start the real answer without waiting.
+
+        That is: a terminal outcome is known, or the format is declared and
+        either `seconds` of audio is queued or the source has finished.
+        """
+        with self._cv:
+            if self._source_terminal is not None or not self._expecting:
+                return True
+            if self._audio_format is None:
+                return False
+            sample_rate, channels, width = self._audio_format
+            target = min(int(sample_rate * channels * width * seconds), self._max_queue_bytes)
+            return self._queued_bytes >= target
+
+    def wait_answer_ready(self, timeout: float, seconds: float = PREBUFFER_SECONDS) -> bool:
+        deadline = self._clock() + timeout
+        while True:
+            if self.answer_ready(seconds):
+                return True
+            remaining = deadline - self._clock()
+            if remaining <= 0:
+                return False
+            with self._cv:
+                self._cv.wait(min(CHUNK_POLL_SECONDS, remaining))
+
     def wait_for_prebuffer(
         self, audio_format: tuple[int, int, int], seconds: float = PREBUFFER_SECONDS
     ) -> bool:
@@ -815,18 +862,22 @@ class ResponseStream:
         with self._cv:
             last_source_progress = self._last_source_progress
             while self._source_terminal is None and self._queued_bytes < target:
-                remaining = self._stall_timeout - (
-                    self._clock() - last_source_progress
+                # Before the first PCM the producer is still synthesizing the
+                # opening sentence; hold it to the first-audio budget, not the
+                # mid-stream stall budget.
+                budget = (
+                    FIRST_AUDIO_TIMEOUT_SECONDS
+                    if self._source_bytes == 0
+                    else self._stall_timeout
                 )
+                remaining = budget - (self._clock() - last_source_progress)
                 if remaining <= 0:
-                    self._stall_duration = max(
-                        self._stall_duration, self._stall_timeout
-                    )
+                    self._stall_duration = max(self._stall_duration, budget)
                     self._mark_unavailable_locked(reason="producer_stall")
                     logger.warning(
                         "puck response prebuffer stalled for %.0fs; "
                         "ending the body as unavailable",
-                        self._stall_timeout,
+                        budget,
                     )
                     return False
                 self._cv.wait(min(CHUNK_POLL_SECONDS, remaining))

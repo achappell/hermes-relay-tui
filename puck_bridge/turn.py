@@ -59,12 +59,12 @@ logger = logging.getLogger("hermes_relay_tui.puck_bridge.turn")
 # thinking, and tool events do not mean that the spoken response has begun;
 # keep this budget until audio_start (or an audio-file fallback) arrives.
 #
-# 25s, not 20s (2026-10-20 retest): Hermes needed 17s from transcript to first
-# audio for an ordinary answer, and a follow-up was abandoned at 20s. The
-# Puck's audio reader allows 6 x 5s = 30s for response headers from its first
-# fetch, and transcription precedes this budget by ~2-3s, so 25s keeps the
-# bridge's verdict inside the device's window.
-FIRST_EVENT_TIMEOUT_SECONDS = 25.0
+# 60s: Hermes needed 17s to the first audio of an ordinary answer and longer
+# answers produced nothing within 25s (2026-10-20). The Puck no longer imposes
+# its ~30s header window here -- the bridge answers slow fetches with a
+# thinking acknowledgement plus keepalive silence -- so the bound is how long
+# a person will wait for a spoken answer, not a device limit.
+FIRST_EVENT_TIMEOUT_SECONDS = 60.0
 
 # Maximum gap BETWEEN events once the stream has started. A healthy
 # response emits audio chunks continuously, so a long silence mid-stream
