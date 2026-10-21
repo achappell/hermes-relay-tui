@@ -4793,22 +4793,35 @@ def test_unmapped_wake_phrase_denial_names_phrase_and_match_count():
 
 
 @pytest.mark.parametrize("value,expected", [(None, 20), ("DEBUG", 10), ("bogus", 20)])
-def test_bridge_log_level_comes_from_environment(monkeypatch, value, expected):
+def test_bridge_log_level_scopes_to_the_bridge_hierarchy(monkeypatch, value, expected):
+    """PUCK_BRIDGE_LOG_LEVEL tunes only hermes_relay_tui.puck_bridge; root and
+    third-party loggers (httpx, websockets, faster_whisper) stay at INFO so
+    DEBUG never puts headers or tokens in the journal."""
     import logging
 
     import puck_bridge.server as server
 
-    seen = {}
-    monkeypatch.setattr(logging, "basicConfig", lambda **kw: seen.update(kw))
-    if value is None:
-        monkeypatch.delenv("PUCK_BRIDGE_LOG_LEVEL", raising=False)
-    else:
-        monkeypatch.setenv("PUCK_BRIDGE_LOG_LEVEL", value)
-    monkeypatch.setattr(server.config, "_option_value", lambda *a: (_ for _ in ()).throw(SystemExit(0)))
-    with pytest.raises(SystemExit):
-        server.main(["--help-not-a-flag"])
-    assert seen["level"] == expected
-
+    root = logging.getLogger()
+    saved_root = (root.level, list(root.handlers))
+    bridge = logging.getLogger(server.BRIDGE_LOGGER)
+    saved_bridge = bridge.level
+    try:
+        root.handlers = []
+        root.setLevel(logging.WARNING)
+        if value is None:
+            monkeypatch.delenv("PUCK_BRIDGE_LOG_LEVEL", raising=False)
+        else:
+            monkeypatch.setenv("PUCK_BRIDGE_LOG_LEVEL", value)
+        server.configure_logging()
+        assert bridge.getEffectiveLevel() == expected
+        assert logging.getLogger("hermes_relay_tui.puck_bridge.receiver").isEnabledFor(logging.DEBUG) == (expected == 10)
+        assert root.level == logging.INFO
+        for name in ("httpx", "httpx2", "httpcore", "websockets", "websockets.client", "faster_whisper", "urllib3"):
+            assert not logging.getLogger(name).isEnabledFor(logging.DEBUG), name
+    finally:
+        root.handlers = saved_root[1]
+        root.setLevel(saved_root[0])
+        bridge.setLevel(saved_bridge)
 
 def _read_chunked_stream(sock, until_eof=True, limit_seconds=10.0):
     import time as _t
