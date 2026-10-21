@@ -574,12 +574,7 @@ class FakeSession:
         return _events()
 
 
-def test_turn_runner_submits_exactly_one_turn_and_plays_the_response(monkeypatch):
-    import puck_bridge.turn as _turn_mod
-
-    # The follow-up window scales with the 16 MB response queue; this host-
-    # player test does not exercise it.
-    monkeypatch.setattr(_turn_mod, "FOLLOW_UP_CAPTURE_WAIT_SECONDS", 1.0)
+def test_turn_runner_submits_exactly_one_turn_and_plays_the_response():
     session = FakeSession()
     player = FakePlayer()
     runner = TurnRunner(session, player=player)
@@ -1631,12 +1626,7 @@ def test_turn_runner_reports_remote_error_as_failed_delivery(caplog):
         runner.stop()
 
 
-def test_turn_runner_falls_back_to_the_audio_file_when_no_chunks_streamed(tmp_path, monkeypatch):
-    import puck_bridge.turn as _turn_mod
-
-    # The follow-up window scales with the 16 MB response queue; this host-
-    # player test does not exercise it.
-    monkeypatch.setattr(_turn_mod, "FOLLOW_UP_CAPTURE_WAIT_SECONDS", 1.0)
+def test_turn_runner_falls_back_to_the_audio_file_when_no_chunks_streamed(tmp_path):
     from audio import write_wav
 
     wav_path = tmp_path / "response.wav"
@@ -5028,6 +5018,25 @@ def test_parse_playback_report_validates_fields():
 
 def test_status_poll_with_playback_report_logs_one_joined_line(tmp_path, caplog):
     import logging
+def test_follow_up_window_is_bounded_after_delivery_whatever_the_queue_size():
+    """#267 tradeoff: deriving the guard from the 16 MB queue made the
+    no-capture worst case ~510 s. The fixed part now covers only the Puck's
+    read-ahead, the capture window and a margin."""
+    import puck_bridge.turn as turn_mod
+
+    assert turn_mod.FOLLOW_UP_CAPTURE_WAIT_SECONDS <= 30.0
+
+
+def _follow_up_runner(monkeypatch, stream):
+    import puck_bridge.turn as turn_mod
+
+    monkeypatch.setattr(turn_mod, "FOLLOW_UP_CAPTURE_WAIT_SECONDS", 0.3)
+    monkeypatch.setattr(turn_mod, "FOLLOW_UP_DELIVERY_POLL_SECONDS", 0.02)
+    return TurnRunner(FakeSession(), response_stream=stream)
+
+
+def test_follow_up_without_capture_expires_soon_after_delivery_ends(monkeypatch):
+    import time as _t
 
     from puck_bridge.response import ResponseStream
 
@@ -5067,3 +5076,43 @@ def test_status_poll_with_playback_report_logs_one_joined_line(tmp_path, caplog)
     assert "longest_underrun_ms=420" in line and "rssi_min=-71" in line and "rssi_avg=-64" in line
     assert "first_pcm_seconds=" in line and "producer_gap_max_seconds=" in line
     assert any("playback report rejected" in r.getMessage() for r in caplog.records)
+    runner = _follow_up_runner(monkeypatch, stream)
+    runner.start()
+    try:
+        started = _t.monotonic()
+        assert runner._take_follow_up_transcript() == ""
+        assert _t.monotonic() - started < 1.0
+    finally:
+        runner.stop()
+
+
+def test_follow_up_window_waits_out_a_long_answer_still_being_delivered(monkeypatch):
+    """A long answer still playing (reader active, PCM queued) must not expire
+    the follow-up window; once delivery ends a capture is still accepted."""
+    import time as _t
+
+    from puck_bridge.response import ResponseStream
+
+    stream = ResponseStream()
+    assert stream.expect(seq=5)
+    stream.begin(5, (24000, 1, 2))
+    stream.write(b"\x00\x00" * 24000, seq=5)
+    assert stream.acquire_reader(5)
+    runner = _follow_up_runner(monkeypatch, stream)
+    runner.start()
+    result = []
+    worker = threading.Thread(target=lambda: result.append(runner._take_follow_up_transcript()))
+    try:
+        worker.start()
+        _t.sleep(1.0)  # > 3x the base window while delivery is ongoing
+        assert worker.is_alive(), "window expired during playback"
+        list(stream.iter_chunks(stall_timeout=0.05))  # drain the queue
+        stream.release_reader()
+        _t.sleep(0.1)
+        with runner._follow_up_condition:
+            runner._follow_up_queue.append(("accepted", "and Saturn?"))
+            runner._follow_up_condition.notify_all()
+        worker.join(2)
+        assert result == ["and Saturn?"]
+    finally:
+        runner.stop()

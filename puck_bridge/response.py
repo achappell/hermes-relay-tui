@@ -822,6 +822,16 @@ class ResponseStream:
             return self._response_started_at
 
     @property
+    def delivery_in_progress(self) -> bool:
+        """True while a device reader is streaming this answer.
+
+        Queued PCM with no reader does not count: an answer nobody fetches
+        must not hold a follow-up window open indefinitely.
+        """
+        with self._cv:
+            return self._reader_active
+
+    @property
     def source_bytes(self) -> int:
         with self._cv:
             return self._source_bytes

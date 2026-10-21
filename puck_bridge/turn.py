@@ -36,7 +36,7 @@ from .home_admission import (
     HOME_WAKE_ADMISSION_TIMEOUT_SECONDS, is_home_identity_rejection,
 )
 from .home_session import HOME_CLAIM_RETIRE_CALL_TIMEOUT_SECONDS
-from .response import MAX_QUEUED_PCM_BYTES, ResponseStreamError
+from .response import ResponseStreamError
 
 logger = logging.getLogger("hermes_relay_tui.puck_bridge.turn")
 
@@ -99,21 +99,27 @@ RECONNECT_TIMEOUT_SECONDS = 10.0
 SHUTDOWN_TIMEOUT_SECONDS = 10.0
 
 # The firmware bounds the actual microphone window to eight seconds. The
-# bridge-side wait also has to cover both bounded PCM buffers: the bridge can
-# hold 16 MB and the Puck's audio_http source can read ahead 300 KB. Use the
-# slowest supported response rate for a conservative playback-tail budget,
-# then add the status poll. This is a bridge backstop, not the user-facing
-# capture limit; the firmware still decides when the microphone window closes.
+# bridge-side wait for that capture starts when the turn's audio has been
+# PRODUCED, but the Puck is still playing it: the bridge's own queue (up to
+# 16 MB, i.e. minutes of a long answer) and the Puck's 300 KB audio_http
+# read-ahead stand between production and the end of playback.
+#
+# Deriving a fixed guard from the 16 MB queue made the no-capture worst case
+# ~510 s. Instead the window is re-armed while the bridge is still delivering
+# (a device reader is streaming the answer), and once delivery ends it is the
+# device read-ahead at the slowest supported rate, the capture window and a
+# margin -- about 20 s, whatever the answer length.
 MIN_RESPONSE_BYTES_PER_SECOND = 16000 * 2  # 16 kHz, 16-bit mono
 PUCK_AUDIO_HTTP_BUFFER_BYTES = 300_000
 FOLLOW_UP_PLAYBACK_GUARD_SECONDS = (
-    (MAX_QUEUED_PCM_BYTES + PUCK_AUDIO_HTTP_BUFFER_BYTES)
-    / MIN_RESPONSE_BYTES_PER_SECOND
-    + 2.0
+    PUCK_AUDIO_HTTP_BUFFER_BYTES / MIN_RESPONSE_BYTES_PER_SECOND + 2.0
 )
 FOLLOW_UP_CAPTURE_WAIT_SECONDS = (
     DEFAULT_LISTEN_TIMEOUT + FOLLOW_UP_PLAYBACK_GUARD_SECONDS + 1.0
 )
+# How often a waiting follow-up re-checks whether delivery is still running.
+FOLLOW_UP_DELIVERY_POLL_SECONDS = 0.5
+
 
 TRANSCRIPT_ACCEPTED = "accepted"
 TRANSCRIPT_SILENT = "silent"
@@ -1136,6 +1142,13 @@ class TurnRunner:
             self._follow_up_waiting = True
             try:
                 while not self._follow_up_queue and not self._stopping.is_set():
+                    stream = self._response_stream
+                    if stream is not None and stream.delivery_in_progress:
+                        # The Puck is still being fed this answer; the capture
+                        # window cannot have opened yet. Re-arm from now.
+                        deadline = time.monotonic() + FOLLOW_UP_CAPTURE_WAIT_SECONDS
+                        self._follow_up_condition.wait(FOLLOW_UP_DELIVERY_POLL_SECONDS)
+                        continue
                     remaining = deadline - time.monotonic()
                     if remaining <= 0:
                         logger.info(
@@ -1143,7 +1156,9 @@ class TurnRunner:
                         )
                         self._follow_up_admission = False
                         return ""
-                    self._follow_up_condition.wait(remaining)
+                    self._follow_up_condition.wait(
+                        min(remaining, FOLLOW_UP_DELIVERY_POLL_SECONDS)
+                    )
                 if not self._follow_up_queue:
                     self._follow_up_admission = False
                     return ""
