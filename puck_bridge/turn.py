@@ -100,7 +100,7 @@ SHUTDOWN_TIMEOUT_SECONDS = 10.0
 
 # The firmware bounds the actual microphone window to eight seconds. The
 # bridge-side wait also has to cover both bounded PCM buffers: the bridge can
-# hold 480 KB and the Puck's audio_http source can read ahead 300 KB. Use the
+# hold 16 MB and the Puck's audio_http source can read ahead 300 KB. Use the
 # slowest supported response rate for a conservative playback-tail budget,
 # then add the status poll. This is a bridge backstop, not the user-facing
 # capture limit; the firmware still decides when the microphone window closes.
@@ -1351,8 +1351,9 @@ class TurnRunner:
                     return False
                 if kind in {"audio_abort", "turn_interrupted"}:
                     logger.warning(
-                        "puck bridge turn ended before delivery (%s); not replaying",
+                        "puck bridge turn ended before delivery (%s: %s); not replaying",
                         kind,
+                        event.get("reason") or "unspecified",
                     )
                     return False
                 if kind == "audio_start":

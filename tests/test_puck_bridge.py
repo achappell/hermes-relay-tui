@@ -574,7 +574,12 @@ class FakeSession:
         return _events()
 
 
-def test_turn_runner_submits_exactly_one_turn_and_plays_the_response():
+def test_turn_runner_submits_exactly_one_turn_and_plays_the_response(monkeypatch):
+    import puck_bridge.turn as _turn_mod
+
+    # The follow-up window scales with the 16 MB response queue; this host-
+    # player test does not exercise it.
+    monkeypatch.setattr(_turn_mod, "FOLLOW_UP_CAPTURE_WAIT_SECONDS", 1.0)
     session = FakeSession()
     player = FakePlayer()
     runner = TurnRunner(session, player=player)
@@ -1626,7 +1631,12 @@ def test_turn_runner_reports_remote_error_as_failed_delivery(caplog):
         runner.stop()
 
 
-def test_turn_runner_falls_back_to_the_audio_file_when_no_chunks_streamed(tmp_path):
+def test_turn_runner_falls_back_to_the_audio_file_when_no_chunks_streamed(tmp_path, monkeypatch):
+    import puck_bridge.turn as _turn_mod
+
+    # The follow-up window scales with the 16 MB response queue; this host-
+    # player test does not exercise it.
+    monkeypatch.setattr(_turn_mod, "FOLLOW_UP_CAPTURE_WAIT_SECONDS", 1.0)
     from audio import write_wav
 
     wav_path = tmp_path / "response.wav"
@@ -2559,7 +2569,7 @@ def test_response_queue_is_bounded_and_full_queue_becomes_unavailable():
         ResponseStreamBackpressure,
     )
 
-    assert MAX_QUEUED_PCM_BYTES == 480_000
+    assert MAX_QUEUED_PCM_BYTES == 16_000_000
     stream = ResponseStream(max_queue_bytes=32, stall_timeout=0.05)
     assert stream.expect(seq=1)
     stream.begin(1, (24000, 1, 2))
@@ -4929,3 +4939,67 @@ def test_thinking_earcon_is_soft_and_short():
     pcm = array.array("h", thinking_earcon_pcm())
     assert 0.2 < len(pcm) / 24000 < 0.5
     assert max(abs(v) for v in pcm) <= int(0.1 * 32767) + 1
+
+
+def test_tts_running_ahead_for_two_minutes_never_blocks_the_home_turn_loop():
+    """2026-10-21: TTS produced a 125 s answer faster than real time. With a
+    480 KB response queue the producer blocked on a full queue, the Home turn
+    loop stopped draining Home's 128-frame event queue, the socket failed and
+    the answer was cut at 120.8 s (audio_abort). The whole answer must be
+    absorbed without the producer ever waiting on the device."""
+    import time as _time
+
+    from puck_bridge.response import ResponseStream
+
+    chunk = b"\x01\x00" * 2400  # 0.1 s at 24 kHz mono S16
+    seconds = 130
+
+    class FastTTS(FakeSession):
+        def send_turn(self, text, *, stt_source="local"):
+            self.turns.append((text, stt_source))
+
+            async def _events():
+                yield {"type": "audio_start", "sample_rate": 24000, "channels": 1, "sample_width": 2}
+                for _ in range(seconds * 10):
+                    yield {"type": "audio_chunk", "data": chunk}
+                yield {"type": "audio_end"}
+
+            return _events()
+
+    # No reader at all: the device has not consumed anything yet.
+    stream = ResponseStream(stall_timeout=0.5)
+    runner = TurnRunner(FastTTS(), response_stream=stream)
+    runner.start()
+    try:
+        assert stream.expect(seq=3)
+        runner.set_response_seq(3)
+        started = _time.monotonic()
+        assert runner._send("tell me about the planets") is True
+        assert _time.monotonic() - started < 10
+        assert stream.source_bytes == len(chunk) * seconds * 10
+        assert stream.source_terminal == "complete"
+    finally:
+        runner.stop()
+
+
+def test_audio_abort_log_names_its_branch(caplog, monkeypatch):
+    import logging
+
+    class Abort(FakeSession):
+        def send_turn(self, text, *, stt_source="local"):
+            self.turns.append((text, stt_source))
+
+            async def _events():
+                yield {"type": "audio_start", "sample_rate": 24000, "channels": 1, "sample_width": 2}
+                yield {"type": "audio_abort", "error": "x", "reason": "transport_lost_after_text"}
+
+            return _events()
+
+    runner = TurnRunner(Abort(), player=FakePlayer())
+    runner.start()
+    try:
+        with caplog.at_level(logging.WARNING, logger="hermes_relay_tui.puck_bridge.turn"):
+            assert runner._send("q") is False
+    finally:
+        runner.stop()
+    assert any("audio_abort: transport_lost_after_text" in r.getMessage() for r in caplog.records)

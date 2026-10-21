@@ -1626,7 +1626,7 @@ async def test_home_audio_failure_preserves_later_text_and_terminal_event():
     try:
         events = [event async for event in session.send_turn("text survives")]
         assert events == [
-            {"type": "audio_abort", "error": "Home bridge response audio unavailable"},
+            {"type": "audio_abort", "error": "Home bridge response audio unavailable", "reason": "home_audio_unavailable"},
             {"type": "text_delta", "text": "still text"},
         ]
     finally:
