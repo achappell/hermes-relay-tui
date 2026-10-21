@@ -241,6 +241,12 @@ binary_sensor:
 wifi:
   ssid: !secret wifi_ssid
   password: !secret wifi_password
+  # ESP32 Wi-Fi defaults to LIGHT modem sleep, which parks the radio between
+  # DTIM beacons and delivers streamed TCP in bursts. The 2026-10-20 retest
+  # answer was "patchy, like starved for audio" throughout although the
+  # bridge had the whole answer queued. Streaming media devices run with the
+  # radio awake; this costs idle power on a mains-powered puck only.
+  power_save_mode: none
 
   # Fallback hotspot in case WiFi connection fails, so the device is still
   # reachable to fix configuration.
@@ -824,7 +830,19 @@ interval:
                 !puck_response::playback_cleanup_stop_requested;
           then:
             - media_player.stop: puck_media_player
-            - lambda: puck_response::playback_cleanup_stop_requested = true;
+            # media_player.stop only reaches the pipeline's active or last
+            # source. A /response that fails before PLAYING (HTTP 204 for a
+            # silent answer) never became active, so ERROR was left on the
+            # HTTP source, `drained()` stayed false and wake never resumed
+            # (2026-10-20 retest). Stop each errored source directly.
+            - lambda: |-
+                if (id(puck_http_source).get_state() == media_source::MediaSourceState::ERROR) {
+                  id(puck_http_source).handle_command(media_source::MediaSourceCommand::STOP);
+                }
+                if (id(puck_local_source).get_state() == media_source::MediaSourceState::ERROR) {
+                  id(puck_local_source).handle_command(media_source::MediaSourceCommand::STOP);
+                }
+                puck_response::playback_cleanup_stop_requested = true;
           else:
             - lambda: |-
                 const bool pending = puck_response::playback_cleanup_pending;

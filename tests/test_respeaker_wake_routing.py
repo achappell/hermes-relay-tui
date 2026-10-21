@@ -103,6 +103,7 @@ def test_internal_events_cannot_reach_real_capture_or_upload(tmp_path):
           internal.detected = true;
           assert(!dispatch_public_detection(internal, trigger));
           assert(trigger.calls == 1 && capture::capturing);
+          capture::tick(true, true, next_vad_generation());  // speech precedes the full buffer
           std::vector<uint8_t> synthetic_pcm(capture::WAKE_CAPTURE_BYTES, 0x35);
           capture::write(synthetic_pcm.data(), synthetic_pcm.size());
           assert(!capture::capturing && capture::capture_pending_upload);

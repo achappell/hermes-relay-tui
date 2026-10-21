@@ -99,6 +99,7 @@ def _write_capture_stubs(tmp_path):
         }
         namespace media_source {
         enum class MediaSourceState { IDLE, READING, ERROR };
+        enum class MediaSourceCommand { STOP };
         }
         namespace puck_firmware_fixture {
         struct VADSnapshot {
@@ -139,7 +140,13 @@ def _write_capture_stubs(tmp_path):
         };
         struct HttpSource {
           media_source::MediaSourceState state = media_source::MediaSourceState::IDLE;
+          unsigned direct_stops = 0;
           media_source::MediaSourceState get_state() const { return state; }
+          // Real micro-decoder stop() moves FAILED to IDLE.
+          void handle_command(media_source::MediaSourceCommand) {
+            ++direct_stops;
+            if (state == media_source::MediaSourceState::ERROR) state = media_source::MediaSourceState::IDLE;
+          }
         };
         inline Detector mww;
         inline OutputDevice puck_resampler, puck_speaker;
@@ -641,6 +648,8 @@ def test_follow_up_speech_retains_capture_limit_debounce_and_media(tmp_path, com
 
           const std::uint8_t speech_frame[] = {1, 2, 3, 4};
           write(speech_frame, sizeof(speech_frame));
+          tick(true, true, next_vad_generation());
+          fake_millis += FOLLOW_UP_MIN_SPEECH_MS;  // sustained speech, not an echo blip
           tick(true, true, next_vad_generation());
           if (COMPLETE_BY_BUFFER) {
             std::vector<std::uint8_t> remainder(WAKE_CAPTURE_BYTES - write_pos, 0);
@@ -1555,14 +1564,18 @@ def test_capture_requires_fresh_vad_and_keeps_hard_eight_second_bound(tmp_path, 
             ++fake_millis;
             tick(false, true, 99);
           } else if (scenario == "late_speech") {
-            fake_millis = capture_started_ms + CAPTURE_LISTEN_TIMEOUT_MS - 1;
+            fake_millis = capture_started_ms + CAPTURE_LISTEN_TIMEOUT_MS - 1 - FOLLOW_UP_MIN_SPEECH_MS;
+            tick(true, true, 7);
+            fake_millis += FOLLOW_UP_MIN_SPEECH_MS;  // follow-ups need sustained speech
             tick(true, true, 1);
             assert(capturing && speech_seen);
             ++fake_millis;
             tick(true, true, 2); // Speech never extends the original clock.
           } else {
+            tick(true, true, 7);
+            fake_millis += FOLLOW_UP_MIN_SPEECH_MS;  // follow-ups need sustained speech
             tick(true, true, 1);
-            fake_millis = capture_started_ms + 100;
+            fake_millis += 100;
             tick(true, false, 2);
             fake_millis += VAD_SILENCE_DEBOUNCE_MS;
             if (scenario == "repeated_generation") {
@@ -1614,9 +1627,12 @@ def test_first_fresh_vad_generation_zero_is_not_a_sentinel(tmp_path):
           tick(false, true, 0);
           assert(!speech_seen && !has_vad_generation);
           tick(true, true, 0); // A real generation can be zero after wrap.
-          assert(speech_seen && has_vad_generation && last_vad_generation == 0);
+          assert(has_vad_generation && last_vad_generation == 0);
+          fake_millis += FOLLOW_UP_MIN_SPEECH_MS;
+          tick(true, true, 7);
+          assert(speech_seen);
           fake_millis += 100;
-          tick(true, false, 0); // Same generation cannot switch the decision.
+          tick(true, false, 7); // Same generation cannot switch the decision.
           assert(capturing && silence_start_ms == 0);
           tick(true, false, 1);
           assert(silence_start_ms == fake_millis);
@@ -1658,6 +1674,7 @@ def test_full_capture_upload_failure_names_chunk_and_http_status_at_warn(tmp_pat
           prepare("hey missy");
           start_pending();
           assert(capturing);
+          tick(true, true, next_vad_generation());
           std::vector<std::uint8_t> pcm(WAKE_CAPTURE_BYTES, 0);
           write(pcm.data(), pcm.size());
           assert(!capturing && capture_pending_upload);
@@ -1676,3 +1693,143 @@ def test_full_capture_upload_failure_names_chunk_and_http_status_at_warn(tmp_pat
     )
     assert "Wake upload 0 chunk 63 failed (status 503)" in output
     assert "FAILED at chunk 63/64 with HTTP status 503" in output
+
+
+@pytest.mark.parametrize("speaks", [True, False])
+def test_initial_wake_waits_for_speech_before_silence_can_end_it(tmp_path, speaks):
+    """2026-10-20 retest: with the 0.5 cutoff an initial wake capture ended
+    ~1 s after the cue (800 ms of pre-speech silence) and STT received no
+    speech. Silence may only end a capture after speech; a wake with no
+    speech ends empty at the eight-second deadline."""
+    compiler = shutil.which("clang++") or shutil.which("c++")
+    if compiler is None:
+        pytest.skip("no C++ compiler available for the capture-state harness")
+    _write_capture_stubs(tmp_path)
+    _compile_and_run_capture_harness(
+        tmp_path,
+        compiler,
+        """
+        #include "pcm_capture.h"
+        #include <cassert>
+        #include <cstdint>
+        std::uint32_t fake_millis = 0;
+        int main() {
+          using namespace pcm_capture::wake_capture;
+          puck_identity::setup("configured");
+          setup();
+          const auto seq = pending_sequence();
+          assert(puck_response::begin_home_admission(seq));
+          puck_response::note_home_admission(200, "admitted:" + std::to_string(seq));
+          prepare("hey missy");
+          start_pending();
+          assert(capturing);
+          const std::uint8_t frame[64] = {7};
+          for (int i = 0; i < 30; ++i) {  // 3 s of breath after the cue
+            write(frame, sizeof(frame));
+            tick(true, false, next_vad_generation());
+            fake_millis += 100;
+          }
+          assert(capturing);
+          if (SPEAKS) {
+            tick(true, true, next_vad_generation());
+            fake_millis += 100;
+            tick(true, false, next_vad_generation());
+            fake_millis += VAD_SILENCE_DEBOUNCE_MS;
+            tick(true, false, next_vad_generation());
+            assert(!capturing && completed_capture_bytes > 0);
+          } else {
+            fake_millis = capture_started_ms + CAPTURE_LISTEN_TIMEOUT_MS;
+            tick(true, false, next_vad_generation());
+            assert(!capturing && completed_capture_bytes == 0);
+          }
+          return 0;
+        }
+        """.replace("SPEAKS", str(speaks).lower()),
+    )
+
+
+@pytest.mark.parametrize("run_ms", [100, 300])
+def test_follow_up_needs_sustained_speech_not_an_echo_blip(tmp_path, run_ms):
+    """2026-10-20 retest: a follow-up recorded 5.8 s while the owner stayed
+    quiet. Brief VAD blips (echo/room) must not mark a follow-up as spoken;
+    300 ms of continuous speech does. Initial wakes are unaffected."""
+    compiler = shutil.which("clang++") or shutil.which("c++")
+    if compiler is None:
+        pytest.skip("no C++ compiler available for the capture-state harness")
+    _write_capture_stubs(tmp_path)
+    _compile_and_run_capture_harness(
+        tmp_path,
+        compiler,
+        """
+        #include "pcm_capture.h"
+        #include <cassert>
+        #include <cstdint>
+        std::uint32_t fake_millis = 1000;
+        int main() {
+          using namespace pcm_capture::wake_capture;
+          puck_identity::setup("configured");
+          setup();
+          puck_response::response_seq = 0;
+          puck_response::state = puck_response::State::FOLLOW_UP_PENDING;
+          assert(puck_response::begin_follow_up_admission(0));
+          puck_response::note_follow_up_admission(200, "admitted:0");
+          assert(start_follow_up());
+          const std::uint8_t frame[64] = {3};
+          write(frame, sizeof(frame));
+          tick(true, true, next_vad_generation());
+          fake_millis += RUN_MS;
+          tick(true, true, next_vad_generation());
+          fake_millis += 30;
+          tick(true, false, next_vad_generation());
+          fake_millis += 1;
+          tick(true, false, next_vad_generation());
+          fake_millis += VAD_SILENCE_DEBOUNCE_MS;
+          tick(true, false, next_vad_generation());
+          if (RUN_MS > 100) {
+            assert(!capturing && completed_capture_bytes > 0);
+          } else {
+            assert(capturing);  // blips never count; only the deadline ends it
+            fake_millis = capture_started_ms + CAPTURE_LISTEN_TIMEOUT_MS;
+            tick(true, false, next_vad_generation());
+            assert(!capturing && completed_capture_bytes == 0);
+          }
+          return 0;
+        }
+        """.replace("RUN_MS", str(run_ms)),
+    )
+
+
+def test_silent_terminal_needing_home_admission_resumes_without_refusal(tmp_path):
+    compiler = shutil.which("clang++") or shutil.which("c++")
+    if compiler is None:
+        pytest.skip("no C++ compiler available for the response-state harness")
+    _write_capture_stubs(tmp_path)
+    _compile_and_run_capture_harness(
+        tmp_path,
+        compiler,
+        """
+        #include "pcm_capture.h"
+        #include <cassert>
+        std::uint32_t fake_millis = 1000;
+        int main() {
+          puck_identity::setup("configured");
+          puck_response::begin(5, true);
+          assert(puck_response::poll_due());
+          puck_response::note_status(
+              200, "{\\"seq\\": 5, \\"status\\": \\"silent\\", \\"needs_home_admission\\": true}");
+          assert(puck_response::state == puck_response::State::READY_TO_RESUME);
+          assert(puck_response::needs_home_admission());
+          return 0;
+        }
+        """,
+    )
+
+
+def test_wifi_modem_sleep_is_disabled_for_streamed_playback():
+    """2026-10-20: answer playback was patchy throughout; ESP32 LIGHT modem
+    sleep (the ESPHome default) batches streamed TCP delivery."""
+    config = yaml.load(
+        (Path(__file__).resolve().parents[1] / "firmware/respeaker-lite/respeaker-lite.yaml").read_text(),
+        Loader=yaml.BaseLoader,
+    )
+    assert config["wifi"]["power_save_mode"] == "none"

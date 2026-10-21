@@ -515,13 +515,34 @@ def make_handler(
                 # which is what the device needs to see end-of-stream.
                 self.send_header("Transfer-Encoding", "chunked")
                 self.end_headers()
-                self._write_chunk(streaming_wav_header(audio_format))
                 # Let a cushion build before the first PCM leaves. Without
                 # it the device plays exactly as fast as Hermes speaks and
                 # any upstream hesitation is audible as chop.
                 response_stream.wait_for_prebuffer(audio_format)
+                # The WAV header goes out only with the cushion behind it.
+                # Sent first, it let the Puck's decoder parse the format and
+                # start the speaker up to PREBUFFER_SECONDS before any PCM,
+                # so playback began by underrunning -- the crackle at the
+                # START of the answer on the 2026-10-20 retest.
+                self._write_chunk(streaming_wav_header(audio_format))
+                last_chunk_at = time.monotonic()
                 for chunk in response_stream.iter_chunks():
                     self._write_chunk(chunk)
+                    now = time.monotonic()
+                    # Content-free cadence trace: byte count, the wait since
+                    # the previous chunk, and the bridge queue left behind,
+                    # so the next window can separate a starved producer from
+                    # a device-side stall.
+                    logger.debug(
+                        "puck response chunk seq=%s bytes=%d gap_ms=%.0f "
+                        "queued_bytes=%d delivered_total=%d",
+                        stream_seq,
+                        len(chunk),
+                        (now - last_chunk_at) * 1000.0,
+                        response_stream.queued_bytes,
+                        total + len(chunk),
+                    )
+                    last_chunk_at = now
                     if not response_stream.record_delivered(chunk, stream_seq):
                         response_stream.fail_delivery(
                             stream_seq, reason="delivery_accounting"

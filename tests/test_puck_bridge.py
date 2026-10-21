@@ -2529,11 +2529,17 @@ def test_streaming_wav_header_declares_a_sentinel_length():
     assert struct.unpack("<I", header[40:44])[0] != 0
 
 
-def test_response_format_budget_matches_turn_first_audio_budget():
+def test_response_format_budget_covers_turn_budget_inside_device_header_window():
+    """The reader must outlast transcription + the turn's first-audio budget
+    (so a late first audio is never orphaned behind a 504), and still answer
+    before the Puck's audio reader gives up on headers (6 x 5 s)."""
     import puck_bridge.response as response_mod
     import puck_bridge.turn as turn_mod
 
-    assert response_mod.FORMAT_WAIT_SECONDS == turn_mod.FIRST_EVENT_TIMEOUT_SECONDS
+    assert response_mod.FORMAT_WAIT_SECONDS >= turn_mod.FIRST_EVENT_TIMEOUT_SECONDS + 3.0
+    assert response_mod.FORMAT_WAIT_SECONDS < 30.0
+    # 2026-10-20: an ordinary answer took 17 s from transcript to first audio.
+    assert turn_mod.FIRST_EVENT_TIMEOUT_SECONDS >= 25.0
 
 
 def test_response_stream_delivers_chunks_in_order_then_ends():
@@ -4031,6 +4037,10 @@ def test_a_rebooted_puck_restarting_its_sequence_is_answered_not_dropped(tmp_pat
     try:
         delivered, _ = _get_response(port, token="s3cret", seq=7)
         assert delivered == 200
+        # The handler releases the reader slot just after the final byte.
+        deadline = time.monotonic() + 5
+        while stream.busy_reason() is not None and time.monotonic() < deadline:
+            time.sleep(0.01)
         assert stream.busy_reason() is None
         total = 64
         statuses = [
@@ -4383,3 +4393,335 @@ def test_device_request_timeout_covers_the_bridge_admission_contract():
         Loader=yaml.BaseLoader,
     )
     assert config["http_request"]["timeout"] == f"{DEVICE_ADMISSION_TIMEOUT_SECONDS:g}s"
+
+
+def test_paired_room_empty_wake_capture_closes_its_claim_after_silent_terminal():
+    """2026-10-20 retest: an empty initial capture ended silent but the
+    paired-room claim opened for that wake stayed ACTIVE at Home."""
+    from types import SimpleNamespace
+
+    from puck_bridge.response import ResponseStream
+
+    events = []
+    stream = ResponseStream()
+
+    class PairedSession(FakeSession):
+        wake_mapping_id = "hey-missy"
+        wake_configuration_revision = 4
+        wake_admission_mode = "paired_room"
+
+        def __init__(self, handle):
+            super().__init__()
+            self.conversation_handle = handle
+
+        async def close_claim(self):
+            events.append(("close", self.conversation_handle, stream.status_for(9)))
+            self.connected = False
+            return True
+
+    class Factory:
+        async def verify_mapping_id(self, mapping_id, revision):
+            return True
+
+        async def admit_wake(self, phrase, *, previous_handle):
+            events.append(("claim", previous_handle))
+            replacement = PairedSession("fresh")
+            await replacement.connect()
+            return SimpleNamespace(status="admitted", session=replacement)
+
+    session = PairedSession("initial")
+    runner = TurnRunner(session, home_claim_factory=Factory(), response_stream=stream)
+    runner.start()
+    try:
+        assert runner.admit_wake("Hey Missy", 9) == "admitted"
+        events.clear()
+        assert stream.expect(seq=9)
+        assert runner.submit_capture_silent(9) == "silent"
+        assert events == [("close", "fresh", "silent")]
+        # The next physical wake opens a new claim without a second close.
+        assert runner.admit_wake("Hey Missy", 10) == "admitted"
+        assert events == [("close", "fresh", "silent"), ("claim", "fresh")]
+        assert session.turns == []
+    finally:
+        assert runner.stop()
+
+
+def test_direct_empty_capture_does_not_touch_any_claim():
+    from puck_bridge.response import ResponseStream
+
+    stream = ResponseStream()
+    runner = TurnRunner(FakeSession(), response_stream=stream)
+    runner.start()
+    try:
+        assert stream.expect(seq=2)
+        assert runner.submit_capture_silent(2) == "silent"
+        assert stream.status_for(2) == "silent"
+    finally:
+        runner.stop()
+
+
+def test_unanswered_follow_up_ends_silent_not_unavailable(monkeypatch):
+    """2026-10-20 retest: a follow-up captured room noise while the owner
+    stayed quiet; Hermes produced no audio and the Puck played the refusal
+    tone. An unanswered follow-up now ends quietly (still requiring fresh
+    admission); an unanswered initial question stays unavailable."""
+    from puck_bridge.response import ResponseStream
+
+    import puck_bridge.turn as turn_module
+
+    monkeypatch.setattr(turn_module, "FIRST_EVENT_TIMEOUT_SECONDS", 0.2)
+
+    class Session(FakeSession):
+        def send_turn(self, text, *, stt_source="local"):
+            self.turns.append((text, stt_source))
+            events = self._events if len(self.turns) == 1 else []
+
+            async def _events():
+                for event in events:
+                    yield event
+                if len(self.turns) > 1:
+                    await asyncio.sleep(5)
+
+            return _events()
+
+    session = Session()
+    stream = ResponseStream()
+    runner = TurnRunner(session, player=FakePlayer(), response_stream=stream)
+    runner.start()
+    initial = threading.Thread(target=lambda: runner.submit_transcript("first question"))
+    try:
+        assert stream.expect(seq=20)
+        runner.set_response_seq(20)
+        initial.start()
+        for _ in range(200):
+            if runner.coordinator.state == "capturing":
+                break
+            threading.Event().wait(0.01)
+        assert runner.coordinator.state == "capturing"
+        assert stream.expect(seq=21)
+        runner.set_response_seq(21)
+        runner.submit_transcript_outcome("thank you")
+        for _ in range(300):
+            if stream.status_for(21) not in (None, "active"):
+                break
+            threading.Event().wait(0.01)
+        assert stream.status_for(21) == "silent"
+    finally:
+        runner.request_stop()
+        initial.join(timeout=3.0)
+        runner.stop()
+    assert [t for t, _ in session.turns] == ["first question", "thank you"]
+
+
+def test_wav_header_is_held_until_the_prebuffer_is_ready(tmp_path):
+    """2026-10-20 retest: crackle at the START of the answer. The WAV header
+    used to leave before the prebuffer, letting the Puck's decoder start the
+    speaker with no PCM behind it. Header and cushion now leave together."""
+    import socket
+
+    from puck_bridge.response import PREBUFFER_SECONDS, ResponseStream
+
+    stream = ResponseStream()
+    assert stream.expect(seq=6)
+    stream.begin(6, (24000, 1, 2))
+    stream.write(b"\x00\x00" * 100, seq=6)
+    handler_cls = make_handler(
+        expected_token="s3cret",
+        on_transcript=_RecordingSink(),
+        transcribe_fn=_fake_transcribe(),
+        work_dir=tmp_path,
+        response_stream=stream,
+    )
+    server = _start_server(handler_cls)
+    try:
+        sock = socket.create_connection(("127.0.0.1", server.server_address[1]), timeout=5)
+        sock.sendall(b"GET /response?seq=6&token=s3cret HTTP/1.1\r\nHost: puck\r\n\r\n")
+        received = b""
+        sock.settimeout(0.5)
+        try:
+            while True:
+                data = sock.recv(4096)
+                if not data:
+                    break
+                received += data
+        except socket.timeout:
+            pass
+        head, _, body = received.partition(b"\r\n\r\n")
+        assert head.startswith(b"HTTP/1.1 200")
+        assert body == b"", "no WAV header may precede the prebuffer"
+        stream.write(b"\x01\x00" * int(24000 * PREBUFFER_SECONDS), seq=6)
+        stream.finish()
+        sock.settimeout(5)
+        while not received.endswith(b"0\r\n\r\n"):
+            data = sock.recv(65536)
+            if not data:
+                break
+            received += data
+        sock.close()
+    finally:
+        server.shutdown()
+    body = received.partition(b"\r\n\r\n")[2]
+    size_line, _, rest = body.partition(b"\r\n")
+    assert rest[:4] == b"RIFF" and int(size_line, 16) == 44
+
+
+@pytest.mark.parametrize(
+    "home_reason", ["wake_mapping_unavailable", "home_service_unavailable_http_503"]
+)
+def test_home_wake_denial_logs_its_reason_at_warn(caplog, home_reason):
+    """2026-10-20: after the #260 deploy two wakes were denied in ~0.05 s with
+    no journal reason. Every denial now names its cause at WARN."""
+    import logging
+    from types import SimpleNamespace
+
+    class Factory:
+        async def admit_wake(self, phrase, *, previous_handle):
+            return SimpleNamespace(status="denied", session=None, reason=home_reason)
+
+    runner = TurnRunner(
+        FakeSession(),
+        home_claim_factory=Factory(),
+        home_claim_retired=True,
+        home_claim_close_confirmed=True,
+    )
+    runner.start()
+    try:
+        with caplog.at_level(logging.WARNING, logger="hermes_relay_tui.puck_bridge.turn"):
+            assert runner.admit_wake("Hey Missy", 0) == "denied"
+    finally:
+        runner.stop()
+    assert any(
+        r.levelno == logging.WARNING
+        and f"wake admission denied (home:{home_reason})" in r.getMessage()
+        for r in caplog.records
+    )
+
+
+def test_retired_claim_marker_does_not_deny_without_asking_home():
+    """A confirmed-retired marker (the post-#259 state) must reach Home's
+    claim API, not deny locally."""
+    from types import SimpleNamespace
+
+    calls = []
+
+    class Factory:
+        async def admit_wake(self, phrase, *, previous_handle):
+            calls.append(previous_handle)
+            return SimpleNamespace(status="denied", session=None, reason="claim_denied")
+
+    class Retired(FakeSession):
+        conversation_handle = "cwFRTHkU"
+
+    runner = TurnRunner(
+        Retired(),
+        home_claim_factory=Factory(),
+        home_claim_retired=True,
+        home_claim_close_confirmed=True,
+    )
+    runner.start()
+    try:
+        runner.admit_wake("Hey Missy", 0)
+    finally:
+        runner.stop()
+    assert calls == ["cwFRTHkU"]
+
+
+@pytest.mark.parametrize("ending", ["silent_follow_up", "window_expired", "failed_turn"])
+def test_paired_room_claim_is_retired_when_the_conversation_ends(monkeypatch, ending):
+    """2026-10-20 retest #2: an empty follow-up ended the conversation but the
+    paired-room claim stayed active at Home for 30+ minutes. Every way a
+    paired conversation ends must close its claim exactly once."""
+    from types import SimpleNamespace
+
+    from puck_bridge.response import ResponseStream
+
+    import puck_bridge.turn as turn_module
+
+    monkeypatch.setattr(turn_module, "FOLLOW_UP_CAPTURE_WAIT_SECONDS", 0.3)
+    closes = []
+
+    class PairedSession(FakeSession):
+        wake_mapping_id = "hey-missy"
+        wake_configuration_revision = 4
+        wake_admission_mode = "paired_room"
+        conversation_handle = "eeuVbnKJ"
+
+        async def close_claim(self):
+            closes.append(self.conversation_handle)
+            self.connected = False
+            return True
+
+    events = [{"type": "error"}] if ending == "failed_turn" else None
+    session = PairedSession(events=events)
+    stream = ResponseStream()
+
+    class Factory:
+        async def verify_mapping_id(self, mapping_id, revision):
+            return True
+
+        async def admit_wake(self, phrase, *, previous_handle):
+            return SimpleNamespace(status="denied", session=None, reason="x")
+
+    runner = TurnRunner(session, player=FakePlayer(), response_stream=stream,
+                        home_claim_factory=Factory())
+    runner.start()
+    try:
+        asyncio.run_coroutine_threadsafe(session.connect(), runner._loop).result(2)
+        assert stream.expect(seq=1)
+        runner.set_response_seq(1)
+        done = threading.Event()
+        threading.Thread(
+            target=lambda: (runner.submit_transcript("question"), done.set()),
+            daemon=True,
+        ).start()
+        if ending == "silent_follow_up":
+            for _ in range(200):
+                if runner._follow_up_waiting:
+                    break
+                time.sleep(0.01)
+            assert runner._follow_up_waiting
+            assert stream.expect(seq=2)
+            runner.set_response_seq(2)
+            assert runner.submit_capture_silent(2) == "silent"
+        assert done.wait(5)
+    finally:
+        runner.stop()
+    assert closes == ["eeuVbnKJ"]
+
+
+def test_prebuffer_exceeds_the_largest_observed_producer_gap():
+    """2026-10-20 retest #2: a 3.29 s producer gap drained the 1.5 s cushion."""
+    from puck_bridge.response import PREBUFFER_SECONDS, STREAM_STALL_SECONDS
+
+    assert 3.29 < PREBUFFER_SECONDS < STREAM_STALL_SECONDS
+
+
+def test_streamed_response_logs_per_chunk_cadence_at_debug(tmp_path, caplog):
+    import logging
+
+    from puck_bridge.response import ResponseStream
+
+    stream = ResponseStream()
+    assert stream.expect(seq=3)
+    stream.begin(3, (24000, 1, 2))
+    stream.write(b"\x00\x01" * 100, seq=3)
+    stream.finish()
+    handler_cls = make_handler(
+        expected_token="s3cret",
+        on_transcript=_RecordingSink(),
+        transcribe_fn=_fake_transcribe(),
+        work_dir=tmp_path,
+        response_stream=stream,
+    )
+    server = _start_server(handler_cls)
+    try:
+        with caplog.at_level(logging.DEBUG, logger="hermes_relay_tui.puck_bridge.receiver"):
+            status, _ = _get_response(server.server_address[1], token="s3cret", seq=3)
+    finally:
+        server.shutdown()
+    assert status == 200
+    assert any(
+        "puck response chunk seq=3 bytes=200 gap_ms=" in r.getMessage()
+        and "queued_bytes=" in r.getMessage()
+        for r in caplog.records
+    )

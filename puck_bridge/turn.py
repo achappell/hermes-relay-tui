@@ -58,7 +58,13 @@ logger = logging.getLogger("hermes_relay_tui.puck_bridge.turn")
 # How long Hermes may leave a gap before the FIRST AUDIO event. Activity,
 # thinking, and tool events do not mean that the spoken response has begun;
 # keep this budget until audio_start (or an audio-file fallback) arrives.
-FIRST_EVENT_TIMEOUT_SECONDS = 20.0
+#
+# 25s, not 20s (2026-10-20 retest): Hermes needed 17s from transcript to first
+# audio for an ordinary answer, and a follow-up was abandoned at 20s. The
+# Puck's audio reader allows 6 x 5s = 30s for response headers from its first
+# fetch, and transcription precedes this budget by ~2-3s, so 25s keeps the
+# bridge's verdict inside the device's window.
+FIRST_EVENT_TIMEOUT_SECONDS = 25.0
 
 # Maximum gap BETWEEN events once the stream has started. A healthy
 # response emits audio chunks continuously, so a long silence mid-stream
@@ -212,6 +218,8 @@ class TurnRunner:
         self._loop: asyncio.AbstractEventLoop | None = None
         self._loop_thread: threading.Thread | None = None
         self._pending_transcript: str | None = None
+        # True while the running turn came from a wake-free follow-up capture.
+        self._turn_is_follow_up = False
         self._delivery_succeeded = False
         self._follow_up_queue: deque[tuple[str, str]] = deque()
         self._follow_up_waiting = False
@@ -552,6 +560,13 @@ class TurnRunner:
                 self._delivery_succeeded = False
 
             accepted = self._coordinator.on_wake(True)
+            # on_wake returns only when the whole conversation has ended:
+            # answered with no follow-up, empty/silent or failed follow-up,
+            # follow-up window expiry, local stop, or a failed turn. Every
+            # one of those leaves the per-wake paired-room claim with no
+            # further use (2026-10-20: an empty follow-up left eeuVbnKJ
+            # active at Home for 30+ minutes).
+            self._retire_unused_paired_claim()
             return (
                 TRANSCRIPT_ACCEPTED
                 if accepted and self._delivery_succeeded
@@ -577,7 +592,49 @@ class TurnRunner:
             if self._coordinator.state != "idle":
                 return TRANSCRIPT_REJECTED
         self._mark_silent(seq, reason="empty_capture")
+        self._retire_unused_paired_claim()
         return TRANSCRIPT_SILENT
+
+    def _retire_unused_paired_claim(self) -> None:
+        """Close a paired-room claim once its wake's conversation is over.
+
+        A paired-room claim is issued per physical wake. It is called for an
+        empty first capture and whenever the conversation ends, so the claim
+        never stays ACTIVE at Home until the next wake (2026-10-20 retests).
+        A no-op when the claim is already retired. Runs after the silent terminal is published, so
+        the device's status confirmation never waits on Home.
+        """
+        loop = self._loop
+        if (
+            self._home_claim_factory is None
+            or loop is None
+            or self._stopping.is_set()
+            or self._home_claim_retired
+            or getattr(self._session, "wake_admission_mode", "") != "paired_room"
+        ):
+            return
+        # Serialize with wake admission, which retires/claims on the same state.
+        if not self._home_admission_lock.acquire(
+            timeout=HOME_CLAIM_RETIRE_CALL_TIMEOUT_SECONDS
+        ):
+            return
+        try:
+            future = asyncio.run_coroutine_threadsafe(self._retire_home_claim(), loop)
+            try:
+                closed = future.result(timeout=HOME_CLAIM_RETIRE_CALL_TIMEOUT_SECONDS + 1.0)
+            except Exception as exc:
+                future.cancel()
+                logger.warning(
+                    "Puck Home claim close after empty capture failed (%s)",
+                    type(exc).__name__,
+                )
+                return
+            logger.info(
+                "Puck Home claim closed after an empty wake capture (confirmed=%s)",
+                closed,
+            )
+        finally:
+            self._home_admission_lock.release()
 
     def submit_capture_failure(self, seq: int) -> str:
         """End a failed Puck capture without replaying its uncertain audio."""
@@ -609,7 +666,7 @@ class TurnRunner:
             return "identity_rejected"
         factory = self._home_claim_factory
         if not self._home_admission_lock.acquire(blocking=False):
-            return "denied"
+            return self._deny_wake("admission_in_progress")
         try:
             future = asyncio.run_coroutine_threadsafe(
                 self._admit_home_wake(wake_phrase, seq), self._loop
@@ -630,7 +687,7 @@ class TurnRunner:
                     "Puck Home pre-capture admission failed (%s)",
                     type(exc).__name__,
                 )
-                return "denied"
+                return self._deny_wake("admission_timeout_or_error")
         finally:
             self._home_admission_lock.release()
 
@@ -724,6 +781,12 @@ class TurnRunner:
         self._disarm_follow_up_admission()
         return "denied"
 
+    @staticmethod
+    def _deny_wake(reason: str) -> str:
+        """Deny a physical wake and say why; bare denials were undiagnosable."""
+        logger.warning("Puck Home wake admission denied (%s)", reason)
+        return "denied"
+
     async def _admit_home_wake(self, wake_phrase: str, seq: int) -> str:
         del seq  # The HTTP reply binds this result to the request sequence.
         if self._stopping.is_set():
@@ -739,7 +802,7 @@ class TurnRunner:
         ):
             with self._follow_up_condition:
                 if self._coordinator.state != "idle":
-                    return "denied"
+                    return self._deny_wake("conversation_busy")
             self._mark_home_admission_required()
             await self._retire_home_claim()
 
@@ -752,10 +815,10 @@ class TurnRunner:
             if not mapping_id or type(revision) is not int or revision < 0:
                 self._mark_home_admission_required()
                 await self._retire_home_claim()
-                return "denied"
+                return self._deny_wake("active_claim_mapping_invalid")
             resolve_mapping = getattr(factory, "current_mapping_id", None)
             if not callable(resolve_mapping):
-                return "denied"
+                return self._deny_wake("mapping_lookup_unavailable")
             try:
                 resolved = await resolve_mapping(
                     wake_phrase, mapping_id, configuration_revision=revision,
@@ -769,13 +832,13 @@ class TurnRunner:
                 )
                 self._mark_home_admission_required()
                 await self._retire_home_claim()
-                return "denied"
+                return self._deny_wake("mapping_check_failed")
             if self._home_claim_retired or not self._session_is_connected():
                 if not self._home_claim_retired:
                     await self._retire_home_claim()
-                return "denied"
+                return self._deny_wake("active_claim_disconnected")
             if not resolved:
-                return "denied"
+                return self._deny_wake("wake_phrase_not_mapped_to_active_claim")
             return "admitted"
 
         if not self._home_claim_retired:
@@ -786,10 +849,10 @@ class TurnRunner:
             return (
                 "identity_rejected"
                 if self._home_identity_rejected
-                else "denied"
+                else self._deny_wake("previous_claim_close_unconfirmed")
             )
         if factory is None:
-            return "denied"
+            return self._deny_wake("no_claim_factory")
         result = await factory.admit_wake(
             wake_phrase,
             previous_handle=str(
@@ -801,21 +864,23 @@ class TurnRunner:
             self._reject_home_identity()
             return status
         if status != "admitted":
-            return "denied"
+            return self._deny_wake(
+                "home:" + str(getattr(result, "reason", "") or "unspecified")
+            )
         replacement = getattr(result, "session", None)
         if replacement is None:
-            return "denied"
+            return self._deny_wake("grant_without_session")
         mapping_id = str(getattr(replacement, "wake_mapping_id", "") or "")
         if not mapping_id:
             await self._retire_replacement_home_claim(replacement)
-            return "denied"
+            return self._deny_wake("grant_without_mapping")
         try:
             ready = bool(replacement.is_connected())
         except Exception:
             ready = False
         if not ready:
             await self._retire_replacement_home_claim(replacement)
-            return "denied"
+            return self._deny_wake("fresh_session_not_connected")
 
         self._session = replacement
         self._home_claim_retired = False
@@ -824,7 +889,11 @@ class TurnRunner:
         # new claim can recover an unavailable mapping/transport.
         self._needs_reconnect = False
         if not await self._verify_home_mapping():
-            return "identity_rejected" if self._home_identity_rejected else "denied"
+            return (
+                "identity_rejected"
+                if self._home_identity_rejected
+                else self._deny_wake("fresh_mapping_unverified")
+            )
         logger.info("Puck Home claim admitted for a fresh physical wake")
         return "admitted"
 
@@ -1055,6 +1124,7 @@ class TurnRunner:
 
     def _take_pending_transcript(self) -> str:
         with self._follow_up_condition:
+            self._turn_is_follow_up = False
             transcript = self._pending_transcript or ""
             self._pending_transcript = None
             return transcript
@@ -1078,6 +1148,7 @@ class TurnRunner:
                     self._follow_up_admission = False
                     return ""
                 disposition, transcript = self._follow_up_queue.popleft()
+                self._turn_is_follow_up = disposition == TRANSCRIPT_ACCEPTED
                 if disposition != TRANSCRIPT_ACCEPTED:
                     self._follow_up_admission = False
                 return transcript if disposition == TRANSCRIPT_ACCEPTED else ""
@@ -1425,6 +1496,21 @@ class TurnRunner:
                         )
                         if not completed:
                             response_delivery_failed = True
+                    elif (
+                        self._turn_is_follow_up
+                        and not spoke
+                        and self._response_stream.silent(
+                            self._response_seq, reason="follow_up_no_answer"
+                        )
+                    ):
+                        # A wake-free follow-up nobody clearly asked (room
+                        # noise, echo) that Hermes never answers ends the
+                        # conversation quietly. The refusal tone is for a
+                        # wake the user deliberately made; the claim is still
+                        # retired above, so the next wake needs admission.
+                        logger.info(
+                            "puck bridge follow-up produced no answer; ending quietly"
+                        )
                     else:
                         self._response_stream.fail_delivery(
                             self._response_seq, reason="turn_failure"
