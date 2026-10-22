@@ -356,6 +356,7 @@ def main(argv: list[str] | None = None) -> int:
                 ),
                 set_response_seq=runner.set_response_seq,
                 on_capture_silent=getattr(runner, "submit_capture_silent", None),
+                on_capture_upload_started=getattr(runner, "note_capture_upload_started", None),
                 on_capture_failure=getattr(runner, "submit_capture_failure", None),
                 response_stream=response_stream,
                 on_wake_admission=runner.admit_wake,

@@ -123,6 +123,7 @@ PLAYBACK_REPORT_FIELDS = {
     "pb_played_ms": (0, 3_600_000),
     "pb_underruns": (0, 1_000_000),
     "pb_longest_underrun_ms": (0, 3_600_000),
+    "pb_longest_underrun_at_ms": (0, 3_600_000),
     "pb_rssi_min": (-127, 0),
     "pb_rssi_avg": (-127, 0),
 }
@@ -160,18 +161,35 @@ def _log_playback_report(response_stream: ResponseStream, seq: int, report: dict
     delivered = metrics.get("delivered_duration_seconds")
     wall = report["pb_wall_ms"] / 1000.0
     played = report["pb_played_ms"] / 1000.0
+    # Played audio includes the bridge's thinking cue + keepalive silence,
+    # which is not answer audio.
+    keepalive = metrics.get("keepalive_seconds")
+    keepalive = float(keepalive) if isinstance(keepalive, (int, float)) else 0.0
+    at_ms = report.get("pb_longest_underrun_at_ms")
+    if at_ms is None or report["pb_longest_underrun_ms"] == 0:
+        where = "none" if report["pb_longest_underrun_ms"] == 0 else "unknown"
+    elif keepalive > 0 and at_ms <= keepalive * 1000.0 + 250:
+        where = "before_first_answer_audio"
+    else:
+        where = "during_answer"
     logger.info(
         "puck playback report seq=%d delivered_seconds=%s played_seconds=%.3f "
+        "keepalive_seconds=%.3f answer_played_seconds=%.3f "
         "wall_seconds=%.3f wall_minus_played_seconds=%.3f underruns=%d "
-        "longest_underrun_ms=%d rssi_min=%s rssi_avg=%s first_pcm_seconds=%s "
+        "longest_underrun_ms=%d longest_underrun_at_ms=%s longest_underrun_where=%s "
+        "rssi_min=%s rssi_avg=%s first_pcm_seconds=%s "
         "producer_gap_max_seconds=%s queue_high_water=%s",
         seq,
         "%.3f" % delivered if isinstance(delivered, (int, float)) else "unknown",
         played,
+        keepalive,
+        max(0.0, played - keepalive),
         wall,
         wall - played,
         report["pb_underruns"],
         report["pb_longest_underrun_ms"],
+        at_ms if at_ms is not None else "unknown",
+        where,
         report.get("pb_rssi_min", "unknown"),
         report.get("pb_rssi_avg", "unknown"),
         metrics.get("first_pcm_seconds", "unknown"),
@@ -323,6 +341,7 @@ def make_handler(
     on_transcript: Callable[[str], object],
     set_response_seq: Callable[[int], None] | None = None,
     on_capture_silent: Callable[[int], object] | None = None,
+    on_capture_upload_started: Callable[[int], object] | None = None,
     on_capture_failure: Callable[[int], object] | None = None,
     transcribe_fn: Callable[[str], dict] | None = None,
     work_dir: str | os.PathLike[str] | None = None,
@@ -865,9 +884,12 @@ def make_handler(
             deadline = started + _response_module.FORMAT_WAIT_SECONDS
             # Once headers are out the device is reading THIS connection; a
             # later fetch is refused by the reader slot rather than
-            # superseding it. Hold only until the first answer PCM arrives;
-            # the normal prebuffer/stall logic takes over from there.
-            while not (response_stream.answer_ready() or response_stream.source_bytes):
+            # superseding it. Keep the silence flowing until the answer's
+            # prebuffer is ready: stopping at the first PCM and then waiting
+            # for the prebuffer in silence was a ~2.8 s audible underrun
+            # between the cue and the answer (2026-10-22). A producer stall
+            # is still caught: the turn's own stall budget ends the source.
+            while not response_stream.answer_ready():
                 if stopping.is_set():
                     self.close_connection = True
                     return None
@@ -886,6 +908,7 @@ def make_handler(
                     max(0.0, min(KEEPALIVE_SLICE_SECONDS, next_write - time.monotonic()))
                 )
             held = time.monotonic() - started
+            response_stream.note_keepalive_seconds(held)
             audio_format = response_stream.audio_format
             if audio_format is None:
                 if response_stream.terminal_status == "silent":
@@ -971,10 +994,17 @@ def make_handler(
                     self.close_connection = True
                     return
                 _evict_stale_captures(captures)
+                new_capture = seq not in captures
                 capture = captures.setdefault(seq, _PendingCapture(total))
                 capture.chunks[chunk] = body
                 if capture.complete:
                     finished_capture = captures.pop(seq)
+
+            if new_capture and on_capture_upload_started is not None:
+                try:
+                    on_capture_upload_started(seq)
+                except Exception:
+                    logger.exception("puck bridge capture start callback failed")
 
             # Acknowledge the chunk before doing the (comparatively slow)
             # WAV conversion and transcription -- the Puck's own upload

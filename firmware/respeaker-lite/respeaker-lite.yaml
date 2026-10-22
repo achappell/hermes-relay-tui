@@ -95,7 +95,8 @@ esphome:
             puck_response::set_playback_stats_source(
                 []() -> puck_response::PlaybackStats {
                   const auto stats = id(puck_speaker).playback_stats();
-                  return {stats.played_ms, stats.underruns, stats.longest_underrun_ms};
+                  return {stats.played_ms, stats.underruns, stats.longest_underrun_ms,
+                          stats.longest_underrun_at_ms};
                 },
                 []() { id(puck_speaker).reset_playback_stats(); });
             puck_audio_handoff::set_output_reader([]() -> puck_audio_handoff::Output {

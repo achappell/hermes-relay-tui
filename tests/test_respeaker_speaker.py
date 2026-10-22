@@ -679,6 +679,8 @@ static void playback_stats() {
   auto stats = probe.stats();
   assert(stats.underruns == 2);
   assert(stats.longest_underrun_ms == 25);
+  // The 25 ms gap began after 2 full buffers + 240 frames had played.
+  assert(stats.longest_underrun_at_ms == (480 * 2 + 240) * 1000 / 48000);
   assert(stats.played_ms == (480 * 4 + 240) * 1000 / 48000);
   probe.request_reset();
   probe.note_dma_buffer(0, 480, 48000);

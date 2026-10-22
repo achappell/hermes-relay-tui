@@ -131,7 +131,7 @@ def _write_capture_stubs(tmp_path):
           std::uint32_t playback_error_generation() const { return errors; }
           void set_output_error_generation_callback(std::uint32_t (*reader)()) { error_reader = reader; }
           void add_audio_output_callback(void (*callback)(std::uint32_t, std::int64_t)) { audio_callback = callback; }
-          struct Stats { std::uint32_t played_ms = 0, underruns = 0, longest_underrun_ms = 0; } stats;
+          struct Stats { std::uint32_t played_ms = 0, underruns = 0, longest_underrun_ms = 0, longest_underrun_at_ms = 0; } stats;
           unsigned stats_resets = 0;
           Stats playback_stats() const { return stats; }
           void reset_playback_stats() { ++stats_resets; stats = Stats{}; }
@@ -1860,7 +1860,7 @@ def test_playback_telemetry_rides_on_the_status_poll_only_after_real_playback(tm
         int main() {
           puck_identity::setup("configured");
           puck_response::set_playback_stats_source(
-              []() -> puck_response::PlaybackStats { return {6080, 3, 420}; },
+              []() -> puck_response::PlaybackStats { return {6080, 3, 420, 1500}; },
               []() { ++resets; });
           // Empty capture: nothing played, nothing reported.
           puck_response::begin(1, true);
@@ -1881,7 +1881,8 @@ def test_playback_telemetry_rides_on_the_status_poll_only_after_real_playback(tm
           assert(!puck_response::playback_in_progress());
           assert(puck_response::telemetry_query() ==
                  "&pb_wall_ms=7750&pb_played_ms=6080&pb_underruns=3"
-                 "&pb_longest_underrun_ms=420&pb_rssi_min=-70&pb_rssi_avg=-65");
+                 "&pb_longest_underrun_ms=420&pb_longest_underrun_at_ms=1500"
+                 "&pb_rssi_min=-70&pb_rssi_avg=-65");
           return 0;
         }
     """)

@@ -52,6 +52,9 @@ struct PlaybackStats {
   uint32_t played_ms{0};
   uint32_t underruns{0};
   uint32_t longest_underrun_ms{0};
+  // Audio already played (ms) when the longest underrun began, so the bridge
+  // can tell a gap after its thinking cue/keepalive from one mid-answer.
+  uint32_t longest_underrun_at_ms{0};
 };
 
 class PlaybackStatsTracker {
@@ -63,6 +66,7 @@ class PlaybackStatsTracker {
     stats.played_ms = rate ? (uint32_t) (frames * 1000 / rate) : 0;
     stats.underruns = this->underruns_.load(std::memory_order_acquire);
     stats.longest_underrun_ms = this->longest_underrun_ms_.load(std::memory_order_acquire);
+    stats.longest_underrun_at_ms = this->longest_underrun_at_ms_.load(std::memory_order_acquire);
     return stats;
   }
   void request_reset() { this->reset_requested_.store(true, std::memory_order_release); }
@@ -72,6 +76,7 @@ class PlaybackStatsTracker {
       this->real_frames_.store(0, std::memory_order_release);
       this->underruns_.store(0, std::memory_order_release);
       this->longest_underrun_ms_.store(0, std::memory_order_release);
+      this->longest_underrun_at_ms_.store(0, std::memory_order_release);
       this->real_seen_ = false;
       this->gap_frames_ = 0;
     }
@@ -82,6 +87,9 @@ class PlaybackStatsTracker {
         this->underruns_.fetch_add(1, std::memory_order_acq_rel);
         if (gap_ms > this->longest_underrun_ms_.load(std::memory_order_acquire)) {
           this->longest_underrun_ms_.store(gap_ms, std::memory_order_release);
+          const uint64_t played = this->real_frames_.load(std::memory_order_acquire);
+          this->longest_underrun_at_ms_.store((uint32_t) (played * 1000 / sample_rate),
+                                              std::memory_order_release);
         }
       }
       this->real_seen_ = true;
@@ -100,6 +108,7 @@ class PlaybackStatsTracker {
   std::atomic<uint32_t> sample_rate_{0};
   std::atomic<uint32_t> underruns_{0};
   std::atomic<uint32_t> longest_underrun_ms_{0};
+  std::atomic<uint32_t> longest_underrun_at_ms_{0};
   std::atomic<bool> reset_requested_{false};
   bool real_seen_{false};
   uint32_t gap_frames_{0};
