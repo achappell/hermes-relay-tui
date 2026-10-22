@@ -343,6 +343,9 @@ async def test_idle_health_no_claims_revocation_and_recovery(client):
     await admission.refresh(force=True)
     assert admission.health()[0] == 200
     admission.updated = time.monotonic() - 46
+    assert admission.health()[0] == 200, "one slow 90 s pass must not flap health"
+    from home_display.home_admission import HEALTH_STALE_SECONDS
+    admission.updated = time.monotonic() - HEALTH_STALE_SECONDS - 1
     assert admission.health()[0] == 503
     assert not client.calls
 
@@ -447,3 +450,53 @@ async def test_clarify_outcome_is_forwarded_once_from_the_claim_bridge(client):
     assert session.take_clarify_outcome() is None
     session.bridge = SimpleNamespace()  # a bridge without sequential clarify
     assert session.take_clarify_outcome() is None
+
+
+def test_background_maintenance_polls_every_75_to_105_seconds_and_retries_sooner():
+    """Home logged ~240 client-claims GETs per hour at the old 15 s cadence."""
+    from home_display import home_admission as ha
+
+    delays = [ha.maintenance_delay(None) for _ in range(200)]
+    assert min(delays) >= 75 and max(delays) <= 105
+    assert len({round(d, 3) for d in delays}) > 1, "jittered"
+    assert ha.maintenance_delay("profile_unavailable") >= 75
+    assert ha.maintenance_delay("home_unreachable") == ha.MAINTAIN_RETRY_SECONDS < 75
+    assert 3600 / ha.MAINTAIN_INTERVAL_SECONDS <= 40
+
+
+@pytest.mark.asyncio
+async def test_maintenance_loop_uses_the_slow_interval(client, monkeypatch):
+    import home_display.home_admission as ha
+
+    slept = []
+
+    async def fake_sleep(seconds):
+        slept.append(seconds)
+        if len(slept) >= 3:
+            raise asyncio.CancelledError
+
+    monkeypatch.setattr(ha.asyncio, "sleep", fake_sleep)
+    admission = BrowserAdmission(client, session_factory=Bridge)
+    with pytest.raises(asyncio.CancelledError):
+        await admission._maintain()
+    assert len(slept) == 3 and all(75 <= s <= 105 for s in slept)
+
+
+@pytest.mark.asyncio
+async def test_open_still_refreshes_when_background_state_is_older_than_30s(client):
+    admission = await admit(client)
+    refreshed = []
+    original = admission._refresh_locked
+
+    async def counting():
+        refreshed.append(True)
+        await original()
+
+    admission._refresh_locked = counting
+    session = BrowserSession(admission, "one")
+    await session.connect()
+    admission.updated = time.monotonic() - 40  # between background passes
+    refreshed.clear()
+    await turn(session)
+    assert refreshed, "open()'s pre-claim refresh must not rely on the background cadence"
+    assert len(client.calls) == 1

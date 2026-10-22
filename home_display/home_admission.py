@@ -5,6 +5,7 @@ import asyncio
 from collections import Counter
 import contextlib
 import logging
+import random
 import time
 import uuid
 
@@ -42,6 +43,26 @@ def reason_for(error: Exception) -> str:
     return "hermes_unavailable"
 
 
+# Background maintenance cadence. Every pass is a GET /api/v1/client-claims
+# (plus configuration) that Home records as a diagnostic event; at 15 s that
+# was ~240/h around the clock and evicted real turn history from Home's capped
+# event store. open() still refreshes before every claim, so a slower idle
+# cadence never admits on stale state.
+MAINTAIN_INTERVAL_SECONDS = 90.0
+MAINTAIN_JITTER_SECONDS = 15.0
+# After a failed pass, retry sooner so recovery is noticed promptly.
+MAINTAIN_RETRY_SECONDS = 20.0
+# health() reports home_unreachable only after two whole maintenance periods
+# without a successful refresh, so a single slow or jittered pass never flaps.
+HEALTH_STALE_SECONDS = 2 * (MAINTAIN_INTERVAL_SECONDS + MAINTAIN_JITTER_SECONDS) + 15.0
+
+
+def maintenance_delay(reason: str | None, rng=random.uniform) -> float:
+    if reason is not None and reason != "profile_unavailable":
+        return MAINTAIN_RETRY_SECONDS
+    return MAINTAIN_INTERVAL_SECONDS + rng(-MAINTAIN_JITTER_SECONDS, MAINTAIN_JITTER_SECONDS)
+
+
 class BrowserAdmission:
     """All claim/config/renewal transitions serialize; HTTP never admits a turn twice."""
     def __init__(self, client: HomeClient, *, socket_limit: int = 8, session_factory=HomeBrowserSession):
@@ -77,7 +98,7 @@ class BrowserAdmission:
     async def _maintain(self):
         while True:
             await self.refresh(force=True)
-            await asyncio.sleep(15)
+            await asyncio.sleep(maintenance_delay(self.reason))
 
     async def close(self):
         if self.task is not None:
@@ -146,7 +167,7 @@ class BrowserAdmission:
 
     def health(self):
         reason = self.reason
-        if time.monotonic() - self.updated > 45:
+        if time.monotonic() - self.updated > HEALTH_STALE_SECONDS:
             reason = reason or "home_unreachable"
         return (503, {"status": "degraded", "reason": reason}) if reason else (200, {"status": "ok"})
 
