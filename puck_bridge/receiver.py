@@ -117,6 +117,71 @@ def thinking_earcon_pcm(sample_rate: int = KEEPALIVE_FORMAT[0]) -> bytes:
 DEVICE_ADMISSION_TIMEOUT_SECONDS = 15.0
 
 
+PLAYBACK_REPORT_FIELDS = {
+    # name: (min, max) inclusive; all device-side, content-free integers.
+    "pb_wall_ms": (0, 3_600_000),
+    "pb_played_ms": (0, 3_600_000),
+    "pb_underruns": (0, 1_000_000),
+    "pb_longest_underrun_ms": (0, 3_600_000),
+    "pb_rssi_min": (-127, 0),
+    "pb_rssi_avg": (-127, 0),
+}
+PLAYBACK_REPORT_REQUIRED = ("pb_wall_ms", "pb_played_ms", "pb_underruns", "pb_longest_underrun_ms")
+
+
+def parse_playback_report(query: dict[str, list[str]]) -> dict[str, int] | None:
+    """Validate the Puck's optional playback telemetry on /response-status.
+
+    Returns None when absent; raises ValueError when present but malformed.
+    """
+    present = {name for name in PLAYBACK_REPORT_FIELDS if name in query}
+    if not present:
+        return None
+    if any(name not in present for name in PLAYBACK_REPORT_REQUIRED):
+        raise ValueError("incomplete playback report")
+    if ("pb_rssi_min" in present) != ("pb_rssi_avg" in present):
+        raise ValueError("incomplete playback rssi")
+    report: dict[str, int] = {}
+    for name in present:
+        values = query[name]
+        if len(values) != 1:
+            raise ValueError(f"repeated {name}")
+        value = int(values[0])
+        low, high = PLAYBACK_REPORT_FIELDS[name]
+        if not low <= value <= high:
+            raise ValueError(f"{name} out of range")
+        report[name] = value
+    return report
+
+
+def _log_playback_report(response_stream: ResponseStream, seq: int, report: dict[str, int]) -> None:
+    """One INFO line joining device playback with the bridge's delivery trace."""
+    metrics = response_stream.metrics() if response_stream.seq == seq else {}
+    delivered = metrics.get("delivered_duration_seconds")
+    wall = report["pb_wall_ms"] / 1000.0
+    played = report["pb_played_ms"] / 1000.0
+    logger.info(
+        "puck playback report seq=%d delivered_seconds=%s played_seconds=%.3f "
+        "wall_seconds=%.3f wall_minus_played_seconds=%.3f underruns=%d "
+        "longest_underrun_ms=%d rssi_min=%s rssi_avg=%s first_pcm_seconds=%s "
+        "producer_gap_max_seconds=%s queue_high_water=%s",
+        seq,
+        "%.3f" % delivered if isinstance(delivered, (int, float)) else "unknown",
+        played,
+        wall,
+        wall - played,
+        report["pb_underruns"],
+        report["pb_longest_underrun_ms"],
+        report.get("pb_rssi_min", "unknown"),
+        report.get("pb_rssi_avg", "unknown"),
+        metrics.get("first_pcm_seconds", "unknown"),
+        "%.3f" % metrics["producer_gap_max_seconds"]
+        if isinstance(metrics.get("producer_gap_max_seconds"), (int, float))
+        else "unknown",
+        metrics.get("queue_high_water", "unknown"),
+    )
+
+
 def _log_response_trace(response_stream: ResponseStream, *, framing: str) -> None:
     """Write one bounded, content-safe delivery record for the current seq."""
     metrics = response_stream.metrics()
@@ -288,6 +353,7 @@ def make_handler(
     )
     captures: dict[int, _PendingCapture] = {}
     captures_lock = threading.Lock()
+    last_playback_report: list[object] = [None]
     stopping = threading.Event()
 
     class Handler(http.server.BaseHTTPRequestHandler):
@@ -664,6 +730,20 @@ def make_handler(
             except ValueError:
                 self._respond(400, b"bad response sequence")
                 return
+            # Telemetry never changes the status answer: a malformed report
+            # is logged and dropped, and each seq is logged at most once
+            # (the device may poll the same seq several times).
+            try:
+                report = parse_playback_report(query)
+            except ValueError as exc:
+                logger.warning("puck playback report rejected for seq=%d (%s)", seq, exc)
+                report = None
+            # Keyed by the response instance, not just seq: the Puck's seq
+            # restarts at 0 after every reboot.
+            report_key = (seq, response_stream.response_started_at)
+            if report is not None and report_key != last_playback_report[0]:
+                last_playback_report[0] = report_key
+                _log_playback_report(response_stream, seq, report)
             status = response_stream.status_for(seq)
             if status is None:
                 self._respond(404, b"unknown response sequence")

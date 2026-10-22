@@ -817,6 +817,11 @@ class ResponseStream:
             return self._audio_format
 
     @property
+    def response_started_at(self) -> float:
+        with self._cv:
+            return self._response_started_at
+
+    @property
     def delivery_in_progress(self) -> bool:
         """True while a device reader is streaming this answer.
 

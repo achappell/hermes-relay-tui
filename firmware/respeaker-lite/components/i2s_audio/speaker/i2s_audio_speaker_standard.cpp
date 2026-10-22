@@ -363,6 +363,10 @@ void I2SAudioSpeaker::run_speaker_task() {
       if (real_frames_total > 0) {
         pending_real_buffers++;
       }
+      if (!this->pause_state_) {
+        this->playback_stats_tracker_.note_dma_buffer(real_frames_total, frames_per_dma_buffer,
+                               this->output_stream_info_.get_sample_rate());
+      }
     }
   }
 

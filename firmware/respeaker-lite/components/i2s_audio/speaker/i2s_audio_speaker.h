@@ -43,6 +43,68 @@ enum SpeakerEventGroupBits : uint32_t {
   ALL_BITS = 0x00FFFFFF,  // All valid FreeRTOS event group bits
 };
 
+// Content-free playback telemetry (Puck, 2026-10-21). An underrun is a run of
+// silence-padded DMA output BETWEEN real audio: a gap the listener hears.
+// Leading silence and trailing silence after the last real frame are not
+// counted. note_dma_buffer() runs on the speaker task; stats() and
+// request_reset() are safe from the main loop.
+struct PlaybackStats {
+  uint32_t played_ms{0};
+  uint32_t underruns{0};
+  uint32_t longest_underrun_ms{0};
+};
+
+class PlaybackStatsTracker {
+ public:
+  PlaybackStats stats() const {
+    PlaybackStats stats;
+    const uint32_t rate = this->sample_rate_.load(std::memory_order_acquire);
+    const uint64_t frames = this->real_frames_.load(std::memory_order_acquire);
+    stats.played_ms = rate ? (uint32_t) (frames * 1000 / rate) : 0;
+    stats.underruns = this->underruns_.load(std::memory_order_acquire);
+    stats.longest_underrun_ms = this->longest_underrun_ms_.load(std::memory_order_acquire);
+    return stats;
+  }
+  void request_reset() { this->reset_requested_.store(true, std::memory_order_release); }
+
+  void note_dma_buffer(uint32_t real_frames, uint32_t frames_per_buffer, uint32_t sample_rate) {
+    if (this->reset_requested_.exchange(false, std::memory_order_acq_rel)) {
+      this->real_frames_.store(0, std::memory_order_release);
+      this->underruns_.store(0, std::memory_order_release);
+      this->longest_underrun_ms_.store(0, std::memory_order_release);
+      this->real_seen_ = false;
+      this->gap_frames_ = 0;
+    }
+    this->sample_rate_.store(sample_rate, std::memory_order_release);
+    if (real_frames > 0) {
+      if (this->real_seen_ && this->gap_frames_ > 0 && sample_rate > 0) {
+        const uint32_t gap_ms = (uint32_t) ((uint64_t) this->gap_frames_ * 1000 / sample_rate);
+        this->underruns_.fetch_add(1, std::memory_order_acq_rel);
+        if (gap_ms > this->longest_underrun_ms_.load(std::memory_order_acquire)) {
+          this->longest_underrun_ms_.store(gap_ms, std::memory_order_release);
+        }
+      }
+      this->real_seen_ = true;
+      this->gap_frames_ = 0;
+      this->real_frames_.fetch_add(real_frames, std::memory_order_acq_rel);
+    }
+    // Real audio is packed first, so a partly filled buffer's padding is the
+    // start of a gap that may continue into the next buffers.
+    if (this->real_seen_ && real_frames < frames_per_buffer) {
+      this->gap_frames_ += frames_per_buffer - real_frames;
+    }
+  }
+
+ private:
+  std::atomic<uint64_t> real_frames_{0};
+  std::atomic<uint32_t> sample_rate_{0};
+  std::atomic<uint32_t> underruns_{0};
+  std::atomic<uint32_t> longest_underrun_ms_{0};
+  std::atomic<bool> reset_requested_{false};
+  bool real_seen_{false};
+  uint32_t gap_frames_{0};
+};
+
 /// @brief Abstract base class for I2S audio speaker implementations.
 /// Provides shared infrastructure (event groups, ring buffer, volume control, task lifecycle)
 /// for derived standard I2S and SPDIF speaker classes.
@@ -65,6 +127,10 @@ class I2SAudioSpeakerBase : public I2SAudioOut, public speaker::Speaker, public 
   uint32_t playback_error_generation() const {
     return this->playback_error_generation_.load(std::memory_order_acquire);
   }
+
+  // Content-free playback telemetry; see PlaybackStatsTracker.
+  PlaybackStats playback_stats() const { return this->playback_stats_tracker_.stats(); }
+  void reset_playback_stats() { this->playback_stats_tracker_.request_reset(); }
 
   void start() override;
   void stop() override;
@@ -99,6 +165,7 @@ class I2SAudioSpeakerBase : public I2SAudioOut, public speaker::Speaker, public 
  protected:
   void record_playback_error_(const char *site, esp_err_t error = ESP_OK, bool has_error_code = false);
   std::atomic<uint32_t> playback_error_generation_{0};
+  PlaybackStatsTracker playback_stats_tracker_;
 
   /// @brief FreeRTOS task entry point. Casts params to I2SAudioSpeakerBase and calls run_speaker_task_().
   /// @param params I2SAudioSpeakerBase component pointer
