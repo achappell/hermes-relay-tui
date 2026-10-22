@@ -130,7 +130,8 @@ async def test_puck_session_still_reports_the_same_frame_as_audio_abort():
     try:
         events = [event async for event in session.send_turn("TEST")]
         assert events == [
-            {"type": "audio_abort", "error": "Home bridge response audio unavailable"}
+            {"type": "audio_abort", "error": "Home bridge response audio unavailable",
+             "reason": "home_audio_fallback"}
         ]
     finally:
         await session.close()

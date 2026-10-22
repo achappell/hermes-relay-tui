@@ -91,11 +91,15 @@ PREBUFFER_SECONDS = 3.5
 # a definite short response beats an indefinite hang.
 STREAM_STALL_SECONDS = 20.0
 
-# The Puck is the real-time consumer. A producer that briefly outruns it may
-# borrow ten source-seconds of memory, but never more. The producer waits in a
-# worker thread when this fills; the Hermes event loop remains free to service
-# the rest of the session.
-MAX_QUEUED_PCM_BYTES = 480_000
+# The Puck is the real-time consumer and TTS routinely runs faster than real
+# time. While this queue is full the producer blocks, and with it the Home
+# turn loop that drains Home's 128-frame event queue; on 2026-10-21 a 125s
+# answer kept this full (480 KB) for minutes until Home's queue overflowed,
+# the socket was failed, and the answer was cut at 120.8s ("audio_abort").
+# 16 MB (~5.5 min at 24 kHz mono S16) lets a whole spoken answer be absorbed
+# so Home's frames are always drained; delivery to the device is still
+# paced by the device. Memory is bounded and transient (one response).
+MAX_QUEUED_PCM_BYTES = 16_000_000
 MAX_QUEUE_CHUNK_BYTES = 16_384
 TERMINAL_STATUS_TTL_SECONDS = 60.0
 
@@ -811,6 +815,21 @@ class ResponseStream:
     def audio_format(self) -> tuple[int, int, int] | None:
         with self._cv:
             return self._audio_format
+
+    @property
+    def response_started_at(self) -> float:
+        with self._cv:
+            return self._response_started_at
+
+    @property
+    def delivery_in_progress(self) -> bool:
+        """True while a device reader is streaming this answer.
+
+        Queued PCM with no reader does not count: an answer nobody fetches
+        must not hold a follow-up window open indefinitely.
+        """
+        with self._cv:
+            return self._reader_active
 
     @property
     def source_bytes(self) -> int:

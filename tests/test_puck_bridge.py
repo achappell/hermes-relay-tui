@@ -2559,7 +2559,7 @@ def test_response_queue_is_bounded_and_full_queue_becomes_unavailable():
         ResponseStreamBackpressure,
     )
 
-    assert MAX_QUEUED_PCM_BYTES == 480_000
+    assert MAX_QUEUED_PCM_BYTES == 16_000_000
     stream = ResponseStream(max_queue_bytes=32, stall_timeout=0.05)
     assert stream.expect(seq=1)
     stream.begin(1, (24000, 1, 2))
@@ -4793,22 +4793,35 @@ def test_unmapped_wake_phrase_denial_names_phrase_and_match_count():
 
 
 @pytest.mark.parametrize("value,expected", [(None, 20), ("DEBUG", 10), ("bogus", 20)])
-def test_bridge_log_level_comes_from_environment(monkeypatch, value, expected):
+def test_bridge_log_level_scopes_to_the_bridge_hierarchy(monkeypatch, value, expected):
+    """PUCK_BRIDGE_LOG_LEVEL tunes only hermes_relay_tui.puck_bridge; root and
+    third-party loggers (httpx, websockets, faster_whisper) stay at INFO so
+    DEBUG never puts headers or tokens in the journal."""
     import logging
 
     import puck_bridge.server as server
 
-    seen = {}
-    monkeypatch.setattr(logging, "basicConfig", lambda **kw: seen.update(kw))
-    if value is None:
-        monkeypatch.delenv("PUCK_BRIDGE_LOG_LEVEL", raising=False)
-    else:
-        monkeypatch.setenv("PUCK_BRIDGE_LOG_LEVEL", value)
-    monkeypatch.setattr(server.config, "_option_value", lambda *a: (_ for _ in ()).throw(SystemExit(0)))
-    with pytest.raises(SystemExit):
-        server.main(["--help-not-a-flag"])
-    assert seen["level"] == expected
-
+    root = logging.getLogger()
+    saved_root = (root.level, list(root.handlers))
+    bridge = logging.getLogger(server.BRIDGE_LOGGER)
+    saved_bridge = bridge.level
+    try:
+        root.handlers = []
+        root.setLevel(logging.WARNING)
+        if value is None:
+            monkeypatch.delenv("PUCK_BRIDGE_LOG_LEVEL", raising=False)
+        else:
+            monkeypatch.setenv("PUCK_BRIDGE_LOG_LEVEL", value)
+        server.configure_logging()
+        assert bridge.getEffectiveLevel() == expected
+        assert logging.getLogger("hermes_relay_tui.puck_bridge.receiver").isEnabledFor(logging.DEBUG) == (expected == 10)
+        assert root.level == logging.INFO
+        for name in ("httpx", "httpx2", "httpcore", "websockets", "websockets.client", "faster_whisper", "urllib3"):
+            assert not logging.getLogger(name).isEnabledFor(logging.DEBUG), name
+    finally:
+        root.handlers = saved_root[1]
+        root.setLevel(saved_root[0])
+        bridge.setLevel(saved_bridge)
 
 def _read_chunked_stream(sock, until_eof=True, limit_seconds=10.0):
     import time as _t
@@ -4916,3 +4929,196 @@ def test_thinking_earcon_is_soft_and_short():
     pcm = array.array("h", thinking_earcon_pcm())
     assert 0.2 < len(pcm) / 24000 < 0.5
     assert max(abs(v) for v in pcm) <= int(0.1 * 32767) + 1
+
+
+def test_tts_running_ahead_for_two_minutes_never_blocks_the_home_turn_loop():
+    """2026-10-21: TTS produced a 125 s answer faster than real time. With a
+    480 KB response queue the producer blocked on a full queue, the Home turn
+    loop stopped draining Home's 128-frame event queue, the socket failed and
+    the answer was cut at 120.8 s (audio_abort). The whole answer must be
+    absorbed without the producer ever waiting on the device."""
+    import time as _time
+
+    from puck_bridge.response import ResponseStream
+
+    chunk = b"\x01\x00" * 2400  # 0.1 s at 24 kHz mono S16
+    seconds = 130
+
+    class FastTTS(FakeSession):
+        def send_turn(self, text, *, stt_source="local"):
+            self.turns.append((text, stt_source))
+
+            async def _events():
+                yield {"type": "audio_start", "sample_rate": 24000, "channels": 1, "sample_width": 2}
+                for _ in range(seconds * 10):
+                    yield {"type": "audio_chunk", "data": chunk}
+                yield {"type": "audio_end"}
+
+            return _events()
+
+    # No reader at all: the device has not consumed anything yet.
+    stream = ResponseStream(stall_timeout=0.5)
+    runner = TurnRunner(FastTTS(), response_stream=stream)
+    runner.start()
+    try:
+        assert stream.expect(seq=3)
+        runner.set_response_seq(3)
+        started = _time.monotonic()
+        assert runner._send("tell me about the planets") is True
+        assert _time.monotonic() - started < 10
+        assert stream.source_bytes == len(chunk) * seconds * 10
+        assert stream.source_terminal == "complete"
+    finally:
+        runner.stop()
+
+
+def test_audio_abort_log_names_its_branch(caplog, monkeypatch):
+    import logging
+
+    class Abort(FakeSession):
+        def send_turn(self, text, *, stt_source="local"):
+            self.turns.append((text, stt_source))
+
+            async def _events():
+                yield {"type": "audio_start", "sample_rate": 24000, "channels": 1, "sample_width": 2}
+                yield {"type": "audio_abort", "error": "x", "reason": "transport_lost_after_text"}
+
+            return _events()
+
+    runner = TurnRunner(Abort(), player=FakePlayer())
+    runner.start()
+    try:
+        with caplog.at_level(logging.WARNING, logger="hermes_relay_tui.puck_bridge.turn"):
+            assert runner._send("q") is False
+    finally:
+        runner.stop()
+    assert any("audio_abort: transport_lost_after_text" in r.getMessage() for r in caplog.records)
+
+
+def test_follow_up_window_is_bounded_after_delivery_whatever_the_queue_size():
+    """#267 tradeoff: deriving the guard from the 16 MB queue made the
+    no-capture worst case ~510 s. The fixed part now covers only the Puck's
+    read-ahead, the capture window and a margin."""
+    import puck_bridge.turn as turn_mod
+
+    assert turn_mod.FOLLOW_UP_CAPTURE_WAIT_SECONDS <= 30.0
+
+
+def _follow_up_runner(monkeypatch, stream):
+    import puck_bridge.turn as turn_mod
+
+    monkeypatch.setattr(turn_mod, "FOLLOW_UP_CAPTURE_WAIT_SECONDS", 0.3)
+    monkeypatch.setattr(turn_mod, "FOLLOW_UP_DELIVERY_POLL_SECONDS", 0.02)
+    return TurnRunner(FakeSession(), response_stream=stream)
+
+
+def test_follow_up_without_capture_expires_soon_after_delivery_ends(monkeypatch):
+    import time as _t
+
+    from puck_bridge.response import ResponseStream
+
+    stream = ResponseStream()
+    runner = _follow_up_runner(monkeypatch, stream)
+    runner.start()
+    try:
+        started = _t.monotonic()
+        assert runner._take_follow_up_transcript() == ""
+        assert _t.monotonic() - started < 1.0
+    finally:
+        runner.stop()
+
+
+def test_follow_up_window_waits_out_a_long_answer_still_being_delivered(monkeypatch):
+    """A long answer still playing (reader active, PCM queued) must not expire
+    the follow-up window; once delivery ends a capture is still accepted."""
+    import time as _t
+
+    from puck_bridge.response import ResponseStream
+
+    stream = ResponseStream()
+    assert stream.expect(seq=5)
+    stream.begin(5, (24000, 1, 2))
+    stream.write(b"\x00\x00" * 24000, seq=5)
+    assert stream.acquire_reader(5)
+    runner = _follow_up_runner(monkeypatch, stream)
+    runner.start()
+    result = []
+    worker = threading.Thread(target=lambda: result.append(runner._take_follow_up_transcript()))
+    try:
+        worker.start()
+        _t.sleep(1.0)  # > 3x the base window while delivery is ongoing
+        assert worker.is_alive(), "window expired during playback"
+        list(stream.iter_chunks(stall_timeout=0.05))  # drain the queue
+        stream.release_reader()
+        _t.sleep(0.1)
+        with runner._follow_up_condition:
+            runner._follow_up_queue.append(("accepted", "and Saturn?"))
+            runner._follow_up_condition.notify_all()
+        worker.join(2)
+        assert result == ["and Saturn?"]
+    finally:
+        runner.stop()
+
+
+def test_parse_playback_report_validates_fields():
+    from puck_bridge.receiver import parse_playback_report
+
+    good = {"pb_wall_ms": ["7750"], "pb_played_ms": ["6080"], "pb_underruns": ["3"],
+            "pb_longest_underrun_ms": ["420"], "pb_rssi_min": ["-71"], "pb_rssi_avg": ["-64"]}
+    assert parse_playback_report({"seq": ["1"]}) is None
+    assert parse_playback_report(good)["pb_underruns"] == 3
+    no_rssi = {k: v for k, v in good.items() if not k.startswith("pb_rssi")}
+    assert parse_playback_report(no_rssi)["pb_played_ms"] == 6080
+    for bad in (
+        {**good, "pb_underruns": ["-1"]},
+        {**good, "pb_rssi_avg": ["12"]},
+        {**good, "pb_wall_ms": ["x"]},
+        {**good, "pb_wall_ms": ["1", "2"]},
+        {k: v for k, v in good.items() if k != "pb_played_ms"},
+        {k: v for k, v in good.items() if k != "pb_rssi_avg"},
+    ):
+        with pytest.raises(ValueError):
+            parse_playback_report(bad)
+
+
+def test_status_poll_with_playback_report_logs_one_joined_line(tmp_path, caplog):
+    import logging
+
+    from puck_bridge.response import ResponseStream
+
+    stream = ResponseStream()
+    assert stream.expect(seq=4)
+    stream.begin(4, (24000, 1, 2))
+    stream.write(b"\x00\x00" * 24000, seq=4)
+    stream.finish()
+    server = _start_server(make_handler(
+        expected_token="s3cret", on_transcript=_RecordingSink(),
+        transcribe_fn=_fake_transcribe(), work_dir=tmp_path, response_stream=stream))
+    port = server.server_address[1]
+    suffix = ("&pb_wall_ms=7750&pb_played_ms=6080&pb_underruns=3"
+              "&pb_longest_underrun_ms=420&pb_rssi_min=-71&pb_rssi_avg=-64")
+    try:
+        status, _ = _get_response(port, token="s3cret", seq=4)
+        assert status == 200
+        with caplog.at_level(logging.INFO, logger="hermes_relay_tui.puck_bridge.receiver"):
+            for _ in range(3):  # retried polls log once
+                conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+                conn.request("GET", "/response-status?seq=4&token=s3cret" + suffix)
+                response = conn.getresponse()
+                body = response.read()
+                conn.close()
+                assert response.status == 200 and b'"complete"' in body
+            conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+            conn.request("GET", "/response-status?seq=4&token=s3cret&pb_wall_ms=oops")
+            assert conn.getresponse().status == 200, "telemetry never changes the status answer"
+            conn.close()
+    finally:
+        server.shutdown()
+    lines = [r.getMessage() for r in caplog.records if "puck playback report seq=4" in r.getMessage()]
+    assert len(lines) == 1
+    line = lines[0]
+    assert "delivered_seconds=1.000" in line and "played_seconds=6.080" in line
+    assert "wall_minus_played_seconds=1.670" in line and "underruns=3" in line
+    assert "longest_underrun_ms=420" in line and "rssi_min=-71" in line and "rssi_avg=-64" in line
+    assert "first_pcm_seconds=" in line and "producer_gap_max_seconds=" in line
+    assert any("playback report rejected" in r.getMessage() for r in caplog.records)

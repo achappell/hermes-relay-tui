@@ -160,12 +160,29 @@ def _home_profile_context(remaining_argv: Sequence[str]) -> tuple[Path, str]:
     return profile_env, profile_name
 
 
-def main(argv: list[str] | None = None) -> int:
-    # PUCK_BRIDGE_LOG_LEVEL=DEBUG enables per-chunk cadence and other DEBUG
-    # traces for a test window; default INFO. Unknown values fall back to INFO.
+BRIDGE_LOGGER = "hermes_relay_tui.puck_bridge"
+
+
+def configure_logging() -> None:
+    """Root and third-party loggers stay at INFO; only the bridge is tunable.
+
+    PUCK_BRIDGE_LOG_LEVEL (default INFO; unknown values fall back to INFO)
+    applies to the hermes_relay_tui.puck_bridge hierarchy alone, so a DEBUG
+    test window never turns on httpx/websockets/faster_whisper DEBUG output,
+    which can carry request headers or credentials into the journal.
+    """
     level_name = os.environ.get("PUCK_BRIDGE_LOG_LEVEL", "INFO").strip().upper()
     level = logging.getLevelName(level_name)
-    logging.basicConfig(level=level if isinstance(level, int) else logging.INFO)
+    bridge_level = level if isinstance(level, int) else logging.INFO
+    # Handler accepts everything; logger levels decide what is emitted.
+    logging.basicConfig(level=logging.INFO)
+    for handler in logging.getLogger().handlers:
+        handler.setLevel(logging.NOTSET)
+    logging.getLogger(BRIDGE_LOGGER).setLevel(bridge_level)
+
+
+def main(argv: list[str] | None = None) -> int:
+    configure_logging()
     raw_argv = list(sys.argv[1:] if argv is None else argv)
     args, remaining = build_arg_parser().parse_known_args(raw_argv)
     transport = getattr(args, "transport", "legacy")
