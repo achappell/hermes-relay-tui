@@ -5122,3 +5122,152 @@ def test_status_poll_with_playback_report_logs_one_joined_line(tmp_path, caplog)
     assert "longest_underrun_ms=420" in line and "rssi_min=-71" in line and "rssi_avg=-64" in line
     assert "first_pcm_seconds=" in line and "producer_gap_max_seconds=" in line
     assert any("playback report rejected" in r.getMessage() for r in caplog.records)
+
+
+def test_follow_up_window_stays_open_while_a_capture_is_uploading(monkeypatch):
+    """2026-10-22: an 8 s follow-up was still uploading when the window
+    expired; the claim closed 2 s before the upload finished."""
+    import time as _t
+
+    import puck_bridge.turn as turn_mod
+    from puck_bridge.response import ResponseStream
+
+    monkeypatch.setattr(turn_mod, "FOLLOW_UP_CAPTURE_WAIT_SECONDS", 0.2)
+    monkeypatch.setattr(turn_mod, "FOLLOW_UP_DELIVERY_POLL_SECONDS", 0.02)
+    runner = TurnRunner(FakeSession(), response_stream=ResponseStream())
+    runner.start()
+    result = []
+    worker = threading.Thread(target=lambda: result.append(runner._take_follow_up_transcript()))
+    try:
+        worker.start()
+        for _ in range(100):
+            if runner._follow_up_waiting:
+                break
+            _t.sleep(0.01)
+        runner.note_capture_upload_started(3)  # first chunk arrived
+        _t.sleep(0.8)  # 4x the window
+        assert worker.is_alive(), "window expired mid-upload"
+        with runner._follow_up_condition:
+            runner._queue_follow_up_locked("accepted", "and Mars?", 3, reason="follow_up_accepted")
+        worker.join(2)
+        assert result == ["and Mars?"]
+    finally:
+        runner.stop()
+
+
+def test_follow_up_upload_hold_is_capped(monkeypatch):
+    import time as _t
+
+    import puck_bridge.turn as turn_mod
+    from puck_bridge.response import ResponseStream
+
+    monkeypatch.setattr(turn_mod, "FOLLOW_UP_CAPTURE_WAIT_SECONDS", 0.1)
+    monkeypatch.setattr(turn_mod, "FOLLOW_UP_DELIVERY_POLL_SECONDS", 0.02)
+    monkeypatch.setattr(turn_mod, "FOLLOW_UP_UPLOAD_CAP_SECONDS", 0.3)
+    runner = TurnRunner(FakeSession(), response_stream=ResponseStream())
+    runner.start()
+    try:
+        threading.Timer(0.05, runner.note_capture_upload_started, args=(3,)).start()
+        started = _t.monotonic()
+        assert runner._take_follow_up_transcript() == ""
+        assert _t.monotonic() - started < 1.5
+    finally:
+        runner.stop()
+
+
+def test_upload_start_callback_fires_once_per_capture(tmp_path):
+    started = []
+    server = _start_server(make_handler(
+        expected_token="s3cret", on_transcript=_RecordingSink(),
+        transcribe_fn=_fake_transcribe(), work_dir=tmp_path,
+        on_capture_upload_started=started.append))
+    try:
+        port = server.server_address[1]
+        for chunk in range(3):
+            _post_chunk(port, seq=7, chunk=chunk, total=4, body=b"\x00" * 8, token="s3cret")
+    finally:
+        server.shutdown()
+    assert started == [7]
+
+
+def test_follow_up_arriving_after_its_claim_closed_ends_silently():
+    """2026-10-22: the late follow-up got 503 and the Puck played a refusal."""
+    from puck_bridge.response import ResponseStream
+
+    stream = ResponseStream()
+
+    class Factory:
+        async def admit_wake(self, *a, **k):
+            raise AssertionError("no admission for a late follow-up")
+
+    runner = TurnRunner(FakeSession(), response_stream=stream, home_claim_factory=Factory(),
+                        home_claim_retired=True, home_claim_close_confirmed=True)
+    runner.start()
+    try:
+        runner._follow_up_expired_at = __import__("time").monotonic()  # window just expired
+        assert stream.expect(seq=3)
+        runner.set_response_seq(3)
+        assert runner.submit_transcript_outcome("anything else", seq=3) == "silent"
+        assert stream.status_for(3) == "silent"
+    finally:
+        runner.stop()
+
+
+def test_own_close_does_not_log_a_connection_failure(caplog):
+    import logging
+
+    from puck_bridge.home_session import HomeBridgeClient, HomeBridgeTransportError
+
+    client = HomeBridgeClient.__new__(HomeBridgeClient)
+    client._terminal_error = None
+    client._closing = True
+    client._connected = True
+    client._closed = asyncio.Event()
+    client._pending = {}
+    client._sentinel_queued = True
+    with caplog.at_level(logging.WARNING, logger="hermes_relay_tui.puck_bridge.home_session"):
+        client._fail(HomeBridgeTransportError("home bridge close", ConnectionError("closed")))
+    assert not any("connection failed" in r.getMessage() for r in caplog.records)
+
+
+def test_keepalive_continues_until_prebuffer_and_report_splits_cue_from_answer(tmp_path, monkeypatch, caplog):
+    """2026-10-22: after the thinking cue the bridge stopped sending at the
+    first answer PCM and waited for the prebuffer in silence -- a ~2.8 s
+    underrun. Silence now flows until the prebuffer is ready, and the
+    playback report separates keepalive from answer audio."""
+    import logging
+    import socket
+
+    import puck_bridge.receiver as receiver_mod
+    from puck_bridge.response import ResponseStream
+
+    monkeypatch.setattr(receiver_mod, "THINKING_DELAY_SECONDS", 0.1)
+    stream = ResponseStream()
+    assert stream.expect(seq=9)
+    server = _start_server(make_handler(
+        expected_token="s3cret", on_transcript=_RecordingSink(),
+        transcribe_fn=_fake_transcribe(), work_dir=tmp_path, response_stream=stream))
+    port = server.server_address[1]
+    try:
+        sock = socket.create_connection(("127.0.0.1", port), timeout=5)
+        sock.sendall(b"GET /response?seq=9&token=s3cret HTTP/1.1\r\nHost: puck\r\n\r\n")
+        _read_chunked_stream(sock, until_eof=False, limit_seconds=0.4)
+        stream.begin(9, (24000, 1, 2))
+        stream.write(b"\x01\x00" * 2400, seq=9)  # first PCM, far below prebuffer
+        during = _read_chunked_stream(sock, until_eof=False, limit_seconds=1.0)
+        assert len(during) > 24000, "keepalive must keep flowing until the prebuffer is ready"
+        stream.write(b"\x01\x00" * 24000 * 4, seq=9)
+        stream.finish()
+        _read_chunked_stream(sock)
+        sock.close()
+        with caplog.at_level(logging.INFO, logger="hermes_relay_tui.puck_bridge.receiver"):
+            conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+            conn.request("GET", "/response-status?seq=9&token=s3cret&pb_wall_ms=7000&pb_played_ms=6500"
+                         "&pb_underruns=1&pb_longest_underrun_ms=2800&pb_longest_underrun_at_ms=400")
+            assert conn.getresponse().status == 200
+            conn.close()
+    finally:
+        server.shutdown()
+    line = next(r.getMessage() for r in caplog.records if "puck playback report seq=9" in r.getMessage())
+    assert "longest_underrun_where=before_first_answer_audio" in line
+    assert "keepalive_seconds=" in line and "answer_played_seconds=" in line

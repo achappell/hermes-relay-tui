@@ -119,6 +119,11 @@ FOLLOW_UP_CAPTURE_WAIT_SECONDS = (
 )
 # How often a waiting follow-up re-checks whether delivery is still running.
 FOLLOW_UP_DELIVERY_POLL_SECONDS = 0.5
+# Once a follow-up capture's first chunk has arrived, the window stays open
+# until its outcome is queued: an 8 s capture can still be uploading when
+# the post-delivery window ends (2026-10-22, closed 2 s before the upload
+# finished). Bounded by upload + reassembly TTL + transcription.
+FOLLOW_UP_UPLOAD_CAP_SECONDS = 45.0
 
 
 TRANSCRIPT_ACCEPTED = "accepted"
@@ -224,6 +229,8 @@ class TurnRunner:
         self._loop: asyncio.AbstractEventLoop | None = None
         self._loop_thread: threading.Thread | None = None
         self._pending_transcript: str | None = None
+        self._follow_up_upload_started_at: float | None = None
+        self._follow_up_expired_at: float | None = None
         # True while the running turn came from a wake-free follow-up capture.
         self._turn_is_follow_up = False
         self._delivery_succeeded = False
@@ -462,6 +469,7 @@ class TurnRunner:
         elif disposition == TRANSCRIPT_REJECTED and self._response_stream is not None:
             response_seq = seq if seq is not None else self._response_seq
             self._response_stream.unavailable(response_seq, reason=reason)
+        self._follow_up_upload_started_at = None
         self._follow_up_queue.append((disposition, transcript))
         self._follow_up_condition.notify_all()
         return disposition
@@ -542,6 +550,22 @@ class TurnRunner:
                         or self._home_claim_retired
                         or not self._session_is_connected()
                     ):
+                        expired_at = self._follow_up_expired_at
+                        if (
+                            self._home_claim_retired
+                            and not self._home_identity_rejected
+                            and expired_at is not None
+                            and time.monotonic() - expired_at < FOLLOW_UP_UPLOAD_CAP_SECONDS
+                        ):
+                            # A follow-up window just expired and every wake is
+                            # admitted first, so this is that follow-up's late
+                            # capture. End quietly, not with a refusal.
+                            self._mark_silent(seq, reason="follow_up_after_claim_closed")
+                            logger.info(
+                                "puck bridge follow-up arrived after its claim closed; "
+                                "ending quietly"
+                            )
+                            return TRANSCRIPT_SILENT
                         return TRANSCRIPT_REJECTED
                 elif self._needs_reconnect or not self._session.is_connected():
                     if self._loop is None:
@@ -1135,6 +1159,13 @@ class TurnRunner:
             self._pending_transcript = None
             return transcript
 
+    def note_capture_upload_started(self, seq: int) -> None:
+        """First chunk of a capture arrived; hold an open follow-up window."""
+        with self._follow_up_condition:
+            if self._follow_up_waiting:
+                self._follow_up_upload_started_at = time.monotonic()
+                self._follow_up_condition.notify_all()
+
     def _take_follow_up_transcript(self) -> str:
         """Wait for one firmware-bounded follow-up capture outcome."""
         deadline = time.monotonic() + FOLLOW_UP_CAPTURE_WAIT_SECONDS
@@ -1143,6 +1174,15 @@ class TurnRunner:
             try:
                 while not self._follow_up_queue and not self._stopping.is_set():
                     stream = self._response_stream
+                    upload_at = self._follow_up_upload_started_at
+                    if (
+                        upload_at is not None
+                        and time.monotonic() - upload_at < FOLLOW_UP_UPLOAD_CAP_SECONDS
+                    ):
+                        # The capture is on its way; wait for its outcome.
+                        deadline = max(deadline, time.monotonic() + FOLLOW_UP_DELIVERY_POLL_SECONDS)
+                        self._follow_up_condition.wait(FOLLOW_UP_DELIVERY_POLL_SECONDS)
+                        continue
                     if stream is not None and stream.delivery_in_progress:
                         # The Puck is still being fed this answer; the capture
                         # window cannot have opened yet. Re-arm from now.
@@ -1154,6 +1194,7 @@ class TurnRunner:
                         logger.info(
                             "puck bridge follow-up window expired without a capture"
                         )
+                        self._follow_up_expired_at = time.monotonic()
                         self._follow_up_admission = False
                         return ""
                     self._follow_up_condition.wait(
@@ -1168,6 +1209,7 @@ class TurnRunner:
                     self._follow_up_admission = False
                 return transcript if disposition == TRANSCRIPT_ACCEPTED else ""
             finally:
+                self._follow_up_upload_started_at = None
                 self._follow_up_waiting = False
 
     def _send(self, text: str) -> bool:

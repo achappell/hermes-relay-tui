@@ -593,7 +593,10 @@ class HomeBridgeClient:
             self._terminal_error = error
             # Content-free cause (e.g. "notification queue is full"), so an
             # audio_abort after a lost socket names why the socket was lost.
-            logger.warning("Puck Home bridge connection failed: %s", error)
+            # Our own close() is not a failure: it logged a misleading
+            # "close failed (ConnectionError)" WARN on every claim close.
+            if not self._closing:
+                logger.warning("Puck Home bridge connection failed: %s", error)
         self._connected = False
         self._closed.set()
         for future, _method in list(self._pending.values()):

@@ -99,6 +99,7 @@ struct PlaybackStats {
   uint32_t played_ms{0};
   uint32_t underruns{0};
   uint32_t longest_underrun_ms{0};
+  uint32_t longest_underrun_at_ms{0};
 };
 using PlaybackStatsReader = PlaybackStats (*)();
 using PlaybackStatsReset = void (*)();
@@ -143,7 +144,8 @@ inline std::string telemetry_query() {
   std::string query = "&pb_wall_ms=" + std::to_string(telemetry.end_ms - telemetry.start_ms) +
                       "&pb_played_ms=" + std::to_string(stats.played_ms) +
                       "&pb_underruns=" + std::to_string(stats.underruns) +
-                      "&pb_longest_underrun_ms=" + std::to_string(stats.longest_underrun_ms);
+                      "&pb_longest_underrun_ms=" + std::to_string(stats.longest_underrun_ms) +
+                      "&pb_longest_underrun_at_ms=" + std::to_string(stats.longest_underrun_at_ms);
   if (telemetry.rssi_samples > 0) {
     query += "&pb_rssi_min=" + std::to_string(telemetry.rssi_min) + "&pb_rssi_avg=" +
              std::to_string((int32_t) (telemetry.rssi_sum / (int64_t) telemetry.rssi_samples));

@@ -164,6 +164,7 @@ class ResponseStream:
         self._chunks: deque[bytes] = deque()
         self._queued_bytes = 0
         self._queue_high_water = 0
+        self._keepalive_seconds = 0.0
         self._max_queue_bytes = max_queue_bytes
         self._stall_timeout = stall_timeout
         self._device_build_identity = device_build_identity
@@ -536,6 +537,7 @@ class ResponseStream:
         self._last_source_progress = self._response_started_at
         self._last_consumer_progress = self._response_started_at
         self._queue_high_water = 0
+        self._keepalive_seconds = 0.0
         self._producer_gap_max = 0.0
         self._stall_duration = 0.0
         self._terminal_reason = None
@@ -770,6 +772,7 @@ class ResponseStream:
                 ),
                 "queued_bytes": self._queued_bytes,
                 "queue_high_water": self._queue_high_water,
+                "keepalive_seconds": self._keepalive_seconds,
                 "terminal": self._delivery_terminal or self._source_terminal,
                 "terminal_reason": self._terminal_reason,
             }
@@ -820,6 +823,11 @@ class ResponseStream:
     def response_started_at(self) -> float:
         with self._cv:
             return self._response_started_at
+
+    def note_keepalive_seconds(self, seconds: float) -> None:
+        """Thinking cue + keepalive played before the answer (not answer audio)."""
+        with self._cv:
+            self._keepalive_seconds = max(0.0, float(seconds))
 
     @property
     def delivery_in_progress(self) -> bool:
