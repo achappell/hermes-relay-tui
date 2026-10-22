@@ -591,6 +591,9 @@ class HomeBridgeClient:
     def _fail(self, error: BaseException) -> None:
         if self._terminal_error is None:
             self._terminal_error = error
+            # Content-free cause (e.g. "notification queue is full"), so an
+            # audio_abort after a lost socket names why the socket was lost.
+            logger.warning("Puck Home bridge connection failed: %s", error)
         self._connected = False
         self._closed.set()
         for future, _method in list(self._pending.values()):
@@ -886,7 +889,7 @@ class HomePuckSession:
                                 frame = await client.next_frame()
                         except asyncio.TimeoutError:
                             try:
-                                yield {"type": "audio_abort", "error": "Home audio completion timed out; text completed. Reconnect before the next prompt.", "text_completed": True}
+                                yield {"type": "audio_abort", "error": "Home audio completion timed out; text completed. Reconnect before the next prompt.", "text_completed": True, "reason": "audio_completion_timeout"}
                             finally:
                                 await self._close_after_protocol_failure()
                             return
@@ -896,7 +899,7 @@ class HomePuckSession:
                         # Text has an authoritative terminal event. Losing its
                         # audio tail must not turn that answer into uncertainty.
                         try:
-                            yield {"type": "audio_abort", "error": "Home audio was interrupted; text completed. Choose a conversation before the next prompt.", "text_completed": True}
+                            yield {"type": "audio_abort", "error": "Home audio was interrupted; text completed. Choose a conversation before the next prompt.", "text_completed": True, "reason": "transport_lost_after_text"}
                         finally:
                             await self._close_after_protocol_failure()
                         return
@@ -933,7 +936,7 @@ class HomePuckSession:
                             # The resumed worker may still send unlabelled PCM.
                             # Retire this socket so its tail cannot enter a new turn.
                             try:
-                                yield {"type": "audio_abort", "error": "Home audio was interrupted; text completed. Reconnect before the next prompt.", "text_completed": True}
+                                yield {"type": "audio_abort", "error": "Home audio was interrupted; text completed. Reconnect before the next prompt.", "text_completed": True, "reason": "transport_lost_on_resume"}
                             finally:
                                 await self._close_after_protocol_failure()
                             return
@@ -1726,6 +1729,7 @@ class HomePuckSession:
             return {
                 "type": "audio_abort",
                 "error": "Home bridge response audio unavailable",
+                "reason": f"home_audio_{kind}",
             }
         raise HomeBridgeAudioError(f"Home bridge audio kind {kind!r} is unsupported")
 

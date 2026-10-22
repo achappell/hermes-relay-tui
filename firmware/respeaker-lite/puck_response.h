@@ -92,9 +92,70 @@ inline void observe_playback_cleanup(bool stopped_and_empty) {
   }
 }
 
+// Always-on, content-free playback telemetry. Reported to the bridge as
+// extra query parameters on the existing /response-status poll that follows
+// media idle, so it adds no request, no blocking and no new endpoint.
+struct PlaybackStats {
+  uint32_t played_ms{0};
+  uint32_t underruns{0};
+  uint32_t longest_underrun_ms{0};
+};
+using PlaybackStatsReader = PlaybackStats (*)();
+using PlaybackStatsReset = void (*)();
+static PlaybackStatsReader playback_stats_reader = nullptr;
+static PlaybackStatsReset playback_stats_reset = nullptr;
+inline void set_playback_stats_source(PlaybackStatsReader reader, PlaybackStatsReset reset) {
+  playback_stats_reader = reader;
+  playback_stats_reset = reset;
+}
+
+struct PlaybackTelemetry {
+  bool started{false};
+  bool ended{false};
+  uint32_t start_ms{0};
+  uint32_t end_ms{0};
+  int32_t rssi_min{0};
+  int64_t rssi_sum{0};
+  uint32_t rssi_samples{0};
+};
+static PlaybackTelemetry telemetry;
+
+inline void reset_playback_telemetry() {
+  telemetry = PlaybackTelemetry{};
+  if (playback_stats_reset != nullptr) playback_stats_reset();
+}
+
+// Called from the fast interval while a response is playing.
+inline void sample_rssi(float rssi) {
+  if (!telemetry.started || telemetry.ended || !(rssi < 0.0f) || rssi < -127.0f) return;
+  const int32_t value = (int32_t) rssi;
+  if (telemetry.rssi_samples == 0 || value < telemetry.rssi_min) telemetry.rssi_min = value;
+  telemetry.rssi_sum += value;
+  telemetry.rssi_samples++;
+}
+
+inline bool playback_in_progress() { return telemetry.started && !telemetry.ended; }
+
+// Query suffix for the status poll, empty unless this response actually played.
+inline std::string telemetry_query() {
+  if (!telemetry.started || !telemetry.ended) return "";
+  const PlaybackStats stats = playback_stats_reader != nullptr ? playback_stats_reader() : PlaybackStats{};
+  std::string query = "&pb_wall_ms=" + std::to_string(telemetry.end_ms - telemetry.start_ms) +
+                      "&pb_played_ms=" + std::to_string(stats.played_ms) +
+                      "&pb_underruns=" + std::to_string(stats.underruns) +
+                      "&pb_longest_underrun_ms=" + std::to_string(stats.longest_underrun_ms);
+  if (telemetry.rssi_samples > 0) {
+    query += "&pb_rssi_min=" + std::to_string(telemetry.rssi_min) + "&pb_rssi_avg=" +
+             std::to_string((int32_t) (telemetry.rssi_sum / (int64_t) telemetry.rssi_samples));
+  }
+  return query;
+}
+
 inline void announcement_started() {
   if (state == State::WAITING_FOR_MEDIA_IDLE && !playback_announcement_seen) {
     playback_announcement_seen = true;
+    telemetry.started = true;
+    telemetry.start_ms = millis();
     playback_progress();
   }
 }
@@ -151,6 +212,7 @@ inline std::string url_encode(const std::string &value) {
 }
 
 inline void begin(uint32_t seq, bool empty_capture = false) {
+  reset_playback_telemetry();
   response_seq = seq;
   silent_completion_only = empty_capture;
   retry_started_ms = empty_capture ? millis() : 0;
@@ -307,6 +369,10 @@ inline bool holds_wake() { return state != State::IDLE; }
 
 inline void media_idle() {
   if (state == State::WAITING_FOR_MEDIA_IDLE) {
+    if (telemetry.started && !telemetry.ended) {
+      telemetry.ended = true;
+      telemetry.end_ms = millis();
+    }
     retry_started_ms = millis();
     next_poll_ms = retry_started_ms;
     state = State::POLLING;
