@@ -32,6 +32,7 @@ import wave
 from typing import Callable
 from urllib.parse import parse_qs, urlparse
 
+from . import response as _response_module
 from .response import ResponseStream, ResponseStreamError, streaming_wav_header
 
 logger = logging.getLogger("hermes_relay_tui.puck_bridge.receiver")
@@ -76,6 +77,42 @@ FOLLOW_UP_ADMISSION_PATH = "/follow-up-admission"
 # reader forever. Keep this aligned with the response stream's stall budget;
 # tests may shorten it to exercise the failure path without waiting 20s.
 RESPONSE_WRITE_TIMEOUT_SECONDS = 20.0
+# Thinking acknowledgement / keepalive (2026-10-20: long answers produced no
+# first audio within 25s and the Puck's audio reader gives up on headers
+# ~30s after its first fetch, so the owner heard only a refusal).
+#
+# If the answer is not ready to start this soon after a fetch, the reader
+# commits the response: it sends the WAV header in the format Hermes has
+# always produced, a short soft "thinking" earcon, then real-time silence
+# until the answer's prebuffer is ready. The device's 5s per-attempt header
+# timeout is never reached, and the owner hears that the question was taken.
+THINKING_DELAY_SECONDS = 2.0
+KEEPALIVE_FORMAT = (24000, 1, 2)
+KEEPALIVE_SLICE_SECONDS = 0.1
+
+
+def thinking_earcon_pcm(sample_rate: int = KEEPALIVE_FORMAT[0]) -> bytes:
+    """Two soft 520 Hz pulses (~-20 dBFS, 0.12s each, 0.08s apart).
+
+    Deliberately unlike the cue (ascending pair) and refusal (descending pair):
+    a level, quiet "hm-hm" that reads as "working on it", not as an outcome.
+    """
+    import math
+
+    amplitude = 0.1 * 32767
+    pulse = int(sample_rate * 0.12)
+    gap = int(sample_rate * 0.08)
+    fade = int(sample_rate * 0.01)
+    samples: list[int] = []
+    for index in range(2):
+        for n in range(pulse):
+            envelope = min(1.0, n / fade, (pulse - 1 - n) / fade)
+            samples.append(int(amplitude * envelope * math.sin(2 * math.pi * 520 * n / sample_rate)))
+        if index == 0:
+            samples.extend([0] * gap)
+    return struct.pack("<%dh" % len(samples), *samples)
+
+
 # Must match `http_request.timeout` in firmware/respeaker-lite/respeaker-lite.yaml.
 DEVICE_ADMISSION_TIMEOUT_SECONDS = 15.0
 
@@ -431,7 +468,12 @@ def make_handler(
                 self._respond(409, b"response is terminal")
                 return
 
-            audio_format = response_stream.wait_for_format()
+            thinking = not response_stream.wait_answer_ready(THINKING_DELAY_SECONDS)
+            audio_format = (
+                response_stream.audio_format
+                if thinking
+                else response_stream.wait_for_format()
+            )
             if response_stream.fetch_superseded(fetch_generation):
                 # The device already re-requested this sequence after its
                 # 5s header timeout and closed this socket. Leave the answer
@@ -443,7 +485,7 @@ def make_handler(
                 )
                 self.close_connection = True
                 return
-            if audio_format is None:
+            if audio_format is None and not thinking:
                 if response_stream.terminal_status == "silent":
                     self._respond(204)
                     _log_response_trace(response_stream, framing="none")
@@ -515,16 +557,23 @@ def make_handler(
                 # which is what the device needs to see end-of-stream.
                 self.send_header("Transfer-Encoding", "chunked")
                 self.end_headers()
-                # Let a cushion build before the first PCM leaves. Without
-                # it the device plays exactly as fast as Hermes speaks and
-                # any upstream hesitation is audible as chop.
-                response_stream.wait_for_prebuffer(audio_format)
-                # The WAV header goes out only with the cushion behind it.
-                # Sent first, it let the Puck's decoder parse the format and
-                # start the speaker up to PREBUFFER_SECONDS before any PCM,
-                # so playback began by underrunning -- the crackle at the
-                # START of the answer on the 2026-10-20 retest.
-                self._write_chunk(streaming_wav_header(audio_format))
+                if thinking:
+                    audio_format = self._hold_with_thinking(stream_seq, fetch_generation)
+                    if audio_format is None:
+                        return
+                    if not response_stream.wait_for_prebuffer(audio_format):
+                        self.close_connection = True
+                        _log_response_trace(response_stream, framing="chunked")
+                        return
+                else:
+                    # Let a cushion build before the first PCM leaves.
+                    # Without it the device plays exactly as fast as Hermes
+                    # speaks and any upstream hesitation is audible as chop.
+                    response_stream.wait_for_prebuffer(audio_format)
+                    # The WAV header goes out only with the cushion behind
+                    # it. Sent first, it let the Puck's decoder start the
+                    # speaker before any PCM -- the start-of-answer crackle.
+                    self._write_chunk(streaming_wav_header(audio_format))
                 last_chunk_at = time.monotonic()
                 for chunk in response_stream.iter_chunks():
                     self._write_chunk(chunk)
@@ -712,6 +761,85 @@ def make_handler(
                 result = "unavailable"
             body = f"{result}:{seq}".encode("ascii")
             self._respond(200, body, content_type="text/plain; charset=utf-8")
+
+        def _hold_with_thinking(
+            self, stream_seq, fetch_generation: int
+        ) -> tuple[int, int, int] | None:
+            """Acknowledge a slow answer and keep the device's reader alive.
+
+            Returns the answer's format once its prebuffer is ready, or None
+            after ending the body itself (no answer, or a mismatched format).
+            """
+            sample_rate, channels, width = KEEPALIVE_FORMAT
+            self._write_chunk(streaming_wav_header(KEEPALIVE_FORMAT))
+            self._write_chunk(thinking_earcon_pcm(sample_rate))
+            logger.info(
+                "puck bridge response seq=%s: answer not ready after %.0fs; "
+                "thinking acknowledgement sent, holding the connection",
+                stream_seq,
+                THINKING_DELAY_SECONDS,
+            )
+            silence = b"\x00" * int(sample_rate * channels * width * KEEPALIVE_SLICE_SECONDS)
+            started = time.monotonic()
+            next_write = started
+            deadline = started + _response_module.FORMAT_WAIT_SECONDS
+            # Once headers are out the device is reading THIS connection; a
+            # later fetch is refused by the reader slot rather than
+            # superseding it. Hold only until the first answer PCM arrives;
+            # the normal prebuffer/stall logic takes over from there.
+            while not (response_stream.answer_ready() or response_stream.source_bytes):
+                if stopping.is_set():
+                    self.close_connection = True
+                    return None
+                if time.monotonic() >= deadline:
+                    # The same first-audio verdict the plain path reaches.
+                    response_stream.unavailable(stream_seq, reason="first_audio_timeout")
+                    break
+                # Real-time pacing: the device consumes silence at the play
+                # rate, so its buffer never fills and real audio is not
+                # queued behind seconds of padding.
+                now = time.monotonic()
+                if now >= next_write:
+                    self._write_chunk(silence)
+                    next_write += KEEPALIVE_SLICE_SECONDS
+                response_stream.wait_answer_ready(
+                    max(0.0, min(KEEPALIVE_SLICE_SECONDS, next_write - time.monotonic()))
+                )
+            held = time.monotonic() - started
+            audio_format = response_stream.audio_format
+            if audio_format is None:
+                if response_stream.terminal_status == "silent":
+                    # Nothing to say after all: a clean end of body.
+                    self.wfile.write(b"0\r\n\r\n")
+                    self.wfile.flush()
+                else:
+                    self.close_connection = True
+                logger.info(
+                    "puck bridge response seq=%s: no answer audio after a %.1fs hold (%s)",
+                    stream_seq,
+                    held,
+                    response_stream.terminal_status or "unknown",
+                )
+                _log_response_trace(response_stream, framing="chunked")
+                return None
+            if tuple(audio_format) != KEEPALIVE_FORMAT:
+                logger.error(
+                    "puck bridge response seq=%s: answer format %s differs from "
+                    "the keepalive header %s; ending the body",
+                    stream_seq,
+                    audio_format,
+                    KEEPALIVE_FORMAT,
+                )
+                response_stream.fail_delivery(stream_seq, reason="keepalive_format_mismatch")
+                self.close_connection = True
+                _log_response_trace(response_stream, framing="chunked")
+                return None
+            logger.info(
+                "puck bridge response seq=%s: answer ready after a %.1fs thinking hold",
+                stream_seq,
+                held,
+            )
+            return audio_format
 
         def _write_chunk(self, data: bytes) -> None:
             """Write one HTTP chunked-encoding frame."""
