@@ -388,3 +388,26 @@ Fix in this branch (no duplicate TTS streaming):
 - If the answer is not ready 2 s after a `/response` fetch, the bridge commits the response: a WAV header (24 kHz mono S16), a soft two-pulse "thinking" earcon (−20 dBFS, 0.32 s), then real-time silence until the answer's first PCM. The device's per-attempt header timeout is never reached.
 - The first-audio budgets are now 60 s for the turn and 63 s for the reader. These are bounded by how long a person will wait, not by the device's header window.
 - An answer that turns out silent ends the stream cleanly. A real failure still ends it without EOF, which plays the refusal.
+
+## #269 owner acceptance: long answer + follow-up — 2026-10-23
+
+Bridge main `468cb7d` (#269) on ops; Puck firmware `3c003ef` (build 2026-10-21 20:54:25 −0500, config `0xb4d21503`). One 300 s passive window, 21:44:35Z–21:49:35Z.
+
+**Owner report (Amanda, at the Puck):** "sounded good". She described it as smooth, the follow-up was answered, and there was no refusal beep.
+
+**Log evidence (bridge journal, Puck native log, Home, media-server):**
+
+| Turn | Profile | First PCM | Delivered | Thinking audio | Answer played | Wall − played | Underruns (longest) | Producer gap max | RSSI avg |
+|---|---|---|---|---|---|---|---|---|---|
+| seq0 "Hey Missy" | amanda-voice | 4.20 s | 7.28 s | 5.05 s | 7.31 s | 0.35 s | 1 (210 ms) | 0.72 s | −49 |
+| seq1 follow-up | amanda-voice | 5.17 s | 49.52 s | 6.00 s | 49.72 s | 0.53 s | 4 (420 ms) | 0.74 s | −49 |
+
+- Both turns ended `terminal=complete` with stall 0. The Puck logged HTTP 200, then PLAYING, then COMPLETE, with no `puck_response` warning.
+- The follow-up capture started 0.76 s after the answer completed. Its upload finished at 21:46:00.76Z and was answered (HTTP 200 at 21:46:02.88Z). The follow-up window stayed open during the upload, which is the #269 fix; the 2026-10-22 retest had refused here with HTTP 503.
+- The next empty follow-up ended silent and the claim closed with confirmation. Home had 0 active claims afterwards.
+- For comparison, the 2026-10-22 window on `3c003ef` had wall − played of about 2.9–3.0 s and a longest underrun of 2.7–2.9 s, with RSSI average −71 to −74. Wi-Fi was much stronger this time, so better reception may be part of the improvement [INFERENCE].
+- Journal secret scan over the window (526 lines): Authorization, Bearer, X-Puck-Token and credential 0 each; every `token=` value appears as REDACTED.
+
+**Open items**
+- Firmware that reports `longest_underrun_at_ms` (from #269) is not flashed. The Puck still runs `3c003ef`, so the bridge logs the underrun position as `unknown`.
+- On media-server, the amanda-voice profile's `qmd` MCP server fails at startup. `better-sqlite3`'s native module does not load under Node v24.17.0 (`mcp-stderr.log`, for example 16:44:43 and 16:49:44 local time on 2026-10-23). The voice turns still completed. Rebuilding or reinstalling qmd for that Node version is untested.
