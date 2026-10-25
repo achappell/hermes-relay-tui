@@ -1,3 +1,4 @@
+import json
 import re
 import shutil
 import subprocess
@@ -1908,3 +1909,21 @@ def test_unmapped_hey_bestie_is_not_built_or_enabled():
     assert ids == ["hey_missy", "stop", "hey_skippy"]
     assert "enable_model: hey_bestie" not in (
         Path(__file__).resolve().parents[1] / "firmware/respeaker-lite/respeaker-lite.yaml").read_text()
+
+
+def test_only_hey_missy_cutoff_is_raised():
+    """2026-10-25: hey_missy false-woke on household speech at the 0.5
+    manifest default. Only its cutoff is raised; every other model keeps
+    the manifest's own cutoff and sliding window."""
+    firmware = Path(__file__).resolve().parents[1] / "firmware/respeaker-lite"
+    config = yaml.load((firmware / "respeaker-lite.yaml").read_text(), Loader=yaml.BaseLoader)
+    models = {model["id"]: model for model in config["micro_wake_word"]["models"]}
+    assert float(models["hey_missy"]["probability_cutoff"]) == 0.8
+    for model_id in ("stop", "hey_skippy"):
+        assert "probability_cutoff" not in models[model_id]
+    assert all("sliding_window_size" not in model for model in models.values())
+    assert float(config["micro_wake_word"]["vad"]["probability_cutoff"]) == 0.5
+    # The defaults the README states come from the manifests themselves.
+    for name in ("hey_missy", "hey_skippy", "stop", "vad"):
+        micro = json.loads((firmware / "wake_models" / f"{name}.json").read_text())["micro"]
+        assert (micro["probability_cutoff"], micro["sliding_window_size"]) == (0.5, 5)
