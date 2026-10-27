@@ -59,6 +59,13 @@ the build on 2026-10-21: Home has no mapping for it and it caused
 `stop` model remains a helper for the Puck's local flow, not a household
 Profile mapping, and `vad` supports endpointing.
 
+`hey_missy` runs with `probability_cutoff: 0.8` (owner-approved 2026-10-25).
+At the manifest default of 0.5 it woke about 5–7 times a day on ordinary
+household conversation and TV. `hey_skippy`, `stop` and `vad` keep their
+manifest cutoffs (0.5), and every model keeps the manifest
+`sliding_window_size` (5). Whether 0.8 still wakes reliably on a deliberate
+"Hey Missy" is a physical-acceptance question that this change does not answer.
+
 The initial proving build used **`hey_jarvis`**, a pretrained community model
 bundled with ESPHome's `micro_wake_word` component. The reference-matched
 hardware test verified it after the XMOS firmware was updated to 1.1.0 and the
