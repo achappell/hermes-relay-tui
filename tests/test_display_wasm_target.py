@@ -138,19 +138,25 @@ def test_wasm_typed_choice_supports_thirty_two_options_and_rejects_stale_context
     assert result.returncode == 0, result.stderr
 
 
-def test_wasm_build_reports_an_actionable_missing_toolchain(tmp_path: Path) -> None:
-    empty_path = tmp_path / "bin"
-    empty_path.mkdir()
+def test_wasm_build_rejects_missing_toolchain_without_creating_output(tmp_path: Path) -> None:
+    build_dir = tmp_path / "build"
+    output_dir = tmp_path / "output"
     result = subprocess.run(
         ["/bin/bash", str(BUILD_SCRIPT), "--check"],
         check=False,
         capture_output=True,
         text=True,
-        env={"PATH": str(empty_path)},
+        env={
+            **os.environ,
+            "EMCC": str(tmp_path / "missing-emcc"),
+            "DISPLAY_WASM_BUILD_DIR": str(build_dir),
+            "DISPLAY_WASM_OUTPUT_DIR": str(output_dir),
+        },
     )
 
-    assert result.returncode != 0
-    assert "Emscripten 6.0.5 is required" in result.stderr
+    assert result.returncode == 1
+    assert not build_dir.exists()
+    assert not output_dir.exists()
 
 
 def test_wasm_build_invokes_pinned_sources_and_emits_both_artifacts(tmp_path: Path) -> None:
