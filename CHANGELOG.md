@@ -32,6 +32,45 @@
 - Harden the Home browser's typed-choice (`prompt.choose`/`prompt.explore`) action boundary: one request in flight per socket, results evaluated against current state so a replaced or disconnected request cannot touch newer state, and a refused request for the current object now publishes a non-accepted status snapshot (no new frame type) instead of leaving the page "waiting". Pin that `POST /action` is inert in browser-context mode. Typed choices remain unavailable on production until Home advertises them.
 - Unlock Home browser audio inside a user gesture (typed Send, tap, or key press) instead of only creating the audio context when a reply starts, resume contexts Safari reports as `interrupted`, and re-resume on `audio_start`, so spoken replies are no longer silent on Safari after a typed turn, page reload, or an iOS interruption. Verified in headless WebKit only; audible output on real Safari is not yet confirmed.
 
+## 0.14.0 (2026-10-27)
+
+<!-- Release notes generated using configuration in .github/release.yml at main -->
+
+## What's Changed
+### Dependencies
+* ci(actions): bump the actions-minor-and-patch group across 1 directory with 3 updates by @dependabot[bot] in https://github.com/achappell/hermes-relay-tui/pull/245
+* ci(actions): bump the actions-minor-and-patch group with 2 updates by @dependabot[bot] in https://github.com/achappell/hermes-relay-tui/pull/274
+* ci(deps): bump @vitest/mocker and vitest in /home_display/web by @dependabot[bot] in https://github.com/achappell/hermes-relay-tui/pull/272
+### Other Changes
+* feat(home): default browser sessions to HomeBridge for R6 by @achappell in https://github.com/achappell/hermes-relay-tui/pull/238
+* fix(home): accept Home's dotted prompt.request typed-choice event by @achappell in https://github.com/achappell/hermes-relay-tui/pull/240
+* fix(home): render Standard clarify.request in the browser and answer with question_id by @achappell in https://github.com/achappell/hermes-relay-tui/pull/241
+* fix(home): validate typed-choice actions at the browser boundary (2-WK-5) by @achappell in https://github.com/achappell/hermes-relay-tui/pull/242
+* feat(home): answer multi-question single-select clarify sequentially in the browser (B2c) by @achappell in https://github.com/achappell/hermes-relay-tui/pull/243
+* fix(puck): make raw PCM diagnostics explicitly opt-in and bounded (P-7) by @achappell in https://github.com/achappell/hermes-relay-tui/pull/246
+* fix(puck): deterministic microphone PCM format (P-8) by @achappell in https://github.com/achappell/hermes-relay-tui/pull/248
+* docs(bmad): narrow P-HOME-01 to Puck ops deployment + runbook; reconcile STD-6/P-4 records by @achappell in https://github.com/achappell/hermes-relay-tui/pull/247
+* docs(puck): record partial P-7 hardware evidence (default-off boot on device) by @achappell in https://github.com/achappell/hermes-relay-tui/pull/252
+* fix(puck): fail closed for unavailable Home identities (3-P-5) by @achappell in https://github.com/achappell/hermes-relay-tui/pull/249
+* feat(puck): add hardened ops deploy/rollback tooling for the Puck bridge (P-HOME-01) by @achappell in https://github.com/achappell/hermes-relay-tui/pull/250
+* feat(puck): consume explicit Home paired-room wake grants by @achappell in https://github.com/achappell/hermes-relay-tui/pull/254
+* fix(puck): fail-safe RX I2S lifecycle (P-9) by @achappell in https://github.com/achappell/hermes-relay-tui/pull/251
+* fix(puck): isolate internal wake model routing (P-10) by @achappell in https://github.com/achappell/hermes-relay-tui/pull/253
+* fix(home): keep browser turns alive on explicit audio fallback by @achappell in https://github.com/achappell/hermes-relay-tui/pull/244
+* fix(puck): keep no-speech follow-ups control-only by @achappell in https://github.com/achappell/hermes-relay-tui/pull/255
+* fix(puck): wait for real playback drain and fresh VAD by @achappell in https://github.com/achappell/hermes-relay-tui/pull/256
+* fix(puck): audible cue, VAD default cutoff, accept restarted device sequence by @achappell in https://github.com/achappell/hermes-relay-tui/pull/257
+* fix(puck): wait for speech, resume wake after silent 204, close unused claim by @achappell in https://github.com/achappell/hermes-relay-tui/pull/259
+* fix(puck): thinking acknowledgement + keepalive for slow answers by @achappell in https://github.com/achappell/hermes-relay-tui/pull/265
+* fix(puck): log scoping, Home drain fix, follow-up guard, playback telemetry, drop hey_bestie by @achappell in https://github.com/achappell/hermes-relay-tui/pull/266
+* fix(puck): follow-up window waits for uploads; late follow-up is silent; no gap after thinking cue by @achappell in https://github.com/achappell/hermes-relay-tui/pull/269
+* fix(home-browser): poll Home claims every ~90 s, not 15 s by @achappell in https://github.com/achappell/hermes-relay-tui/pull/270
+* docs(puck): owner acceptance of #269 (long answer + follow-up) by @achappell in https://github.com/achappell/hermes-relay-tui/pull/271
+* fix(puck): raise hey_missy wake probability_cutoff to 0.8 by @achappell in https://github.com/achappell/hermes-relay-tui/pull/273
+
+
+**Full Changelog**: https://github.com/achappell/hermes-relay-tui/compare/v0.13.1...v0.14.0
+
 ## 0.13.1 (2026-10-09)
 
 <!-- Release notes generated using configuration in .github/release.yml at main -->
