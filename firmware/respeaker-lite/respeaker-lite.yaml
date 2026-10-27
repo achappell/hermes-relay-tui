@@ -597,6 +597,11 @@ micro_wake_word:
     # explicit enable_model call.
     - model: wake_models/hey_missy.json
       id: hey_missy
+      # Manifest default 0.5 woke ~5-7 times/day on ordinary household
+      # conversation and TV (2026-10-22..24). Owner-approved 2026-10-25:
+      # raise only this model's cutoff; hey_skippy, sliding windows, stop
+      # and VAD keep their manifest defaults.
+      probability_cutoff: 0.8
     - model: wake_models/stop.json
       id: stop
       internal: true
