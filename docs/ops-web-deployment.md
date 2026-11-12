@@ -347,6 +347,19 @@ temporary Home and actual appliance UI for browser inspection; its printed
 loopback `/fixture` controls affect only temporary test state. Standard text/
 silent PCM is a controlled fixture; all Home enrollment, grants, claim cleanup,
 and HomeBridge HTTP/WS traffic uses the real Home implementation.
+
+HOME-TC-B3 (placeholder ID; the owner assigns the real one) typed-choice proof:
+the same run publishes the paired-client `client_devices` opt-in for the paired
+browser Device (second admin PUT, after pairing and before the appliance
+launches) and then drives single-select, replaced, free-text, multi-select,
+colliding-label, opt-in-removed, socket-loss, expired and no-opt-in clarify
+scenarios through the real Home and appliance, ending in a
+`typed_choice_proof` JSON line. `--typed-choice-only` runs just that proof and
+skips the roughly two-minute dynamic-grant flow. The appliance refuses a
+non-loopback bind in Home mode, so there is no LAN `--display-host`; to open the
+`--serve` UI from an iPad, run your own Tailscale Serve in front of the loopback
+port and pass `--display-port N --display-public-origin https://<name>.ts.net`.
+The manual iPad Safari check is separate and is not performed by the script.
 To validate a built wheel rather than the source appliance, install it in a
 fresh venv and pass `--appliance-python /path/to/venv/bin/python`; the harness
 then launches that interpreter outside the checkout and repeats the same real

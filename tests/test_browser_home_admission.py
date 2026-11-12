@@ -500,3 +500,13 @@ async def test_open_still_refreshes_when_background_state_is_older_than_30s(clie
     await turn(session)
     assert refreshed, "open()'s pre-claim refresh must not rely on the background cadence"
     assert len(client.calls) == 1
+
+
+def test_browser_session_reports_its_bridge_structured_prompt_support():
+    """The appliance gates every prompt answer on this attribute of the facade."""
+    session = BrowserSession(BrowserAdmission(client=None), "tab")
+    assert session.supports_structured_prompts is False
+    session.bridge = SimpleNamespace(supports_structured_prompts=True)
+    assert session.supports_structured_prompts is True
+    session.bridge = SimpleNamespace(supports_structured_prompts=False)
+    assert session.supports_structured_prompts is False

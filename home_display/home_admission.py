@@ -278,6 +278,12 @@ class BrowserSession:
         return getattr(self.bridge, "capabilities", set())
 
     @property
+    def supports_structured_prompts(self):
+        # The appliance answers approvals, clarifications and typed choices only
+        # through a session that says so; this facade must report its bridge's value.
+        return bool(getattr(self.bridge, "supports_structured_prompts", False))
+
+    @property
     def supported_prompt_kinds(self):
         return getattr(self.bridge, "supported_prompt_kinds", ())
 
